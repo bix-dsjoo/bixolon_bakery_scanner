@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build an independent CPU-deployed bakery box scanner in this repository using D-FINE-N, RTMDet-Tiny, a four-state crop verifier, fixed-tray foreground coverage, conflict recovery, and scan-level exact-match acceptance.
+**Goal:** Build an independent CPU-deployed bakery box scanner in this repository using D-FINE-N, RTMDet-Tiny, a four-state crop verifier, annotation-masked pseudo-background recovery, conflict recovery, and a grouped-OOF development report.
 
-**Architecture:** A new `bakery_scanner` Python package owns data preparation, detector experiment orchestration, verifier training, candidate fusion, deterministic solving, OpenVINO inference, and acceptance reporting. Both detectors learn the single class `1: bread`; the final JSON API returns verified bread boxes that a future 20-class classifier can consume without depending on another repository.
+**Architecture:** A new `bakery_scanner` Python package owns data preparation, detector experiment orchestration, verifier training, candidate fusion, deterministic solving, OpenVINO inference, and development reporting. Both detectors learn the single class `1: bread`; the final JSON API returns verified bread boxes that a future 20-class classifier can consume without depending on another repository.
 
 **Tech Stack:** Python 3.11, PyTorch/timm for verifier training, official D-FINE commit `7fe2f8889f0b7b817f20c315b40fc15a4fb64ae6`, MMDetection `3.x` commit `ecac3a77becc63f23d9f6980b2a36f86acd00a8a`, MMDeploy commit `3f8604bd72e8e15d06b2e0552fe2fdb8f8de33c4`, OpenVINO `2026.2.1`, OpenCV, NumPy, SciPy, scikit-learn, Pillow, Pydantic, pytest.
 
 **Approved design:** `docs/superpowers/specs/2026-07-24-detector-verifier-design.md`
+
+**Execution override:** `docs/superpowers/plans/2026-07-24-existing-data-only-override.md` is binding for this run. It replaces any task detail that needs new physical images, tray coordinates, calibration, or a locked acceptance set.
 
 ## Global Constraints
 
