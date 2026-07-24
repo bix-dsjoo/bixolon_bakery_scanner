@@ -49,6 +49,10 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
     assert "foreach ($Fold in 0..4)" in script
     assert "receipt.json" in script and "validation_predictions.json" in script
     assert "fold-$Fold/manifest.json" in script
-    assert "--test" in script
+    assert "--test-only" in script
     assert "__INJECTED_MMD_BASE__" in script
     assert "canonicalize_validation_predictions.py" in script
+    assert "collect_oof_evidence.py" in script
+    assert "DFINE_OOF_PREDICTIONS" in script
+    overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+    assert "img_folder" in overlay and "ann_file" in overlay
