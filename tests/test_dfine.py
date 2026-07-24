@@ -83,6 +83,10 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert "FORCE_CUDA" in bootstrap
     assert "Join-Path $env:CUDA_PATH \"bin\\nvcc.exe\"" in bootstrap and "release 12\\.8" in bootstrap
     assert "cuda_runtime.h" in bootstrap and "cudart.lib" in bootstrap and "artifacts\\box_system\\logs\\cuda_12.8.1_windows_network.exe -s -n cudart_12.8" in bootstrap
+    assert "if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH))" in bootstrap
+    assert "$CudaRoot = (Resolve-Path -LiteralPath $env:CUDA_PATH).Path" in bootstrap
+    assert "Split-Path -Leaf $CudaRoot" in bootstrap and "v12.8" in bootstrap
+    assert bootstrap.index("if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH))") < bootstrap.index('Join-Path $env:CUDA_PATH "bin\\nvcc.exe"')
     assert 'TORCH_CUDA_ARCH_LIST = "12.0"' in bootstrap
     assert "$PreviousErrorActionPreference" in bootstrap and "$ErrorActionPreference = \"Continue\"" in bootstrap and "finally" in bootstrap
     matrix = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
