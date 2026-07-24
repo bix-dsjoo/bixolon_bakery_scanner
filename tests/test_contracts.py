@@ -79,3 +79,25 @@ def test_result_requires_canonical_box_and_source_ordering():
             verifier_state=VerifierState.EXACTLY_ONE,
             sources=("rtmdet_tiny_768", "dfine_n_768"),
         )
+
+
+def test_result_freezes_a_mutable_boxes_input():
+    mutable_boxes = [
+        VerifiedBreadBox(
+            object_id="bread-0001",
+            box=Box(1, 2, 3, 4),
+            score=0.9,
+            verifier_state=VerifierState.EXACTLY_ONE,
+            sources=("dfine_n_768",),
+        )
+    ]
+    result = BoxSystemResult(
+        source_id="scan-1",
+        source_sha256="a" * 64,
+        boxes=mutable_boxes,
+    )
+
+    mutable_boxes.clear()
+
+    assert len(result.boxes) == 1
+    assert isinstance(result.boxes, tuple)

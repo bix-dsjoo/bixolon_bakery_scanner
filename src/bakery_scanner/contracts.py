@@ -140,6 +140,10 @@ class BoxSystemResult:
         if not isinstance(self.source_id, str) or not self.source_id:
             raise ValueError("source_id must be non-empty")
         object.__setattr__(self, "source_sha256", _sha256(self.source_sha256, "source_sha256"))
+        # Accept sequence-like caller input only at the boundary, then freeze it.
+        # This prevents a mutable list supplied by a caller from altering an
+        # already-created result and its canonical JSON audit output.
+        object.__setattr__(self, "boxes", tuple(self.boxes))
         if any(not isinstance(box, VerifiedBreadBox) for box in self.boxes):
             raise ValueError("boxes must contain VerifiedBreadBox values")
         expected_ids = tuple(f"bread-{index:04d}" for index in range(1, len(self.boxes) + 1))
