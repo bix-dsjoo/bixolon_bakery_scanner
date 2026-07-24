@@ -1,0 +1,36 @@
+import pytest
+
+from bakery_scanner.contracts import Box
+from bakery_scanner.detectors.dfine import DFineRunner, parse_dfine_output
+
+
+def test_dfine_xyxy_is_normalized_to_source_xywh():
+    rows = parse_dfine_output(
+        image_id=7,
+        image_size=(100, 80),
+        labels=[0],
+        boxes=[[10, 20, 40, 60]],
+        scores=[.2],
+        source="dfine_n_768",
+    )
+    assert rows[0].box == Box(10, 20, 30, 40)
+    assert rows[0].class_name == "bread"
+
+
+def test_dfine_parser_rejects_unknown_classes_and_caps_canonical_candidates():
+    with pytest.raises(ValueError, match="class"):
+        parse_dfine_output(1, (100, 80), [1], [[0, 0, 10, 10]], [.5], "dfine_n_768")
+    rows = parse_dfine_output(
+        1, (100, 80), [0] * 31,
+        [[index, 0, index + 1, 1] for index in range(31)],
+        [0.5] * 31, "dfine_n_768",
+    )
+    assert len(rows) == 30
+    assert rows[0].box == Box(0, 0, 1, 1)
+
+
+def test_runner_uses_injected_command_runner(tmp_path):
+    calls = []
+    runner = DFineRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []})
+    assert runner.predict("model.pt", "image.png", image_id=1, image_size=(10, 10), source="dfine_n_640") == ()
+    assert calls[0][0] == "dfine-predict"
