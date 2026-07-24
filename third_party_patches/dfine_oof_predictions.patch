@@ -1,21 +1,30 @@
 diff --git a/src/solver/det_engine.py b/src/solver/det_engine.py
-index b877b09..3da3e89 100644
+index b877b09..05b55a1 100644
 --- a/src/solver/det_engine.py
 +++ b/src/solver/det_engine.py
 @@ -8,0 +9 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 +import json
 @@ -9,0 +11 @@ import math
 +import os
-@@ -179,0 +182 @@ def evaluate(
+@@ -179,0 +182,2 @@ def evaluate(
 +    oof_predictions = []
 +    processed_image_ids = []
-@@ -207,0 +211,4 @@ def evaluate(
+@@ -207,0 +212,14 @@ def evaluate(
 +        for target, output in zip(targets, results):
 +            processed_image_ids.append(target["image_id"].item())
-+            for box, score, label in zip(output["boxes"].tolist(), output["scores"].tolist(), output["labels"].tolist()):
++            for box, score, label in zip(
++                output["boxes"].tolist(), output["scores"].tolist(), output["labels"].tolist()
++            ):
 +                x1, y1, x2, y2 = box
-+                oof_predictions.append({"image_id": target["image_id"].item(), "category_id": int(label), "bbox": [x1, y1, x2 - x1, y2 - y1], "score": score})
-@@ -249,0 +257,4 @@ def evaluate(
++                oof_predictions.append(
++                    {
++                        "image_id": target["image_id"].item(),
++                        "category_id": int(label),
++                        "bbox": [x1, y1, x2 - x1, y2 - y1],
++                        "score": score,
++                    }
++                )
+@@ -249,0 +268,18 @@ def evaluate(
 +    gathered_processed_image_ids = [None] * dist_utils.get_world_size()
 +    gathered_oof_predictions = [None] * dist_utils.get_world_size()
 +    if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -27,4 +36,10 @@ index b877b09..3da3e89 100644
 +    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
 +    if oof_path and dist_utils.is_main_process():
 +        with open(oof_path, "w", encoding="utf-8") as handle:
-+            json.dump({"predictions": [prediction for rows in gathered_oof_predictions for prediction in rows], "processed_image_ids": [image_id for rows in gathered_processed_image_ids for image_id in rows]}, handle)
++            json.dump(
++                {
++                    "predictions": [prediction for rows in gathered_oof_predictions for prediction in rows],
++                    "processed_image_ids": [image_id for rows in gathered_processed_image_ids for image_id in rows],
++                },
++                handle,
++            )
