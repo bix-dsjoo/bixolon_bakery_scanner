@@ -1,6 +1,9 @@
 param([string]$Config = "configs/box_system.yaml")
 $ErrorActionPreference = "Stop"
+$env:CUDA_VISIBLE_DEVICES = "0"
 function Invoke-Checked([scriptblock]$Command, [string]$Description) { & $Command; if ($LASTEXITCODE -ne 0) { throw "Failed: $Description (exit $LASTEXITCODE)" } }
+Invoke-Checked { & .venvs/dfine/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for D-FINE"
+Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for RTMDet"
 
 # Uses only the already staged 299-image dataset and its grouped five-fold
 # manifests. Each run trains on the other four folds and tests exactly one.
@@ -46,13 +49,13 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     Set-Content -NoNewline -Encoding utf8 -Path $RunConfig -Value $ConfigText
     $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.json"; $PredictionPath = Join-Path $RunRoot "validation_predictions.json"
     if ($Variant.Backend -eq "dfine") {
-        Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --seed=$Seed --output-dir $RunRoot } "train $RunId"
+        Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig -d cuda:0 --seed=$Seed --output-dir $RunRoot } "train $RunId"
         # Official evaluation CLI plus the audited, pinned-source export patch.
         $env:DFINE_OOF_PREDICTIONS = $RawPredictionPath
         try {
             $Checkpoint = Join-Path $RunRoot "best_stg2.pth"; if (-not (Test-Path $Checkpoint)) { $Checkpoint = Join-Path $RunRoot "best_stg1.pth" }
             if (-not (Test-Path $Checkpoint)) { throw "D-FINE did not produce best_stg2.pth or best_stg1.pth for $RunId" }
-            Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r $Checkpoint --output-dir $RunRoot } "test $RunId"
+            Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig -d cuda:0 --test-only -r $Checkpoint --output-dir $RunRoot } "test $RunId"
         } finally { Remove-Item Env:DFINE_OOF_PREDICTIONS -ErrorAction SilentlyContinue }
     } else {
         Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed } "train $RunId"

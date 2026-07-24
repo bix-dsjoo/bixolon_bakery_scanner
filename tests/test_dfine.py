@@ -64,14 +64,18 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
 def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
     patch = __import__("pathlib").Path("third_party_patches/dfine_oof_predictions.patch").read_text(encoding="utf-8")
-    assert "torch==2.8.0+cpu" in bootstrap and "mmdet==3.3.0" in bootstrap
+    assert "torch==2.8.0+cu128" in bootstrap and "mmdet==3.3.0" in bootstrap
     assert "import torch, torchvision, mmengine, mmcv, mmdet" in bootstrap
     assert patch.count("all_gather_object") >= 2 and "gathered_oof_predictions" in patch
     assert "Invoke-Checked" in bootstrap and "from src.core import YAMLConfig" in bootstrap
     assert "apply --check $DFinePatch" in bootstrap and "create D-FINE venv" in bootstrap
+    assert "torch.version.cuda == '12.8'" in bootstrap and "RTX 5080" in bootstrap and "nvcc" in bootstrap
+    assert "FORCE_CUDA" in bootstrap
     assert "$PreviousErrorActionPreference" in bootstrap and "$ErrorActionPreference = \"Continue\"" in bootstrap and "finally" in bootstrap
     matrix = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
     assert "Invoke-Checked" in matrix and "finally" in matrix and "best_coco_bbox_mAP_*.pth" in matrix
+    assert "CUDA_VISIBLE_DEVICES" in matrix and "-d cuda:0" in matrix
+    assert "require RTX 5080 CUDA" in matrix
     assert "Refusing stale run-owned artifacts" in matrix and "best_coco_bbox_mAP_*.pth" in matrix
     overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert overlay.count("type: Resize") == 2
