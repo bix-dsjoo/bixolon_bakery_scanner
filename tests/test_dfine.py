@@ -31,9 +31,19 @@ def test_dfine_parser_rejects_unknown_classes_and_caps_canonical_candidates():
 
 def test_runner_uses_injected_command_runner(tmp_path):
     calls = []
-    runner = DFineRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []})
+    runner = DFineRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []}, gpu_probe=lambda: (True, "NVIDIA RTX 5080"))
     assert runner.predict("model.pt", "image.png", image_id=1, image_size=(10, 10), source="dfine_n_640") == ()
     assert calls[0][0] == "dfine-predict"
+
+
+def test_runner_rejects_cpu_unavailable_and_wrong_gpu():
+    runner = DFineRunner(gpu_probe=lambda: (False, ""))
+    with pytest.raises(RuntimeError): runner.train("c", "o")
+    wrong = DFineRunner(gpu_probe=lambda: (True, "RTX 4090"))
+    with pytest.raises(RuntimeError): wrong.train("c", "o")
+    allowed = DFineRunner(command_runner=lambda _: {}, gpu_probe=lambda: (True, "RTX 5080"))
+    allowed.train("c", "o", device="CUDA:0")
+    with pytest.raises(ValueError): allowed.train("c", "o", device="cuda:1")
 
 
 def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():

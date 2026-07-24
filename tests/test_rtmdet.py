@@ -17,7 +17,7 @@ def test_rtmdet_drops_scores_below_retention_floor_and_rejects_invalid_box():
 
 def test_runner_uses_injected_command_runner():
     calls = []
-    runner = RTMDetRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []})
+    runner = RTMDetRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []}, gpu_probe=lambda: (True, "NVIDIA RTX 5080"))
     assert runner.predict("model.pth", "image.png", image_id=1, image_size=(10, 10), source="rtmdet_tiny_640") == ()
     assert calls[0][0] == "rtmdet-predict"
 

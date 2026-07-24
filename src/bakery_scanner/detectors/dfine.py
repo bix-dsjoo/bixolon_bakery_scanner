@@ -27,26 +27,35 @@ def parse_dfine_output(
 class DFineRunner:
     """Thin command-backed adapter; importing D-FINE remains isolated to its venv."""
 
-    def __init__(self, command_runner: Callable[[tuple[str, ...]], dict[str, Any]] | None = None) -> None:
+    def __init__(self, command_runner: Callable[[tuple[str, ...]], dict[str, Any]] | None = None, gpu_probe: Callable[[], tuple[bool, str]] | None = None) -> None:
         self._command_runner = command_runner or _subprocess_runner
+        self._gpu_probe = gpu_probe or _default_gpu_probe
 
     def train(self, config: str | Path, output: str | Path, *, device: str = "cuda:0") -> dict[str, Any]:
-        _require_rtx_5080(device)
+        _require_rtx_5080(device, self._gpu_probe)
         return self._command_runner(("dfine-train", "--config", str(config), "--output", str(output), "--device", device))
 
     def predict(self, model: str | Path, image: str | Path, *, image_id: int, image_size: tuple[int, int], source: str) -> tuple[BreadProposal, ...]:
-        _require_rtx_5080("cuda:0")
+        _require_rtx_5080("cuda:0", self._gpu_probe)
         payload = self._command_runner(("dfine-predict", "--model", str(model), "--image", str(image), "--device", "cuda:0"))
         return parse_dfine_output(image_id, image_size, payload["labels"], payload["boxes"], payload["scores"], source)
 
     def export_onnx(self, model: str | Path, output: str | Path) -> dict[str, Any]:
-        _require_rtx_5080("cuda:0")
+        _require_rtx_5080("cuda:0", self._gpu_probe)
         return self._command_runner(("dfine-export-onnx", "--model", str(model), "--output", str(output), "--device", "cuda:0"))
 
 
-def _require_rtx_5080(device: str) -> None:
-    if device != "cuda:0":
+def _require_rtx_5080(device: str, probe: Callable[[], tuple[bool, str]]) -> None:
+    if device.lower() != "cuda:0":
         raise ValueError("GPU-only project requires RTX 5080 device cuda:0")
+    available, name = probe()
+    if not available or "RTX 5080" not in name:
+        raise RuntimeError("RTX 5080 CUDA device 0 is required")
+
+
+def _default_gpu_probe() -> tuple[bool, str]:
+    import torch
+    return torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
 
 
 def _parse_xyxy(image_id: int, image_size: tuple[int, int], labels: Sequence[int], boxes: Sequence[Sequence[float]], scores: Sequence[float], source: str) -> tuple[BreadProposal, ...]:
