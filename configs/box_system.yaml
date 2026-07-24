@@ -1,0 +1,30 @@
+seed: 20260724
+artifact_root: artifacts/box_system
+canonical_frame:
+  width: 1152
+  height: 1536
+dataset:
+  sources:
+    - name: group_15class
+      images: datasets/detection/group_15class/images
+      annotations: datasets/detection/group_15class/annotations/instances.json
+    - name: group_20class_batch01
+      images: datasets/detection/group_20class_batch01/images
+      annotations: datasets/detection/group_20class_batch01/annotations/instances.json
+    - name: group_20class_batch02
+      images: datasets/detection/group_20class_batch02/images
+      annotations: datasets/detection/group_20class_batch02/annotations/instances.json
+  expected_images: 299
+  expected_boxes: 1410
+  folds: 5
+detectors:
+  seeds: [20260724, 20260725, 20260726]
+  variants:
+    - {name: dfine_n_640, backend: dfine, input_size: 640, role: audit}
+    - {name: dfine_n_768, backend: dfine, input_size: 768, role: primary}
+    - {name: rtmdet_tiny_640, backend: rtmdet, input_size: 640, role: audit}
+    - {name: rtmdet_tiny_768, backend: rtmdet, input_size: 768, role: secondary}
+runtime:
+  device: CPU
+  precision: FP32
+  proposal_limit: 30

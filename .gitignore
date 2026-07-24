@@ -1,0 +1,13 @@
+.venv/
+.venvs/
+third_party/
+artifacts/
+acceptance_data/
+__pycache__/
+.pytest_cache/
+*.pt
+*.pth
+*.onnx
+*.xml
+*.bin
+*.egg-info/
