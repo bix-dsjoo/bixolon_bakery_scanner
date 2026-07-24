@@ -48,3 +48,7 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
     assert "foreach ($Seed in $Seeds)" in script
     assert "foreach ($Fold in 0..4)" in script
     assert "receipt.json" in script and "validation_predictions.json" in script
+    assert "fold-$Fold/manifest.json" in script
+    assert "--test" in script
+    assert "__INJECTED_MMD_BASE__" in script
+    assert "canonicalize_validation_predictions.py" in script

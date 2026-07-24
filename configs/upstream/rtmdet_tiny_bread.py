@@ -1,9 +1,9 @@
 # Overlay consumed by the pinned MMDetection checkout; paths/sizes are injected per run.
-_base_ = "../../third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"
+_base_ = r"__INJECTED_MMD_BASE__"
 metainfo = {"classes": ("bread",)}
 model = dict(bbox_head=dict(num_classes=1))
-train_dataloader = dict(dataset=dict(metainfo=metainfo, ann_file="__INJECTED_TRAIN_ANNOTATIONS__"))
-val_dataloader = dict(dataset=dict(metainfo=metainfo, ann_file="__INJECTED_VALIDATION_ANNOTATIONS__"))
+train_dataloader = dict(dataset=dict(metainfo=metainfo, data_root=r"__INJECTED_DATA_ROOT__", ann_file="__INJECTED_TRAIN_ANNOTATIONS__"))
+val_dataloader = dict(dataset=dict(metainfo=metainfo, data_root=r"__INJECTED_DATA_ROOT__", ann_file="__INJECTED_VALIDATION_ANNOTATIONS__"))
 test_dataloader = val_dataloader
 # All train/test/TTA resize scales are injected as either 640 or 768.
 input_size = __INJECTED_INPUT_SIZE__

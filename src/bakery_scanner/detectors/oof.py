@@ -39,6 +39,7 @@ class PairEvidence:
     false_proposals: int
     primary_misses: int
     sem_exact: float
+    seed_count: int
     receipt_hashes: tuple[str, ...]
     prediction_artifact_hashes: tuple[str, ...]
 
@@ -130,15 +131,21 @@ def select_complementary_pair(
         primary, secondary = (first, second) if first.startswith("dfine") else (second, first)
         _require_variant_settings(primary, score_thresholds, latency_ms)
         _require_variant_settings(secondary, score_thresholds, latency_ms)
-        primary_predictions = _predictions_for(artifact, (primary,), score_thresholds)
-        union_predictions = _predictions_for(artifact, (primary, secondary), score_thresholds)
-        primary_report = evaluate_scans(ground_truth, primary_predictions, scenarios)
-        union_report = evaluate_scans(ground_truth, union_predictions, scenarios)
+        seeds = tuple(sorted({experiment.seed for experiment in artifact.experiments_by_run.values() if experiment.name in {primary, secondary}}))
+        if not seeds:
+            continue
+        # Never pool predictions from independently trained seeds: that would
+        # manufacture duplicate boxes and bias the pair toward seed count.
+        reports = tuple(
+            (evaluate_scans(ground_truth, _predictions_for(artifact, (primary,), score_thresholds, seed), scenarios),
+             evaluate_scans(ground_truth, _predictions_for(artifact, (primary, secondary), score_thresholds, seed), scenarios))
+            for seed in seeds
+        )
         used_runs = tuple(sorted(run_id for run_id, experiment in artifact.experiments_by_run.items() if experiment.name in {primary, secondary}))
         row = PairEvidence(
-            primary, secondary, union_report.misses, union_report.merge_errors,
-            union_report.false_positives + union_report.duplicates, primary_report.misses,
-            union_report.sem_exact, tuple(sorted(artifact.run_receipt_hashes[run_id] for run_id in used_runs)),
+            primary, secondary, sum(union.misses for _, union in reports), sum(union.merge_errors for _, union in reports),
+            sum(union.false_positives + union.duplicates for _, union in reports), sum(primary_report.misses for primary_report, _ in reports),
+            sum(union.sem_exact for _, union in reports) / len(reports), len(seeds), tuple(sorted(artifact.run_receipt_hashes[run_id] for run_id in used_runs)),
             tuple(sorted(artifact.prediction_artifact_hashes[run_id] for run_id in used_runs)),
         )
         rank = (row.union_misses, row.union_merge_errors, row.false_proposals, row.primary_misses, -row.sem_exact, latency_ms[primary] + latency_ms[secondary], primary, secondary)
@@ -149,10 +156,10 @@ def select_complementary_pair(
     return DetectorPairSelection(ordered[0].primary, ordered[0].secondary, ordered)
 
 
-def _predictions_for(artifact: OofArtifact, names: tuple[str, ...], thresholds: Mapping[str, float]) -> dict[int, tuple[Box, ...]]:
+def _predictions_for(artifact: OofArtifact, names: tuple[str, ...], thresholds: Mapping[str, float], seed: int) -> dict[int, tuple[Box, ...]]:
     values: dict[int, list[Box]] = {}
     for row in artifact.predictions:
-        if row.proposal.source in names and row.proposal.score >= thresholds[row.proposal.source]:
+        if artifact.experiments_by_run[row.run_id].seed == seed and row.proposal.source in names and row.proposal.score >= thresholds[row.proposal.source]:
             values.setdefault(row.proposal.image_id, []).append(row.proposal.box)
     return {image_id: tuple(boxes) for image_id, boxes in values.items()}
 

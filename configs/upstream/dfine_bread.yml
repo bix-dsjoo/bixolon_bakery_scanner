@@ -1,5 +1,5 @@
 # Overlay for the pinned D-FINE checkout. Fold paths are injected per run.
-__include__: configs/dfine/dfine_hgnetv2_n_coco.yml
+__include__: __INJECTED_DFINE_BASE__
 num_classes: 1
 remap_mscoco_category: false
 seed: 20260724
@@ -8,3 +8,4 @@ experiment:
   eval_spatial_size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]
   train_annotations: __INJECTED_TRAIN_ANNOTATIONS__
   validation_annotations: __INJECTED_VALIDATION_ANNOTATIONS__
+  data_root: __INJECTED_DATA_ROOT__

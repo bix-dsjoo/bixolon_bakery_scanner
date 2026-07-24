@@ -71,4 +71,18 @@ def test_pair_selection_uses_union_predictions_calibrated_semr_and_hashes(tmp_pa
     )
     assert selection.primary.startswith("dfine")
     assert selection.evidence[0].sem_exact == 1.0
+    assert selection.evidence[0].seed_count == 1
+
+
+def test_pair_selection_averages_seeds_instead_of_pooling_duplicate_boxes(tmp_path):
+    runs = tuple(run for run in _matrix_runs() if run.experiment.seed in {20260724, 20260725} and run.experiment.fold == 0)
+    artifact = collect_oof_predictions(
+        runs,
+        lambda run: ((run.validation_scenes[0], _proposal(1, run.experiment.name)),) if run.experiment.name == "dfine_n_768" else (),
+        tmp_path, expected_experiments=tuple(run.experiment for run in runs),
+    )
+    names = ("dfine_n_640", "dfine_n_768", "rtmdet_tiny_640", "rtmdet_tiny_768")
+    selection = select_complementary_pair(artifact, ground_truth={1: (Box(0, 0, 10, 10),)}, scenarios={1: frozenset()}, score_thresholds={name: .001 for name in names}, latency_ms={name: 1.0 for name in names})
+    assert selection.evidence[0].seed_count == 2
+    assert selection.evidence[0].sem_exact == 1.0
     assert selection.evidence[0].receipt_hashes
