@@ -17,11 +17,14 @@ index b877b09..3da3e89 100644
 +                oof_predictions.append({"image_id": target["image_id"].item(), "category_id": int(label), "bbox": [x1, y1, x2 - x1, y2 - y1], "score": score})
 @@ -249,0 +257,4 @@ def evaluate(
 +    gathered_processed_image_ids = [None] * dist_utils.get_world_size()
++    gathered_oof_predictions = [None] * dist_utils.get_world_size()
 +    if torch.distributed.is_available() and torch.distributed.is_initialized():
 +        torch.distributed.all_gather_object(gathered_processed_image_ids, processed_image_ids)
++        torch.distributed.all_gather_object(gathered_oof_predictions, oof_predictions)
 +    else:
 +        gathered_processed_image_ids = [processed_image_ids]
++        gathered_oof_predictions = [oof_predictions]
 +    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
 +    if oof_path and dist_utils.is_main_process():
 +        with open(oof_path, "w", encoding="utf-8") as handle:
-+            json.dump({"predictions": oof_predictions, "processed_image_ids": [image_id for rows in gathered_processed_image_ids for image_id in rows]}, handle)
++            json.dump({"predictions": [prediction for rows in gathered_oof_predictions for prediction in rows], "processed_image_ids": [image_id for rows in gathered_processed_image_ids for image_id in rows]}, handle)
