@@ -46,9 +46,13 @@ Install-CUDAEnvironment ".venvs/dfine/Scripts/python.exe" @("-r", "third_party/D
 Install-CUDAEnvironment ".venvs/rtmdet/Scripts/python.exe" @("mmengine==0.10.7", "mmdet==3.3.0")
 # OpenMMLab currently provides no pinned prebuilt mmcv wheel contract here for
 # torch 2.8/cu128. Refuse CPU fallback; require a local CUDA toolkit to build.
-if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) { throw "MMCV for torch 2.8 CUDA 12.8 requires nvcc; install CUDA Toolkit 12.8, then rerun." }
+$Nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
+if (-not (Test-Path $Nvcc)) { throw "MMCV for torch 2.8 CUDA 12.8 requires $Nvcc; install CUDA Toolkit 12.8, then rerun." }
+if (-not ((Resolve-Path $Nvcc).Path.StartsWith((Resolve-Path $env:CUDA_PATH).Path, [StringComparison]::OrdinalIgnoreCase))) { throw "nvcc must resolve beneath CUDA_PATH" }
+$NvccVersion = & $Nvcc -V
+if ($LASTEXITCODE -ne 0 -or $NvccVersion -notmatch "release 12\.8") { throw "CUDA_PATH nvcc must report release 12.8" }
 if ($env:CUDA_PATH -notmatch "v12\.8" -or -not (Test-Path (Join-Path $env:CUDA_PATH "include\cuda_runtime.h")) -or -not (Test-Path (Join-Path $env:CUDA_PATH "lib\x64\cudart.lib"))) {
-    throw "MMCV CUDA build requires CUDA 12.8 development headers and libraries. Install cuda_12.8.1_windows_network.exe -s -n cudart_12.8 (and nvcc if missing), then rerun."
+    throw "MMCV CUDA build requires CUDA 12.8 development headers and libraries. Install artifacts\box_system\logs\cuda_12.8.1_windows_network.exe -s -n cudart_12.8 (and nvcc if missing), then rerun."
 }
 $env:FORCE_CUDA = "1"
 $env:TORCH_CUDA_ARCH_LIST = "12.0"
