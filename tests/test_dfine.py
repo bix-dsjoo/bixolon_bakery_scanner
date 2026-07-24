@@ -56,14 +56,17 @@ def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():
     assert "base_size" in overlay
 
 
-def test_matrix_writes_dfine_include_list_and_posix_relative_paths_loadable_by_upstream(tmp_path):
-    """D-FINE treats scalar Windows includes as characters, so generated overlays stay portable."""
+def test_matrix_writes_dfine_include_and_data_paths_relative_to_their_consumers(tmp_path):
+    """D-FINE loads includes beside the config but opens dataset fields from repo CWD."""
     script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
     overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
 
     assert "__include__:\n  - __INJECTED_DFINE_BASE__" in overlay
     assert "function Convert-ToPosixRelativePath" in script
-    assert "Convert-ToPosixRelativePath $GeneratedConfigRoot" in script
+    assert "function Convert-ToPosixRepositoryPath" in script
+    assert "Convert-ToPosixRelativePath $GeneratedConfigRoot \"third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml\"" in script
+    assert "Convert-ToPosixRepositoryPath $TrainAnnotations" in script
+    assert "Convert-ToPosixRepositoryPath (Join-Path $StagedRoot \"images\")" in script
 
     generated_root = tmp_path / "configs" / "generated" / "detector-matrix"
     generated_root.mkdir(parents=True)
@@ -72,16 +75,18 @@ def test_matrix_writes_dfine_include_list_and_posix_relative_paths_loadable_by_u
     train = Path("artifacts/box_system/detectors/dfine_n_640-seed20260724-fold0/fold-data/train.json").resolve()
     validation = Path("artifacts/box_system/detectors/dfine_n_640-seed20260724-fold0/fold-data/validation.json").resolve()
 
-    helper = re.search(r"(?ms)^function Convert-ToPosixRelativePath\b.*?^}\s*$", script)
-    assert helper, "matrix script needs a D-FINE POSIX relative-path helper"
+    helper = re.search(r"(?ms)^function Convert-ToPosixRelativePath\b.*?^}\s*^function Convert-ToPosixRepositoryPath\b.*?^}\s*$", script)
+    assert helper, "matrix script needs separate D-FINE include and repository-data path helpers"
     helper_smoke = tmp_path / "relative-paths.ps1"
     helper_smoke.write_text(
         helper.group(0)
-        + "\n$paths = @("
-        + ", ".join(json.dumps(str(path)) for path in (base_config, images, train, validation))
-        + ")\n$paths | ForEach-Object { Convert-ToPosixRelativePath '"
+        + "\n$include = Convert-ToPosixRelativePath '"
         + str(generated_root)
-        + "' $_ } | ConvertTo-Json -Compress\n",
+        + "' '"
+        + str(base_config)
+        + "'\n$data = @("
+        + ", ".join(json.dumps(str(path)) for path in (images, train, validation))
+        + ") | ForEach-Object { Convert-ToPosixRepositoryPath $_ }\n(@($include) + @($data)) | ConvertTo-Json -Compress\n",
         encoding="utf-8",
     )
     converted = subprocess.run(
@@ -93,6 +98,13 @@ def test_matrix_writes_dfine_include_list_and_posix_relative_paths_loadable_by_u
     assert converted.returncode == 0, converted.stderr
     base_relative, images_relative, train_relative, validation_relative = json.loads(converted.stdout)
     assert all("\\" not in value for value in (base_relative, images_relative, train_relative, validation_relative))
+    assert base_relative.startswith("../")
+    assert not images_relative.startswith("../")
+    assert not train_relative.startswith("../")
+    assert not validation_relative.startswith("../")
+    assert (Path.cwd() / images_relative).is_dir()
+    assert (Path.cwd() / train_relative).is_file()
+    assert (Path.cwd() / validation_relative).is_file()
 
     rendered = (
         overlay.replace("__INJECTED_DFINE_BASE__", base_relative)

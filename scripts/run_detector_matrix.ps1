@@ -11,6 +11,12 @@ function Convert-ToPosixRelativePath([string]$FromDirectory, [string]$TargetPath
     $RelativeUri = ([Uri]$From).MakeRelativeUri([Uri]$Target)
     return [Uri]::UnescapeDataString($RelativeUri.ToString())
 }
+function Convert-ToPosixRepositoryPath([string]$TargetPath) {
+    $Repository = (Get-Location).Path.TrimEnd("\") + "\"
+    $Target = (Resolve-Path -LiteralPath $TargetPath).Path
+    $RelativeUri = ([Uri]$Repository).MakeRelativeUri([Uri]$Target)
+    return [Uri]::UnescapeDataString($RelativeUri.ToString())
+}
 Invoke-Checked { & .venvs/dfine/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for D-FINE"
 Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for RTMDet"
 
@@ -55,9 +61,9 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     $RunConfig = Join-Path $GeneratedConfigRoot "$RunId.$([IO.Path]::GetExtension($Variant.Template).TrimStart('.'))"; New-Item -ItemType Directory -Force -Path (Split-Path $RunConfig) | Out-Null
     $ConfigText = Get-Content -Raw $Variant.Template
     if ($Variant.Backend -eq "dfine") {
-        $TrainConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot $TrainAnnotations
-        $ValidationConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot $ValidationAnnotations
-        $ImagesConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot (Join-Path $StagedRoot "images")
+        $TrainConfigPath = Convert-ToPosixRepositoryPath $TrainAnnotations
+        $ValidationConfigPath = Convert-ToPosixRepositoryPath $ValidationAnnotations
+        $ImagesConfigPath = Convert-ToPosixRepositoryPath (Join-Path $StagedRoot "images")
         $DFineBaseConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml"
         $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", $TrainConfigPath).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", $ValidationConfigPath).Replace("__INJECTED_IMAGES_DIR__", $ImagesConfigPath).Replace("__INJECTED_DFINE_BASE__", $DFineBaseConfigPath)
     } else {
