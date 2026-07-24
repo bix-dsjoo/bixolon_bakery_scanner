@@ -43,10 +43,18 @@ class ScanMetrics:
 
 
 @dataclass(frozen=True, slots=True)
+class ThresholdEvaluation(ScanMetrics):
+    """All scan and scenario diagnostics for one required IoU threshold."""
+
+    scenarios: Mapping[str, ScanMetrics]
+
+
+@dataclass(frozen=True, slots=True)
 class EvaluationReport(ScanMetrics):
     sem_exact_75: float
     sem_exact_90: float
     scenarios: Mapping[str, ScanMetrics]
+    by_iou: Mapping[float, ThresholdEvaluation]
 
 
 def match_boxes(
@@ -106,11 +114,17 @@ def evaluate_scans(
         }
         for threshold in IOU_THRESHOLDS
     }
-    overall = _metrics(matches[0.50])
-    scenario_metrics: dict[str, ScanMetrics] = {}
-    for scenario in sorted({name for labels in scenarios.values() for name in labels}):
-        subset = {scan_id: result for scan_id, result in matches[0.50].items() if scenario in scenarios[scan_id]}
-        scenario_metrics[scenario] = _metrics(subset)
+    by_iou = {
+        threshold: ThresholdEvaluation(
+            **_metric_fields(_metrics(rows)),
+            scenarios={
+                scenario: _metrics({scan_id: result for scan_id, result in rows.items() if scenario in scenarios[scan_id]})
+                for scenario in sorted({name for labels in scenarios.values() for name in labels})
+            },
+        )
+        for threshold, rows in matches.items()
+    }
+    overall = by_iou[0.50]
     return EvaluationReport(
         scan_count=overall.scan_count,
         exact_scans=overall.exact_scans,
@@ -121,7 +135,8 @@ def evaluate_scans(
         merge_errors=overall.merge_errors,
         sem_exact_75=_metrics(matches[0.75]).sem_exact,
         sem_exact_90=_metrics(matches[0.90]).sem_exact,
-        scenarios=scenario_metrics,
+        scenarios=overall.scenarios,
+        by_iou=by_iou,
     )
 
 
@@ -136,6 +151,18 @@ def _metrics(results: Mapping[int, MatchResult]) -> ScanMetrics:
         split_errors=sum(row.split_errors for row in values),
         merge_errors=sum(row.merge_errors for row in values),
     )
+
+
+def _metric_fields(metrics: ScanMetrics) -> dict[str, int]:
+    return {
+        "scan_count": metrics.scan_count,
+        "exact_scans": metrics.exact_scans,
+        "misses": metrics.misses,
+        "false_positives": metrics.false_positives,
+        "duplicates": metrics.duplicates,
+        "split_errors": metrics.split_errors,
+        "merge_errors": metrics.merge_errors,
+    }
 
 
 def _iou_matrix(gt: tuple[Box, ...], predictions: tuple[Box, ...]) -> np.ndarray:

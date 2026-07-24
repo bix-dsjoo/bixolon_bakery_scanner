@@ -36,3 +36,16 @@ def test_scenario_strata_are_evaluated_from_same_scan_outcomes():
     assert report.sem_exact == 0.5
     assert report.scenarios["clean"].sem_exact == 1.0
     assert report.scenarios["touching"].misses == 1
+
+
+def test_all_required_iou_thresholds_include_error_counts_and_scenarios():
+    report = evaluate_scans(
+        gt={1: (Box(0, 0, 10, 10),)},
+        predictions={1: (Box(0, 0, 10, 10), Box(0, 0, 10, 10))},
+        scenarios={1: frozenset({"touching"})},
+    )
+
+    assert report.by_iou[0.50].duplicates == 1
+    assert report.by_iou[0.75].duplicates == 1
+    assert report.by_iou[0.90].duplicates == 1
+    assert report.by_iou[0.90].scenarios["touching"].duplicates == 1

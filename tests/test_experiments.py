@@ -42,6 +42,7 @@ def test_receipt_is_deterministic_and_records_required_hashes(config, tmp_path):
     )
 
     assert receipt.config_hash == "c24043dc75b93d90476186f96d158d329d25840bff84f7cbcac8a324d79cc6ea"
+    assert receipt.config_text == "seed: 20260724\n"
     assert (tmp_path / "receipt.json").read_bytes() == receipt.to_json_bytes()
 
 

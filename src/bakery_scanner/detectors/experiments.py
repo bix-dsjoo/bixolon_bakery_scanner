@@ -41,6 +41,7 @@ class DetectorExperiment:
 class ExperimentReceipt:
     experiment: DetectorExperiment
     config_hash: str
+    config_text: str
     fold_hash: str
     upstream_commit: str
     command: tuple[str, ...]
@@ -95,9 +96,14 @@ def write_experiment_receipt(
         raise ValueError("upstream_commit must be a lowercase 40-character git SHA")
     if not command or any(not part for part in command):
         raise ValueError("command must contain non-empty arguments")
+    try:
+        config_text = config_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("config_bytes must be UTF-8 so the receipt is recoverable") from exc
     receipt = ExperimentReceipt(
         experiment=experiment,
         config_hash=hashlib.sha256(config_bytes).hexdigest(),
+        config_text=config_text,
         fold_hash=fold_hash,
         upstream_commit=upstream_commit,
         command=tuple(command),
