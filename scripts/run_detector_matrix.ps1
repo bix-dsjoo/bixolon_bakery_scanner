@@ -35,6 +35,7 @@ function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [strin
 
 foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 0..4) {
     $RunId = "$($Variant.Name)-seed$Seed-fold$Fold"; $RunRoot = Join-Path $ArtifactRoot $RunId
+    if ((Test-Path $RunRoot) -and (Get-ChildItem -Force $RunRoot | Select-Object -First 1)) { throw "Refusing stale run-owned artifacts: $RunRoot" }
     $FoldRoot = Join-Path $RunRoot "fold-data"; New-Item -ItemType Directory -Force -Path $FoldRoot | Out-Null
     $ManifestPath = "artifacts/box_system/folds/fold-$Fold/manifest.json"
     $TrainAnnotations = Join-Path $FoldRoot "train.json"; $ValidationAnnotations = Join-Path $FoldRoot "validation.json"
@@ -57,7 +58,7 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
         Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed } "train $RunId"
         # MMDetection 3.x tools/test.py writes --out as pickle, not JSON.
         $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.pkl"
-        $Candidates = @(Get-ChildItem -LiteralPath $RunRoot -Filter "best_*.pth" -File)
+        $Candidates = @(Get-ChildItem -LiteralPath $RunRoot -Filter "best_coco_bbox_mAP_*.pth" -File)
         if ($Candidates.Count -ne 1) { throw "Expected exactly one RTMDet metric best checkpoint for $RunId, got $($Candidates.Count)" }
         Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/test.py $RunConfig $Candidates[0].FullName --out $RawPredictionPath } "test $RunId"
     }

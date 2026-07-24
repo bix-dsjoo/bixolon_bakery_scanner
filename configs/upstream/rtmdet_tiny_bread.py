@@ -7,6 +7,7 @@ val_dataloader = dict(dataset=dict(metainfo=metainfo, data_root=r"__INJECTED_DAT
 test_dataloader = val_dataloader
 val_evaluator = dict(ann_file=r"__INJECTED_VALIDATION_ANNOTATIONS__")
 test_evaluator = dict(ann_file=r"__INJECTED_VALIDATION_ANNOTATIONS__")
+default_hooks = dict(checkpoint=dict(type="CheckpointHook", interval=1, save_best="coco/bbox_mAP", rule="greater", max_keep_ckpts=1))
 # All train/test/TTA resize scales are injected as either 640 or 768.
 input_size = __INJECTED_INPUT_SIZE__
 train_pipeline = [dict(type="LoadImageFromFile"), dict(type="LoadAnnotations", with_bbox=True), dict(type="Resize", scale=(input_size, input_size), keep_ratio=True), dict(type="PackDetInputs")]

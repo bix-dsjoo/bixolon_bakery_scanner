@@ -31,3 +31,4 @@ def test_rtmdet_overlay_replaces_train_test_and_tta_resize_scales():
     assert "data_prefix=dict(img=\"images/\")" in overlay
     assert overlay.count("PackDetInputs") >= 2
     assert "val_evaluator" in overlay and "test_evaluator" in overlay
+    assert "save_best=\"coco/bbox_mAP\"" in overlay and "rule=\"greater\"" in overlay
