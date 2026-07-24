@@ -1,4 +1,5 @@
 import pytest
+import subprocess
 
 from bakery_scanner.contracts import Box
 from bakery_scanner.detectors.dfine import DFineRunner, parse_dfine_output
@@ -96,3 +97,25 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert "Refusing stale run-owned artifacts" in matrix and "best_coco_bbox_mAP_*.pth" in matrix
     overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert overlay.count("type: Resize") == 2
+
+
+def test_bootstrap_matches_release_in_multiline_nvcc_version_output():
+    """CUDA's multi-line ``nvcc -V`` output must be matched as one string."""
+    bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
+    completed = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$NvccVersion = @('nvcc: NVIDIA (R) Cuda compiler driver', "
+            "'Copyright (c) NVIDIA Corporation', "
+            "'Cuda compilation tools, release 12.8, V12.8.93'); "
+            "$NvccVersionText = $NvccVersion -join [Environment]::NewLine; "
+            "if ($NvccVersionText -notmatch 'release 12\\.8') { exit 1 }",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "$NvccVersion = (& $Nvcc -V) -join [Environment]::NewLine" in bootstrap

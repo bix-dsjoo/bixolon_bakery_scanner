@@ -60,7 +60,7 @@ if ((Split-Path -Leaf $CudaRoot) -ine "v12.8") {
 $Nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
 if (-not (Test-Path $Nvcc)) { throw "$CudaRuntimeRepair Expected CUDA 12.8 compiler: $Nvcc" }
 if (-not ((Resolve-Path $Nvcc).Path.StartsWith($CudaRoot, [StringComparison]::OrdinalIgnoreCase))) { throw "$CudaRuntimeRepair nvcc must resolve beneath CUDA_PATH" }
-$NvccVersion = & $Nvcc -V
+$NvccVersion = (& $Nvcc -V) -join [Environment]::NewLine
 if ($LASTEXITCODE -ne 0 -or $NvccVersion -notmatch "release 12\.8") { throw "$CudaRuntimeRepair CUDA_PATH nvcc must report release 12.8" }
 if (-not (Test-Path (Join-Path $CudaRoot "include\cuda_runtime.h")) -or -not (Test-Path (Join-Path $CudaRoot "lib\x64\cudart.lib"))) {
     throw $CudaRuntimeRepair
