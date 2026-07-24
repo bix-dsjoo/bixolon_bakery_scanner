@@ -69,6 +69,7 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert patch.count("all_gather_object") >= 2 and "gathered_oof_predictions" in patch
     assert "Invoke-Checked" in bootstrap and "from src.core import YAMLConfig" in bootstrap
     assert "apply --check $DFinePatch" in bootstrap and "create D-FINE venv" in bootstrap
+    assert "$PreviousErrorActionPreference" in bootstrap and "$ErrorActionPreference = \"Continue\"" in bootstrap and "finally" in bootstrap
     matrix = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
     assert "Invoke-Checked" in matrix and "finally" in matrix and "best_coco_bbox_mAP_*.pth" in matrix
     assert "Refusing stale run-owned artifacts" in matrix and "best_coco_bbox_mAP_*.pth" in matrix

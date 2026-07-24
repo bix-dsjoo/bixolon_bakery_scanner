@@ -18,8 +18,15 @@ function Get-PinnedRepository([string]$Url, [string]$Destination, [string]$Commi
 Get-PinnedRepository "https://github.com/Peterande/D-FINE.git" "third_party/D-FINE" "7fe2f8889f0b7b817f20c315b40fc15a4fb64ae6"
 $DFinePatch = "..\..\third_party_patches\dfine_oof_predictions.patch"
 $ReversePatchApplied = $false
-& git -C third_party/D-FINE apply --reverse --check $DFinePatch 2>$null
-if ($LASTEXITCODE -eq 0) { $ReversePatchApplied = $true }
+$PreviousErrorActionPreference = $ErrorActionPreference
+try {
+    # A nonzero reverse check means the patch has not yet been applied.
+    $ErrorActionPreference = "Continue"
+    & git -C third_party/D-FINE apply --reverse --check $DFinePatch 2>$null
+    $ReversePatchApplied = ($LASTEXITCODE -eq 0)
+} finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
 if (-not $ReversePatchApplied) {
     Invoke-Checked { git -C third_party/D-FINE apply --check $DFinePatch } "check D-FINE OOF patch"
     Invoke-Checked { git -C third_party/D-FINE apply $DFinePatch } "apply D-FINE OOF patch"
