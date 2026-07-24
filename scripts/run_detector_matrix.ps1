@@ -5,6 +5,12 @@ function Invoke-Checked([scriptblock]$Command, [string]$Description) { & $Comman
 function Write-Utf8NoBom([string]$Path, [string]$Value) {
     [IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
 }
+function Convert-ToPosixRelativePath([string]$FromDirectory, [string]$TargetPath) {
+    $From = (Resolve-Path -LiteralPath $FromDirectory).Path.TrimEnd("\") + "\"
+    $Target = (Resolve-Path -LiteralPath $TargetPath).Path
+    $RelativeUri = ([Uri]$From).MakeRelativeUri([Uri]$Target)
+    return [Uri]::UnescapeDataString($RelativeUri.ToString())
+}
 Invoke-Checked { & .venvs/dfine/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for D-FINE"
 Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for RTMDet"
 
@@ -48,7 +54,16 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     Write-FoldAnnotations $ManifestPath $TrainAnnotations $ValidationAnnotations
     $RunConfig = Join-Path $GeneratedConfigRoot "$RunId.$([IO.Path]::GetExtension($Variant.Template).TrimStart('.'))"; New-Item -ItemType Directory -Force -Path (Split-Path $RunConfig) | Out-Null
     $ConfigText = Get-Content -Raw $Variant.Template
-    $ConfigText = $ConfigText.Replace("__INJECTED_INPUT_SIZE__", [string]$Variant.Size).Replace("__INJECTED_SEED__", [string]$Seed).Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_DFINE_BASE__", (Resolve-Path "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml")).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"))
+    if ($Variant.Backend -eq "dfine") {
+        $TrainConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot $TrainAnnotations
+        $ValidationConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot $ValidationAnnotations
+        $ImagesConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot (Join-Path $StagedRoot "images")
+        $DFineBaseConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml"
+        $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", $TrainConfigPath).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", $ValidationConfigPath).Replace("__INJECTED_IMAGES_DIR__", $ImagesConfigPath).Replace("__INJECTED_DFINE_BASE__", $DFineBaseConfigPath)
+    } else {
+        $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"))
+    }
+    $ConfigText = $ConfigText.Replace("__INJECTED_INPUT_SIZE__", [string]$Variant.Size).Replace("__INJECTED_SEED__", [string]$Seed)
     Write-Utf8NoBom -Path $RunConfig -Value $ConfigText
     $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.json"; $PredictionPath = Join-Path $RunRoot "validation_predictions.json"
     if ($Variant.Backend -eq "dfine") {

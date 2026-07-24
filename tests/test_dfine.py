@@ -1,6 +1,8 @@
 import pytest
 import subprocess
 import re
+import json
+from pathlib import Path
 
 from bakery_scanner.contracts import Box
 from bakery_scanner.detectors.dfine import DFineRunner, parse_dfine_output
@@ -52,6 +54,85 @@ def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():
     overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert "__INJECTED_INPUT_SIZE__" in overlay
     assert "base_size" in overlay
+
+
+def test_matrix_writes_dfine_include_list_and_posix_relative_paths_loadable_by_upstream(tmp_path):
+    """D-FINE treats scalar Windows includes as characters, so generated overlays stay portable."""
+    script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+    overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+
+    assert "__include__:\n  - __INJECTED_DFINE_BASE__" in overlay
+    assert "function Convert-ToPosixRelativePath" in script
+    assert "Convert-ToPosixRelativePath $GeneratedConfigRoot" in script
+
+    generated_root = tmp_path / "configs" / "generated" / "detector-matrix"
+    generated_root.mkdir(parents=True)
+    base_config = Path("third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml").resolve()
+    images = Path("artifacts/box_system/staged/images").resolve()
+    train = Path("artifacts/box_system/detectors/dfine_n_640-seed20260724-fold0/fold-data/train.json").resolve()
+    validation = Path("artifacts/box_system/detectors/dfine_n_640-seed20260724-fold0/fold-data/validation.json").resolve()
+
+    helper = re.search(r"(?ms)^function Convert-ToPosixRelativePath\b.*?^}\s*$", script)
+    assert helper, "matrix script needs a D-FINE POSIX relative-path helper"
+    helper_smoke = tmp_path / "relative-paths.ps1"
+    helper_smoke.write_text(
+        helper.group(0)
+        + "\n$paths = @("
+        + ", ".join(json.dumps(str(path)) for path in (base_config, images, train, validation))
+        + ")\n$paths | ForEach-Object { Convert-ToPosixRelativePath '"
+        + str(generated_root)
+        + "' $_ } | ConvertTo-Json -Compress\n",
+        encoding="utf-8",
+    )
+    converted = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper_smoke)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert converted.returncode == 0, converted.stderr
+    base_relative, images_relative, train_relative, validation_relative = json.loads(converted.stdout)
+    assert all("\\" not in value for value in (base_relative, images_relative, train_relative, validation_relative))
+
+    rendered = (
+        overlay.replace("__INJECTED_DFINE_BASE__", base_relative)
+        .replace("__INJECTED_IMAGES_DIR__", images_relative)
+        .replace("__INJECTED_TRAIN_ANNOTATIONS__", train_relative)
+        .replace("__INJECTED_VALIDATION_ANNOTATIONS__", validation_relative)
+        .replace("__INJECTED_INPUT_SIZE__", "640")
+    )
+    config_path = generated_root / "dfine.yml"
+    config_path.write_text(rendered, encoding="utf-8")
+
+    checkout = Path("third_party/D-FINE").resolve()
+    bad_config_path = generated_root / "scalar-windows.yml"
+    bad_config_path.write_text(f"__include__: {base_config}\n", encoding="utf-8")
+    probe = (
+        "import sys; "
+        f"sys.path.insert(0, r'{checkout}'); "
+        "from src.core.yaml_utils import load_config; "
+        f"cfg=load_config(r'{config_path}'); "
+        "assert cfg['DFINE']['backbone'] == 'HGNetv2'; "
+        f"assert cfg['train_dataloader']['dataset']['img_folder'] == r'{images_relative}'; "
+        f"assert cfg['val_dataloader']['dataset']['ann_file'] == r'{validation_relative}'; "
+        "assert isinstance(cfg['__include__'], list)"
+    )
+    completed = subprocess.run(
+        [".venvs/dfine/Scripts/python.exe", "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    scalar = subprocess.run(
+        [".venvs/dfine/Scripts/python.exe", "-c", f"import sys; sys.path.insert(0, r'{checkout}'); from src.core.yaml_utils import load_config; load_config(r'{bad_config_path}')"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert scalar.returncode != 0
+    assert scalar.stderr.rstrip().endswith("detector-matrix\\\\C'"), scalar.stderr
 
 
 def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
