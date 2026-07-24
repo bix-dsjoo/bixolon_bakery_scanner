@@ -58,11 +58,13 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
             Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig -d cuda:0 --test-only -r $Checkpoint --output-dir $RunRoot } "test $RunId"
         } finally { Remove-Item Env:DFINE_OOF_PREDICTIONS -ErrorAction SilentlyContinue }
     } else {
+        Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe scripts/require_rtx5080.py } "require RTX 5080 before RTMDet train $RunId"
         Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed } "train $RunId"
         # MMDetection 3.x tools/test.py writes --out as pickle, not JSON.
         $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.pkl"
         $Candidates = @(Get-ChildItem -LiteralPath $RunRoot -Filter "best_coco_bbox_mAP_*.pth" -File)
         if ($Candidates.Count -ne 1) { throw "Expected exactly one RTMDet metric best checkpoint for $RunId, got $($Candidates.Count)" }
+        Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe scripts/require_rtx5080.py } "require RTX 5080 before RTMDet test $RunId"
         Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/test.py $RunConfig $Candidates[0].FullName --out $RawPredictionPath } "test $RunId"
     }
     $InputFormat = if ($Variant.Backend -eq "rtmdet") { "mmdet-pickle" } else { "dfine-coco-json" }

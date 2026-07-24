@@ -32,3 +32,10 @@ def test_rtmdet_overlay_replaces_train_test_and_tta_resize_scales():
     assert overlay.count("PackDetInputs") >= 2
     assert "val_evaluator" in overlay and "test_evaluator" in overlay
     assert "save_best=\"coco/bbox_mAP\"" in overlay and "rule=\"greater\"" in overlay
+
+
+def test_matrix_runs_rtm_gpu_guard_immediately_before_train_and_test():
+    script = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+    guard = __import__("pathlib").Path("scripts/require_rtx5080.py").read_text(encoding="utf-8")
+    assert script.count("scripts/require_rtx5080.py") == 2
+    assert "torch.cuda.current_device() != 0" in guard and "CUDA_VISIBLE_DEVICES" in guard
