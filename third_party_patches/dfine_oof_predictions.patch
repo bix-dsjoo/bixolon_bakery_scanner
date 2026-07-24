@@ -8,8 +8,10 @@ index b877b09..3da3e89 100644
 +import os
 @@ -179,0 +182 @@ def evaluate(
 +    oof_predictions = []
++    processed_image_ids = []
 @@ -207,0 +211,4 @@ def evaluate(
 +        for target, output in zip(targets, results):
++            processed_image_ids.append(target["image_id"].item())
 +            for box, score, label in zip(output["boxes"].tolist(), output["scores"].tolist(), output["labels"].tolist()):
 +                x1, y1, x2, y2 = box
 +                oof_predictions.append({"image_id": target["image_id"].item(), "category_id": int(label), "bbox": [x1, y1, x2 - x1, y2 - y1], "score": score})
@@ -17,4 +19,4 @@ index b877b09..3da3e89 100644
 +    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
 +    if oof_path and dist_utils.is_main_process():
 +        with open(oof_path, "w", encoding="utf-8") as handle:
-+            json.dump(oof_predictions, handle)
++            json.dump({"predictions": oof_predictions, "processed_image_ids": processed_image_ids}, handle)

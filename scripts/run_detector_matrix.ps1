@@ -38,8 +38,6 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     $ManifestPath = "artifacts/box_system/folds/fold-$Fold/manifest.json"
     $TrainAnnotations = Join-Path $FoldRoot "train.json"; $ValidationAnnotations = Join-Path $FoldRoot "validation.json"
     Write-FoldAnnotations $ManifestPath $TrainAnnotations $ValidationAnnotations
-    $FoldManifest = Get-Content -Raw $ManifestPath | ConvertFrom-Json
-    $ValidationImageIds = @($FoldManifest.validation_image_ids | ForEach-Object { [int]$_ } | Sort-Object)
     $RunConfig = Join-Path $GeneratedConfigRoot "$RunId.$([IO.Path]::GetExtension($Variant.Template).TrimStart('.'))"; New-Item -ItemType Directory -Force -Path (Split-Path $RunConfig) | Out-Null
     $ConfigText = Get-Content -Raw $Variant.Template
     $ConfigText = $ConfigText.Replace("__INJECTED_INPUT_SIZE__", [string]$Variant.Size).Replace("__INJECTED_SEED__", [string]$Seed).Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_DFINE_BASE__", (Resolve-Path "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml")).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"))
@@ -61,11 +59,10 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
         & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/test.py $RunConfig (Join-Path $RunRoot "best.pth") --out $RawPredictionPath
     }
     $InputFormat = if ($Variant.Backend -eq "rtmdet") { "mmdet-pickle" } else { "dfine-coco-json" }
-    & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath
     $ProcessedPath = Join-Path $RunRoot "processed_validation_image_ids.json"
-    $ValidationImageIds | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 -Path $ProcessedPath
+    & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath --processed-output $ProcessedPath
     if (-not (Test-Path $PredictionPath)) { throw "Missing canonical validation artifact for ${RunId}: $PredictionPath" }
-    $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; validation_image_ids = $ValidationImageIds; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); processed_images_sha256 = (Get-FileHash $ProcessedPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
+    $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); processed_images_sha256 = (Get-FileHash $ProcessedPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
     $Receipt | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 -Path (Join-Path $RunRoot "receipt.json")
 } } }
 

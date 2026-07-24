@@ -58,4 +58,5 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
     assert "img_folder" in overlay and "ann_file" in overlay
     assert "dataset:" in overlay and "base_size:" in overlay
     assert "remap_mscoco_category: true" in overlay
+    assert "processed-output" in __import__("pathlib").Path("scripts/canonicalize_validation_predictions.py").read_text(encoding="utf-8")
     assert overlay.count("type: Resize") == 2

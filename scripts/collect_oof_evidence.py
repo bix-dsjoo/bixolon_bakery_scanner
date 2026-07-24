@@ -38,7 +38,7 @@ def main() -> None:
             raise ValueError(f"receipt hash mismatch: {receipt['run_id']}")
         fold = json.loads(manifest.read_text(encoding="utf-8"))
         validation_ids = {int(value) for value in fold["validation_image_ids"]}
-        if list(sorted(receipt["validation_image_ids"])) != sorted(validation_ids) or set(json.loads(processed.read_text(encoding="utf-8"))) != validation_ids:
+        if set(json.loads(processed.read_text(encoding="utf-8"))) != validation_ids:
             raise ValueError("held-out processed image set is incomplete")
         validation_scenes = {(row["capture_batch"], row["scene_number"]) for row in fold["validation_scenes"]}
         training_scenes = {(row["capture_batch"], row["scene_number"]) for row in fold["training_scenes"]}
