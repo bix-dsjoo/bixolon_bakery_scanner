@@ -20,3 +20,11 @@ def test_runner_uses_injected_command_runner():
     runner = RTMDetRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []})
     assert runner.predict("model.pth", "image.png", image_id=1, image_size=(10, 10), source="rtmdet_tiny_640") == ()
     assert calls[0][0] == "rtmdet-predict"
+
+
+def test_rtmdet_overlay_replaces_train_test_and_tta_resize_scales():
+    overlay = __import__("pathlib").Path("configs/upstream/rtmdet_tiny_bread.py").read_text(encoding="utf-8")
+    assert "train_pipeline" in overlay
+    assert "test_pipeline" in overlay
+    assert "tta_pipeline" in overlay
+    assert overlay.count("input_size") >= 4

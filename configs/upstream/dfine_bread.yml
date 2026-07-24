@@ -4,6 +4,7 @@ num_classes: 1
 remap_mscoco_category: false
 seed: 20260724
 experiment:
-  input_size: 768
+  input_size: __INJECTED_INPUT_SIZE__
+  eval_spatial_size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]
   train_annotations: __INJECTED_TRAIN_ANNOTATIONS__
   validation_annotations: __INJECTED_VALIDATION_ANNOTATIONS__

@@ -34,3 +34,17 @@ def test_runner_uses_injected_command_runner(tmp_path):
     runner = DFineRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []})
     assert runner.predict("model.pt", "image.png", image_id=1, image_size=(10, 10), source="dfine_n_640") == ()
     assert calls[0][0] == "dfine-predict"
+
+
+def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():
+    overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+    assert "__INJECTED_INPUT_SIZE__" in overlay
+    assert "eval_spatial_size" in overlay
+
+
+def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
+    script = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+    assert "foreach ($Variant in $Variants)" in script
+    assert "foreach ($Seed in $Seeds)" in script
+    assert "foreach ($Fold in 0..4)" in script
+    assert "receipt.json" in script and "validation_predictions.json" in script
