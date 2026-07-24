@@ -1,43 +1,26 @@
 diff --git a/src/solver/det_engine.py b/src/solver/det_engine.py
-index b877b09..3da3e89 100644
 --- a/src/solver/det_engine.py
 +++ b/src/solver/det_engine.py
-@@ -6,7 +6,9 @@ Modified from DETR (https://github.com/facebookresearch/detr/blob/main/engine.py
- Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
- """
- 
+@@ -9,2 +9,4 @@
 +import json
  import math
 +import os
  import sys
- from typing import Dict, Iterable, List
-@@ -177,6 +179,7 @@ def evaluate(
- 
+@@ -180,2 +182,3 @@ def evaluate(
      gt: List[Dict[str, torch.Tensor]] = []
      preds: List[Dict[str, torch.Tensor]] = []
 +    oof_predictions = []
- 
-     output_dir = kwargs.get("output_dir", None)
-     num_visualization_sample_batch = kwargs.get("num_visualization_sample_batch", 1)
-@@ -205,6 +208,10 @@ def evaluate(
-         #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
- 
+@@ -208,2 +211,6 @@ def evaluate(
          res = {target["image_id"].item(): output for target, output in zip(targets, results)}
 +        for target, output in zip(targets, results):
 +            for box, score, label in zip(output["boxes"].tolist(), output["scores"].tolist(), output["labels"].tolist()):
 +                x1, y1, x2, y2 = box
 +                oof_predictions.append({"image_id": target["image_id"].item(), "category_id": int(label), "bbox": [x1, y1, x2 - x1, y2 - y1], "score": score})
          if coco_evaluator is not None:
-             coco_evaluator.update(res)
- 
-@@ -247,6 +254,10 @@ def evaluate(
-     if coco_evaluator is not None:
-         coco_evaluator.accumulate()
+@@ -254,2 +261,6 @@ def evaluate(
          coco_evaluator.summarize()
 +    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
 +    if oof_path and dist_utils.is_main_process():
 +        with open(oof_path, "w", encoding="utf-8") as handle:
 +            json.dump(oof_predictions, handle)
  
-     stats = {}
-     # stats = {k: meter.global_avg for meter in metric_logger.meters.items()}
