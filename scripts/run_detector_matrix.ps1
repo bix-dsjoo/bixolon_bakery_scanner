@@ -1,5 +1,6 @@
 param([string]$Config = "configs/box_system.yaml")
 $ErrorActionPreference = "Stop"
+function Invoke-Checked([scriptblock]$Command, [string]$Description) { & $Command; if ($LASTEXITCODE -ne 0) { throw "Failed: $Description (exit $LASTEXITCODE)" } }
 
 # Uses only the already staged 299-image dataset and its grouped five-fold
 # manifests. Each run trains on the other four folds and tests exactly one.
@@ -44,27 +45,29 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     Set-Content -NoNewline -Encoding utf8 -Path $RunConfig -Value $ConfigText
     $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.json"; $PredictionPath = Join-Path $RunRoot "validation_predictions.json"
     if ($Variant.Backend -eq "dfine") {
-        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --seed=$Seed --output-dir $RunRoot
+        Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --seed=$Seed --output-dir $RunRoot } "train $RunId"
         # Official evaluation CLI plus the audited, pinned-source export patch.
         $env:DFINE_OOF_PREDICTIONS = $RawPredictionPath
-        $Checkpoint = Join-Path $RunRoot "best_stg2.pth"
-        if (-not (Test-Path $Checkpoint)) { $Checkpoint = Join-Path $RunRoot "best_stg1.pth" }
-        if (-not (Test-Path $Checkpoint)) { throw "D-FINE did not produce best_stg2.pth or best_stg1.pth for $RunId" }
-        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r $Checkpoint --output-dir $RunRoot
-        Remove-Item Env:DFINE_OOF_PREDICTIONS
+        try {
+            $Checkpoint = Join-Path $RunRoot "best_stg2.pth"; if (-not (Test-Path $Checkpoint)) { $Checkpoint = Join-Path $RunRoot "best_stg1.pth" }
+            if (-not (Test-Path $Checkpoint)) { throw "D-FINE did not produce best_stg2.pth or best_stg1.pth for $RunId" }
+            Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r $Checkpoint --output-dir $RunRoot } "test $RunId"
+        } finally { Remove-Item Env:DFINE_OOF_PREDICTIONS -ErrorAction SilentlyContinue }
     } else {
-        & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed
+        Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed } "train $RunId"
         # MMDetection 3.x tools/test.py writes --out as pickle, not JSON.
         $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.pkl"
-        & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/test.py $RunConfig (Join-Path $RunRoot "best.pth") --out $RawPredictionPath
+        $Candidates = @(Get-ChildItem -LiteralPath $RunRoot -Filter "best_*.pth" -File)
+        if ($Candidates.Count -ne 1) { throw "Expected exactly one RTMDet metric best checkpoint for $RunId, got $($Candidates.Count)" }
+        Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/test.py $RunConfig $Candidates[0].FullName --out $RawPredictionPath } "test $RunId"
     }
     $InputFormat = if ($Variant.Backend -eq "rtmdet") { "mmdet-pickle" } else { "dfine-coco-json" }
     $ProcessedPath = Join-Path $RunRoot "processed_validation_image_ids.json"
-    & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath --processed-output $ProcessedPath
+    Invoke-Checked { & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath --processed-output $ProcessedPath } "canonicalize $RunId"
     if (-not (Test-Path $PredictionPath)) { throw "Missing canonical validation artifact for ${RunId}: $PredictionPath" }
     $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); processed_images_sha256 = (Get-FileHash $ProcessedPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
     $Receipt | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 -Path (Join-Path $RunRoot "receipt.json")
 } } }
 
 # Validate that all 60 receipts/artifacts form one globally leak-safe OOF set.
-& python scripts/collect_oof_evidence.py --detector-root $ArtifactRoot --fold-root "artifacts/box_system/folds" --output (Join-Path $ArtifactRoot "oof_predictions.json")
+Invoke-Checked { & python scripts/collect_oof_evidence.py --detector-root $ArtifactRoot --fold-root "artifacts/box_system/folds" --output (Join-Path $ArtifactRoot "oof_predictions.json") } "collect global OOF evidence"
