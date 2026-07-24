@@ -57,8 +57,12 @@ def _tolist(value: object) -> list[object]:
 
 
 def _row(image_id: object, bbox: object, score: object, source: str, category_id: object) -> dict[str, object]:
-    if int(category_id) != 1 or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-        raise ValueError("only class 1/bread COCO boxes are valid")
+    # D-FINE postprocessor labels are zero-based model labels; canonical COCO
+    # category id for the one bread class is always one.
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        raise ValueError("only four-value bread COCO boxes are valid")
+    if int(category_id) not in {0, 1}:
+        raise ValueError("only the single bread model class is valid")
     return {"image_id": int(image_id), "source": source, "score": float(score), "bbox": [float(value) for value in bbox]}
 
 

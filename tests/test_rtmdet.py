@@ -29,3 +29,4 @@ def test_rtmdet_overlay_replaces_train_test_and_tta_resize_scales():
     assert "tta_pipeline" in overlay
     assert overlay.count("input_size") >= 4
     assert "data_prefix=dict(img=\"images/\")" in overlay
+    assert overlay.count("PackDetInputs") >= 2

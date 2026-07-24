@@ -44,10 +44,10 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     Set-Content -NoNewline -Encoding utf8 -Path $RunConfig -Value $ConfigText
     $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.json"; $PredictionPath = Join-Path $RunRoot "validation_predictions.json"
     if ($Variant.Backend -eq "dfine") {
-        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --seed=$Seed
+        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --seed=$Seed --output-dir $RunRoot
         # Official evaluation CLI plus the audited, pinned-source export patch.
         $env:DFINE_OOF_PREDICTIONS = $RawPredictionPath
-        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r (Join-Path $RunRoot "best.pth")
+        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r (Join-Path $RunRoot "best_stg1.pth") --output-dir $RunRoot
         Remove-Item Env:DFINE_OOF_PREDICTIONS
     } else {
         & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed

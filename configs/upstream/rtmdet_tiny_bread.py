@@ -7,8 +7,8 @@ val_dataloader = dict(dataset=dict(metainfo=metainfo, data_root=r"__INJECTED_DAT
 test_dataloader = val_dataloader
 # All train/test/TTA resize scales are injected as either 640 or 768.
 input_size = __INJECTED_INPUT_SIZE__
-train_pipeline = [dict(type="LoadImageFromFile"), dict(type="LoadAnnotations", with_bbox=True), dict(type="Resize", scale=(input_size, input_size), keep_ratio=True)]
-test_pipeline = [dict(type="LoadImageFromFile"), dict(type="Resize", scale=(input_size, input_size), keep_ratio=True)]
+train_pipeline = [dict(type="LoadImageFromFile"), dict(type="LoadAnnotations", with_bbox=True), dict(type="Resize", scale=(input_size, input_size), keep_ratio=True), dict(type="PackDetInputs")]
+test_pipeline = [dict(type="LoadImageFromFile"), dict(type="Resize", scale=(input_size, input_size), keep_ratio=True), dict(type="PackDetInputs", meta_keys=("img_id", "img_path", "ori_shape", "img_shape", "scale_factor"))]
 tta_pipeline = [dict(type="TestTimeAug", transforms=[[dict(type="Resize", scale=(input_size, input_size), keep_ratio=True)]])]
 train_dataloader.update(dataset=dict(pipeline=train_pipeline))
 val_dataloader.update(dataset=dict(pipeline=test_pipeline))

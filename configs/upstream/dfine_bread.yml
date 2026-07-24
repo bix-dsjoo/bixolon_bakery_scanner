@@ -5,10 +5,18 @@ remap_mscoco_category: false
 seed: 20260724
 # D-FINE's documented dataloader fields bind COCO JSON and image folders.
 train_dataloader:
-  img_folder: __INJECTED_IMAGES_DIR__
-  ann_file: __INJECTED_TRAIN_ANNOTATIONS__
+  dataset:
+    img_folder: __INJECTED_IMAGES_DIR__
+    ann_file: __INJECTED_TRAIN_ANNOTATIONS__
+    transforms:
+      ops:
+        - {type: Resize, size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]}
+  collate_fn:
+    base_size: __INJECTED_INPUT_SIZE__
 val_dataloader:
-  img_folder: __INJECTED_IMAGES_DIR__
-  ann_file: __INJECTED_VALIDATION_ANNOTATIONS__
-input_size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]
-eval_spatial_size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]
+  dataset:
+    img_folder: __INJECTED_IMAGES_DIR__
+    ann_file: __INJECTED_VALIDATION_ANNOTATIONS__
+    transforms:
+      ops:
+        - {type: Resize, size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]}
