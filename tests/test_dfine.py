@@ -2,6 +2,7 @@ import pytest
 import subprocess
 import re
 import json
+import os
 from pathlib import Path
 
 from bakery_scanner.contracts import Box
@@ -54,6 +55,71 @@ def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():
     overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert "__INJECTED_INPUT_SIZE__" in overlay
     assert "base_size" in overlay
+
+
+@pytest.mark.parametrize("size", (640, 768))
+def test_dfine_overlay_keeps_terminal_tensor_and_box_transforms_for_each_input_size(size):
+    """Resize must not replace D-FINE's tensor/box terminal transforms."""
+    overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+    rendered = overlay.replace("__INJECTED_INPUT_SIZE__", str(size))
+
+    assert rendered.count(f"type: Resize, size: [{size}, {size}]") == 2
+    assert "type: ConvertPILImage, dtype: 'float32', scale: True" in rendered
+    assert "type: ConvertBoxes, fmt: 'cxcywh', normalize: True" in rendered
+
+
+@pytest.mark.parametrize("size", (640, 768))
+def test_dfine_pinned_config_transforms_a_dataset_sample_to_tensor_with_normalized_cxcywh_boxes(tmp_path, size):
+    """Exercise the pinned loader and actual configured transforms, not a mock pipeline."""
+    checkout = Path("third_party/D-FINE").resolve()
+    generated_root = tmp_path / "configs" / "generated" / "detector-matrix"
+    generated_root.mkdir(parents=True)
+    base_config = Path("third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml").resolve()
+    overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+    config_path = generated_root / f"dfine-{size}.yml"
+    config_path.write_text(
+        overlay
+        .replace("__INJECTED_DFINE_BASE__", os.path.relpath(base_config, generated_root).replace("\\", "/"))
+        .replace("__INJECTED_IMAGES_DIR__", "artifacts/box_system/staged/images")
+        .replace("__INJECTED_TRAIN_ANNOTATIONS__", "artifacts/box_system/staged/annotations.json")
+        .replace("__INJECTED_VALIDATION_ANNOTATIONS__", "artifacts/box_system/staged/annotations.json")
+        .replace("__INJECTED_INPUT_SIZE__", str(size)),
+        encoding="utf-8",
+    )
+    probe = (
+        "import json, sys, torch; "
+        f"sys.path.insert(0, r'{checkout}'); "
+        "import src; from src.core import YAMLConfig; "
+        f"cfg=YAMLConfig(r'{config_path.resolve()}'); "
+        "dataset=cfg.train_dataloader.dataset; dataset.set_epoch(72); "
+        "[setattr(op, 'p', 0.0) for op in dataset._transforms.transforms if type(op).__name__ == 'RandomHorizontalFlip']; "
+        "raw_image, raw_target=dataset.load_item(0); image, target=dataset[0]; "
+        "raw_boxes=torch.as_tensor(raw_target['boxes']); width, height=raw_image.size; "
+        "expected=torch.stack(((raw_boxes[:, 0] + raw_boxes[:, 2]) / (2 * width), (raw_boxes[:, 1] + raw_boxes[:, 3]) / (2 * height), (raw_boxes[:, 2] - raw_boxes[:, 0]) / width, (raw_boxes[:, 3] - raw_boxes[:, 1]) / height), dim=1); "
+        "val_image, _=cfg.val_dataloader.dataset[0]; "
+        "payload={'tensor': isinstance(image, torch.Tensor), 'shape': list(image.shape), "
+        "'dtype': str(image.dtype), 'scaled': bool(float(image.min()) >= 0 and float(image.max()) <= 1), "
+        "'boxes_cxcywh_normalized': bool(torch.allclose(torch.as_tensor(target['boxes']), expected)), "
+        "'val_tensor': isinstance(val_image, torch.Tensor), 'val_shape': list(val_image.shape)}; "
+        "print(json.dumps(payload))"
+    )
+    completed = subprocess.run(
+        [".venvs/dfine/Scripts/python.exe", "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.splitlines()[-1])
+    assert result == {
+        "tensor": True,
+        "shape": [3, size, size],
+        "dtype": "torch.float32",
+        "scaled": True,
+        "boxes_cxcywh_normalized": True,
+        "val_tensor": True,
+        "val_shape": [3, size, size],
+    }
 
 
 def test_matrix_writes_dfine_include_and_data_paths_relative_to_their_consumers(tmp_path):

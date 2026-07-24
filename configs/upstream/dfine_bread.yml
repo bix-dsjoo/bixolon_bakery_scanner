@@ -12,7 +12,19 @@ train_dataloader:
     ann_file: __INJECTED_TRAIN_ANNOTATIONS__
     transforms:
       ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
         - {type: Resize, size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 72
+        ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
   collate_fn:
     base_size: __INJECTED_INPUT_SIZE__
 val_dataloader:
@@ -22,3 +34,4 @@ val_dataloader:
     transforms:
       ops:
         - {type: Resize, size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
