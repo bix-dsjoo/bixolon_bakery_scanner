@@ -39,7 +39,7 @@ def test_runner_uses_injected_command_runner(tmp_path):
 def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():
     overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert "__INJECTED_INPUT_SIZE__" in overlay
-    assert "eval_spatial_size" in overlay
+    assert "base_size" in overlay
 
 
 def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
