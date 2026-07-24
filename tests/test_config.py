@@ -15,6 +15,7 @@ def test_config_loads_current_dataset_paths():
     assert not hasattr(config, "camera")
     assert all(source.images.is_dir() for source in config.dataset.sources)
     assert all(source.annotations.is_file() for source in config.dataset.sources)
+    assert config.artifact_root == Path("artifacts/box_system").resolve()
     assert config.runtime.device == "CUDA:0"
 
 

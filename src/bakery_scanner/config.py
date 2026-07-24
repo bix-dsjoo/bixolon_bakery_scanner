@@ -107,4 +107,4 @@ def _resolve_path(base: Path, raw: object) -> Path:
     if not isinstance(raw, (str, Path)) or not str(raw):
         raise ValueError("configured path must be a non-empty string")
     candidate = Path(raw)
-    return candidate if candidate.is_absolute() else base / candidate
+    return candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()

@@ -1,5 +1,5 @@
 seed: 20260724
-artifact_root: artifacts/box_system
+artifact_root: ../artifacts/box_system
 canonical_frame:
   width: 1152
   height: 1536
