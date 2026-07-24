@@ -58,7 +58,7 @@ class DetectorsConfig(_StrictModel):
 
 
 class RuntimeConfig(_StrictModel):
-    device: Literal["CPU"]
+    device: Literal["CUDA:0"]
     precision: Literal["FP32"]
     proposal_limit: int = Field(gt=0)
 

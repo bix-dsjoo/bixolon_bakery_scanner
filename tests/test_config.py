@@ -15,6 +15,7 @@ def test_config_loads_current_dataset_paths():
     assert not hasattr(config, "camera")
     assert all(source.images.is_dir() for source in config.dataset.sources)
     assert all(source.annotations.is_file() for source in config.dataset.sources)
+    assert config.runtime.device == "CUDA:0"
 
 
 def test_config_resolves_paths_from_config_location(tmp_path: Path):
@@ -35,7 +36,7 @@ detectors:
   seeds: [1]
   variants:
     - {name: dfine_n_640, backend: dfine, input_size: 640, role: audit}
-runtime: {device: CPU, precision: FP32, proposal_limit: 30}
+runtime: {device: CUDA:0, precision: FP32, proposal_limit: 30}
 """.strip(),
         encoding="utf-8",
     )

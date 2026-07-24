@@ -25,6 +25,6 @@ detectors:
     - {name: rtmdet_tiny_640, backend: rtmdet, input_size: 640, role: audit}
     - {name: rtmdet_tiny_768, backend: rtmdet, input_size: 768, role: secondary}
 runtime:
-  device: CPU
+  device: CUDA:0
   precision: FP32
   proposal_limit: 30
