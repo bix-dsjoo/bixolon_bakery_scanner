@@ -99,6 +99,14 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert overlay.count("type: Resize") == 2
 
 
+def test_bootstrap_installs_and_verifies_pinned_dfine_matplotlib():
+    """D-FINE validator imports matplotlib although upstream requirements omit it."""
+    bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
+    assert '"matplotlib==3.10.6"' in bootstrap
+    assert "import torch, torchvision, matplotlib" in bootstrap
+    assert "matplotlib.__version__ == '3.10.6'" in bootstrap
+
+
 def test_dfine_oof_patch_is_context_rich_and_exports_once_before_evaluate_return():
     """The pinned D-FINE patch must be unambiguous and cannot append after return."""
     patch = __import__("pathlib").Path("third_party_patches/dfine_oof_predictions.patch").read_text(encoding="utf-8")
