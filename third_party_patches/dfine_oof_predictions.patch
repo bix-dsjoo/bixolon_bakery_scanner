@@ -1,26 +1,20 @@
 diff --git a/src/solver/det_engine.py b/src/solver/det_engine.py
+index b877b09..3da3e89 100644
 --- a/src/solver/det_engine.py
 +++ b/src/solver/det_engine.py
-@@ -9,2 +9,4 @@
+@@ -8,0 +9 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 +import json
- import math
+@@ -9,0 +11 @@ import math
 +import os
- import sys
-@@ -180,2 +182,3 @@ def evaluate(
-     gt: List[Dict[str, torch.Tensor]] = []
-     preds: List[Dict[str, torch.Tensor]] = []
+@@ -179,0 +182 @@ def evaluate(
 +    oof_predictions = []
-@@ -208,2 +211,6 @@ def evaluate(
-         res = {target["image_id"].item(): output for target, output in zip(targets, results)}
+@@ -207,0 +211,4 @@ def evaluate(
 +        for target, output in zip(targets, results):
 +            for box, score, label in zip(output["boxes"].tolist(), output["scores"].tolist(), output["labels"].tolist()):
 +                x1, y1, x2, y2 = box
 +                oof_predictions.append({"image_id": target["image_id"].item(), "category_id": int(label), "bbox": [x1, y1, x2 - x1, y2 - y1], "score": score})
-         if coco_evaluator is not None:
-@@ -254,2 +261,6 @@ def evaluate(
-         coco_evaluator.summarize()
+@@ -249,0 +257,4 @@ def evaluate(
 +    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
 +    if oof_path and dist_utils.is_main_process():
 +        with open(oof_path, "w", encoding="utf-8") as handle:
 +            json.dump(oof_predictions, handle)
- 
