@@ -2,6 +2,9 @@ param([string]$Config = "configs/box_system.yaml")
 $ErrorActionPreference = "Stop"
 $env:CUDA_VISIBLE_DEVICES = "0"
 function Invoke-Checked([scriptblock]$Command, [string]$Description) { & $Command; if ($LASTEXITCODE -ne 0) { throw "Failed: $Description (exit $LASTEXITCODE)" } }
+function Write-Utf8NoBom([string]$Path, [string]$Value) {
+    [IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
+}
 Invoke-Checked { & .venvs/dfine/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for D-FINE"
 Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)" } "require RTX 5080 CUDA for RTMDet"
 
@@ -32,8 +35,8 @@ function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [strin
     $trainIds = @{}; $trainImages | ForEach-Object { $trainIds[[int]$_.id] = $true }
     $train = [ordered]@{ images = $trainImages; annotations = @($coco.annotations | Where-Object { $trainIds[[int]$_.image_id] }); categories = $coco.categories }
     $validation = [ordered]@{ images = $validationImages; annotations = @($coco.annotations | Where-Object { $validationSet[[int]$_.image_id] }); categories = $coco.categories }
-    $train | ConvertTo-Json -Depth 8 -Compress | Set-Content -NoNewline -Encoding utf8 $TrainPath
-    $validation | ConvertTo-Json -Depth 8 -Compress | Set-Content -NoNewline -Encoding utf8 $ValidationPath
+    Write-Utf8NoBom -Path $TrainPath -Value ($train | ConvertTo-Json -Depth 8 -Compress)
+    Write-Utf8NoBom -Path $ValidationPath -Value ($validation | ConvertTo-Json -Depth 8 -Compress)
 }
 
 foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 0..4) {
@@ -46,7 +49,7 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     $RunConfig = Join-Path $GeneratedConfigRoot "$RunId.$([IO.Path]::GetExtension($Variant.Template).TrimStart('.'))"; New-Item -ItemType Directory -Force -Path (Split-Path $RunConfig) | Out-Null
     $ConfigText = Get-Content -Raw $Variant.Template
     $ConfigText = $ConfigText.Replace("__INJECTED_INPUT_SIZE__", [string]$Variant.Size).Replace("__INJECTED_SEED__", [string]$Seed).Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_DFINE_BASE__", (Resolve-Path "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml")).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"))
-    Set-Content -NoNewline -Encoding utf8 -Path $RunConfig -Value $ConfigText
+    Write-Utf8NoBom -Path $RunConfig -Value $ConfigText
     $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.json"; $PredictionPath = Join-Path $RunRoot "validation_predictions.json"
     if ($Variant.Backend -eq "dfine") {
         Invoke-Checked { & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig -d cuda:0 --seed=$Seed --output-dir $RunRoot } "train $RunId"
@@ -72,7 +75,7 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     Invoke-Checked { & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath --processed-output $ProcessedPath } "canonicalize $RunId"
     if (-not (Test-Path $PredictionPath)) { throw "Missing canonical validation artifact for ${RunId}: $PredictionPath" }
     $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); processed_images_sha256 = (Get-FileHash $ProcessedPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
-    $Receipt | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 -Path (Join-Path $RunRoot "receipt.json")
+    Write-Utf8NoBom -Path (Join-Path $RunRoot "receipt.json") -Value ($Receipt | ConvertTo-Json -Compress)
 } } }
 
 # Validate that all 60 receipts/artifacts form one globally leak-safe OOF set.

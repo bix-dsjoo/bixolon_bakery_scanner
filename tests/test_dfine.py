@@ -1,5 +1,6 @@
 import pytest
 import subprocess
+import re
 
 from bakery_scanner.contracts import Box
 from bakery_scanner.detectors.dfine import DFineRunner, parse_dfine_output
@@ -70,6 +71,39 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
     assert "dataset:" in overlay and "base_size:" in overlay
     assert "remap_mscoco_category: true" in overlay
     assert "processed-output" in __import__("pathlib").Path("scripts/canonicalize_validation_predictions.py").read_text(encoding="utf-8")
+
+
+def test_matrix_generated_artifacts_use_a_reusable_utf8_without_bom_writer(tmp_path):
+    """Generated configs, fold COCO, and receipts must decode on Windows Python."""
+    script = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+    helper = re.search(
+        r"(?ms)^function Write-Utf8NoBom\b.*?^}\s*$",
+        script,
+    )
+    assert helper, "matrix script needs a reusable Write-Utf8NoBom helper"
+    # One declaration plus train COCO, validation COCO, run config, and receipt.
+    assert script.count("Write-Utf8NoBom") >= 5
+    assert "Set-Content -NoNewline -Encoding utf8" not in script
+
+    smoke = tmp_path / "utf8-smoke.ps1"
+    target = tmp_path / "한글-생성.json"
+    smoke.write_text(
+        helper.group(0)
+        + f"\nWrite-Utf8NoBom -Path '{target}' -Value '{{\"label\":\"빵\"}}'"
+        + f"\n$bytes = [IO.File]::ReadAllBytes('{target}')"
+        + "\nif ($bytes.Length -lt 3 -or ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) { exit 1 }\n",
+        # Windows PowerShell 5 needs a BOM to parse this *test script*'s Korean
+        # literals; the artifact written by the helper is what must have none.
+        encoding="utf-8-sig",
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(smoke)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert target.read_bytes()[:3] != b"\xef\xbb\xbf"
 
 
 def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
