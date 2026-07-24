@@ -82,9 +82,9 @@ Install-CUDAEnvironment ".venvs/rtmdet/Scripts/python.exe" @("mmengine==0.10.7",
 # torch 2.8/cu128. The CUDA build prerequisites above prohibit CPU fallback.
 $env:FORCE_CUDA = "1"
 $env:TORCH_CUDA_ARCH_LIST = "12.0"
-Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -m pip install --no-binary mmcv "mmcv==2.2.0" } "build CUDA MMCV 2.2.0"
+Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -m pip install --no-binary mmcv "mmcv==2.1.0" } "build CUDA MMCV 2.1.0"
 Push-Location third_party/D-FINE
 Invoke-Checked { & ..\..\.venvs\dfine\Scripts\python.exe -c "import torch, torchvision, matplotlib; from src.core import YAMLConfig; assert torch.__version__ == '2.8.0+cu128'; assert torchvision.__version__ == '0.23.0+cu128'; assert matplotlib.__version__ == '3.10.6'; assert torch.version.cuda == '12.8'; assert torch.cuda.is_available(); assert 'RTX 5080' in torch.cuda.get_device_name(0)" } "verify pinned D-FINE CUDA environment"
 Pop-Location
-Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch, torchvision, mmengine, mmcv, mmdet; assert torch.__version__ == '2.8.0+cu128'; assert torchvision.__version__ == '0.23.0+cu128'; assert torch.version.cuda == '12.8'; assert torch.cuda.is_available(); assert 'RTX 5080' in torch.cuda.get_device_name(0); assert mmengine.__version__ == '0.10.7'; assert mmcv.__version__ == '2.2.0'; assert mmdet.__version__ == '3.3.0'" } "verify pinned MMDetection CUDA environment"
+Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch, torchvision, mmengine, mmcv, mmdet; assert torch.__version__ == '2.8.0+cu128'; assert torchvision.__version__ == '0.23.0+cu128'; assert torch.version.cuda == '12.8'; assert torch.cuda.is_available(); assert 'RTX 5080' in torch.cuda.get_device_name(0); assert mmengine.__version__ == '0.10.7'; assert mmcv.__version__ == '2.1.0'; assert mmdet.__version__ == '3.3.0'" } "verify pinned MMDetection CUDA environment"
 if ($LASTEXITCODE -ne 0) { throw "Pinned CPU detector environment import/version verification failed; inspect the venv package constraints." }

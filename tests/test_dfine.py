@@ -99,6 +99,15 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert overlay.count("type: Resize") == 2
 
 
+def test_bootstrap_pins_mmcv_within_mmdetection_330_compatibility_range():
+    """MMDetection 3.3.0 rejects MMCV 2.2.0; keep its compatible CUDA source pin."""
+    bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
+    assert '"mmcv==2.1.0"' in bootstrap
+    assert "build CUDA MMCV 2.1.0" in bootstrap
+    assert "mmcv.__version__ == '2.1.0'" in bootstrap
+    assert "mmcv==2.2.0" not in bootstrap
+
+
 def test_bootstrap_installs_and_verifies_pinned_dfine_matplotlib():
     """D-FINE validator imports matplotlib although upstream requirements omit it."""
     bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
