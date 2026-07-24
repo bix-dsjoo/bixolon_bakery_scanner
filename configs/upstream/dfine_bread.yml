@@ -1,7 +1,8 @@
 # Overlay for the pinned D-FINE checkout. Fold paths are injected per run.
 __include__: __INJECTED_DFINE_BASE__
 num_classes: 1
-remap_mscoco_category: false
+# Convert COCO category id 1 to D-FINE's single model label 0.
+remap_mscoco_category: true
 seed: 20260724
 # D-FINE's documented dataloader fields bind COCO JSON and image folders.
 train_dataloader:

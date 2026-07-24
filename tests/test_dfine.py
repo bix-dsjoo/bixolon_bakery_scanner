@@ -57,4 +57,5 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
     overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert "img_folder" in overlay and "ann_file" in overlay
     assert "dataset:" in overlay and "base_size:" in overlay
+    assert "remap_mscoco_category: true" in overlay
     assert overlay.count("type: Resize") == 2

@@ -38,6 +38,8 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     $ManifestPath = "artifacts/box_system/folds/fold-$Fold/manifest.json"
     $TrainAnnotations = Join-Path $FoldRoot "train.json"; $ValidationAnnotations = Join-Path $FoldRoot "validation.json"
     Write-FoldAnnotations $ManifestPath $TrainAnnotations $ValidationAnnotations
+    $FoldManifest = Get-Content -Raw $ManifestPath | ConvertFrom-Json
+    $ValidationImageIds = @($FoldManifest.validation_image_ids | ForEach-Object { [int]$_ } | Sort-Object)
     $RunConfig = Join-Path $GeneratedConfigRoot "$RunId.$([IO.Path]::GetExtension($Variant.Template).TrimStart('.'))"; New-Item -ItemType Directory -Force -Path (Split-Path $RunConfig) | Out-Null
     $ConfigText = Get-Content -Raw $Variant.Template
     $ConfigText = $ConfigText.Replace("__INJECTED_INPUT_SIZE__", [string]$Variant.Size).Replace("__INJECTED_SEED__", [string]$Seed).Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_DFINE_BASE__", (Resolve-Path "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml")).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"))
@@ -47,7 +49,10 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
         & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --seed=$Seed --output-dir $RunRoot
         # Official evaluation CLI plus the audited, pinned-source export patch.
         $env:DFINE_OOF_PREDICTIONS = $RawPredictionPath
-        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r (Join-Path $RunRoot "best_stg1.pth") --output-dir $RunRoot
+        $Checkpoint = Join-Path $RunRoot "best_stg2.pth"
+        if (-not (Test-Path $Checkpoint)) { $Checkpoint = Join-Path $RunRoot "best_stg1.pth" }
+        if (-not (Test-Path $Checkpoint)) { throw "D-FINE did not produce best_stg2.pth or best_stg1.pth for $RunId" }
+        & .venvs/dfine/Scripts/python.exe third_party/D-FINE/train.py -c $RunConfig --test-only -r $Checkpoint --output-dir $RunRoot
         Remove-Item Env:DFINE_OOF_PREDICTIONS
     } else {
         & .venvs/rtmdet/Scripts/python.exe third_party/mmdetection/tools/train.py $RunConfig --work-dir $RunRoot --cfg-options randomness.seed=$Seed
@@ -57,8 +62,10 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     }
     $InputFormat = if ($Variant.Backend -eq "rtmdet") { "mmdet-pickle" } else { "dfine-coco-json" }
     & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath
+    $ProcessedPath = Join-Path $RunRoot "processed_validation_image_ids.json"
+    $ValidationImageIds | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 -Path $ProcessedPath
     if (-not (Test-Path $PredictionPath)) { throw "Missing canonical validation artifact for ${RunId}: $PredictionPath" }
-    $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
+    $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; validation_image_ids = $ValidationImageIds; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); processed_images_sha256 = (Get-FileHash $ProcessedPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
     $Receipt | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 -Path (Join-Path $RunRoot "receipt.json")
 } } }
 

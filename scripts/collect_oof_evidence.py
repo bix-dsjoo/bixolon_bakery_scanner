@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -22,17 +23,23 @@ def main() -> None:
     seen_runs = set()
     for receipt_path in receipts:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        match = re.fullmatch(r"(dfine_n_(?:640|768)|rtmdet_tiny_(?:640|768))-seed(2026072[4-6])-fold([0-4])", receipt["run_id"])
+        if not match or (receipt["variant"], int(receipt["seed"]), int(receipt["fold"])) != (match.group(1), int(match.group(2)), int(match.group(3))):
+            raise ValueError("receipt variant/seed/fold do not match run ID")
         if receipt["run_id"] in seen_runs or receipt["run_id"] not in expected:
             raise ValueError("unexpected or duplicate detector run ID")
         seen_runs.add(receipt["run_id"])
         prediction = receipt_path.parent / "validation_predictions.json"
+        processed = receipt_path.parent / "processed_validation_image_ids.json"
         manifest = args.fold_root / f"fold-{receipt['fold']}" / "manifest.json"
-        if not prediction.is_file() or not manifest.is_file():
+        if not prediction.is_file() or not processed.is_file() or not manifest.is_file():
             raise FileNotFoundError("every receipt needs canonical predictions and its fold manifest")
-        if receipt["prediction_sha256"] != _hash(prediction) or receipt["fold_manifest_sha256"] != _hash(manifest):
+        if receipt["prediction_sha256"] != _hash(prediction) or receipt["processed_images_sha256"] != _hash(processed) or receipt["fold_manifest_sha256"] != _hash(manifest):
             raise ValueError(f"receipt hash mismatch: {receipt['run_id']}")
         fold = json.loads(manifest.read_text(encoding="utf-8"))
         validation_ids = {int(value) for value in fold["validation_image_ids"]}
+        if list(sorted(receipt["validation_image_ids"])) != sorted(validation_ids) or set(json.loads(processed.read_text(encoding="utf-8"))) != validation_ids:
+            raise ValueError("held-out processed image set is incomplete")
         validation_scenes = {(row["capture_batch"], row["scene_number"]) for row in fold["validation_scenes"]}
         training_scenes = {(row["capture_batch"], row["scene_number"]) for row in fold["training_scenes"]}
         if validation_scenes & training_scenes:

@@ -5,6 +5,8 @@ model = dict(bbox_head=dict(num_classes=1))
 train_dataloader = dict(dataset=dict(metainfo=metainfo, data_root=r"__INJECTED_DATA_ROOT__", ann_file=r"__INJECTED_TRAIN_ANNOTATIONS__", data_prefix=dict(img="images/")))
 val_dataloader = dict(dataset=dict(metainfo=metainfo, data_root=r"__INJECTED_DATA_ROOT__", ann_file=r"__INJECTED_VALIDATION_ANNOTATIONS__", data_prefix=dict(img="images/")))
 test_dataloader = val_dataloader
+val_evaluator = dict(ann_file=r"__INJECTED_VALIDATION_ANNOTATIONS__")
+test_evaluator = dict(ann_file=r"__INJECTED_VALIDATION_ANNOTATIONS__")
 # All train/test/TTA resize scales are injected as either 640 or 768.
 input_size = __INJECTED_INPUT_SIZE__
 train_pipeline = [dict(type="LoadImageFromFile"), dict(type="LoadAnnotations", with_bbox=True), dict(type="Resize", scale=(input_size, input_size), keep_ratio=True), dict(type="PackDetInputs")]
