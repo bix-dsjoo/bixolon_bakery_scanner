@@ -6,14 +6,14 @@ canonical_frame:
 dataset:
   sources:
     - name: group_15class
-      images: datasets/detection/group_15class/images
-      annotations: datasets/detection/group_15class/annotations/instances.json
+      images: ../datasets/detection/group_15class/images
+      annotations: ../datasets/detection/group_15class/annotations/instances.json
     - name: group_20class_batch01
-      images: datasets/detection/group_20class_batch01/images
-      annotations: datasets/detection/group_20class_batch01/annotations/instances.json
+      images: ../datasets/detection/group_20class_batch01/images
+      annotations: ../datasets/detection/group_20class_batch01/annotations/instances.json
     - name: group_20class_batch02
-      images: datasets/detection/group_20class_batch02/images
-      annotations: datasets/detection/group_20class_batch02/annotations/instances.json
+      images: ../datasets/detection/group_20class_batch02/images
+      annotations: ../datasets/detection/group_20class_batch02/annotations/instances.json
   expected_images: 299
   expected_boxes: 1410
   folds: 5

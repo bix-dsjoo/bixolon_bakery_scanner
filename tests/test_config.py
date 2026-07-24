@@ -13,6 +13,8 @@ def test_config_loads_current_dataset_paths():
     assert config.canonical_frame.width == 1152
     assert config.canonical_frame.height == 1536
     assert not hasattr(config, "camera")
+    assert all(source.images.is_dir() for source in config.dataset.sources)
+    assert all(source.annotations.is_file() for source in config.dataset.sources)
 
 
 def test_config_resolves_paths_from_config_location(tmp_path: Path):
