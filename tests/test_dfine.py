@@ -81,6 +81,8 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert "apply --check $DFinePatch" in bootstrap and "create D-FINE venv" in bootstrap
     assert "torch.version.cuda == '12.8'" in bootstrap and "RTX 5080" in bootstrap and "nvcc" in bootstrap
     assert "FORCE_CUDA" in bootstrap
+    assert "cuda_runtime.h" in bootstrap and "cudart.lib" in bootstrap and "cuda_12.8.1_windows_network.exe -s -n cudart_12.8" in bootstrap
+    assert 'TORCH_CUDA_ARCH_LIST = "12.0"' in bootstrap
     assert "$PreviousErrorActionPreference" in bootstrap and "$ErrorActionPreference = \"Continue\"" in bootstrap and "finally" in bootstrap
     matrix = __import__("pathlib").Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
     assert "Invoke-Checked" in matrix and "finally" in matrix and "best_coco_bbox_mAP_*.pth" in matrix

@@ -46,8 +46,12 @@ Install-CUDAEnvironment ".venvs/dfine/Scripts/python.exe" @("-r", "third_party/D
 Install-CUDAEnvironment ".venvs/rtmdet/Scripts/python.exe" @("mmengine==0.10.7", "mmdet==3.3.0")
 # OpenMMLab currently provides no pinned prebuilt mmcv wheel contract here for
 # torch 2.8/cu128. Refuse CPU fallback; require a local CUDA toolkit to build.
-if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) { throw "MMCV for torch 2.8 CUDA 12.8 requires a CUDA toolkit (nvcc) for source build; install a matching toolkit, then rerun." }
+if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) { throw "MMCV for torch 2.8 CUDA 12.8 requires nvcc; install CUDA Toolkit 12.8, then rerun." }
+if ($env:CUDA_PATH -notmatch "v12\.8" -or -not (Test-Path (Join-Path $env:CUDA_PATH "include\cuda_runtime.h")) -or -not (Test-Path (Join-Path $env:CUDA_PATH "lib\x64\cudart.lib"))) {
+    throw "MMCV CUDA build requires CUDA 12.8 development headers and libraries. Install cuda_12.8.1_windows_network.exe -s -n cudart_12.8 (and nvcc if missing), then rerun."
+}
 $env:FORCE_CUDA = "1"
+$env:TORCH_CUDA_ARCH_LIST = "12.0"
 Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -m pip install --no-binary mmcv "mmcv==2.2.0" } "build CUDA MMCV 2.2.0"
 Push-Location third_party/D-FINE
 Invoke-Checked { & ..\..\.venvs\dfine\Scripts\python.exe -c "import torch, torchvision; from src.core import YAMLConfig; assert torch.__version__ == '2.8.0+cu128'; assert torchvision.__version__ == '0.23.0+cu128'; assert torch.version.cuda == '12.8'; assert torch.cuda.is_available(); assert 'RTX 5080' in torch.cuda.get_device_name(0)" } "verify pinned D-FINE CUDA environment"
