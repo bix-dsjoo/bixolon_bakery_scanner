@@ -1,15 +1,30 @@
 diff --git a/src/solver/det_engine.py b/src/solver/det_engine.py
-index b877b09..05b55a1 100644
+index b877b09..21c99e9 100644
 --- a/src/solver/det_engine.py
 +++ b/src/solver/det_engine.py
-@@ -8,0 +9 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+@@ -6,6 +6,8 @@
+ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+ """
+ 
 +import json
-@@ -9,0 +11 @@ import math
 +import os
-@@ -179,0 +182,2 @@ def evaluate(
+ import math
+ import sys
+ from typing import Dict, Iterable, List
+@@ -180,6 +182,8 @@
+ 
+     output_dir = kwargs.get("output_dir", None)
+     num_visualization_sample_batch = kwargs.get("num_visualization_sample_batch", 1)
 +    oof_predictions = []
 +    processed_image_ids = []
-@@ -207,0 +212,14 @@ def evaluate(
+ 
+     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+         global_step = epoch * len(data_loader) + i
+@@ -199,6 +203,21 @@
+         # orig_target_sizes = torch.tensor([[samples.shape[-1], samples.shape[-2]]], device=samples.device)
+ 
+         results = postprocessor(outputs, orig_target_sizes)
++
 +        for target, output in zip(targets, results):
 +            processed_image_ids.append(target["image_id"].item())
 +            for box, score, label in zip(
@@ -24,7 +39,13 @@ index b877b09..05b55a1 100644
 +                        "score": score,
 +                    }
 +                )
-@@ -249,0 +268,18 @@ def evaluate(
+ 
+         # if 'segm' in postprocessor.keys():
+         #     target_sizes = torch.stack([t["size"] for t in targets], dim=0)
+@@ -229,6 +248,26 @@
+                 {"boxes": result["boxes"], "labels": labels, "scores": result["scores"]}
+             )
+ 
 +    gathered_processed_image_ids = [None] * dist_utils.get_world_size()
 +    gathered_oof_predictions = [None] * dist_utils.get_world_size()
 +    if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -33,6 +54,7 @@ index b877b09..05b55a1 100644
 +    else:
 +        gathered_processed_image_ids = [processed_image_ids]
 +        gathered_oof_predictions = [oof_predictions]
++
 +    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
 +    if oof_path and dist_utils.is_main_process():
 +        with open(oof_path, "w", encoding="utf-8") as handle:
@@ -43,3 +65,7 @@ index b877b09..05b55a1 100644
 +                },
 +                handle,
 +            )
++
+     # Conf matrix, F1, Precision, Recall, box IoU
+     metrics = Validator(gt, preds).compute_metrics()
+     print("Metrics:", metrics)

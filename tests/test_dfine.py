@@ -99,6 +99,20 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert overlay.count("type: Resize") == 2
 
 
+def test_dfine_oof_patch_is_context_rich_and_exports_once_before_evaluate_return():
+    """The pinned D-FINE patch must be unambiguous and cannot append after return."""
+    patch = __import__("pathlib").Path("third_party_patches/dfine_oof_predictions.patch").read_text(encoding="utf-8")
+    assert "@@ -8,0" not in patch
+    assert "@@ -179,0" not in patch
+    assert "@@ -207,0" not in patch
+    assert "@@ -249,0" not in patch
+    assert patch.count("oof_predictions = []") == 1
+    assert patch.count("processed_image_ids = []") == 1
+    assert patch.count("all_gather_object") == 2
+    assert patch.index("results = postprocessor(outputs, orig_target_sizes)") < patch.index("for target, output in zip(targets, results):")
+    assert patch.index("json.dump(") < patch.index("# Conf matrix, F1, Precision, Recall, box IoU")
+
+
 def test_bootstrap_matches_release_in_multiline_nvcc_version_output():
     """CUDA's multi-line ``nvcc -V`` output must be matched as one string."""
     bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
