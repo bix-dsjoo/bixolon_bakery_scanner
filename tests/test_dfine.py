@@ -59,4 +59,12 @@ def test_matrix_script_generates_every_variant_seed_fold_config_and_receipt():
     assert "dataset:" in overlay and "base_size:" in overlay
     assert "remap_mscoco_category: true" in overlay
     assert "processed-output" in __import__("pathlib").Path("scripts/canonicalize_validation_predictions.py").read_text(encoding="utf-8")
+
+
+def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
+    bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
+    patch = __import__("pathlib").Path("third_party_patches/dfine_oof_predictions.patch").read_text(encoding="utf-8")
+    assert "torch==2.8.0+cpu" in bootstrap and "mmdet==3.3.0" in bootstrap
+    assert "import torch, torchvision, mmengine, mmcv, mmdet" in bootstrap
+    assert "all_gather_object" in patch and "get_world_size" in patch
     assert overlay.count("type: Resize") == 2
