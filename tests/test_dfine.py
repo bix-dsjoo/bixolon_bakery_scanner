@@ -119,3 +119,34 @@ def test_bootstrap_matches_release_in_multiline_nvcc_version_output():
     )
     assert completed.returncode == 0, completed.stderr
     assert "$NvccVersion = (& $Nvcc -V) -join [Environment]::NewLine" in bootstrap
+
+
+def test_bootstrap_requires_cuda_math_development_families_before_pip():
+    """A missing CUDA math development family must stop the GPU build up front."""
+    bootstrap = __import__("pathlib").Path("scripts/bootstrap_training.ps1").read_text(encoding="utf-8")
+    required_headers = (
+        "cublas_v2.h",
+        "cublasLt.h",
+        "cusolverDn.h",
+        "cusparse.h",
+        "cufft.h",
+        "curand.h",
+    )
+    required_libraries = ("cublas.lib", "cublasLt.lib", "cusolver.lib", "cusparse.lib", "cufft.lib", "curand.lib")
+    repair_packages = (
+        "cudart_12.8",
+        "cudart_dev_12.8",
+        "cublas_12.8",
+        "cublas_dev_12.8",
+        "cusolver_12.8",
+        "cusolver_dev_12.8",
+        "cusparse_12.8",
+        "cusparse_dev_12.8",
+        "cufft_12.8",
+        "cufft_dev_12.8",
+        "curand_12.8",
+        "curand_dev_12.8",
+    )
+    assert all(item in bootstrap for item in required_headers + required_libraries + repair_packages)
+    assert "Missing CUDA 12.8 development components" in bootstrap
+    assert bootstrap.index("Missing CUDA 12.8 development components") < bootstrap.index("Install-CUDAEnvironment")

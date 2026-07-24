@@ -15,6 +15,40 @@ function Get-PinnedRepository([string]$Url, [string]$Destination, [string]$Commi
     Invoke-Checked { git -C $Destination checkout $Commit } "checkout $Commit"
 }
 
+$CudaRuntimeRepair = "MMCV CUDA build requires CUDA 12.8 development headers and libraries. Install artifacts\box_system\logs\cuda_12.8.1_windows_network.exe -s -n cudart_12.8,cudart_dev_12.8,cublas_12.8,cublas_dev_12.8,cusolver_12.8,cusolver_dev_12.8,cusparse_12.8,cusparse_dev_12.8,cufft_12.8,cufft_dev_12.8,curand_12.8,curand_dev_12.8, then rerun."
+
+function Assert-CudaBuildPrerequisites() {
+    if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH)) { throw $CudaRuntimeRepair }
+    if (-not (Test-Path -LiteralPath $env:CUDA_PATH -PathType Container)) { throw $CudaRuntimeRepair }
+    $CudaRoot = (Resolve-Path -LiteralPath $env:CUDA_PATH).Path
+    if ((Split-Path -Leaf $CudaRoot) -ine "v12.8") { throw $CudaRuntimeRepair }
+    $Nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
+    if (-not (Test-Path $Nvcc)) { throw "$CudaRuntimeRepair Expected CUDA 12.8 compiler: $Nvcc" }
+    if (-not ((Resolve-Path $Nvcc).Path.StartsWith($CudaRoot, [StringComparison]::OrdinalIgnoreCase))) { throw "$CudaRuntimeRepair nvcc must resolve beneath CUDA_PATH" }
+    $NvccVersion = (& $Nvcc -V) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0 -or $NvccVersion -notmatch "release 12\.8") { throw "$CudaRuntimeRepair CUDA_PATH nvcc must report release 12.8" }
+
+    $RequiredCudaFamilies = @(
+        @{ Name = "CUDA runtime"; Files = @("include\cuda_runtime.h", "lib\x64\cudart.lib") },
+        @{ Name = "cuBLAS"; Files = @("include\cublas_v2.h", "include\cublasLt.h", "lib\x64\cublas.lib", "lib\x64\cublasLt.lib") },
+        @{ Name = "cuSOLVER"; Files = @("include\cusolverDn.h", "lib\x64\cusolver.lib") },
+        @{ Name = "cuSPARSE"; Files = @("include\cusparse.h", "lib\x64\cusparse.lib") },
+        @{ Name = "cuFFT"; Files = @("include\cufft.h", "lib\x64\cufft.lib") },
+        @{ Name = "cuRAND"; Files = @("include\curand.h", "lib\x64\curand.lib") }
+    )
+    $MissingFamilies = @(
+        $RequiredCudaFamilies | Where-Object {
+            $Family = $_
+            @($Family.Files | Where-Object { -not (Test-Path (Join-Path $CudaRoot $_)) }).Count -gt 0
+        } | ForEach-Object { $_.Name }
+    )
+    if ($MissingFamilies.Count -gt 0) {
+        throw "Missing CUDA 12.8 development components: $($MissingFamilies -join ', '). $CudaRuntimeRepair"
+    }
+}
+
+Assert-CudaBuildPrerequisites
+
 Get-PinnedRepository "https://github.com/Peterande/D-FINE.git" "third_party/D-FINE" "7fe2f8889f0b7b817f20c315b40fc15a4fb64ae6"
 $DFinePatch = "..\..\third_party_patches\dfine_oof_predictions.patch"
 $ReversePatchApplied = $false
@@ -45,26 +79,7 @@ function Install-CUDAEnvironment([string]$Python, [string[]]$Packages) {
 Install-CUDAEnvironment ".venvs/dfine/Scripts/python.exe" @("-r", "third_party/D-FINE/requirements.txt")
 Install-CUDAEnvironment ".venvs/rtmdet/Scripts/python.exe" @("mmengine==0.10.7", "mmdet==3.3.0")
 # OpenMMLab currently provides no pinned prebuilt mmcv wheel contract here for
-# torch 2.8/cu128. Refuse CPU fallback; require a local CUDA toolkit to build.
-$CudaRuntimeRepair = "MMCV CUDA build requires CUDA 12.8 development headers and libraries. Install artifacts\box_system\logs\cuda_12.8.1_windows_network.exe -s -n cudart_12.8 (and nvcc if missing), then rerun."
-if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH)) {
-    throw $CudaRuntimeRepair
-}
-if (-not (Test-Path -LiteralPath $env:CUDA_PATH -PathType Container)) {
-    throw $CudaRuntimeRepair
-}
-$CudaRoot = (Resolve-Path -LiteralPath $env:CUDA_PATH).Path
-if ((Split-Path -Leaf $CudaRoot) -ine "v12.8") {
-    throw $CudaRuntimeRepair
-}
-$Nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
-if (-not (Test-Path $Nvcc)) { throw "$CudaRuntimeRepair Expected CUDA 12.8 compiler: $Nvcc" }
-if (-not ((Resolve-Path $Nvcc).Path.StartsWith($CudaRoot, [StringComparison]::OrdinalIgnoreCase))) { throw "$CudaRuntimeRepair nvcc must resolve beneath CUDA_PATH" }
-$NvccVersion = (& $Nvcc -V) -join [Environment]::NewLine
-if ($LASTEXITCODE -ne 0 -or $NvccVersion -notmatch "release 12\.8") { throw "$CudaRuntimeRepair CUDA_PATH nvcc must report release 12.8" }
-if (-not (Test-Path (Join-Path $CudaRoot "include\cuda_runtime.h")) -or -not (Test-Path (Join-Path $CudaRoot "lib\x64\cudart.lib"))) {
-    throw $CudaRuntimeRepair
-}
+# torch 2.8/cu128. The CUDA build prerequisites above prohibit CPU fallback.
 $env:FORCE_CUDA = "1"
 $env:TORCH_CUDA_ARCH_LIST = "12.0"
 Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -m pip install --no-binary mmcv "mmcv==2.2.0" } "build CUDA MMCV 2.2.0"
