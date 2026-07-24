@@ -3,7 +3,7 @@
 Baseline: `091ce57` (`docs: add detector verifier design and implementation plan`)
 
 Task 1: approved (`80a2a64b3b7a337cb696f7671a16b7a6ba996540`)
-Task 2: pending
+Task 2: approved (`27dc0d0`)
 Task 3: pending
 Task 4: pending
 Task 5: pending
