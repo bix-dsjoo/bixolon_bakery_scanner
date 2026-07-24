@@ -67,4 +67,5 @@ def test_bootstrap_pins_cpu_dependencies_and_patch_gathers_distributed_ids():
     assert "torch==2.8.0+cpu" in bootstrap and "mmdet==3.3.0" in bootstrap
     assert "import torch, torchvision, mmengine, mmcv, mmdet" in bootstrap
     assert "all_gather_object" in patch and "get_world_size" in patch
+    overlay = __import__("pathlib").Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
     assert overlay.count("type: Resize") == 2
