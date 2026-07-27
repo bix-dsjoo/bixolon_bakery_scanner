@@ -10,19 +10,19 @@ def test_three_padded_crops_are_ordered_and_clipped():
     image = Image.new("RGB", (100, 80))
     crops = make_padded_crops(image, Box(0, 0, 40, 20), (0.05, 0.10, 0.15))
     assert len(crops) == 3
-    assert [crop.size for crop in crops] == [(42, 21), (44, 22), (46, 23)]
+    assert [crop.size for crop in crops] == [(41, 21), (42, 21), (43, 22)]
 
 
 def test_centered_crop_expands_each_side_with_floor_and_ceil():
     image = Image.new("RGB", (100, 80))
     crops = make_padded_crops(image, Box(20, 30, 40, 20), (0.05,))
-    assert crops[0].size == (44, 22)
+    assert crops[0].size == (42, 22)
 
 
 def test_crops_clip_at_all_image_edges():
     image = Image.new("RGB", (100, 80))
     boxes = (Box(0, 0, 10, 10), Box(90, 0, 10, 10), Box(0, 70, 10, 10), Box(90, 70, 10, 10))
-    assert [make_padded_crops(image, box, (0.15,))[0].size for box in boxes] == [(12, 12)] * 4
+    assert [make_padded_crops(image, box, (0.15,))[0].size for box in boxes] == [(11, 11)] * 4
 
 
 def test_crops_convert_non_rgb_input_to_rgb():

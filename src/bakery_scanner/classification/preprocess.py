@@ -23,8 +23,8 @@ def make_padded_crops(
 def _crop_one(image: Image.Image, box: Box, padding: float) -> Image.Image:
     if not math.isfinite(padding) or padding < 0.0:
         raise ValueError("padding must be a finite non-negative value")
-    horizontal = padding * box.width
-    vertical = padding * box.height
+    horizontal = padding * box.width / 2.0
+    vertical = padding * box.height / 2.0
     left = max(0, math.floor(box.x - horizontal))
     top = max(0, math.floor(box.y - vertical))
     right = min(image.width, math.ceil(box.x + box.width + horizontal))
