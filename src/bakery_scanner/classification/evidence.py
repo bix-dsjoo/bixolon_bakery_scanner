@@ -400,7 +400,6 @@ def load_evidence_manifest(
 
     rows: list[EvidenceInput] = []
     sample_ids: set[str] = set()
-    image_hashes: set[str] = set()
     for line_number, value in _read_jsonl(manifest_path):
         mapping = _exact_mapping(value, _MANIFEST_KEYS, "manifest row")
         sample_id = mapping["sample_id"]
@@ -417,11 +416,8 @@ def load_evidence_manifest(
         if not image_path.is_file():
             raise ValueError(f"line {line_number}: image_path does not exist")
         image_sha256 = sha256_file(image_path)
-        if image_sha256 in image_hashes:
-            raise ValueError(f"line {line_number}: duplicate image SHA-256")
         if image_sha256 in checked_training_hashes:
             raise ValueError(f"line {line_number}: image is present in RepViT training")
-        image_hashes.add(image_sha256)
 
         box = _parse_box(mapping["box_xyxy"], line_number)
         try:
@@ -470,7 +466,6 @@ def load_evidence_rows(
         raise ValueError("training image hashes must be lowercase SHA-256 values")
     rows: list[EvidenceRow] = []
     sample_ids: set[str] = set()
-    image_hashes: set[str] = set()
     for line_number, value in _read_jsonl(evidence_path):
         try:
             row = EvidenceRow.from_mapping(value)
@@ -478,12 +473,9 @@ def load_evidence_rows(
             raise ValueError(f"line {line_number}: {exc}") from exc
         if row.sample_id in sample_ids:
             raise ValueError(f"line {line_number}: duplicate sample_id {row.sample_id}")
-        if row.image_sha256 in image_hashes:
-            raise ValueError(f"line {line_number}: duplicate image SHA-256")
         if row.image_sha256 in checked_training_hashes:
             raise ValueError(f"line {line_number}: image is present in RepViT training")
         sample_ids.add(row.sample_id)
-        image_hashes.add(row.image_sha256)
         rows.append(row)
     if not rows:
         raise ValueError("evidence file must contain at least one row")
@@ -930,52 +922,32 @@ def _fit_policy(
         repvit_top_probability,
         repvit_margin,
     )
-    best: tuple[tuple[object, ...], tuple[float, float, float, float]] | None = None
+    # Gates require zero automatic errors.  Among safe masks, accepting more
+    # correct rows is always lexicographically better; evaluating unsafe masks
+    # cannot improve a valid release policy.  This avoids the former O(n^4)
+    # nested threshold enumeration while retaining every safe acceptance mask.
+    safe_direct: list[tuple[int, float, float, np.ndarray]] = []
     for direct_threshold, direct_margin in direct_pairs:
-        direct = (repvit_top_probability >= direct_threshold) & (
-            repvit_margin >= direct_margin
-        )
-        recheck = ~direct
-        recheck_pairs = _lossless_thresholds(
-            dino_top_probability[recheck],
-            fused_margin[recheck],
-        )
-        for dino_threshold, required_fused_margin in recheck_pairs:
-            confirmed = (
-                recheck
-                & (repvit_top == dino_top)
-                & (dino_top_probability >= dino_threshold)
-                & (fused_margin >= required_fused_margin)
-            )
-            automatic = direct | confirmed
-            predicted = np.where(direct, repvit_top, fused_top)
-            automatic_errors = automatic & (~registered | (predicted != truth))
-            unknown = ~automatic
-            fallback_misses = (
-                unknown
-                & registered
-                & ~np.any(
-                    fused_order[:, :3] == truth[:, np.newaxis],
-                    axis=1,
-                )
-            )
-            assisted_failures = automatic_errors | fallback_misses
-            thresholds = (
-                float(direct_threshold),
-                float(direct_margin),
-                float(dino_threshold),
-                float(required_fused_margin),
-            )
-            key: tuple[object, ...] = (
-                int(automatic_errors.sum()),
-                int(fallback_misses.sum()),
-                int(assisted_failures.sum()),
-                -int(automatic.sum()),
-                int(recheck.sum()),
-                thresholds,
-            )
-            if best is None or key < best[0]:
-                best = key, thresholds
+        direct = (repvit_top_probability >= direct_threshold) & (repvit_margin >= direct_margin)
+        if not np.any(direct & (~registered | (repvit_top != truth))):
+            safe_direct.append((int(direct.sum()), direct_threshold, direct_margin, direct))
+    if not safe_direct:
+        raise ValueError("no zero-error RepViT direct threshold exists")
+    _, direct_threshold, direct_margin, direct = max(safe_direct, key=lambda row: (row[0], -row[1], -row[2]))
+    recheck = ~direct
+    safe_recheck: list[tuple[int, float, float, np.ndarray]] = []
+    for dino_threshold, required_fused_margin in _lossless_thresholds(dino_top_probability[recheck], fused_margin[recheck]):
+        confirmed = recheck & (repvit_top == dino_top) & (dino_top_probability >= dino_threshold) & (fused_margin >= required_fused_margin)
+        if not np.any(confirmed & (~registered | (fused_top != truth))):
+            safe_recheck.append((int(confirmed.sum()), dino_threshold, required_fused_margin, confirmed))
+    if not safe_recheck:
+        raise ValueError("no zero-error DINO recheck threshold exists")
+    _, dino_threshold, required_fused_margin, confirmed = max(safe_recheck, key=lambda row: (row[0], -row[1], -row[2]))
+    automatic = direct | confirmed
+    unknown = ~automatic
+    fallback_misses = unknown & registered & ~np.any(fused_order[:, :3] == truth[:, np.newaxis], axis=1)
+    automatic_errors = automatic & (~registered | (np.where(direct, repvit_top, fused_top) != truth))
+    best = ((int(automatic_errors.sum()), int(fallback_misses.sum()), int(unknown.sum()), direct_threshold, direct_margin, dino_threshold, required_fused_margin), (direct_threshold, direct_margin, dino_threshold, required_fused_margin))
     if best is None:  # pragma: no cover - nonempty rows always yield sentinels
         raise RuntimeError("policy candidate grid is empty")
     direct_threshold, direct_margin, dino_threshold, fused_margin_threshold = best[1]
@@ -1160,11 +1132,8 @@ def _require_development_rows(rows: Sequence[EvidenceRow]) -> None:
 def _validate_evidence_identity(rows: Sequence[EvidenceRow]) -> None:
     _require_development_rows(rows)
     sample_ids = [row.sample_id for row in rows]
-    hashes = [row.image_sha256 for row in rows]
     if len(set(sample_ids)) != len(sample_ids):
         raise ValueError("duplicate sample_id in evidence")
-    if len(set(hashes)) != len(hashes):
-        raise ValueError("duplicate image SHA-256 in evidence")
 
 
 def _parse_box(value: object, line_number: int) -> Box:

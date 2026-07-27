@@ -297,7 +297,7 @@ def test_evidence_rows_reject_whitespace_only_capture_group():
         )
 
 
-def test_manifest_rejects_duplicate_ids_and_duplicate_image_content(tmp_path: Path):
+def test_manifest_rejects_duplicate_ids_but_allows_multiple_boxes_per_image(tmp_path: Path):
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
     _write_image(first)
@@ -318,8 +318,7 @@ def test_manifest_rejects_duplicate_ids_and_duplicate_image_content(tmp_path: Pa
         _manifest_row(second.name, sample_id="cal-000002"),
     ]
     _write_manifest(manifest, rows)
-    with pytest.raises(ValueError, match="duplicate image SHA-256"):
-        load_evidence_manifest(manifest, training_image_hashes=frozenset())
+    assert len(load_evidence_manifest(manifest, training_image_hashes=frozenset())) == 2
 
 
 def test_manifest_rejects_repvit_training_image_hash(tmp_path: Path):
