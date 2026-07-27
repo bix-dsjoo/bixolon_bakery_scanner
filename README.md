@@ -1,7 +1,7 @@
 # Bixolon Bakery Scanner
 
 스캔 이미지 한 장에서 빵의 **품목, 수량, 위치**를 빠르고 정확하게
-추론하는 CPU 기반 비전 파이프라인입니다.
+추론하는 GPU 기반 비전 파이프라인입니다.
 
 ## 목표
 
@@ -18,35 +18,37 @@ Bakery Scanner는 검출, 영역 검증, 제품 분류, 조건부 재확인을 �
 
 ```text
 스캔 이미지
-  → Detector (D-FINE / RTMDet)
-  → Verifier
-  → Classifier (MobileNetV4 / RepViT)
-  → 저신뢰·난분류 결과만 DINOv3 재확인
+  → Detector: D-FINE-N
+  → Verifier: ConvNeXt-Tiny
+  → Classifier: RepViT-M1 (`repvit_m1_15plus5_v1`)
+  → 저신뢰·난분류 결과만 DINOv3 ViT-S/16 (`dinov3_vits16_15plus5_v1`) 재확인
   → 품목·수량·위치 결과
 ```
 
 ### 1. Detector
 
-D-FINE 또는 RTMDet가 입력 이미지에서 빵의 위치와 후보 박스를 검출합니다.
+D-FINE-N이 입력 이미지에서 빵의 위치와 후보 박스를 검출합니다.
 이 단계의 출력은 최종 결과가 아니라 Verifier가 확인할 후보 집합입니다.
 
 ### 2. Verifier
 
-Verifier는 Detector의 후보 박스를 검증하고 필요한 보정과 정리를 수행합니다.
+ConvNeXt-Tiny Verifier는 Detector의 후보 박스를 검증하고 필요한 보정과
+정리를 수행합니다.
 누락된 빵, 하나의 빵을 가리키는 중복 박스, 여러 빵을 합친 박스, 배경이나
 비대상 물체의 오검출을 제거하여 빵 하나당 하나의 최종 대상 영역을
 확정합니다.
 
 ### 3. Classifier
 
-검증된 각 빵 영역은 MobileNetV4 또는 RepViT 기반 Classifier로 전달됩니다.
-Classifier는 제품 종류와 분류 신뢰도를 산출하며, 신뢰도가 충분하고 혼동
-가능성이 낮은 결과는 즉시 사용합니다.
+검증된 각 빵 영역은 `repvit_m1_15plus5_v1` RepViT-M1 Classifier로
+전달됩니다. Classifier는 제품 종류와 보정된 분류 신뢰도를 산출하며,
+신뢰도와 클래스 간 분리도가 모두 충분한 결과만 즉시 확정합니다.
 
 ### 4. DINOv3 재확인
 
-DINOv3는 모든 대상에 실행하지 않습니다. 분류 신뢰도가 낮거나 서로
-유사한 제품을 구분하기 어려운 경우에만 재확인을 수행합니다.
+DINOv3 ViT-S/16 `dinov3_vits16_15plus5_v1`은 모든 대상에 실행하지
+않습니다. 분류 신뢰도가 낮거나 서로 유사한 제품을 구분하기 어려운
+경우에만 재확인을 수행합니다.
 
 - 등록 제품임이 충분히 확인되면 해당 품목으로 확정합니다.
 - 등록 제품으로 확정할 근거가 부족하면 `Unknown`으로 처리합니다.
@@ -84,9 +86,61 @@ DINOv3는 모든 대상에 실행하지 않습니다. 분류 신뢰도가 낮거
 
 ### 성능
 
-현재 기준 PC의 CPU에서 Detector부터 최종 집계까지 전체 파이프라인의
+현재 기준 PC의 GPU에서 Detector부터 최종 집계까지 전체 파이프라인의
 이미지당 추론 시간 **0.5초 이하**를 목표로 합니다. 정확성 승인 기준을
 훼손하는 속도 최적화는 허용하지 않습니다.
+
+## Classifier 보정·승인·벤치마크
+
+Classifier 임계값은 모델 패키지에 내장된 고정값이 아니라 독립적인 개발
+증거에서 선택해 버전된 calibration 산출물로 저장합니다. 입력 JSONL은
+원본 이미지 경로와 원본 좌표계의 `box_xyxy`를 사용합니다.
+
+- `development_manifest.jsonl`: RepViT 학습 이미지와 겹치지 않는
+  `role=development` 표본입니다. 두 모델의 점수를 수집하고 grouped
+  cross-fit으로 calibration을 선택하는 용도입니다.
+- `locked_acceptance_manifest.jsonl`: 파라미터 선택에 사용하지 않은
+  `role=locked_acceptance` 표본입니다. calibration을 고정한 뒤 한 번
+  평가하는 출하 승인 용도입니다.
+- `benchmark_manifest.jsonl`: `sample_id`, `image_path`, `box_xyxy`를
+  필수로 갖는 분류기 전용 성능 표본입니다. 선택적으로 `registered`와
+  `sku_id`를 함께 기록할 수 있지만 벤치마크는 정답률을 계산하지 않습니다.
+
+개발 증거 수집과 calibration 선택:
+
+```powershell
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/development_manifest.jsonl --output artifacts/classification/development_evidence.jsonl
+python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
+```
+
+잠긴 승인 증거 수집과 고정 정책 평가:
+
+```powershell
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
+python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/locked_evidence.jsonl --calibration artifacts/classification/policy_v1.json --output artifacts/classification/locked-report.json
+```
+
+잠긴 보고서는 `auto_precision`, `fallback_top3_recall`,
+`assisted_success`가 적용 가능한 구간마다 1.0인지 검사하며, 하나라도
+충족하지 못하면 명령이 0이 아닌 종료 코드를 반환합니다. 잠긴 결과를 보고
+임계값을 조정했다면 새 잠금 평가셋으로 다시 검증해야 합니다.
+
+분류기 전용 GPU 벤치마크:
+
+```powershell
+python scripts/benchmark_classifier_pipeline.py --config configs/classifier_policy.yaml --manifest datasets/classification/benchmark_manifest.jsonl --warmup 20 --output artifacts/classification/benchmark.json
+```
+
+보고서는 warm-up을 제외한 전체·RepViT p50/p95, 실제 재확인 행의 DINOv3
+p50/p95, DINOv3 실행률, 장치·정밀도 및 모델·calibration 해시를
+기록합니다. 이 수치는 검증된 crop 이후의 Classifier만 측정하므로
+Detector와 Verifier를 포함하는 0.5초 전체 파이프라인 목표의 합격 근거로
+사용할 수 없습니다.
+
+현재 모델 패키지 자체만으로 `auto_precision=100%` 또는
+`fallback_top3_recall=100%`가 증명되는 것은 아닙니다. 학습과 독립적인
+개발 데이터 및 잠긴 승인 데이터의 실제 결과가 있어야
+`assisted_success=100%`를 포함한 출하 기준을 판정할 수 있습니다.
 
 ## 핵심 원칙
 

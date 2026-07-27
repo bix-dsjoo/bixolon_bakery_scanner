@@ -203,3 +203,63 @@ Unknown 결과의 `confidence`와 Top-3 `score`는 결합 Top-1 및 각 후보�
 RepViT 직접 확정 경로에서는 DINOv3를 실행하지 않는다. DINOv3 조건부
 실행률과 두 경로의 latency를 별도로 기록한다. GPU 최적화는 동일한 잠긴
 평가셋에서 자동 확정과 Top-3 결과가 회귀하지 않음을 확인한 뒤 채택한다.
+
+## 10. 실행 가능한 증거·승인 절차
+
+### 10.1 독립 개발 증거와 calibration
+
+`development_manifest.jsonl`은 RepViT 학습 이미지와 겹치지 않는
+`role=development` 표본만 포함한다. 동일 촬영 장면이나 세션은 하나의
+`capture_group`으로 묶어 grouped cross-fit 경계를 보존한다.
+
+```powershell
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/development_manifest.jsonl --output artifacts/classification/development_evidence.jsonl
+python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
+```
+
+증거 수집은 모든 표본에 RepViT와 DINOv3를 모두 실행한다. calibration
+명령은 개발 증거만 사용하며, cross-fit 자동 확정 오류, fallback Top-3
+누락 또는 assisted failure가 있으면 정책 산출물을 쓰지 않는다.
+
+### 10.2 잠긴 승인 평가
+
+`locked_acceptance_manifest.jsonl`은 모델과 임계값 선택에 사용하지 않은
+`role=locked_acceptance` 표본만 포함한다. 먼저 두 모델의 점수를 고정된
+증거로 수집한 뒤 기존 calibration을 변경하지 않고 한 번 평가한다.
+
+```powershell
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
+python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/locked_evidence.jsonl --calibration artifacts/classification/policy_v1.json --output artifacts/classification/locked-report.json
+```
+
+잠긴 보고서는 전체, SKU별, 기존 15종, 추가 5종, 등록 및 미등록 구간의
+`auto_precision`, `fallback_top3_recall`, `assisted_success`와 정확한 실패
+표본 ID를 기록한다. 적용 가능한 출하 지표가 모두 1.0이 아니면 평가
+명령은 0이 아닌 종료 코드를 반환한다. 이 결과로 파라미터를 바꿨다면 기존
+잠금은 해제된 것이므로 새로운 잠금 평가셋이 필요하다.
+
+### 10.3 Classifier 전용 벤치마크
+
+`benchmark_manifest.jsonl`은 `sample_id`, `image_path`, `box_xyxy`를 필수로
+갖는다. 정답을 함께 보존하려면 `registered`와 `sku_id`를 둘 다 추가할 수
+있지만 벤치마크 명령은 정확성 지표를 계산하지 않는다.
+
+```powershell
+python scripts/benchmark_classifier_pipeline.py --config configs/classifier_policy.yaml --manifest datasets/classification/benchmark_manifest.jsonl --warmup 20 --output artifacts/classification/benchmark.json
+```
+
+`ClassifierPipeline`이 각 단계 시작과 종료 직전에 CUDA를 동기화해 측정한
+시간을 사용한다. 보고서는 warm-up 수, 측정 이미지 수, 전체·RepViT
+p50/p95, DINOv3가 실제 실행된 행의 p50/p95, DINOv3 실행률, 장치, 정밀도,
+입력 manifest 해시와 모델·support·calibration 해시를 canonical JSON으로
+기록한다.
+
+이 벤치마크는 검증된 crop 이후의 Classifier만 측정한다. Detector,
+ConvNeXt-Tiny Verifier 및 최종 집계를 포함하지 않으므로 전체 파이프라인
+0.5초 목표의 통과 근거로 사용할 수 없다.
+
+현재 `repvit_m1_15plus5_v1`과 `dinov3_vits16_15plus5_v1` 모델 패키지만으로
+`auto_precision=100%`, `fallback_top3_recall=100%` 또는
+`assisted_success=100%`를 주장할 수 없다. 이 기준은 학습과 독립적인 개발
+증거로 calibration을 확정하고, 별도의 잠긴 승인 증거에서 실제로 확인한
+경우에만 충족된다.
