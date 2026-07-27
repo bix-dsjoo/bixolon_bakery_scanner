@@ -147,6 +147,18 @@ class ClassifierPipeline:
             total_ms=_milliseconds(total_started, total_finished),
         )
 
+    def preflight_models(self, image: Image.Image, box: Box) -> None:
+        """Load and execute both model stages before measured inference."""
+        _validate_original_box(image, box)
+        crops = make_padded_crops(
+            image,
+            box,
+            self.config.preprocess.paddings,
+        )
+        self.repvit.score(crops)
+        self._get_dino().score(crops)
+        self.clock.synchronize()
+
     def _get_dino(self) -> _ScoreRunner:
         if self._dino is None:
             loaded = self._dino_loader()

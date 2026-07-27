@@ -54,6 +54,12 @@ class BenchmarkAggregate:
     dinov3_p50_ms: float
     dinov3_p95_ms: float
     dino_invocation_rate: float
+    direct_path_count: int
+    direct_path_p50_ms: float | None
+    direct_path_p95_ms: float | None
+    dino_recheck_path_count: int
+    dino_recheck_path_p50_ms: float | None
+    dino_recheck_path_p95_ms: float | None
 
 
 def aggregate_benchmark(
@@ -82,6 +88,10 @@ def aggregate_benchmark(
         dinov3_p50, dinov3_p95 = _percentiles(invoked)
     else:
         dinov3_p50 = dinov3_p95 = 0.0
+    direct_rows = tuple(row.total_ms for row in measured if row.dinov3_ms == 0.0)
+    recheck_rows = tuple(row.total_ms for row in measured if row.dinov3_ms > 0.0)
+    direct_p50, direct_p95 = _optional_percentiles(direct_rows)
+    recheck_p50, recheck_p95 = _optional_percentiles(recheck_rows)
 
     return BenchmarkAggregate(
         warmup_count=warmup_count,
@@ -93,6 +103,12 @@ def aggregate_benchmark(
         dinov3_p50_ms=dinov3_p50,
         dinov3_p95_ms=dinov3_p95,
         dino_invocation_rate=len(invoked) / len(measured),
+        direct_path_count=len(direct_rows),
+        direct_path_p50_ms=direct_p50,
+        direct_path_p95_ms=direct_p95,
+        dino_recheck_path_count=len(recheck_rows),
+        dino_recheck_path_p50_ms=recheck_p50,
+        dino_recheck_path_p95_ms=recheck_p95,
     )
 
 
@@ -103,6 +119,14 @@ def _percentiles(values: Sequence[float]) -> tuple[float, float]:
         method="linear",
     )
     return (float(result[0]), float(result[1]))
+
+
+def _optional_percentiles(
+    values: Sequence[float],
+) -> tuple[float | None, float | None]:
+    if not values:
+        return (None, None)
+    return _percentiles(values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +168,14 @@ class BenchmarkReport:
         ):
             if not math.isfinite(value):
                 raise ValueError("benchmark values must be finite")
+        for value in (
+            self.aggregate.direct_path_p50_ms,
+            self.aggregate.direct_path_p95_ms,
+            self.aggregate.dino_recheck_path_p50_ms,
+            self.aggregate.dino_recheck_path_p95_ms,
+        ):
+            if value is not None and not math.isfinite(value):
+                raise ValueError("path benchmark values must be finite or null")
 
     def to_json_bytes(self) -> bytes:
         aggregate = self.aggregate
@@ -171,6 +203,23 @@ class BenchmarkReport:
                 },
             },
             "manifest_sha256": self.manifest_sha256,
+            "model_preflight_count": 1,
+            "path_latency_ms": {
+                "dino_recheck": {
+                    "image_count": aggregate.dino_recheck_path_count,
+                    "total": {
+                        "p50": aggregate.dino_recheck_path_p50_ms,
+                        "p95": aggregate.dino_recheck_path_p95_ms,
+                    },
+                },
+                "repvit_direct": {
+                    "image_count": aggregate.direct_path_count,
+                    "total": {
+                        "p50": aggregate.direct_path_p50_ms,
+                        "p95": aggregate.direct_path_p95_ms,
+                    },
+                },
+            },
             "precision": self.precision,
             "schema_version": 1,
             "scope": "classifier_only",
@@ -305,6 +354,15 @@ def _infer(pipeline: ClassifierPipeline, item: BenchmarkInput):
     return pipeline.infer(image, item.box)
 
 
+def _preflight_models(
+    pipeline: ClassifierPipeline,
+    item: BenchmarkInput,
+) -> None:
+    with Image.open(item.image_path) as source:
+        image = source.convert("RGB")
+    pipeline.preflight_models(image, item.box)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -327,6 +385,7 @@ def run_benchmark(
         raise ValueError("warmup must be a non-negative integer")
     inputs = load_benchmark_manifest(manifest_path)
     pipeline = ClassifierPipeline.load(config_path)
+    _preflight_models(pipeline, inputs[0])
 
     warmup_inputs = tuple(islice(cycle(inputs), warmup_count))
     warmup_timings = tuple(

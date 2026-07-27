@@ -80,6 +80,33 @@ def test_direct_repvit_confirmation_never_loads_or_calls_dino():
     assert dino_loads == 0
 
 
+def test_preflight_models_loads_and_scores_dino_before_all_direct_inference():
+    repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
+    dino = RecordingRunner(_dino_scores({6: 0.70, 5: 0.20}))
+    dino_loads = 0
+
+    def load_dino() -> RecordingRunner:
+        nonlocal dino_loads
+        dino_loads += 1
+        return dino
+
+    pipeline = _pipeline(repvit=repvit, dino_loader=load_dino)
+
+    pipeline.preflight_models(_image(), _box())
+    result = pipeline.infer(_image(), _box())
+
+    assert result.decision_path is DecisionPath.REPVIT_DIRECT
+    assert dino_loads == 1
+    assert repvit.call_count == 2
+    assert dino.call_count == 1
+    assert repvit.received_crops is not dino.received_crops
+    assert tuple(crop.size for crop in dino.received_crops) == (
+        (42, 22),
+        (44, 22),
+        (46, 24),
+    )
+
+
 def test_ambiguous_repvit_loads_dino_once_and_reuses_the_same_crops():
     repvit = RecordingRunner(_repvit_scores({6: 0.50, 5: 0.30, 19: 0.10}))
     dino = RecordingRunner(_dino_scores({5: 0.50, 6: 0.30, 19: 0.10}))

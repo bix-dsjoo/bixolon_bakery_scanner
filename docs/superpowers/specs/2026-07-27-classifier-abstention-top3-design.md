@@ -248,11 +248,22 @@ python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.
 python scripts/benchmark_classifier_pipeline.py --config configs/classifier_policy.yaml --manifest datasets/classification/benchmark_manifest.jsonl --warmup 20 --output artifacts/classification/benchmark.json
 ```
 
-`ClassifierPipeline`이 각 단계 시작과 종료 직전에 CUDA를 동기화해 측정한
-시간을 사용한다. 보고서는 warm-up 수, 측정 이미지 수, 전체·RepViT
-p50/p95, DINOv3가 실제 실행된 행의 p50/p95, DINOv3 실행률, 장치, 정밀도,
-입력 manifest 해시와 모델·support·calibration 해시를 canonical JSON으로
-기록한다.
+먼저 manifest의 첫 유효 crop으로 RepViT와 DINOv3를 각각 한 번 명시적으로
+실행한다. 이 고정 preflight는 all-direct manifest에서도 lazy DINOv3
+모델을 실제로 로드하고 가중치와 support를 검증하며 첫 GPU kernel을
+실행한다. preflight가 실패하면 측정이나 보고서 쓰기를 시작하지 않는다.
+이 1회는 `model_preflight_count=1`로 기록하고 사용자 지정
+`warmup_count`와 분리한다. 그 뒤 manifest를 순환하며 `warmup_count`만큼
+전체 `ClassifierPipeline` 추론을 수행하고 모든 warm-up 행을 집계에서
+제외한다.
+
+`ClassifierPipeline`이 각 측정 단계 시작과 종료 직전에 CUDA를 동기화한
+시간을 사용한다. 보고서는 측정 이미지 수, 혼합 전체·RepViT p50/p95,
+DINOv3가 실제 실행된 행의 p50/p95와 실행률을 기록한다. RepViT 직접 확정
+경로와 DINOv3 재확인 경로는 각각 측정 표본 수와 전체 latency p50/p95를
+별도 집계한다. 측정 표본에 한 경로가 없으면 해당 경로 percentile은
+`null`이다. 장치, 정밀도, 입력 manifest 해시와 실제로 로드·검증한
+모델·support·calibration 해시를 canonical JSON으로 기록한다.
 
 이 벤치마크는 검증된 crop 이후의 Classifier만 측정한다. Detector,
 ConvNeXt-Tiny Verifier 및 최종 집계를 포함하지 않으므로 전체 파이프라인

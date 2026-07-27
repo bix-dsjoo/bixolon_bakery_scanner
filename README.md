@@ -131,11 +131,24 @@ python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.
 python scripts/benchmark_classifier_pipeline.py --config configs/classifier_policy.yaml --manifest datasets/classification/benchmark_manifest.jsonl --warmup 20 --output artifacts/classification/benchmark.json
 ```
 
-보고서는 warm-up을 제외한 전체·RepViT p50/p95, 실제 재확인 행의 DINOv3
-p50/p95, DINOv3 실행률, 장치·정밀도 및 모델·calibration 해시를
-기록합니다. 이 수치는 검증된 crop 이후의 Classifier만 측정하므로
-Detector와 Verifier를 포함하는 0.5초 전체 파이프라인 목표의 합격 근거로
-사용할 수 없습니다.
+측정 전에 manifest의 첫 유효 crop으로 RepViT와 DINOv3를 각각 한 번
+명시적으로 실행합니다. 따라서 manifest가 전부 직접 확정 표본이어도
+DINOv3 모델 로드, artifact 검증과 첫 GPU kernel 실행이 측정 구간에
+들어가지 않습니다. 이 고정 preflight 1회는 `model_preflight_count=1`로
+기록하며 사용자가 지정한 `warmup_count`에는 포함하지 않습니다. 이후
+`--warmup` 횟수만큼 전체 정책 경로를 추가 실행하고 이 행들도 집계에서
+제외합니다.
+
+보고서는 warm-up을 제외한 혼합 전체·RepViT p50/p95, 실제 재확인 행의
+DINOv3 p50/p95와 DINOv3 실행률을 기록합니다. 또한 RepViT 직접 확정
+경로와 DINOv3 재확인 경로의 측정 표본 수 및 전체 latency p50/p95를
+각각 분리합니다. 측정 표본에 한 경로가 없으면 해당 경로 percentile은
+`null`입니다. 장치·정밀도 및 실제로 로드·검증한 모델·calibration 해시도
+함께 기록합니다.
+
+이 수치는 검증된 crop 이후의 Classifier만 측정하므로 Detector와
+Verifier를 포함하는 0.5초 전체 파이프라인 목표의 합격 근거로 사용할 수
+없습니다.
 
 현재 모델 패키지 자체만으로 `auto_precision=100%` 또는
 `fallback_top3_recall=100%`가 증명되는 것은 아닙니다. 학습과 독립적인

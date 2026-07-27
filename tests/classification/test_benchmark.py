@@ -36,6 +36,12 @@ def test_benchmark_reports_percentiles_and_conditional_rate():
     assert report.total_p95_ms == pytest.approx(29)
     assert report.dinov3_p50_ms == 15
     assert report.dinov3_p95_ms == pytest.approx(17.7)
+    assert report.direct_path_count == 1
+    assert report.direct_path_p50_ms == 10
+    assert report.direct_path_p95_ms == 10
+    assert report.dino_recheck_path_count == 2
+    assert report.dino_recheck_path_p50_ms == 25
+    assert report.dino_recheck_path_p95_ms == pytest.approx(29.5)
 
 
 def test_benchmark_excludes_warmup_rows_from_every_statistic():
@@ -54,6 +60,23 @@ def test_benchmark_excludes_warmup_rows_from_every_statistic():
     assert report.repvit_p50_ms == 5
     assert report.dino_invocation_rate == 0.5
     assert report.dinov3_p50_ms == 12
+    assert report.direct_path_count == 1
+    assert report.dino_recheck_path_count == 1
+
+
+def test_benchmark_reports_missing_path_percentiles_as_null():
+    report = aggregate_benchmark(
+        (
+            _timing(total=10, repvit=4, dino=0),
+            _timing(total=20, repvit=6, dino=0),
+        )
+    )
+
+    assert report.direct_path_count == 2
+    assert report.direct_path_p50_ms == 15
+    assert report.dino_recheck_path_count == 0
+    assert report.dino_recheck_path_p50_ms is None
+    assert report.dino_recheck_path_p95_ms is None
 
 
 def test_benchmark_report_json_is_canonical_and_records_scope_and_hashes():
@@ -90,8 +113,19 @@ def test_benchmark_report_json_is_canonical_and_records_scope_and_hashes():
         sort_keys=True,
     ).encode("utf-8")
     assert decoded["scope"] == "classifier_only"
+    assert decoded["model_preflight_count"] == 1
     assert decoded["artifacts"]["repvit_checkpoint_sha256"] == "3" * 64
     assert decoded["latency_ms"]["total"]["p95"] == 10
+    assert decoded["path_latency_ms"] == {
+        "dino_recheck": {
+            "image_count": 0,
+            "total": {"p50": None, "p95": None},
+        },
+        "repvit_direct": {
+            "image_count": 1,
+            "total": {"p50": 10, "p95": 10},
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -155,6 +189,7 @@ def test_benchmark_command_runs_warmups_and_writes_canonical_report(
     class _Pipeline:
         def __init__(self):
             self.calls = 0
+            self.events = []
             self.config = SimpleNamespace(
                 runtime=SimpleNamespace(device="CUDA:0", precision="FP32"),
                 repvit=SimpleNamespace(
@@ -169,8 +204,14 @@ def test_benchmark_command_runs_warmups_and_writes_canonical_report(
                 ),
             )
 
+        def preflight_models(self, image, box):
+            assert image.mode == "RGB"
+            assert box.xyxy == (0.0, 0.0, 20.0, 20.0)
+            self.events.append("preflight_models")
+
         def infer(self, image, box):
             self.calls += 1
+            self.events.append("infer")
             assert image.mode == "RGB"
             assert box.xyxy in ((0.0, 0.0, 20.0, 20.0), (1.0, 1.0, 19.0, 19.0))
             timings = (
@@ -217,6 +258,7 @@ def test_benchmark_command_runs_warmups_and_writes_canonical_report(
     report = json.loads(payload)
     assert exit_code == 0
     assert pipeline.calls == 4
+    assert pipeline.events == ["preflight_models", "infer", "infer", "infer", "infer"]
     assert report["warmup_count"] == 2
     assert report["image_count"] == 2
     assert report["latency_ms"]["total"]["p50"] == 15
@@ -228,3 +270,53 @@ def test_benchmark_command_runs_warmups_and_writes_canonical_report(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def test_benchmark_does_not_write_report_when_dino_preflight_fails(
+    monkeypatch,
+    tmp_path,
+):
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (20, 20), "white").save(image_path)
+    manifest = tmp_path / "benchmark.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "box_xyxy": [0, 0, 20, 20],
+                "image_path": image_path.name,
+                "sample_id": "bench-1",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _InvalidDinoPipeline:
+        def preflight_models(self, image, box):
+            raise ValueError("DINO artifact hash mismatch")
+
+        def infer(self, image, box):
+            pytest.fail("measurement must not start after failed DINO preflight")
+
+    monkeypatch.setattr(
+        benchmark_module.ClassifierPipeline,
+        "load",
+        lambda _path: _InvalidDinoPipeline(),
+    )
+    output = tmp_path / "benchmark.json"
+
+    with pytest.raises(ValueError, match="DINO artifact hash mismatch"):
+        main(
+            [
+                "--config",
+                str(tmp_path / "classifier.yaml"),
+                "--manifest",
+                str(manifest),
+                "--warmup",
+                "2",
+                "--output",
+                str(output),
+            ]
+        )
+
+    assert not output.exists()
