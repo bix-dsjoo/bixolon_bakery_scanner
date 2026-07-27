@@ -29,6 +29,38 @@ _ARCHITECTURE = "vit_small_patch16_dinov3_storage4"
 _STORAGE_TOKEN_SHAPE = [1, 4, _EMBEDDING_DIMENSION]
 
 
+def candidate_union(
+    dino_global: ModelScoreVector,
+    repvit: ModelScoreVector,
+) -> tuple[int, ...]:
+    """Return DINO global Top-5 plus missing RepViT Top-2 candidates."""
+    if (
+        dino_global.model_id != "dinov3_vits16_15plus5_v1"
+        or dino_global.score_kind != "similarity"
+        or dino_global.sku_ids != _SKU_IDS
+    ):
+        raise ValueError("DINO global scores must use the canonical similarity contract")
+    if (
+        repvit.model_id != "repvit_m1_15plus5_v1"
+        or repvit.score_kind != "probability"
+        or repvit.sku_ids != _SKU_IDS
+    ):
+        raise ValueError("RepViT scores must use the canonical probability contract")
+    dino_ranked = sorted(
+        range(len(_SKU_IDS)),
+        key=lambda index: (-dino_global.values[index], _SKU_IDS[index]),
+    )[:5]
+    repvit_ranked = sorted(
+        range(len(_SKU_IDS)),
+        key=lambda index: (-repvit.values[index], _SKU_IDS[index]),
+    )[:2]
+    candidates = [_SKU_IDS[index] for index in dino_ranked]
+    candidates.extend(
+        _SKU_IDS[index] for index in repvit_ranked if _SKU_IDS[index] not in candidates
+    )
+    return tuple(candidates)
+
+
 class DinoV3Rechecker:
     def __init__(
         self,

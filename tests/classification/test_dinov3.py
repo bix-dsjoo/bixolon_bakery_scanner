@@ -13,7 +13,8 @@ from PIL import Image
 from bakery_scanner.contracts import Box
 from bakery_scanner.classification import DinoInferenceError
 from bakery_scanner.classification.config import ClassifierConfig
-from bakery_scanner.classification.dinov3 import DinoV3Rechecker
+from bakery_scanner.classification.contracts import ModelScoreVector
+from bakery_scanner.classification.dinov3 import DinoV3Rechecker, candidate_union
 from bakery_scanner.classification.local_bank import LocalPatchBank
 from bakery_scanner.classification.preprocess import build_transform
 
@@ -67,6 +68,23 @@ class FeatureEncoder(torch.nn.Module):
         cls = torch.nn.functional.normalize(torch.ones((3, 384)), dim=1)
         patches = torch.nn.functional.normalize(torch.ones((3, 196, 384)), dim=2)
         return {"x_norm_clstoken": cls, "x_norm_patchtokens": patches}
+
+
+def test_candidate_union_keeps_dino_top_five_then_appends_missing_repvit_top_two():
+    dino = ModelScoreVector(
+        "dinov3_vits16_15plus5_v1",
+        _SKU_IDS,
+        (0.99, 0.98, 0.97, 0.96, 0.95, 0.94) + (0.0,) * 14,
+        "similarity",
+    )
+    repvit = ModelScoreVector(
+        "repvit_m1_15plus5_v1",
+        _SKU_IDS,
+        (0.01,) * 5 + (0.80, 0.02, 0.70) + (0.01,) * 12,
+        "probability",
+    )
+
+    assert candidate_union(dino, repvit) == (1, 2, 3, 4, 5, 6, 8)
 
 
 def test_dinov3_averages_normalized_embeddings_then_scores_prototypes():
