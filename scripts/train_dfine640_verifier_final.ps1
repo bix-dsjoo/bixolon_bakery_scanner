@@ -132,6 +132,13 @@ if (
 }
 
 Invoke-Checked {
+    & $HostPython -m bakery_scanner.detectors.bundle validate-staged-inputs `
+        --annotations $StagedAnnotations `
+        --staged-manifest $StagedManifest `
+        --images $Images
+} "validate every staged source image and SHA-256 before final training"
+
+Invoke-Checked {
     & $DFinePython -c (
         "import torch; " +
         "assert torch.cuda.is_available() and torch.cuda.current_device() == 0; " +
@@ -155,6 +162,14 @@ New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $PolicyRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $SmokeRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $SmokeWorkRoot | Out-Null
+$TrainingInputSnapshot = Join-Path $EvidenceRoot "training_input_snapshot.json"
+Invoke-Checked {
+    & $HostPython -m bakery_scanner.detectors.bundle write-training-snapshot `
+        --annotations $StagedAnnotations `
+        --staged-manifest $StagedManifest `
+        --images $Images `
+        --output $TrainingInputSnapshot
+} "freeze actual staged PNG training-byte snapshot"
 
 $DetectorConfig = Join-Path $DetectorBundleRoot "dfine_n_640.yml"
 New-DFineConfig `
@@ -178,6 +193,12 @@ if (-not (Test-Path -LiteralPath $TrainedCheckpoint -PathType Leaf)) {
 }
 $DetectorCheckpoint = Join-Path $DetectorBundleRoot "checkpoint.pth"
 Copy-Item -LiteralPath $TrainedCheckpoint -Destination $DetectorCheckpoint
+Invoke-Checked {
+    & $HostPython -m bakery_scanner.detectors.bundle write-detector-metadata `
+        --checkpoint $DetectorCheckpoint `
+        --config $DetectorConfig `
+        --output (Join-Path $DetectorBundleRoot "detector_metadata.json")
+} "record final D-FINE checkpoint/config/runtime metadata"
 
 Invoke-Checked {
     & $HostPython -m bakery_scanner.detectors.bundle train-verifier `
@@ -199,6 +220,11 @@ Invoke-Checked {
         --report $DevelopmentReport `
         --output (Join-Path $PolicyRoot "final_policy.json")
 } "freeze final recall-first policy"
+Invoke-Checked {
+    & $HostPython -m bakery_scanner.detectors.bundle validate-training-snapshot `
+        --snapshot $TrainingInputSnapshot `
+        --images $Images
+} "revalidate staged PNG bytes before smoke inference"
 
 $SmokeImage = @($Coco.images | Sort-Object { [int]$_.id })[0]
 $SmokeImageId = [int]$SmokeImage.id
@@ -264,6 +290,11 @@ Invoke-Checked {
         --device cuda:0
 } "run one-image final verifier GPU smoke inference"
 
+Invoke-Checked {
+    & $HostPython -m bakery_scanner.detectors.bundle validate-training-snapshot `
+        --snapshot $TrainingInputSnapshot `
+        --images $Images
+} "revalidate staged PNG bytes before final bundle approval"
 Invoke-Checked {
     & $HostPython -m bakery_scanner.detectors.bundle write-manifest `
         --bundle-root $BundleRoot
