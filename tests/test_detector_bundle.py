@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
+import base64
 
 import pytest
 
@@ -23,6 +24,29 @@ def _write(path: Path, payload: bytes) -> dict[str, str]:
         "path": path.relative_to(path.parents[1]).as_posix(),
         "sha256": hashlib.sha256(payload).hexdigest(),
     }
+
+
+def _run_final_runner_definitions(command: str) -> subprocess.CompletedProcess[str]:
+    script = Path("scripts/train_dfine640_verifier_final.ps1").read_text(
+        encoding="utf-8"
+    )
+    definitions = script.split("foreach ($Required", maxsplit=1)[0]
+    encoded = base64.b64encode(
+        (definitions + "\n" + command).encode("utf-16-le")
+    ).decode("ascii")
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _valid_bundle(root: Path) -> Path:
@@ -160,6 +184,10 @@ def _valid_bundle(root: Path) -> Path:
                         "image_width": 10,
                         "outcome": "EXACTLY_ONE",
                         "probabilities": [0.01, 0.97, 0.01, 0.01],
+                        "detector_checkpoint_sha256": detector_checkpoint[
+                            "sha256"
+                        ],
+                        "detector_metadata_sha256": detector_metadata["sha256"],
                         "verifier_checkpoint_sha256": verifier_checkpoint[
                             "sha256"
                         ],
@@ -404,6 +432,22 @@ def test_bundle_requires_smoke_to_link_the_verifier_checkpoint(tmp_path):
         validate_final_bundle(root)
 
 
+def test_bundle_requires_smoke_to_link_the_detector_checkpoint(tmp_path):
+    root = _valid_bundle(tmp_path)
+    smoke_path = root / "smoke" / "results.json"
+    smoke = json.loads(smoke_path.read_text(encoding="utf-8"))
+    smoke[0]["detector_checkpoint_sha256"] = "0" * 64
+    smoke_path.write_text(json.dumps(smoke), encoding="utf-8")
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["smoke_results"]["sha256"] = hashlib.sha256(
+        smoke_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="smoke detector checkpoint linkage"):
+        validate_final_bundle(root)
+
+
 def test_bundle_rejects_rehashed_verifier_config_without_model_metadata(tmp_path):
     root = _valid_bundle(tmp_path)
     config_path = root / "verifier" / "verifier_config.json"
@@ -598,6 +642,8 @@ def test_smoke_runner_refuses_existing_output_before_gpu_inference(tmp_path):
     with pytest.raises(ValueError, match="overwrite smoke results"):
         bundle.run_one_image_verifier_smoke(
             checkpoint=tmp_path / "missing-checkpoint.pt",
+            detector_checkpoint=tmp_path / "missing-detector.pth",
+            detector_metadata=tmp_path / "missing-detector-metadata.json",
             detector_predictions=tmp_path / "missing-predictions.json",
             annotations=tmp_path / "missing-annotations.json",
             images=tmp_path / "missing-images",
@@ -616,6 +662,16 @@ def test_smoke_runner_writes_results_linked_to_the_verifier_metadata(
     checkpoint_sha256 = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     (tmp_path / "verifier_metadata.json").write_text(
         json.dumps({"checkpoint_sha256": checkpoint_sha256}), encoding="utf-8"
+    )
+    detector_checkpoint = tmp_path / "detector.pth"
+    detector_checkpoint.write_bytes(b"detector")
+    detector_checkpoint_sha256 = hashlib.sha256(
+        detector_checkpoint.read_bytes()
+    ).hexdigest()
+    detector_metadata = tmp_path / "detector_metadata.json"
+    detector_metadata.write_text(
+        json.dumps({"checkpoint_sha256": detector_checkpoint_sha256}),
+        encoding="utf-8",
     )
 
     class FakeModel:
@@ -667,6 +723,8 @@ def test_smoke_runner_writes_results_linked_to_the_verifier_metadata(
 
     bundle.run_one_image_verifier_smoke(
         checkpoint=checkpoint,
+        detector_checkpoint=detector_checkpoint,
+        detector_metadata=detector_metadata,
         detector_predictions=tmp_path / "predictions.json",
         annotations=tmp_path / "annotations.json",
         images=tmp_path / "images",
@@ -675,10 +733,49 @@ def test_smoke_runner_writes_results_linked_to_the_verifier_metadata(
     )
 
     row = json.loads(output.read_text(encoding="utf-8"))[0]
+    assert row["detector_checkpoint_sha256"] == detector_checkpoint_sha256
+    assert row["detector_metadata_sha256"] == hashlib.sha256(
+        detector_metadata.read_bytes()
+    ).hexdigest()
     assert row["verifier_checkpoint_sha256"] == checkpoint_sha256
     assert row["verifier_metadata_sha256"] == hashlib.sha256(
         (tmp_path / "verifier_metadata.json").read_bytes()
     ).hexdigest()
+
+
+def test_snapshot_mutation_between_stages_aborts_before_verifier_training(
+    tmp_path,
+):
+    image = tmp_path / "staged.png"
+    image.write_bytes(b"original")
+    command = f"""
+$Image = '{str(image).replace("'", "''")}'
+$Expected = (Get-FileHash -LiteralPath $Image -Algorithm SHA256).Hash
+$Events = [System.Collections.Generic.List[string]]::new()
+$Validate = {{
+    if ((Get-FileHash -LiteralPath $Image -Algorithm SHA256).Hash -ne $Expected) {{
+        throw 'training snapshot staged SHA-256 mismatch'
+    }}
+}}
+$DetectorStage = {{
+    $Events.Add('detector')
+    [IO.File]::WriteAllBytes($Image, [byte[]](1, 2, 3))
+}}
+$VerifierStage = {{ $Events.Add('verifier') }}
+Invoke-SnapshotValidatedStage -ValidateSnapshot $Validate -Stage $DetectorStage
+try {{
+    Invoke-SnapshotValidatedStage -ValidateSnapshot $Validate -Stage $VerifierStage
+    throw 'verifier stage unexpectedly ran'
+}} catch {{
+    if ($_.Exception.Message -notmatch 'snapshot') {{ throw }}
+}}
+if (($Events -join ',') -ne 'detector') {{ throw "unexpected stages: $($Events -join ',')" }}
+exit 0
+"""
+
+    completed = _run_final_runner_definitions(command)
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_final_training_script_rejects_cpu_before_creating_artifacts(tmp_path):

@@ -99,6 +99,14 @@ function New-DFineConfig(
     Write-Utf8NoBom -Path $Output -Value $ConfigText
 }
 
+function Invoke-SnapshotValidatedStage(
+    [scriptblock]$ValidateSnapshot,
+    [scriptblock]$Stage
+) {
+    & $ValidateSnapshot
+    & $Stage
+}
+
 foreach ($Required in @(
     $DFinePython,
     $HostPython,
@@ -170,19 +178,29 @@ Invoke-Checked {
         --images $Images `
         --output $TrainingInputSnapshot
 } "freeze actual staged PNG training-byte snapshot"
+$ValidateTrainingSnapshot = {
+    Invoke-Checked {
+        & $HostPython -m bakery_scanner.detectors.bundle validate-training-snapshot `
+            --snapshot $TrainingInputSnapshot `
+            --images $Images
+    } "revalidate staged PNG bytes"
+}
+& $ValidateTrainingSnapshot
 
 $DetectorConfig = Join-Path $DetectorBundleRoot "dfine_n_640.yml"
 New-DFineConfig `
     -Output $DetectorConfig `
     -TrainAnnotations $StagedAnnotations `
     -ValidationAnnotations $StagedAnnotations
-Invoke-Checked {
-    & $DFinePython third_party/D-FINE/train.py `
-        -c $DetectorConfig `
-        -d cuda:0 `
-        --seed=$Seed `
-        --output-dir $DetectorWorkRoot
-} "train final full-data D-FINE-N 640"
+Invoke-SnapshotValidatedStage -ValidateSnapshot $ValidateTrainingSnapshot -Stage {
+    Invoke-Checked {
+        & $DFinePython third_party/D-FINE/train.py `
+            -c $DetectorConfig `
+            -d cuda:0 `
+            --seed=$Seed `
+            --output-dir $DetectorWorkRoot
+    } "train final full-data D-FINE-N 640"
+}
 
 $TrainedCheckpoint = Join-Path $DetectorWorkRoot "best_stg2.pth"
 if (-not (Test-Path -LiteralPath $TrainedCheckpoint -PathType Leaf)) {
@@ -200,14 +218,16 @@ Invoke-Checked {
         --output (Join-Path $DetectorBundleRoot "detector_metadata.json")
 } "record final D-FINE checkpoint/config/runtime metadata"
 
-Invoke-Checked {
-    & $HostPython -m bakery_scanner.detectors.bundle train-verifier `
-        --annotations $StagedAnnotations `
-        --staged-manifest $StagedManifest `
-        --images $Images `
-        --output-dir $VerifierBundleRoot `
-        --device cuda:0
-} "train final full-data four-state verifier"
+Invoke-SnapshotValidatedStage -ValidateSnapshot $ValidateTrainingSnapshot -Stage {
+    Invoke-Checked {
+        & $HostPython -m bakery_scanner.detectors.bundle train-verifier `
+            --annotations $StagedAnnotations `
+            --staged-manifest $StagedManifest `
+            --images $Images `
+            --output-dir $VerifierBundleRoot `
+            --device cuda:0
+    } "train final full-data four-state verifier"
+}
 
 Copy-Item -LiteralPath $StagedAnnotations `
     -Destination (Join-Path $EvidenceRoot "annotations.json")
@@ -220,11 +240,7 @@ Invoke-Checked {
         --report $DevelopmentReport `
         --output (Join-Path $PolicyRoot "final_policy.json")
 } "freeze final recall-first policy"
-Invoke-Checked {
-    & $HostPython -m bakery_scanner.detectors.bundle validate-training-snapshot `
-        --snapshot $TrainingInputSnapshot `
-        --images $Images
-} "revalidate staged PNG bytes before smoke inference"
+& $ValidateTrainingSnapshot
 
 $SmokeImage = @($Coco.images | Sort-Object { [int]$_.id })[0]
 $SmokeImageId = [int]$SmokeImage.id
@@ -283,6 +299,8 @@ if ($ProcessedIds.Count -ne 1 -or $ProcessedIds[0] -ne $SmokeImageId) {
 Invoke-Checked {
     & $HostPython -m bakery_scanner.detectors.bundle smoke-verifier `
         --checkpoint (Join-Path $VerifierBundleRoot "verifier.pt") `
+        --detector-checkpoint $DetectorCheckpoint `
+        --detector-metadata (Join-Path $DetectorBundleRoot "detector_metadata.json") `
         --detector-predictions $SmokePredictions `
         --annotations $StagedAnnotations `
         --images $Images `
@@ -290,11 +308,7 @@ Invoke-Checked {
         --device cuda:0
 } "run one-image final verifier GPU smoke inference"
 
-Invoke-Checked {
-    & $HostPython -m bakery_scanner.detectors.bundle validate-training-snapshot `
-        --snapshot $TrainingInputSnapshot `
-        --images $Images
-} "revalidate staged PNG bytes before final bundle approval"
+& $ValidateTrainingSnapshot
 Invoke-Checked {
     & $HostPython -m bakery_scanner.detectors.bundle write-manifest `
         --bundle-root $BundleRoot

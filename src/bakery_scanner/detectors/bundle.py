@@ -126,6 +126,8 @@ def validate_final_bundle(
     _validate_verifier_bundle_semantics(manifest, resolved_artifacts)
     validate_smoke_results(
         _read_json_array(resolved_artifacts["smoke_results"], "smoke results"),
+        detector_checkpoint_sha256=artifacts["detector_checkpoint"]["sha256"],
+        detector_metadata_sha256=artifacts["detector_metadata"]["sha256"],
         verifier_checkpoint_sha256=artifacts["verifier_checkpoint"]["sha256"],
         verifier_metadata_sha256=artifacts["verifier_metadata"]["sha256"],
     )
@@ -393,6 +395,8 @@ def write_training_input_snapshot(
 def run_one_image_verifier_smoke(
     *,
     checkpoint: Path,
+    detector_checkpoint: Path,
+    detector_metadata: Path,
     detector_predictions: Path,
     annotations: Path,
     images: Path,
@@ -444,6 +448,17 @@ def run_one_image_verifier_smoke(
     if verifier_metadata.get("checkpoint_sha256") != checkpoint_sha256:
         raise ValueError("verifier metadata checkpoint hash mismatch")
     verifier_metadata_sha256 = _sha256_file(verifier_metadata_path)
+    detector_checkpoint_sha256 = _sha256_file(Path(detector_checkpoint))
+    detector_metadata_path = Path(detector_metadata)
+    detector_metadata_payload = _read_json_object(
+        detector_metadata_path, "detector metadata"
+    )
+    if (
+        detector_metadata_payload.get("checkpoint_sha256")
+        != detector_checkpoint_sha256
+    ):
+        raise ValueError("detector metadata checkpoint hash mismatch")
+    detector_metadata_sha256 = _sha256_file(detector_metadata_path)
     if (
         not isinstance(checkpoint_payload, dict)
         or checkpoint_payload.get("class_order") != CLASS_ORDER
@@ -480,12 +495,16 @@ def run_one_image_verifier_smoke(
                     max(range(4), key=lambda index: probabilities[index])
                 ],
                 "probabilities": probabilities,
+                "detector_checkpoint_sha256": detector_checkpoint_sha256,
+                "detector_metadata_sha256": detector_metadata_sha256,
                 "verifier_checkpoint_sha256": checkpoint_sha256,
                 "verifier_metadata_sha256": verifier_metadata_sha256,
             }
         )
     validate_smoke_results(
         payload,
+        detector_checkpoint_sha256=detector_checkpoint_sha256,
+        detector_metadata_sha256=detector_metadata_sha256,
         verifier_checkpoint_sha256=checkpoint_sha256,
         verifier_metadata_sha256=verifier_metadata_sha256,
     )
@@ -627,6 +646,8 @@ def write_final_bundle_manifest(
 def validate_smoke_results(
     results: Sequence[object],
     *,
+    detector_checkpoint_sha256: str | None = None,
+    detector_metadata_sha256: str | None = None,
     verifier_checkpoint_sha256: str | None = None,
     verifier_metadata_sha256: str | None = None,
 ) -> None:
@@ -645,24 +666,46 @@ def validate_smoke_results(
         "outcome",
         "probabilities",
     }
-    require_linkage = (
+    require_detector_linkage = (
+        detector_checkpoint_sha256 is not None
+        or detector_metadata_sha256 is not None
+    )
+    if require_detector_linkage and (
+        not isinstance(detector_checkpoint_sha256, str)
+        or not _SHA256.fullmatch(detector_checkpoint_sha256)
+        or not isinstance(detector_metadata_sha256, str)
+        or not _SHA256.fullmatch(detector_metadata_sha256)
+    ):
+        raise ValueError("smoke detector checkpoint linkage is invalid")
+    require_verifier_linkage = (
         verifier_checkpoint_sha256 is not None
         or verifier_metadata_sha256 is not None
     )
-    if require_linkage and (
+    if require_verifier_linkage and (
         not isinstance(verifier_checkpoint_sha256, str)
         or not _SHA256.fullmatch(verifier_checkpoint_sha256)
         or not isinstance(verifier_metadata_sha256, str)
         or not _SHA256.fullmatch(verifier_metadata_sha256)
     ):
         raise ValueError("smoke verifier checkpoint linkage is invalid")
-    if require_linkage:
+    if require_detector_linkage:
+        expected_fields |= {
+            "detector_checkpoint_sha256",
+            "detector_metadata_sha256",
+        }
+    if require_verifier_linkage:
         expected_fields |= {
             "verifier_checkpoint_sha256",
             "verifier_metadata_sha256",
         }
     image_ids: set[int] = set()
     for row in results:
+        if require_detector_linkage and (
+            not isinstance(row, dict)
+            or "detector_checkpoint_sha256" not in row
+            or "detector_metadata_sha256" not in row
+        ):
+            raise ValueError("smoke detector checkpoint linkage is missing")
         if not isinstance(row, dict) or set(row) != expected_fields:
             raise ValueError("smoke result fields are incomplete")
         image_id = row["image_id"]
@@ -693,7 +736,12 @@ def validate_smoke_results(
             raise ValueError(
                 "smoke four-state outcome must match probability argmax"
             )
-        if require_linkage and (
+        if require_detector_linkage and (
+            row["detector_checkpoint_sha256"] != detector_checkpoint_sha256
+            or row["detector_metadata_sha256"] != detector_metadata_sha256
+        ):
+            raise ValueError("smoke detector checkpoint linkage is stale")
+        if require_verifier_linkage and (
             row["verifier_checkpoint_sha256"] != verifier_checkpoint_sha256
             or row["verifier_metadata_sha256"] != verifier_metadata_sha256
         ):
@@ -742,6 +790,8 @@ def _validate_candidate_bundle(
     _validate_verifier_bundle_semantics(manifest, resolved_artifacts)
     validate_smoke_results(
         _read_json_array(resolved_artifacts["smoke_results"], "smoke results"),
+        detector_checkpoint_sha256=artifacts["detector_checkpoint"]["sha256"],
+        detector_metadata_sha256=artifacts["detector_metadata"]["sha256"],
         verifier_checkpoint_sha256=artifacts["verifier_checkpoint"]["sha256"],
         verifier_metadata_sha256=artifacts["verifier_metadata"]["sha256"],
     )
@@ -1207,6 +1257,8 @@ def _main() -> None:
 
     smoke = subparsers.add_parser("smoke-verifier")
     smoke.add_argument("--checkpoint", type=Path, required=True)
+    smoke.add_argument("--detector-checkpoint", type=Path, required=True)
+    smoke.add_argument("--detector-metadata", type=Path, required=True)
     smoke.add_argument("--detector-predictions", type=Path, required=True)
     smoke.add_argument("--annotations", type=Path, required=True)
     smoke.add_argument("--images", type=Path, required=True)
@@ -1258,6 +1310,8 @@ def _main() -> None:
     elif args.command == "smoke-verifier":
         run_one_image_verifier_smoke(
             checkpoint=args.checkpoint,
+            detector_checkpoint=args.detector_checkpoint,
+            detector_metadata=args.detector_metadata,
             detector_predictions=args.detector_predictions,
             annotations=args.annotations,
             images=args.images,
