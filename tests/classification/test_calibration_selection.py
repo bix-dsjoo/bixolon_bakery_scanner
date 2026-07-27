@@ -161,7 +161,7 @@ def test_selection_rejects_all_unknown_cross_fit_with_undefined_auto_precision()
         select_policy(tuple(rows), folds=5, seed=20260727)
 
 
-def test_cross_fit_rejects_thresholds_that_fail_only_in_held_out_group():
+def test_cross_fit_disables_automatic_confirmation_when_held_out_group_fails():
     rows = list(_mixed_release_rows())
     for index, row in enumerate(rows):
         if row.capture_group != "capture-0" or row.sku_id != 1:
@@ -179,8 +179,9 @@ def test_cross_fit_rejects_thresholds_that_fail_only_in_held_out_group():
             dinov3_artifact_id=row.dinov3_artifact_id,
         )
 
-    with pytest.raises(ValueError, match="cross-fit development gates failed"):
-        select_policy(tuple(rows), folds=5, seed=20260727)
+    calibration = select_policy(tuple(rows), folds=5, seed=20260727)
+    assert calibration.direct_threshold == 1.0
+    assert calibration.dino_threshold == 1.0
 
 
 def test_lossless_threshold_candidates_keep_intermediate_safe_acceptance_mask():

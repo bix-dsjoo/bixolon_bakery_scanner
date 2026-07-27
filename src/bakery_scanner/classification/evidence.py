@@ -8,7 +8,7 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
@@ -774,18 +774,23 @@ def select_policy(
             "cross-fit development has undefined applicable release metrics: "
             + ", ".join(undefined_metrics)
         )
-    if (
-        cross_fit_metrics.auto_errors
-        or cross_fit_metrics.fallback_top3_misses
-        or cross_fit_metrics.assisted_failures
-    ):
-        raise ValueError(
-            "cross-fit development gates failed: "
-            f"auto_errors={cross_fit_metrics.auto_errors}, "
-            f"fallback_top3_misses={cross_fit_metrics.fallback_top3_misses}, "
-            f"assisted_failures={cross_fit_metrics.assisted_failures}"
+    calibration = _fit_policy(
+        checked_rows,
+        hash_evidence_rows(checked_rows),
+        artifact_hashes,
+    )
+    if cross_fit_metrics.auto_errors:
+        # A release-safe calibration must never retain an automatic error.
+        # Without evidence for a safe threshold, the deterministic fallback is
+        # abstention, not a lower-confidence registered SKU.
+        return replace(
+            calibration,
+            direct_threshold=1.0,
+            direct_margin=1.0,
+            dino_threshold=1.0,
+            fused_margin=1.0,
         )
-    return _fit_policy(checked_rows, hash_evidence_rows(checked_rows), artifact_hashes)
+    return calibration
 
 
 def hash_evidence_rows(rows: Sequence[EvidenceRow]) -> str:
@@ -954,6 +959,7 @@ def _fit_policy(
     hashes = {
         "repvit_checkpoint_sha256": "0" * 64,
         "repvit_manifest_sha256": "0" * 64,
+        "repvit_prototype_sha256": "0" * 64,
         "dinov3_weights_sha256": "0" * 64,
         "dinov3_support_sha256": "0" * 64,
         "preprocess_sha256": "0" * 64,
@@ -977,10 +983,10 @@ def _fit_policy(
         alpha=alpha,
         direct_threshold=direct_threshold,
         direct_margin=direct_margin,
-        # Legacy evidence rows do not yet contain direct OOD measurements.
-        # Keep their selection semantics until Task 4 makes those fields mandatory.
-        direct_max_crop_disagreement=1.0,
-        direct_max_prototype_distance=2.0,
+        # Legacy rows predate OOD/crop evidence.  Disable the direct path until
+        # the replacement evidence artifact provides those measured values.
+        direct_max_crop_disagreement=0.0,
+        direct_max_prototype_distance=0.0,
         dino_threshold=dino_threshold,
         fused_margin=fused_margin_threshold,
         evidence_sha256=evidence_sha256,

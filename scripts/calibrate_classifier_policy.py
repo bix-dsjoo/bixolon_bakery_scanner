@@ -51,6 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         artifact_hashes={
             "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
             "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256 or "0" * 64,
             "dinov3_weights_sha256": config.dinov3.weights_sha256,
             "dinov3_support_sha256": config.dinov3.support_sha256,
             "preprocess_sha256": preprocess_sha256(config.preprocess),

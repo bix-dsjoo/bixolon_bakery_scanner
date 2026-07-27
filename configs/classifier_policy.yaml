@@ -22,4 +22,4 @@ runtime:
   device: CUDA:0
   precision: FP32
 calibration:
-  artifact: ../artifacts/classification/policy_v1.json
+  artifact: ../artifacts/classification/policy_v2.json
