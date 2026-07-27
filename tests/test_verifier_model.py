@@ -320,7 +320,22 @@ def test_completed_verifier_reuse_rejects_subset_or_duplicate_predictions(tmp_pa
     (run_root / "verifier_predictions.json").write_text("[]", encoding="utf-8")
     _refresh_prediction_receipt(run_root, manifest)
 
-    with pytest.raises(ValueError, match="candidate set"):
+    with pytest.raises(ValueError, match="non-empty"):
+        validate_completed_verifier_fold(
+            run_root=run_root,
+            fold_manifest=manifest,
+            annotations=annotations,
+            detector_predictions=candidates,
+        )
+
+
+def test_completed_verifier_reuse_rejects_empty_expected_candidate_set(tmp_path: Path):
+    run_root, manifest, annotations, candidates = _write_minimal_verifier_artifact(tmp_path)
+    candidates.write_text("[]", encoding="utf-8")
+    (run_root / "verifier_predictions.json").write_text("[]", encoding="utf-8")
+    _refresh_prediction_receipt(run_root, manifest)
+
+    with pytest.raises(ValueError, match="non-empty"):
         validate_completed_verifier_fold(
             run_root=run_root,
             fold_manifest=manifest,

@@ -624,6 +624,10 @@ def _validate_prediction_rows(
     receipt_core_sha256: str,
 ) -> None:
     expected = {(candidate.image_id, candidate.box) for candidate in candidates}
+    if not expected:
+        raise ValueError("completed verifier fold requires a non-empty retained D-FINE candidate set")
+    if not rows:
+        raise ValueError("completed verifier fold requires non-empty verifier predictions")
     observed: set[tuple[int, Box]] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != {
