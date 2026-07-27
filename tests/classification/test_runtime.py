@@ -66,6 +66,21 @@ class ProgrammingErrorDino:
         raise ValueError("wrong tensor shape")
 
 
+class LocalRecordingDino(RecordingRunner):
+    def __init__(self, scores: ModelScoreVector) -> None:
+        super().__init__(scores)
+        self.product_boxes: tuple[Box, ...] | None = None
+        self.local_bank = None
+
+    def score_global_and_local(self, crops, product_boxes, local_bank, *, repvit_scores):
+        self.call_count += 1
+        self.received_crops = crops
+        self.product_boxes = tuple(product_boxes)
+        self.local_bank = local_bank
+        assert repvit_scores.model_id == "repvit_m1_15plus5_v1"
+        return self.scores, {6: 0.90, 5: 0.10}
+
+
 class StepClock:
     def __init__(self, values: tuple[float, ...]) -> None:
         self._values = iter(values)
@@ -200,6 +215,26 @@ def test_unsafe_repvit_prototype_distance_defers_to_dino():
 
     assert result.decision_path is DecisionPath.DINOV3_CONFIRMED
     assert dino_loads == 1
+
+
+def test_recheck_uses_local_dino_scores_and_crop_relative_product_boxes():
+    repvit = RecordingRunner(_repvit_scores({6: 0.60, 5: 0.20}))
+    dino = LocalRecordingDino(_dino_scores({6: 0.60, 5: 0.20}))
+    local_bank = object()
+    result = _pipeline(
+        repvit=repvit,
+        dino_loader=lambda: dino,
+        local_bank=local_bank,
+        calibration=_calibration(dino_threshold=0.20, fused_margin=0.10),
+    ).infer(_image(), _box())
+
+    assert result.decision_path is DecisionPath.DINOV3_CONFIRMED
+    assert dino.local_bank is local_bank
+    assert dino.product_boxes == (
+        Box(1, 1, 40, 20),
+        Box(2, 1, 40, 20),
+        Box(3, 2, 40, 20),
+    )
 
 
 def test_recheck_confirmation_keeps_fused_confidence_meaning():
@@ -401,6 +436,7 @@ def _pipeline(
     calibration: PolicyCalibration | None = None,
     clock=None,
     prototype_bank: FixedPrototypeBank | None = None,
+    local_bank: object | None = None,
 ) -> ClassifierPipeline:
     selected = calibration or _calibration()
     provenance = ModelProvenance(
@@ -420,6 +456,7 @@ def _pipeline(
         policy=DecisionPolicy(selected, provenance=provenance),
         clock=clock,
         prototype_bank=prototype_bank or FixedPrototypeBank(),
+        local_bank=local_bank,
     )
 
 

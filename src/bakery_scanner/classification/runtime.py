@@ -18,9 +18,9 @@ from .config import ClassifierConfig, preprocess_sha256
 from .contracts import ClassificationDecision, ModelProvenance, StageTimings
 from .dinov3 import DinoV3Rechecker
 from .errors import DinoInferenceError
-from .policy import DecisionPolicy, PolicyCalibration
-from .preprocess import make_padded_crops
-from .policy import DirectEvidence
+from .local_bank import LocalPatchBank
+from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
+from .preprocess import make_padded_crops, make_padded_crops_with_product_boxes
 from .repvit import RepVitM1Runner, RepVitPrototypeBank
 
 
@@ -65,12 +65,16 @@ class ClassifierPipeline:
         dino_loader: Callable[[], _ScoreRunner],
         policy: DecisionPolicy,
         prototype_bank: _PrototypeBank,
+        local_bank: object | None = None,
+        local_bank_loader: Callable[[], object] | None = None,
         clock: _Clock | None = None,
     ) -> None:
         self.config = config
         self.repvit = repvit
         self.policy = policy
         self.prototype_bank = prototype_bank
+        self._local_bank = local_bank
+        self._local_bank_loader = local_bank_loader
         self._dino_loader = dino_loader
         self._dino: _ScoreRunner | None = None
         device = torch.device(config.runtime.device.lower())
@@ -110,6 +114,7 @@ class ClassifierPipeline:
             dino_loader=lambda: DinoV3Rechecker.load(config),
             policy=policy,
             prototype_bank=prototype_bank,
+            local_bank_loader=lambda: _load_local_bank(config),
         )
 
     def infer(
@@ -120,7 +125,7 @@ class ClassifierPipeline:
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         total_started = self._timestamp()
-        crops = make_padded_crops(
+        crops, product_boxes = make_padded_crops_with_product_boxes(
             frame.image,
             box,
             self.config.preprocess.paddings,
@@ -153,7 +158,23 @@ class ClassifierPipeline:
         dinov3_started = self._timestamp()
         dino = self._get_dino()
         try:
-            dino_scores = dino.score(crops)
+            local_bank = self._get_local_bank()
+            if local_bank is not None and callable(getattr(dino, "score_global_and_local", None)):
+                dino_scores, local_scores = dino.score_global_and_local(
+                    crops,
+                    product_boxes,
+                    local_bank,
+                    repvit_scores=repvit_scores,
+                )
+                decision = self.policy.after_local_recheck(
+                    repvit_scores,
+                    dino_scores,
+                    local_scores,
+                    box=box,
+                )
+            else:
+                dino_scores = dino.score(crops)
+                decision = self.policy.after_recheck(repvit_scores, dino_scores, box=box)
         except DinoInferenceError as exc:
             dinov3_finished = self._timestamp()
             decision = self.policy.dino_failure(repvit_scores, box=box)
@@ -171,11 +192,6 @@ class ClassifierPipeline:
             )
 
         dinov3_finished = self._timestamp()
-        decision = self.policy.after_recheck(
-            repvit_scores,
-            dino_scores,
-            box=box,
-        )
         total_finished = self._timestamp()
         return self._with_metadata(
             decision,
@@ -205,6 +221,11 @@ class ClassifierPipeline:
                 raise TypeError("DINO loader must return a score runner")
             self._dino = loaded
         return self._dino
+
+    def _get_local_bank(self) -> object | None:
+        if self._local_bank is None and self._local_bank_loader is not None:
+            self._local_bank = self._local_bank_loader()
+        return self._local_bank
 
     def _timestamp(self) -> float:
         self.clock.synchronize()
@@ -250,3 +271,16 @@ def _canonical_frame(image: Image.Image | CanonicalImage) -> CanonicalImage:
 
 def _validate_visual_box(frame: CanonicalImage, box: Box) -> None:
     frame.require_box(box)
+
+
+def _load_local_bank(config: ClassifierConfig) -> LocalPatchBank:
+    if config.dinov3.local_bank is None or config.dinov3.local_bank_sha256 is None:
+        raise ValueError("DINO local patch bank is required for local recheck")
+    bank = LocalPatchBank.load(
+        config.dinov3.local_bank,
+        dino_weights_sha256=config.dinov3.weights_sha256,
+        preprocess_sha256=preprocess_sha256(config.preprocess),
+    )
+    if bank.sha256 != config.dinov3.local_bank_sha256:
+        raise ValueError("DINO local patch bank SHA-256 mismatch")
+    return bank
