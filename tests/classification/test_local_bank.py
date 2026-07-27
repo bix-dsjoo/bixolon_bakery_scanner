@@ -57,3 +57,15 @@ def test_local_bank_averages_each_query_patch_top_three_reference_matches(tmp_pa
     scores = bank.score((6,), torch.stack((e0, e1)), torch.tensor([True, True]))
 
     assert scores == {6: pytest.approx(0.8)}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA local matching")
+def test_local_bank_moves_requested_reference_patches_to_query_device(tmp_path):
+    path = tmp_path / "bank.pt"
+    torch.save(_payload(), path)
+    bank = LocalPatchBank.load(path, dino_weights_sha256="a" * 64, preprocess_sha256="b" * 64)
+    query = torch.nn.functional.normalize(torch.ones((2, 384), device="cuda"), dim=1)
+
+    scores = bank.score((1, 2), query, torch.tensor([True, True], device="cuda"))
+
+    assert set(scores) == {1, 2}

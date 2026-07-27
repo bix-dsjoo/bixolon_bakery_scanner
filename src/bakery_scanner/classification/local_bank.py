@@ -83,6 +83,10 @@ def _trimmed_topk_similarity(
     reference_patches: torch.Tensor,
 ) -> float:
     """Average each query patch's top three references, then trim query outliers."""
+    # Keep the complete bank on CPU and transfer only the currently selected
+    # SKU reference set.  Query patches come directly from the DINO GPU
+    # forward pass, so matrix multiplication otherwise crosses devices.
+    reference_patches = reference_patches.to(query_patches.device, non_blocking=True)
     similarities = query_patches @ reference_patches.T
     top_count = min(3, reference_patches.shape[0])
     per_query = similarities.topk(top_count, dim=1).values.mean(dim=1)
