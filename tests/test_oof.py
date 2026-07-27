@@ -1,10 +1,12 @@
+import hashlib
+import json
 from dataclasses import dataclass
 
 import pytest
 
 from bakery_scanner.contracts import Box, BreadProposal, SceneKey
 from bakery_scanner.detectors.experiments import DetectorExperiment
-from bakery_scanner.detectors.oof import collect_oof_predictions, select_complementary_pair
+from bakery_scanner.detectors.oof import OofArtifact, collect_oof_predictions, load_complete_oof_artifact, select_complementary_pair
 
 _HASH = "a" * 64
 
@@ -20,6 +22,15 @@ class FakeRun:
 
 def _proposal(image_id: int, source: str, x: int = 0) -> BreadProposal:
     return BreadProposal(image_id, source, .5, Box(x, 0, 10, 10), 30, 20)
+
+
+def _write_json(path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+
+def _sha256(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _matrix_runs() -> tuple[FakeRun, ...]:
@@ -38,6 +49,71 @@ def test_oof_requires_complete_expected_matrix_and_records_hashes(tmp_path):
     )
     assert len(artifact.run_receipt_hashes) == 60
     assert artifact.path.is_file()
+
+
+def test_load_complete_oof_artifact_rehydrates_prediction_with_held_out_scene(tmp_path):
+    experiment = DetectorExperiment("dfine_n_640", "dfine", 640, 20260724, 0)
+    detector_root = tmp_path / "detectors"
+    run_root = detector_root / experiment.run_id
+    prediction = run_root / "validation_predictions.json"
+    processed = run_root / "processed_validation_image_ids.json"
+    fold_root = tmp_path / "folds"
+    manifest = fold_root / "fold-0" / "manifest.json"
+    staged_root = tmp_path / "staged"
+    config_root = tmp_path / "generated-configs"
+    config = config_root / f"{experiment.run_id}.yml"
+    _write_json(prediction, [{"bbox": [1, 2, 3, 4], "image_id": 1, "score": .9, "source": experiment.name}])
+    _write_json(processed, [1])
+    _write_json(manifest, {"training_image_ids": [2], "training_scenes": [{"capture_batch": "g15", "scene_number": 2}], "validation_image_ids": [1], "validation_scenes": [{"capture_batch": "g15", "scene_number": 1}]})
+    _write_json(staged_root / "annotations.json", {"annotations": [], "categories": [], "images": [{"height": 20, "id": 1, "width": 30}, {"height": 20, "id": 2, "width": 30}]})
+    _write_json(staged_root / "staged_manifest.json", [{"box_count": 0, "file_name": "one.png", "image_id": 1, "overlap_proxy": False, "scene": {"capture_batch": "g15", "scene_number": 1}, "source_sha256": _HASH}, {"box_count": 0, "file_name": "two.png", "image_id": 2, "overlap_proxy": False, "scene": {"capture_batch": "g15", "scene_number": 2}, "source_sha256": _HASH}])
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("model: dfine\n", encoding="utf-8")
+    _write_json(run_root / "receipt.json", {"config_sha256": _sha256(config), "fold": 0, "fold_manifest_sha256": _sha256(manifest), "prediction_sha256": _sha256(prediction), "processed_images_sha256": _sha256(processed), "run_id": experiment.run_id, "seed": experiment.seed, "status": "completed", "variant": experiment.name})
+
+    artifact = load_complete_oof_artifact(detector_root=detector_root, fold_root=fold_root, staged_root=staged_root, config_root=config_root, expected_experiments=(experiment,))
+
+    assert isinstance(artifact, OofArtifact)
+    assert len(artifact.predictions) == 1
+    assert artifact.predictions[0].scene == SceneKey("g15", 1)
+
+
+def test_load_complete_oof_artifact_rejects_retained_canonical_prediction_duplicates(tmp_path):
+    experiment = DetectorExperiment("dfine_n_640", "dfine", 640, 20260724, 0)
+    detector_root = tmp_path / "detectors"
+    run_root = detector_root / experiment.run_id
+    prediction = run_root / "validation_predictions.json"
+    processed = run_root / "processed_validation_image_ids.json"
+    fold_root = tmp_path / "folds"
+    manifest = fold_root / "fold-0" / "manifest.json"
+    staged_root = tmp_path / "staged"
+    duplicate = {"bbox": [1, 2, 3, 4], "image_id": 1, "score": .9, "source": experiment.name}
+    _write_json(prediction, [duplicate, duplicate])
+    _write_json(processed, [1])
+    _write_json(manifest, {"training_image_ids": [2], "training_scenes": [{"capture_batch": "g15", "scene_number": 2}], "validation_image_ids": [1], "validation_scenes": [{"capture_batch": "g15", "scene_number": 1}]})
+    _write_json(staged_root / "annotations.json", {"annotations": [], "categories": [], "images": [{"height": 20, "id": 1, "width": 30}, {"height": 20, "id": 2, "width": 30}]})
+    _write_json(staged_root / "staged_manifest.json", [{"box_count": 0, "file_name": "one.png", "image_id": 1, "overlap_proxy": False, "scene": {"capture_batch": "g15", "scene_number": 1}, "source_sha256": _HASH}, {"box_count": 0, "file_name": "two.png", "image_id": 2, "overlap_proxy": False, "scene": {"capture_batch": "g15", "scene_number": 2}, "source_sha256": _HASH}])
+    _write_json(run_root / "receipt.json", {"fold": 0, "fold_manifest_sha256": _sha256(manifest), "prediction_sha256": _sha256(prediction), "processed_images_sha256": _sha256(processed), "run_id": experiment.run_id, "seed": experiment.seed, "status": "completed", "variant": experiment.name})
+
+    with pytest.raises(ValueError, match="duplicate canonical prediction coordinates"):
+        load_complete_oof_artifact(detector_root=detector_root, fold_root=fold_root, staged_root=staged_root, expected_experiments=(experiment,))
+
+
+def test_load_complete_oof_artifact_rejects_duplicate_fold_coverage(tmp_path):
+    detector_root, fold_root, staged_root = tmp_path / "detectors", tmp_path / "folds", tmp_path / "staged"
+    experiments = tuple(DetectorExperiment("dfine_n_640", "dfine", 640, 20260724, fold) for fold in range(5))
+    _write_json(staged_root / "annotations.json", {"annotations": [], "categories": [], "images": [{"height": 20, "id": image_id, "width": 30} for image_id in range(1, 6)]})
+    _write_json(staged_root / "staged_manifest.json", [{"box_count": 0, "file_name": f"{image_id}.png", "image_id": image_id, "overlap_proxy": False, "scene": {"capture_batch": "g15", "scene_number": image_id}, "source_sha256": _HASH} for image_id in range(1, 6)])
+    for experiment in experiments:
+        run_root, manifest = detector_root / experiment.run_id, fold_root / f"fold-{experiment.fold}" / "manifest.json"
+        prediction, processed = run_root / "validation_predictions.json", run_root / "processed_validation_image_ids.json"
+        _write_json(prediction, [])
+        _write_json(processed, [1])
+        _write_json(manifest, {"training_image_ids": [2, 3, 4, 5], "training_scenes": [{"capture_batch": "g15", "scene_number": image_id} for image_id in range(2, 6)], "validation_image_ids": [1], "validation_scenes": [{"capture_batch": "g15", "scene_number": 1}]})
+        _write_json(run_root / "receipt.json", {"fold": experiment.fold, "fold_manifest_sha256": _sha256(manifest), "prediction_sha256": _sha256(prediction), "processed_images_sha256": _sha256(processed), "run_id": experiment.run_id, "seed": experiment.seed, "status": "completed", "variant": experiment.name})
+
+    with pytest.raises(ValueError, match="cover each staged image exactly once"):
+        load_complete_oof_artifact(detector_root=detector_root, fold_root=fold_root, staged_root=staged_root, expected_experiments=experiments)
 
 
 def test_oof_rejects_missing_or_mismatched_expected_run(tmp_path):

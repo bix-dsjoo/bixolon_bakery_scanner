@@ -24,8 +24,11 @@ offline experiments if a later, independently evaluated change is proposed.
 ### Detector: D-FINE
 
 D-FINE proposes every plausible bread location. Its output is candidate
-evidence, not a final item count or product classification. Candidate boxes
-remain in original-image coordinates after normalization is reversed.
+evidence, not a final item count or product classification. Every encoded
+input is first EXIF-transposed and converted to RGB; that visually oriented
+image is the original-image coordinate frame. Candidate boxes return to this
+canonical frame after model resize, letterbox, or perspective normalization is
+reversed. EXIF orientation is never reversed during ordinary inference.
 
 ### Verifier
 
@@ -51,7 +54,7 @@ sufficient reference-match evidence; otherwise the result is `Unknown`.
 ## Final result contract
 
 Each final object contains a registered product ID or `Unknown`, an in-bounds
-original-image box in `[x_min, y_min, x_max, y_max]` form, decision
+canonical visual-original-image box in `[x_min, y_min, x_max, y_max]` form, decision
 confidence, and one decision path: `classifier_direct`, `dinov3_recheck`, or
 `unknown`. Product-level quantities must sum to the number of final object
 regions.
