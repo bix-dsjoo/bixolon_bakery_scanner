@@ -556,7 +556,10 @@ def _evaluation_payload(report: EvaluationReport) -> dict[str, object]:
         }
 
     return {
-        "errors": errors(report.by_iou[0.50]),
+        "errors": {
+            label: errors(report.by_iou[threshold])
+            for label, threshold in thresholds.items()
+        },
         "scenario_strata": {
             name: {
                 "errors": {

@@ -162,6 +162,19 @@ def test_development_report_is_complete_canonical_and_immutable(tmp_path):
     }
     assert payload["metrics"]["overall"]["semr"]["0.50"] == 0.8
     assert payload["metrics"]["overall"]["unresolved_candidates"] == 1
+    for metrics in (
+        payload["metrics"]["overall"],
+        *payload["metrics"]["folds"].values(),
+    ):
+        assert set(metrics["errors"]) == {"0.50", "0.75", "0.90"}
+        for threshold_errors in metrics["errors"].values():
+            assert set(threshold_errors) == {
+                "duplicates",
+                "false_positives",
+                "merge_errors",
+                "misses",
+                "split_errors",
+            }
     assert payload["metrics"]["overall"]["scenario_strata"]["fixture"][
         "semr"
     ]["0.50"] == 0.8
@@ -280,8 +293,8 @@ def test_zero_threshold_never_accepts_a_non_exactly_one_verifier_state(tmp_path)
     metrics = json.loads(output.read_text(encoding="utf-8"))["metrics"][
         "overall"
     ]
-    assert metrics["errors"]["false_positives"] == 0
-    assert metrics["errors"]["misses"] == 1
+    assert metrics["errors"]["0.50"]["false_positives"] == 0
+    assert metrics["errors"]["0.50"]["misses"] == 1
     assert metrics["unresolved_candidates"] == 1
 
 
