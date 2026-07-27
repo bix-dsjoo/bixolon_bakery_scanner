@@ -14,7 +14,7 @@
 - Batch 1 is development-only; Batch 2 must not participate in feature fitting, model fitting, or threshold selection.
 - `auto_correct / registered_count >= 0.95`, `registered_auto_errors / auto_count < 0.05`, and registered Unknown Top-3 recall `>= 0.90` are required on a fixed locked Batch 2 report.  An unregistered acceptance claim requires a separate locked OOD set and is not part of this revised objective.
 - Preserve the existing canonical EXIF visual frame, 5%/10%/15% crop contract, model hashes, and original image box.
-- DINO local candidates remain DINO Top-5 union RepViT Top-3, with a maximum of eight candidates and the v3 source-balanced local coreset.
+- DINO local candidates remain DINO Top-5 union RepViT Top-2, with a maximum of seven candidates and the v3 source-balanced local coreset.
 - Every invalid artifact, missing feature, or inference exception returns `Unknown`; do not fall back to an uncalibrated SKU.
 - Do not stage `datasets/` or `models/` junctions and do not merge this worktree.
 

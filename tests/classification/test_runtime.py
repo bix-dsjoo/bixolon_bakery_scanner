@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 import torch
@@ -16,9 +17,12 @@ from bakery_scanner.classification.contracts import (
     ModelScoreVector,
 )
 from bakery_scanner.classification.dinov3 import DinoV3Rechecker
+from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
+from bakery_scanner.classification.fusion_ranker import FusionRanker
 from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibration
 from bakery_scanner.classification.preprocess import build_transform
 from bakery_scanner.classification.repvit import RepVitEvidence
+from bakery_scanner.classification.risk_calibrator import RiskCalibrator
 from bakery_scanner.classification.runtime import ClassifierPipeline
 from bakery_scanner.contracts import Box
 
@@ -79,6 +83,12 @@ class LocalRecordingDino(RecordingRunner):
         self.local_bank = local_bank
         assert repvit_scores.model_id == "repvit_m1_15plus5_v1"
         return self.scores, {6: 0.90, 5: 0.10}
+
+
+class FullEvidenceDino(LocalRecordingDino):
+    def score_global_and_local_evidence(self, crops, product_boxes, local_bank, *, repvit_scores):
+        scores, local = self.score_global_and_local(crops, product_boxes, local_bank, repvit_scores=repvit_scores)
+        return scores, local, 32, 0.5
 
 
 class StepClock:
@@ -237,6 +247,45 @@ def test_recheck_uses_local_dino_scores_and_crop_relative_product_boxes():
     )
 
 
+def test_runtime_fusion_policy_uses_dino_evidence_and_records_fusion_artifact():
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    selected = _calibration(direct_threshold=0.99)
+    provenance = ModelProvenance(
+        repvit_artifact_id=selected.repvit_artifact_id, repvit_sha256="1" * 64,
+        dinov3_artifact_id=selected.dinov3_artifact_id, dinov3_sha256="2" * 64,
+        dinov3_support_sha256="3" * 64, calibration_id=selected.calibration_id,
+        calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
+    )
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.6,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": preprocess_sha256(config.preprocess),
+        },
+    )
+    dino = FullEvidenceDino(_dino_scores({6: 0.60, 5: 0.20}))
+    pipeline = ClassifierPipeline(
+        config=config, repvit=RecordingRunner(_repvit_scores({6: 0.8, 5: 0.2})),
+        dino_loader=lambda: dino, policy=DecisionPolicy(selected, provenance=provenance),
+        prototype_bank=FixedPrototypeBank(), local_bank=object(), fusion_policy=fusion,
+        fusion_provenance=replace(provenance, calibration_id="fusion_policy_v1", calibration_sha256="9" * 64),
+    )
+
+    result = pipeline.infer(_image(), _box())
+
+    assert dino.call_count == 1
+    assert result.decision_path is DecisionPath.FUSION_RANKED
+    assert result.provenance.calibration_id == "fusion_policy_v1"
+
+
 def test_recheck_confirmation_keeps_fused_confidence_meaning():
     calibration = _calibration(
         alpha=0.5,
@@ -383,9 +432,9 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
     calibration_path.write_bytes(calibration.to_json_bytes())
     configured = config.model_copy(
         update={
-            "calibration": config.calibration.model_copy(
-                update={"artifact": calibration_path}
-            )
+                "calibration": config.calibration.model_copy(
+                    update={"artifact": calibration_path, "fusion_policy": None}
+                )
         }
     )
     repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))

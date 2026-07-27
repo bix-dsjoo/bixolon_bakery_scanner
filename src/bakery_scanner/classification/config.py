@@ -115,6 +115,16 @@ class ClassifierRuntimeConfig(_StrictModel):
 
 class CalibrationConfig(_StrictModel):
     artifact: Path
+    fusion_policy: Path | None = None
+    fusion_policy_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def _fusion_policy_pair(self) -> "CalibrationConfig":
+        if (self.fusion_policy is None) != (self.fusion_policy_sha256 is None):
+            raise ValueError("fusion_policy and fusion_policy_sha256 must be supplied together")
+        if self.fusion_policy_sha256 is not None and not _SHA256.fullmatch(self.fusion_policy_sha256):
+            raise ValueError("fusion_policy_sha256 must be a lowercase SHA-256 hash")
+        return self
 
 
 class ClassifierConfig(_StrictModel):
@@ -137,7 +147,7 @@ class ClassifierConfig(_StrictModel):
         for section, names in {
             "repvit": ("checkpoint", "manifest", "prototype_bank"),
             "dinov3": ("weights", "support", "local_bank"),
-            "calibration": ("artifact",),
+            "calibration": ("artifact", "fusion_policy"),
         }.items():
             values = dict(payload.get(section) or {})
             for name in names:

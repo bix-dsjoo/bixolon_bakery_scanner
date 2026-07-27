@@ -19,6 +19,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 class DecisionPath(str, Enum):
     REPVIT_DIRECT = "repvit_direct"
     DINOV3_CONFIRMED = "dinov3_confirmed"
+    FUSION_RANKED = "fusion_ranked"
     UNKNOWN_TOP3 = "unknown_top3"
 
 
@@ -147,6 +148,7 @@ class ClassificationDecision:
             if self.decision_path not in (
                 DecisionPath.REPVIT_DIRECT,
                 DecisionPath.DINOV3_CONFIRMED,
+                DecisionPath.FUSION_RANKED,
             ):
                 raise ValueError("sku decision requires a SKU decision path")
             if self.top3:

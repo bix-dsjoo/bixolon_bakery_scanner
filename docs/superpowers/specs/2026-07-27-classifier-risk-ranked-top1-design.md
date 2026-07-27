@@ -28,7 +28,7 @@ Verified single-bread crop
   -> RepViT-M1: 20-way probabilities, feature, crop disagreement,
                  prototype distance
   -> DINOv3: global 20-way similarities
-  -> candidates = DINO Top-5 union RepViT Top-3 (at most eight)
+  -> candidates = DINO Top-5 union RepViT Top-2 (at most seven)
   -> DINO local evidence against balanced per-SKU patch coreset
   -> FusionRanker: candidate reranking from all per-candidate evidence
   -> RiskCalibrator: accept the ranked SKU or return Unknown + Top-3
@@ -64,7 +64,7 @@ until the Verifier provides a foreground mask.
 3. Train a separate risk calibrator on out-of-fold Top-1 rows using ranker
    score/margin plus model disagreement and OOD evidence.  It yields an
    acceptance risk score.
-4. Select the most permissive Batch 1 acceptance threshold with registered
+4. Select the most conservative Batch 1 acceptance threshold with registered
    automatic error rate below 5% and at least 95% correct automatic coverage.
    If no such threshold exists, publish the measured maximum coverage and do
    not relax the error-safety condition.
@@ -77,7 +77,7 @@ until the Verifier provides a foreground mask.
 - Invalid/missing model or evidence artifact: fail closed as `Unknown`.
 - Ranker/candidate contract failure: `Unknown` with the model-fusion Top-3 and
   a machine-readable reason.
-- Automatic decision: SKU, confidence/risk, original box, `fusion_ranked`
+- Automatic decision: SKU, ranker confidence/risk, original box, `fusion_ranked`
   path, and complete provenance.
 - Unknown: exactly three unique SKUs, their rank scores, and reason.
 
@@ -94,3 +94,19 @@ independent locked registered-product set; it is not an OOD claim.
 - Regression tests for the repeated hard pairs 20/19, 4/19, 4/8, and 9/14.
 - Batch 1 development report used only for artifact selection.
 - One fixed-artifact Batch 2 report with no threshold selection.
+
+## Frozen Artifact and Result
+
+The immutable `fusion_policy_v1.json` contains the final Batch-1 ranker,
+risk-calibrator and one threshold (`0.9980055438811386`), together with all
+model, preprocessing, support and local-bank hashes.  The configured runtime
+loads it only when those hashes match.  A RepViT direct decision remains
+available under its separate fail-closed gate; the configured v3 gate is
+intentionally closed, so the current accepted path collects the full DINO
+global/local evidence and emits either `fusion_ranked` or `Unknown`.
+
+With the artifact fixed from Batch 1, the independent 522-crop Batch 2 report
+has 510 correct automatic results (97.70% correct Top-1 coverage), 12 automatic
+errors (2.30% automatic error rate), and no Unknown outputs.  Its conditional
+Unknown Top-3 recall is therefore 1.0 (there were no Unknown cases).  This is a
+classifier-crop result only; it is not a detector/verifier or OOD claim.

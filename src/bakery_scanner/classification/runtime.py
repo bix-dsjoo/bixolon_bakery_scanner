@@ -15,9 +15,17 @@ from bakery_scanner.contracts import Box
 from bakery_scanner.data.preprocess import CanonicalImage, canonicalize_image
 
 from .config import ClassifierConfig, preprocess_sha256
-from .contracts import ClassificationDecision, ModelProvenance, StageTimings
+from .contracts import (
+    ClassificationDecision,
+    DecisionPath,
+    ModelProvenance,
+    SkuCandidate,
+    StageTimings,
+)
 from .dinov3 import DinoV3Rechecker
 from .errors import DinoInferenceError
+from .full_evidence import FullEvidenceRow
+from .fusion_policy import FusionPolicyArtifact
 from .local_bank import LocalPatchBank
 from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
 from .preprocess import make_padded_crops, make_padded_crops_with_product_boxes
@@ -65,6 +73,8 @@ class ClassifierPipeline:
         dino_loader: Callable[[], _ScoreRunner],
         policy: DecisionPolicy,
         prototype_bank: _PrototypeBank,
+        fusion_policy: FusionPolicyArtifact | None = None,
+        fusion_provenance: ModelProvenance | None = None,
         local_bank: object | None = None,
         local_bank_loader: Callable[[], object] | None = None,
         clock: _Clock | None = None,
@@ -73,6 +83,10 @@ class ClassifierPipeline:
         self.repvit = repvit
         self.policy = policy
         self.prototype_bank = prototype_bank
+        self.fusion_policy = fusion_policy
+        self.fusion_provenance = fusion_provenance
+        if (fusion_policy is None) != (fusion_provenance is None):
+            raise ValueError("fusion policy and provenance must be supplied together")
         self._local_bank = local_bank
         self._local_bank_loader = local_bank_loader
         self._dino_loader = dino_loader
@@ -104,6 +118,29 @@ class ClassifierPipeline:
             repvit_prototype_sha256=config.repvit.prototype_bank_sha256 or "0" * 64,
         )
         policy = DecisionPolicy(calibration, provenance=provenance)
+        fusion_policy = None
+        fusion_provenance = None
+        if config.calibration.fusion_policy is not None:
+            fusion_payload = config.calibration.fusion_policy.read_bytes()
+            if hashlib.sha256(fusion_payload).hexdigest() != config.calibration.fusion_policy_sha256:
+                raise ValueError("fusion policy SHA-256 does not match classifier config")
+            fusion_policy = FusionPolicyArtifact.from_json_bytes(fusion_payload)
+            expected_hashes = {
+                "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+                "repvit_manifest_sha256": config.repvit.manifest_sha256,
+                "repvit_prototype_sha256": config.repvit.prototype_bank_sha256 or "0" * 64,
+                "dinov3_weights_sha256": config.dinov3.weights_sha256,
+                "dinov3_support_sha256": config.dinov3.support_sha256,
+                "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256 or "0" * 64,
+                "preprocess_sha256": preprocess_sha256(config.preprocess),
+            }
+            if fusion_policy.artifact_hashes != expected_hashes:
+                raise ValueError("fusion policy artifacts do not match classifier config")
+            fusion_provenance = replace(
+                provenance,
+                calibration_id="fusion_policy_v1",
+                calibration_sha256=hashlib.sha256(fusion_payload).hexdigest(),
+            )
         repvit = RepVitM1Runner.load(config)
         if config.repvit.prototype_bank is None or config.repvit.prototype_bank_sha256 is None:
             raise ValueError("RepViT prototype bank is required for safe direct decisions")
@@ -119,6 +156,8 @@ class ClassifierPipeline:
             dino_loader=lambda: DinoV3Rechecker.load(config),
             policy=policy,
             prototype_bank=prototype_bank,
+            fusion_policy=fusion_policy,
+            fusion_provenance=fusion_provenance,
             local_bank_loader=lambda: _load_local_bank(config),
         )
 
@@ -140,13 +179,12 @@ class ClassifierPipeline:
         repvit_evidence = self.repvit.score_with_evidence(crops)
         repvit_scores = repvit_evidence.scores
         repvit_finished = self._timestamp()
+        nearest_prototype_distance = min(self.prototype_bank.distances(repvit_evidence.feature))
         direct = self.policy.direct(
             repvit_scores,
             evidence=DirectEvidence(
                 crop_disagreement=repvit_evidence.crop_disagreement,
-                nearest_prototype_distance=min(
-                    self.prototype_bank.distances(repvit_evidence.feature)
-                ),
+                nearest_prototype_distance=nearest_prototype_distance,
             ),
             box=box,
         )
@@ -164,7 +202,26 @@ class ClassifierPipeline:
         dino = self._get_dino()
         try:
             local_bank = self._get_local_bank()
-            if local_bank is not None and callable(getattr(dino, "score_global_and_local", None)):
+            if self.fusion_policy is not None:
+                if local_bank is None or not callable(getattr(dino, "score_global_and_local_evidence", None)):
+                    raise ValueError("fusion policy requires DINO local evidence scoring")
+                dino_scores, local_scores, patch_count, patch_ratio = dino.score_global_and_local_evidence(
+                    crops,
+                    product_boxes,
+                    local_bank,
+                    repvit_scores=repvit_scores,
+                )
+                decision = self._fusion_decision(
+                    repvit_scores=repvit_scores,
+                    dino_scores=dino_scores,
+                    local_scores=local_scores,
+                    crop_disagreement=repvit_evidence.crop_disagreement,
+                    nearest_prototype_distance=nearest_prototype_distance,
+                    patch_count=patch_count,
+                    patch_ratio=patch_ratio,
+                    box=box,
+                )
+            elif local_bank is not None and callable(getattr(dino, "score_global_and_local", None)):
                 dino_scores, local_scores = dino.score_global_and_local(
                     crops,
                     product_boxes,
@@ -235,6 +292,57 @@ class ClassifierPipeline:
     def _timestamp(self) -> float:
         self.clock.synchronize()
         return self.clock()
+
+    def _fusion_decision(
+        self,
+        *,
+        repvit_scores,
+        dino_scores,
+        local_scores: dict[int, float],
+        crop_disagreement: float,
+        nearest_prototype_distance: float,
+        patch_count: int,
+        patch_ratio: float,
+        box: Box,
+    ) -> ClassificationDecision:
+        if self.fusion_policy is None or self.fusion_provenance is None:
+            raise RuntimeError("fusion decision requested without fusion policy")
+        row = FullEvidenceRow(
+            sample_id="runtime", capture_group="runtime", registered=False, sku_id=None,
+            role="development", image_sha256="0" * 64,
+            repvit_values=repvit_scores.values, dinov3_values=dino_scores.values,
+            candidate_sku_ids=tuple(local_scores),
+            local_values=tuple(local_scores[sku_id] for sku_id in local_scores),
+            repvit_crop_disagreement=crop_disagreement,
+            nearest_prototype_distance=nearest_prototype_distance,
+            local_product_patch_count=patch_count, local_product_patch_ratio=patch_ratio,
+            repvit_checkpoint_sha256=self.config.repvit.checkpoint_sha256,
+            repvit_manifest_sha256=self.config.repvit.manifest_sha256,
+            repvit_prototype_sha256=self.config.repvit.prototype_bank_sha256 or "0" * 64,
+            dinov3_weights_sha256=self.config.dinov3.weights_sha256,
+            dinov3_support_sha256=self.config.dinov3.support_sha256,
+            dinov3_local_bank_sha256=self.config.dinov3.local_bank_sha256 or "0" * 64,
+            preprocess_sha256=preprocess_sha256(self.config.preprocess),
+        )
+        ranked = self.fusion_policy.ranker.rank(row)
+        decision, _ = self.fusion_policy.decide(row)
+        if decision.decision == "sku":
+            return ClassificationDecision(
+                decision="sku", sku_id=decision.predicted_sku_id,
+                confidence=ranked.scores[0], box=box,
+                decision_path=DecisionPath.FUSION_RANKED, top3=(),
+                provenance=self.fusion_provenance, timings=StageTimings(0.0, 0.0, 0.0),
+            )
+        return ClassificationDecision(
+            decision="unknown", sku_id=None, confidence=ranked.scores[0], box=box,
+            decision_path=DecisionPath.UNKNOWN_TOP3,
+            top3=tuple(
+                SkuCandidate(rank=index, sku_id=sku_id, score=score)
+                for index, (sku_id, score) in enumerate(zip(ranked.sku_ids[:3], ranked.scores[:3], strict=True), start=1)
+            ),
+            provenance=self.fusion_provenance, timings=StageTimings(0.0, 0.0, 0.0),
+            unknown_reason="fusion_risk_threshold",
+        )
 
     def _with_metadata(
         self,

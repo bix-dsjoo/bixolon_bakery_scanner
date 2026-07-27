@@ -23,3 +23,5 @@ runtime:
   precision: FP32
 calibration:
   artifact: ../artifacts/classification/policy_v3_fail_closed.json
+  fusion_policy: ../artifacts/classification/fusion_policy_v1.json
+  fusion_policy_sha256: 42c53bd61a47b692e187a6825ad7a6d664442cdc6eea739849d1ff27ec24fa9d
