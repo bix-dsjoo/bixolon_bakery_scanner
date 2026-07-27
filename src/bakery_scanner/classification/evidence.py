@@ -348,9 +348,12 @@ class LockedCoverageContract:
     @classmethod
     def load(cls, path: Path) -> "LockedCoverageContract":
         content = Path(path).read_bytes()
+        # Repository text files conventionally end with one newline; it is not
+        # part of the JSON payload identity.
+        canonical_content = content.removesuffix(b"\r\n").removesuffix(b"\n")
         try:
             payload = json.loads(
-                content.decode("utf-8"), object_pairs_hook=_unique_object
+                canonical_content.decode("utf-8"), object_pairs_hook=_unique_object
             )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("locked coverage contract must be canonical JSON") from exc
@@ -359,7 +362,7 @@ class LockedCoverageContract:
             "required_scenarios",
         }:
             raise ValueError("locked coverage contract has missing or extra keys")
-        if _canonical_json_bytes(payload) != content:
+        if _canonical_json_bytes(payload) != canonical_content:
             raise ValueError("locked coverage contract must use canonical JSON")
         return cls(payload["schema_version"], tuple(payload["required_scenarios"]))
 
