@@ -32,6 +32,16 @@ class RankedCandidates:
 
 
 @dataclass(frozen=True, slots=True)
+class RankedEvidence:
+    row: FullEvidenceRow
+    ranked: RankedCandidates
+
+    def __post_init__(self) -> None:
+        if self.row.sample_id != self.ranked.sample_id or self.row.capture_group != self.ranked.capture_group:
+            raise ValueError("ranked evidence identity does not match its evidence row")
+
+
+@dataclass(frozen=True, slots=True)
 class RankingFold:
     training_capture_groups: frozenset[str]
     held_out_capture_groups: frozenset[str]
@@ -39,7 +49,7 @@ class RankingFold:
 
 @dataclass(frozen=True, slots=True)
 class OofRankingResult:
-    ranked_rows: tuple[RankedCandidates, ...]
+    ranked_rows: tuple[RankedEvidence, ...]
     folds: tuple[RankingFold, ...]
 
 
@@ -112,7 +122,7 @@ def fit_oof_ranker(
     if np.unique(groups).size < folds:
         raise ValueError("capture_group count must be at least folds")
     splitter = StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=seed)
-    ranked: list[RankedCandidates | None] = [None] * len(checked)
+    ranked: list[RankedEvidence | None] = [None] * len(checked)
     fold_records: list[RankingFold] = []
     for training_indices, held_out_indices in splitter.split(np.zeros(len(checked)), labels, groups):
         ranker = fit_ranker(tuple(checked[index] for index in training_indices), seed=seed)
@@ -123,7 +133,7 @@ def fit_oof_ranker(
             )
         )
         for index in held_out_indices:
-            ranked[index] = ranker.rank(checked[index])
+            ranked[index] = RankedEvidence(checked[index], ranker.rank(checked[index]))
     if any(value is None for value in ranked):
         raise RuntimeError("OOF ranker did not rank every evidence row")
     return OofRankingResult(tuple(value for value in ranked if value is not None), tuple(fold_records))

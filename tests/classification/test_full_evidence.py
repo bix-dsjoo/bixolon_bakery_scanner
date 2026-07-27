@@ -6,7 +6,7 @@ from PIL import Image
 
 from bakery_scanner.classification.contracts import ModelScoreVector
 from bakery_scanner.classification.evidence import EvidenceInput
-from bakery_scanner.classification.full_evidence import FullEvidenceRow
+from bakery_scanner.classification.full_evidence import FullEvidenceRow, load_full_evidence_rows
 from bakery_scanner.classification.repvit import RepVitEvidence
 from bakery_scanner.contracts import Box
 from scripts.collect_classifier_evidence import collect_full_rows
@@ -58,6 +58,15 @@ def test_full_evidence_row_rejects_misaligned_candidate_scores():
 def test_full_evidence_row_rejects_duplicate_candidates():
     with pytest.raises(ValueError, match="candidate_sku_ids"):
         _row(candidate_sku_ids=(6, 6, 19))
+
+
+def test_full_evidence_loader_rejects_duplicate_sample_ids(tmp_path):
+    path = tmp_path / "full.jsonl"
+    row = _row().to_json_bytes()
+    path.write_bytes(row + b"\n" + row + b"\n")
+
+    with pytest.raises(ValueError, match="duplicate sample_id"):
+        load_full_evidence_rows(path)
 
 
 class _RepVit:

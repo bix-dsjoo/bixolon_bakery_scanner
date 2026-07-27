@@ -6,6 +6,7 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Literal
 
 
@@ -146,3 +147,27 @@ class FullEvidenceRow:
         if result.to_json_bytes() != payload:
             raise ValueError("full evidence must use canonical JSON")
         return result
+
+
+def load_full_evidence_rows(path: Path) -> tuple[FullEvidenceRow, ...]:
+    """Load canonical JSONL evidence and preserve the one-row-per-sample rule."""
+    rows: list[FullEvidenceRow] = []
+    sample_ids: set[str] = set()
+    try:
+        lines = Path(path).read_bytes().splitlines()
+    except OSError as exc:
+        raise ValueError("full evidence file is not readable") from exc
+    for line_number, line in enumerate(lines, start=1):
+        if not line:
+            raise ValueError(f"line {line_number}: full evidence must not be empty")
+        try:
+            row = FullEvidenceRow.from_json_bytes(line)
+        except ValueError as exc:
+            raise ValueError(f"line {line_number}: {exc}") from exc
+        if row.sample_id in sample_ids:
+            raise ValueError(f"line {line_number}: duplicate sample_id")
+        sample_ids.add(row.sample_id)
+        rows.append(row)
+    if not rows:
+        raise ValueError("full evidence file must contain at least one row")
+    return tuple(rows)

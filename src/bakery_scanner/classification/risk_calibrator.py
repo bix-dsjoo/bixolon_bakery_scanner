@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
+from sklearn.linear_model import LogisticRegression
+
+from .fusion_ranker import RankedEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,61 @@ class RiskCalibrator:
         normalized = (np.asarray(features, dtype=np.float64) - np.asarray(self.feature_mean)) / np.asarray(self.feature_scale)
         logit = float(normalized @ np.asarray(self.coefficients) + self.intercept)
         return float(1.0 / (1.0 + math.exp(-max(-700.0, min(700.0, logit)))))
+
+    def predict_ranked_risk(self, item: RankedEvidence) -> float:
+        return self.predict_risk(_ranked_features(item))
+
+
+def fit_risk_calibrator(
+    ranked_rows: Sequence[RankedEvidence],
+    *,
+    seed: int = 20260727,
+) -> RiskCalibrator:
+    """Fit one SKU-agnostic error-risk model over ranked evidence rows."""
+    checked = tuple(ranked_rows)
+    if not checked or any(not item.row.registered or item.row.sku_id is None for item in checked):
+        raise ValueError("risk calibration requires registered evidence")
+    matrix = np.asarray([_ranked_features(item) for item in checked], dtype=np.float64)
+    labels = np.asarray(
+        [int(item.ranked.sku_ids[0] != item.row.sku_id) for item in checked], dtype=np.int64
+    )
+    if len(set(labels.tolist())) != 2:
+        raise ValueError("risk calibration requires both correct and wrong ranked rows")
+    mean = matrix.mean(axis=0)
+    scale = matrix.std(axis=0)
+    scale[scale == 0.0] = 1.0
+    model = LogisticRegression(
+        C=0.1,
+        class_weight="balanced",
+        max_iter=2000,
+        random_state=seed,
+    ).fit((matrix - mean) / scale, labels)
+    return RiskCalibrator(
+        tuple(float(value) for value in mean),
+        tuple(float(value) for value in scale),
+        tuple(float(value) for value in model.coef_[0]),
+        float(model.intercept_[0]),
+    )
+
+
+def _ranked_features(item: RankedEvidence) -> tuple[float, ...]:
+    ranked = item.ranked
+    row = item.row
+    top_sku_id = ranked.sku_ids[0]
+    top_index = top_sku_id - 1
+    local_index = row.candidate_sku_ids.index(top_sku_id)
+    margin = ranked.scores[0] - ranked.scores[1] if len(ranked.scores) > 1 else ranked.scores[0]
+    return (
+        ranked.scores[0],
+        margin,
+        row.repvit_values[top_index],
+        row.dinov3_values[top_index],
+        row.local_values[local_index],
+        row.repvit_crop_disagreement,
+        row.nearest_prototype_distance,
+        row.local_product_patch_ratio,
+        float(row.local_product_patch_count),
+    )
 
 
 @dataclass(frozen=True, slots=True)
