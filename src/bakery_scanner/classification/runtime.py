@@ -93,7 +93,7 @@ class ClassifierPipeline:
             dinov3_sha256=config.dinov3.weights_sha256,
             dinov3_support_sha256=config.dinov3.support_sha256,
             calibration_id=calibration.calibration_id,
-            calibration_sha256=hashlib.sha256(calibration_payload).hexdigest(),
+            calibration_sha256=hashlib.sha256(calibration.to_json_bytes()).hexdigest(),
             preprocess_sha256=preprocess_sha256(config.preprocess),
             repvit_manifest_sha256=config.repvit.manifest_sha256,
             repvit_prototype_sha256=config.repvit.prototype_bank_sha256 or "0" * 64,

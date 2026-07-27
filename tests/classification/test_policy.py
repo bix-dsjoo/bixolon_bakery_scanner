@@ -117,6 +117,12 @@ def test_calibration_is_canonical_and_bound_to_artifacts():
     assert PolicyCalibration.from_json_bytes(selected.to_json_bytes()) == selected
 
 
+def test_calibration_accepts_one_terminal_newline_without_changing_identity():
+    selected = calibration()
+
+    assert PolicyCalibration.from_json_bytes(selected.to_json_bytes() + b"\n") == selected
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

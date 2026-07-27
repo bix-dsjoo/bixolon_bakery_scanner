@@ -163,9 +163,12 @@ class PolicyCalibration:
     def from_json_bytes(cls, payload: bytes) -> "PolicyCalibration":
         if not isinstance(payload, bytes):
             raise ValueError("calibration payload must be bytes")
+        # Versioned artifacts are canonical JSON; repository text files may add
+        # exactly one terminal newline without changing that artifact identity.
+        canonical_payload = payload.removesuffix(b"\r\n").removesuffix(b"\n")
         try:
             decoded = json.loads(
-                payload.decode("utf-8"),
+                canonical_payload.decode("utf-8"),
                 parse_constant=lambda value: _reject_json_constant(value),
             )
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -178,7 +181,7 @@ class PolicyCalibration:
             result = cls(**decoded)
         except TypeError as exc:
             raise ValueError("calibration payload has invalid field types") from exc
-        if result.to_json_bytes() != payload:
+        if result.to_json_bytes() != canonical_payload:
             raise ValueError("calibration payload must use canonical JSON")
         return result
 
