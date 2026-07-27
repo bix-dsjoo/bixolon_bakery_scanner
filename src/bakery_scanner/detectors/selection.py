@@ -186,7 +186,19 @@ def write_development_selection_report(
         "scope": "grouped_oof_development_only",
         "selection": selection,
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return _write_immutable_json(output, payload)
+
+
+def _write_immutable_json(output: Path, payload: Mapping[str, object]) -> Path:
+    """Write one canonical JSON artifact and refuse replacement."""
+    output = Path(output)
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("xb") as handle:
         handle.write(encoded)
