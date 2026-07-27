@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 
+from bakery_scanner.config import ScannerConfig
 from bakery_scanner.detectors.dfine640_selection import (
     DevelopmentReportProvenance,
     cross_fit_policies,
@@ -48,8 +50,26 @@ def main() -> None:
         type=Path,
         default=Path("configs/generated/detector-matrix"),
     )
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--validate-detector-fold", type=int, choices=range(5))
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.validate_detector_fold is not None:
+        if args.config is None:
+            parser.error("--validate-detector-fold requires --config")
+        validate_detector_fold(args.config, args.validate_detector_fold)
+        print(
+            json.dumps(
+                {
+                    "fold": args.validate_detector_fold,
+                    "status": "detector_fold_validated",
+                },
+                sort_keys=True,
+            )
+        )
+        return
+    if args.output is None:
+        parser.error("--output is required unless --validate-detector-fold is used")
 
     experiments = tuple(
         DetectorExperiment("dfine_n_640", "dfine", 640, SEED, fold)
@@ -109,6 +129,115 @@ def _load_image_folds(fold_root: Path) -> dict[int, int]:
                 raise ValueError("validation folds must not overlap")
             folds[image_id] = fold
     return folds
+
+
+def validate_detector_fold(config_path: Path, fold: int) -> None:
+    """Validate one completed D-FINE-N 640 fold from config-resolved paths."""
+    config_path = Path(config_path).resolve()
+    config = ScannerConfig.load(config_path)
+    if fold not in range(config.dataset.folds):
+        raise ValueError("detector fold is outside the configured fold range")
+    experiment = DetectorExperiment("dfine_n_640", "dfine", 640, config.seed, fold)
+    run_root = config.artifact_root / "detectors" / experiment.run_id
+    manifest_path = config.artifact_root / "folds" / f"fold-{fold}" / "manifest.json"
+    prediction_path = run_root / "validation_predictions.json"
+    processed_path = run_root / "processed_validation_image_ids.json"
+    detector_config = (
+        config_path.parent
+        / "generated"
+        / "detector-matrix"
+        / f"{experiment.run_id}.yml"
+    )
+    receipt = _read_json_object(run_root / "receipt.json", "detector receipt")
+    required = {
+        "config_sha256": _sha256(detector_config),
+        "fold": fold,
+        "fold_manifest_sha256": _sha256(manifest_path),
+        "prediction_sha256": _sha256(prediction_path),
+        "processed_images_sha256": _sha256(processed_path),
+        "run_id": experiment.run_id,
+        "seed": config.seed,
+        "status": "completed",
+        "variant": experiment.name,
+    }
+    if any(receipt.get(name) != value for name, value in required.items()):
+        raise ValueError("detector receipt identity or artifact hash mismatch")
+
+    manifest = _read_json_object(manifest_path, "fold manifest")
+    if manifest.get("index") != fold:
+        raise ValueError("fold manifest index does not match requested fold")
+    validation_ids = _positive_unique_ids(
+        manifest.get("validation_image_ids"), "validation image ids"
+    )
+    training_ids = _positive_unique_ids(
+        manifest.get("training_image_ids"), "training image ids"
+    )
+    if validation_ids & training_ids:
+        raise ValueError("fold training and validation image ids must be disjoint")
+    processed_ids = _positive_unique_ids(
+        _read_json_array(processed_path, "processed validation image ids"),
+        "processed validation image ids",
+    )
+    if processed_ids != validation_ids:
+        raise ValueError("processed validation image ids do not exactly match the fold")
+    for prediction in _read_json_array(prediction_path, "validation predictions"):
+        if not isinstance(prediction, dict):
+            raise ValueError("validation prediction must be an object")
+        image_id = prediction.get("image_id")
+        if image_id not in validation_ids:
+            raise ValueError("validation prediction image must belong to the held-out fold")
+        if prediction.get("source") != experiment.name:
+            raise ValueError("validation prediction source must match D-FINE-N 640")
+        score = prediction.get("score")
+        bbox = prediction.get("bbox")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not math.isfinite(score)
+            or not 0 <= score <= 1
+            or not isinstance(bbox, list)
+            or len(bbox) != 4
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in bbox
+            )
+        ):
+            raise ValueError("validation prediction score or bbox is invalid")
+
+
+def _read_json_object(path: Path, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} must be readable UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def _read_json_array(path: Path, label: str) -> list[object]:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} must be readable UTF-8 JSON") from exc
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a JSON array")
+    return value
+
+
+def _positive_unique_ids(value: object, label: str) -> frozenset[int]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be an array")
+    values = frozenset(
+        item
+        for item in value
+        if isinstance(item, int) and not isinstance(item, bool) and item > 0
+    )
+    if not values or len(values) != len(value):
+        raise ValueError(f"{label} must contain unique positive ids")
+    return values
 
 
 def _load_provenance(args: argparse.Namespace) -> DevelopmentReportProvenance:

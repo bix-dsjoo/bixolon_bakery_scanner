@@ -245,6 +245,106 @@ def test_selection_cli_exposes_only_artifact_and_report_inputs():
     assert "--output" in result.stdout
 
 
+def test_detector_fold_audit_uses_config_paths_without_report_output(tmp_path):
+    config_path = tmp_path / "configs" / "box_system.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        """seed: 20260724
+artifact_root: ../artifacts
+canonical_frame: {width: 1152, height: 1536}
+dataset:
+  sources:
+    - {name: fixture, images: ../images, annotations: ../annotations.json}
+  expected_images: 299
+  expected_boxes: 1410
+  folds: 5
+detectors:
+  seeds: [20260724]
+  variants:
+    - {name: dfine_n_640, backend: dfine, input_size: 640, role: audit}
+    - {name: dfine_n_768, backend: dfine, input_size: 768, role: primary}
+    - {name: rtmdet_tiny_640, backend: rtmdet, input_size: 640, role: audit}
+    - {name: rtmdet_tiny_768, backend: rtmdet, input_size: 768, role: secondary}
+runtime: {device: 'CUDA:0', precision: FP32, proposal_limit: 30}
+""",
+        encoding="utf-8",
+    )
+    artifact_root = tmp_path / "artifacts"
+    run_id = "dfine_n_640-seed20260724-fold0"
+    run_root = artifact_root / "detectors" / run_id
+    manifest = artifact_root / "folds" / "fold-0" / "manifest.json"
+    prediction = run_root / "validation_predictions.json"
+    processed = run_root / "processed_validation_image_ids.json"
+    detector_config = (
+        config_path.parent
+        / "generated"
+        / "detector-matrix"
+        / f"{run_id}.yml"
+    )
+    for path, value in (
+        (
+            manifest,
+            {
+                "index": 0,
+                "training_image_ids": [3],
+                "validation_image_ids": [1, 2],
+            },
+        ),
+        (
+            prediction,
+            [
+                {
+                    "bbox": [1, 2, 3, 4],
+                    "image_id": 1,
+                    "score": 0.9,
+                    "source": "dfine_n_640",
+                }
+            ],
+        ),
+        (processed, [1, 2]),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value), encoding="utf-8")
+    detector_config.parent.mkdir(parents=True, exist_ok=True)
+    detector_config.write_text("seed: 20260724\n", encoding="utf-8")
+    receipt = {
+        "config_sha256": hashlib.sha256(detector_config.read_bytes()).hexdigest(),
+        "fold": 0,
+        "fold_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "prediction_sha256": hashlib.sha256(prediction.read_bytes()).hexdigest(),
+        "processed_images_sha256": hashlib.sha256(processed.read_bytes()).hexdigest(),
+        "run_id": run_id,
+        "seed": 20260724,
+        "status": "completed",
+        "variant": "dfine_n_640",
+    }
+    (run_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = "src"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/select_dfine640_verifier.py",
+            "--validate-detector-fold",
+            "0",
+            "--config",
+            str(config_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "fold": 0,
+        "status": "detector_fold_validated",
+    }
+
+
 def test_verifier_loader_requires_all_five_completed_artifacts(tmp_path):
     with pytest.raises(ValueError, match="all five completed"):
         load_complete_verifier_oof_artifact(
