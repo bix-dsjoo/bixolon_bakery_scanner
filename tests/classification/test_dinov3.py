@@ -10,9 +10,11 @@ import torch
 import torch.nn.functional as functional
 from PIL import Image
 
+from bakery_scanner.contracts import Box
 from bakery_scanner.classification import DinoInferenceError
 from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.dinov3 import DinoV3Rechecker
+from bakery_scanner.classification.local_bank import LocalPatchBank
 from bakery_scanner.classification.preprocess import build_transform
 
 
@@ -55,6 +57,18 @@ class FailingEncoder(torch.nn.Module):
         raise self.error
 
 
+class FeatureEncoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward_features(self, batch: torch.Tensor):
+        self.calls += 1
+        cls = torch.nn.functional.normalize(torch.ones((3, 384)), dim=1)
+        patches = torch.nn.functional.normalize(torch.ones((3, 196, 384)), dim=2)
+        return {"x_norm_clstoken": cls, "x_norm_patchtokens": patches}
+
+
 def test_dinov3_averages_normalized_embeddings_then_scores_prototypes():
     embeddings = torch.zeros((3, 384), dtype=torch.float32)
     embeddings[0, 0] = 1
@@ -82,6 +96,26 @@ def test_dinov3_averages_normalized_embeddings_then_scores_prototypes():
     )
     assert result.values == pytest.approx((prototypes @ expected_embedding).tolist())
     assert encoder.saw_inference_mode
+
+
+def test_dinov3_local_scores_only_global_top_five_candidates(tmp_path):
+    patches = {sku_id: torch.nn.functional.normalize(torch.ones((1, 384)) * sku_id, dim=1) for sku_id in _SKU_IDS}
+    bank_path = tmp_path / "local.pt"
+    torch.save({"artifact_type": "dinov3_vits16_15plus5_local_patch_bank", "schema_version": 1, "dino_weights_sha256": "a" * 64, "preprocess_sha256": "b" * 64, "canonical_frame_version": "exif_visual_rgb_v1", "patches": patches}, bank_path)
+    bank = LocalPatchBank.load(bank_path, dino_weights_sha256="a" * 64, preprocess_sha256="b" * 64)
+    encoder = FeatureEncoder()
+    runner = DinoV3Rechecker(encoder, torch.eye(384, dtype=torch.float32)[:20], _SKU_IDS, build_transform(224), "dinov3_vits16_15plus5_v1", torch.device("cpu"))
+
+    global_scores, local_scores = runner.score_global_and_local(
+        tuple(Image.new("RGB", (32, 32)) for _ in range(3)),
+        (Box(0, 0, 32, 32),) * 3,
+        bank,
+    )
+
+    assert encoder.calls == 1
+    assert len(local_scores) == 5
+    assert tuple(local_scores) == tuple(sorted(range(1, 6)))
+    assert global_scores.score_kind == "similarity"
 
 
 @pytest.mark.parametrize("shape", [(19, 384), (20, 383)])

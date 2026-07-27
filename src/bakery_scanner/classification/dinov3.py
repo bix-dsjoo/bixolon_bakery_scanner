@@ -13,9 +13,12 @@ from dinov3.models.vision_transformer import vit_small
 from PIL import Image
 from torchvision import transforms
 
+from bakery_scanner.contracts import Box
+
 from .config import ClassifierConfig
 from .contracts import ModelScoreVector
 from .errors import DinoInferenceError
+from .local_bank import LocalPatchBank
 from .preprocess import build_transform
 
 _SKU_IDS = tuple(range(1, 21))
@@ -128,6 +131,41 @@ class DinoV3Rechecker:
         values = tuple(float(value) for value in similarities.detach().cpu().tolist())
         return ModelScoreVector(self.model_id, self.sku_ids, values, "similarity")
 
+    def score_global_and_local(
+        self,
+        crops: Sequence[Image.Image],
+        product_boxes_in_crops: Sequence[Box],
+        local_bank: LocalPatchBank,
+    ) -> tuple[ModelScoreVector, dict[int, float]]:
+        """Retrieve global Top-5, then score only their product-mask patches."""
+        if len(crops) != 3 or len(product_boxes_in_crops) != 3:
+            raise ValueError("DINOv3 local scoring requires three crops and three product boxes")
+        if not callable(getattr(self.encoder, "forward_features", None)):
+            raise ValueError("DINOv3 encoder does not expose forward_features")
+        try:
+            batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in crops))
+            with torch.inference_mode():
+                features = self.encoder.forward_features(batch.to(self.device))
+                if not isinstance(features, Mapping):
+                    raise ValueError("DINOv3 forward_features must return a mapping")
+                cls_tokens = features.get("x_norm_clstoken")
+                patch_tokens = features.get("x_norm_patchtokens")
+                if not isinstance(cls_tokens, torch.Tensor) or tuple(cls_tokens.shape) != (3, _EMBEDDING_DIMENSION):
+                    raise ValueError("DINOv3 class tokens must have shape (3, 384)")
+                if not isinstance(patch_tokens, torch.Tensor) or patch_tokens.ndim != 3 or tuple(patch_tokens.shape[:1]) != (3,) or patch_tokens.shape[2] != _EMBEDDING_DIMENSION:
+                    raise ValueError("DINOv3 patch tokens must have shape (3, N, 384)")
+                cls_tokens = functional.normalize(cls_tokens, dim=1)
+                mean_embedding = functional.normalize(cls_tokens.mean(dim=0), dim=0)
+                similarities = self.prototypes @ mean_embedding
+                global_scores = ModelScoreVector(self.model_id, self.sku_ids, tuple(float(value) for value in similarities.cpu().tolist()), "similarity")
+                candidate_indices = sorted(range(20), key=lambda index: (-global_scores.values[index], self.sku_ids[index]))[:5]
+                candidate_ids = tuple(self.sku_ids[index] for index in candidate_indices)
+                masks = tuple(_product_patch_mask(box, crop.size, patch_tokens.shape[1], patch_tokens.device) for crop, box in zip(crops, product_boxes_in_crops, strict=True))
+                local_scores = local_bank.score(candidate_ids, patch_tokens.reshape(-1, _EMBEDDING_DIMENSION), torch.cat(masks))
+        except torch.OutOfMemoryError as exc:
+            raise DinoInferenceError("dino_out_of_memory", "DINOv3 inference exhausted device memory") from exc
+        return global_scores, local_scores
+
 
 def _verify_sha256(path: Path, expected: str, label: str) -> None:
     if not path.is_file():
@@ -138,6 +176,19 @@ def _verify_sha256(path: Path, expected: str, label: str) -> None:
             digest.update(block)
     if digest.hexdigest() != expected:
         raise ValueError(f"DINOv3 {label} SHA-256 mismatch")
+
+
+def _product_patch_mask(box: Box, crop_size: tuple[int, int], token_count: int, device: torch.device) -> torch.Tensor:
+    width, height = crop_size
+    grid = int(token_count**0.5)
+    if grid * grid != token_count or width <= 0 or height <= 0:
+        raise ValueError("DINOv3 patch-token grid is invalid")
+    if box.x < 0 or box.y < 0 or box.x + box.width > width or box.y + box.height > height:
+        raise ValueError("product box must stay within its crop")
+    centers_x = (torch.arange(grid, device=device) + 0.5) * width / grid
+    centers_y = (torch.arange(grid, device=device) + 0.5) * height / grid
+    xx, yy = torch.meshgrid(centers_x, centers_y, indexing="xy")
+    return ((xx >= box.x) & (xx <= box.x + box.width) & (yy >= box.y) & (yy <= box.y + box.height)).reshape(-1)
 
 
 def _validate_support(
