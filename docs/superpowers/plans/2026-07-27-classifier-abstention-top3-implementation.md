@@ -28,6 +28,11 @@
 - Missing or incompatible checkpoints, manifests, support files, calibration artifacts, non-finite vectors, and class-map mismatches fail closed.
 - Thresholds and fusion weights live only in a versioned calibration artifact, never as runtime constants.
 - Preserve unrelated dirty-worktree changes and do not rewrite detector code.
+- This classifier worktree uses the already-installed Torch 2.13 / Torchvision
+  0.28 runtime, but does not change `pyproject.toml` dependency groups while
+  Detector and Verifier development is active. A later integration change must
+  update all model consumer groups together and run whole-pipeline regression
+  and performance validation.
 
 ---
 
@@ -71,7 +76,6 @@ scripts/benchmark_classifier_pipeline.py
 - Create: `src/bakery_scanner/classification/contracts.py`
 - Create: `src/bakery_scanner/classification/config.py`
 - Create: `configs/classifier_policy.yaml`
-- Modify: `pyproject.toml`
 - Create: `tests/classification/test_contracts.py`
 - Create: `tests/classification/test_config.py`
 
@@ -237,18 +241,13 @@ calibration:
 Keep this configuration separate from `ScannerConfig` so detector work remains
 loadable before classifier calibration exists.
 
-- [ ] **Step 6: Add the compatible dependency extra**
+- [ ] **Step 6: Preserve shared dependency declarations during staged work**
 
-```toml
-classifier = [
-  "torch==2.13.0",
-  "torchvision==0.28.0",
-  "timm==1.0.28",
-  "dinov3==0.0.1",
-]
-```
-
-Do not change the existing detector or verifier dependency groups in this task.
+Use the already-installed Torch 2.13 / Torchvision 0.28 runtime for this
+worktree's tests. Do not modify `pyproject.toml` or the Detector/Verifier
+dependency groups while their implementation is active. A later integration
+change must declare one compatible runtime for Detector, Verifier, RepViT, and
+DINOv3, then validate the full pipeline.
 
 - [ ] **Step 7: Run Task 1 tests**
 
@@ -259,7 +258,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit Task 1**
 
 ```powershell
-git add configs/classifier_policy.yaml pyproject.toml src/bakery_scanner/classification/__init__.py src/bakery_scanner/classification/contracts.py src/bakery_scanner/classification/config.py tests/classification/test_contracts.py tests/classification/test_config.py
+git add configs/classifier_policy.yaml src/bakery_scanner/classification/__init__.py src/bakery_scanner/classification/contracts.py src/bakery_scanner/classification/config.py tests/classification/test_contracts.py tests/classification/test_config.py
 git commit -m "feat: define classifier runtime contracts"
 ```
 
