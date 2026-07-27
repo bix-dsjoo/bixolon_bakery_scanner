@@ -378,8 +378,12 @@ class DecisionPolicy:
         ranked = tuple(sorted(range(len(candidate_ids)), key=lambda index: (-fused[index], candidate_ids[index])))
         best, second = ranked[0], ranked[1] if len(ranked) > 1 else ranked[0]
         repvit_top = _rank(repvit, repvit_scores.sku_ids)[0]
-        dino_top = _rank(dino, dino_global_scores.sku_ids)[0]
-        if candidate_ids[best] == repvit_scores.sku_ids[repvit_top] == dino_global_scores.sku_ids[dino_top] and dino[dino_top] >= self.calibration.dino_threshold and fused[best] - fused[second] >= self.calibration.fused_margin:
+        selected_global = candidate_indices[best]
+        if (
+            candidate_ids[best] == repvit_scores.sku_ids[repvit_top]
+            and dino[selected_global] >= self.calibration.dino_threshold
+            and fused[best] - fused[second] >= self.calibration.fused_margin
+        ):
             return self._sku_decision(candidate_ids[best], fused[best], DecisionPath.DINOV3_CONFIRMED, box)
         # Local matching is an additional DINO-family consistency check.  Falling
         # back to global-only confirmation here would allow a local disagreement

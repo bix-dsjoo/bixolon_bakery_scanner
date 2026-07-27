@@ -309,6 +309,20 @@ def test_local_recheck_confirms_only_when_repvit_and_dino_family_agree():
     assert result.sku_id == 6
 
 
+def test_local_recheck_can_restore_a_strong_second_global_candidate_when_repvit_agrees():
+    result = policy(
+        calibration(dino_threshold=0.20, fused_margin=0.10)
+    ).after_local_recheck(
+        probabilities({6: 0.60, 5: 0.20}),
+        similarities_from_probabilities({5: 0.50, 6: 0.40}),
+        {5: -10.0, 6: 10.0},
+        box=BOX,
+    )
+
+    assert result.decision == "sku"
+    assert result.sku_id == 6
+
+
 def test_local_recheck_does_not_fall_back_to_global_confirmation_on_local_disagreement():
     result = policy(
         calibration(dino_threshold=0.20, fused_margin=0.10)
