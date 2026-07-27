@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PREPROCESS_SCHEMA_VERSION = 1
 
 
 class _StrictModel(BaseModel):
@@ -62,6 +65,28 @@ class PreprocessConfig(_StrictModel):
         return self
 
 
+def preprocess_sha256(config: PreprocessConfig) -> str:
+    """Return the versioned identity of every score-affecting image transform."""
+    payload = {
+        "schema_version": _PREPROCESS_SCHEMA_VERSION,
+        "crop_rule": "total_padding_split_floor_ceil_clip_rgb",
+        "input_size": config.input_size,
+        "paddings": list(config.paddings),
+        "resize": "torchvision_resize_antialias_true",
+        "normalization": {
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class ClassifierRuntimeConfig(_StrictModel):
     device: Literal["CUDA:0"]
     precision: Literal["FP32"]
@@ -99,7 +124,9 @@ class ClassifierConfig(_StrictModel):
             payload[section] = values
         result = cls.model_validate(payload)
         if "locked_acceptance" in result.calibration.artifact.parts:
-            raise ValueError("calibration artifact must not be inside locked acceptance directory")
+            raise ValueError(
+                "calibration artifact must not be inside locked acceptance directory"
+            )
         return result
 
 
@@ -107,4 +134,6 @@ def _resolve_path(base: Path, raw: object) -> Path:
     if not isinstance(raw, (str, Path)) or not str(raw):
         raise ValueError("configured path must be a non-empty string")
     candidate = Path(raw)
-    return candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
+    return (
+        candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
+    )

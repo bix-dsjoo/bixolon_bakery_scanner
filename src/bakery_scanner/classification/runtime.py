@@ -13,7 +13,7 @@ from PIL import Image
 
 from bakery_scanner.contracts import Box
 
-from .config import ClassifierConfig
+from .config import ClassifierConfig, preprocess_sha256
 from .contracts import ClassificationDecision, ModelProvenance, StageTimings
 from .dinov3 import DinoV3Rechecker
 from .errors import DinoInferenceError
@@ -78,6 +78,7 @@ class ClassifierPipeline:
             dinov3_support_sha256=config.dinov3.support_sha256,
             calibration_id=calibration.calibration_id,
             calibration_sha256=hashlib.sha256(calibration_payload).hexdigest(),
+            preprocess_sha256=preprocess_sha256(config.preprocess),
         )
         policy = DecisionPolicy(calibration, provenance=provenance)
         repvit = RepVitM1Runner.load(config)

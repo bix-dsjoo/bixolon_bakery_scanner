@@ -10,13 +10,18 @@ from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.evidence import (
     EvaluatedRow,
     EvidenceRow,
+    LockedCoverageContract,
     atomic_write_bytes,
     canonical_json_bytes,
     evaluate_rows,
     load_evidence_rows,
+    load_dinov3_support_training_hashes,
     load_repvit_training_hashes,
     policy_predictions,
     sha256_file,
+    hash_evidence_rows,
+    hash_evidence_identities,
+    validate_evidence_provenance,
 )
 from bakery_scanner.classification.policy import PolicyCalibration
 
@@ -38,7 +43,7 @@ def _empty_metrics() -> dict[str, object]:
         "assisted_success": None,
         "auto_correct": 0,
         "auto_count": 0,
-        "auto_coverage": 0.0,
+        "auto_coverage": None,
         "auto_errors": 0,
         "auto_precision": None,
         "failure_sample_ids": [],
@@ -73,6 +78,7 @@ def build_evaluation_report(
     calibration_sha256: str,
     evidence_sha256: str,
     artifact_hashes: Mapping[str, str],
+    coverage_contract: LockedCoverageContract | None = None,
 ) -> dict[str, object]:
     """Build canonical locked-set slices without selecting any parameters."""
     if len(rows) != len(evaluated) or not rows:
@@ -142,7 +148,26 @@ def build_evaluation_report(
             evaluated,
             lambda row: not row.registered,
         ),
+        "scenarios": {
+            scenario: _slice_metrics(
+                rows,
+                evaluated,
+                lambda row, scenario=scenario: scenario in row.scenarios,
+            )
+            for scenario in (
+                coverage_contract.required_scenarios if coverage_contract else ()
+            )
+        },
     }
+    coverage = (
+        coverage_contract.report(rows) if coverage_contract else {"complete": False}
+    )
+    scenario_passes = all(
+        values["auto_errors"] == 0
+        and values["fallback_top3_misses"] == 0
+        and values["assisted_failures"] == 0
+        for values in metrics["scenarios"].values()
+    )
     first = rows[0]
     return {
         "artifacts": {
@@ -161,7 +186,10 @@ def build_evaluation_report(
             "fallback_top3_misses": fallback_misses,
         },
         "metrics": metrics,
-        "release_passes": overall.release_passes,
+        "coverage": coverage,
+        "release_passes": overall.release_passes
+        and coverage["complete"]
+        and scenario_passes,
         "schema_version": 1,
     }
 
@@ -172,6 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--development-evidence", type=Path, required=True)
+    parser.add_argument("--dino-source-manifest", type=Path, required=True)
+    parser.add_argument("--coverage-contract", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser
@@ -180,9 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = ClassifierConfig.load(args.config)
+    coverage_contract = LockedCoverageContract.load(args.coverage_contract)
     training_hashes = load_repvit_training_hashes(
         config.repvit.manifest,
         expected_sha256=config.repvit.manifest_sha256,
+    ) | load_dinov3_support_training_hashes(
+        config.dinov3.support, args.dino_source_manifest
     )
     rows = load_evidence_rows(
         args.evidence,
@@ -190,8 +224,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if any(row.role != "locked_acceptance" for row in rows):
         raise ValueError("locked evaluation accepts locked_acceptance rows only")
+    development_rows = load_evidence_rows(
+        args.development_evidence, training_image_hashes=training_hashes
+    )
+    if any(row.role != "development" for row in development_rows):
+        raise ValueError("development evidence must contain development rows only")
+    if {row.image_sha256 for row in rows}.intersection(
+        row.image_sha256 for row in development_rows
+    ):
+        raise ValueError("development and locked evidence image identities overlap")
+    validate_evidence_provenance(rows, config)
+    validate_evidence_provenance(development_rows, config)
     calibration_payload = args.calibration.read_bytes()
     calibration = PolicyCalibration.from_json_bytes(calibration_payload)
+    if calibration.evidence_sha256 != hash_evidence_rows(development_rows):
+        raise ValueError(
+            "calibration is not bound to the supplied development evidence"
+        )
+    if calibration.development_identity_sha256 != hash_evidence_identities(
+        development_rows
+    ):
+        raise ValueError(
+            "calibration development identity does not match supplied evidence"
+        )
     evaluated = policy_predictions(rows, calibration)
     report = build_evaluation_report(
         rows,
@@ -204,6 +259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "dinov3_weights_sha256": config.dinov3.weights_sha256,
             "dinov3_support_sha256": config.dinov3.support_sha256,
         },
+        coverage_contract=coverage_contract,
     )
     atomic_write_bytes(args.output, canonical_json_bytes(report))
     return 0 if report["release_passes"] else 1

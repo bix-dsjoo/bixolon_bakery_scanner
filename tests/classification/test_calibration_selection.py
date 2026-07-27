@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import pytest
+import numpy as np
 
 from bakery_scanner.classification.evidence import (
     EvidenceRow,
     evaluate_policy,
     grouped_development_splits,
     select_policy,
+    _lossless_thresholds,
 )
 
 
@@ -179,3 +181,12 @@ def test_cross_fit_rejects_thresholds_that_fail_only_in_held_out_group():
 
     with pytest.raises(ValueError, match="cross-fit development gates failed"):
         select_policy(tuple(rows), folds=5, seed=20260727)
+
+
+def test_lossless_threshold_candidates_keep_intermediate_safe_acceptance_mask():
+    first = np.array([0.20, 0.60, 0.90])
+    second = np.array([0.90, 0.60, 0.20])
+
+    candidates = _lossless_thresholds(first, second)
+
+    assert (0.60, 0.60) in candidates

@@ -8,8 +8,7 @@ import pytest
 import torch
 from PIL import Image
 
-from bakery_scanner.classification import DinoInferenceError
-from bakery_scanner.classification.config import ClassifierConfig
+from bakery_scanner.classification.config import ClassifierConfig, preprocess_sha256
 from bakery_scanner.classification.contracts import (
     DecisionPath,
     ModelProvenance,
@@ -164,9 +163,7 @@ def test_recheck_confirmation_keeps_fused_confidence_meaning():
 
 
 def test_runtime_records_provenance_stage_timings_and_synchronizes():
-    clock = StepClock(
-        (10.000, 10.001, 10.004, 10.005, 10.011, 10.012)
-    )
+    clock = StepClock((10.000, 10.001, 10.004, 10.005, 10.011, 10.012))
     repvit = RecordingRunner(_repvit_scores({6: 0.50, 5: 0.30, 19: 0.10}))
     dino = RecordingRunner(_dino_scores({5: 0.50, 6: 0.30, 19: 0.10}))
     pipeline = _pipeline(
@@ -259,9 +256,7 @@ def test_load_requires_calibration_before_loading_repvit(monkeypatch, tmp_path):
     missing = tmp_path / "missing-policy.json"
     configured = config.model_copy(
         update={
-            "calibration": config.calibration.model_copy(
-                update={"artifact": missing}
-            )
+            "calibration": config.calibration.model_copy(update={"artifact": missing})
         }
     )
     monkeypatch.setattr(
@@ -277,9 +272,7 @@ def test_load_requires_calibration_before_loading_repvit(monkeypatch, tmp_path):
         ClassifierPipeline.load(tmp_path / "classifier.yaml")
 
 
-def test_load_builds_provenance_and_defers_dino_model_load(
-    monkeypatch, tmp_path
-):
+def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path):
     calibration = _calibration()
     calibration_path = tmp_path / "policy.json"
     calibration_path.write_bytes(calibration.to_json_bytes())
@@ -323,9 +316,8 @@ def test_load_builds_provenance_and_defers_dino_model_load(
         dinov3_sha256=config.dinov3.weights_sha256,
         dinov3_support_sha256=config.dinov3.support_sha256,
         calibration_id=calibration.calibration_id,
-        calibration_sha256=hashlib.sha256(
-            calibration.to_json_bytes()
-        ).hexdigest(),
+        calibration_sha256=hashlib.sha256(calibration.to_json_bytes()).hexdigest(),
+        preprocess_sha256=preprocess_sha256(config.preprocess),
     )
     pipeline.infer(_image(), _box())
     assert dino_loads == 0
@@ -346,9 +338,7 @@ def _pipeline(
         dinov3_sha256="2" * 64,
         dinov3_support_sha256="3" * 64,
         calibration_id=selected.calibration_id,
-        calibration_sha256=hashlib.sha256(
-            selected.to_json_bytes()
-        ).hexdigest(),
+        calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
     )
     config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
     return ClassifierPipeline(
@@ -398,10 +388,7 @@ def _dino_scores(values: dict[int, float]) -> ModelScoreVector:
     return ModelScoreVector(
         "dinov3_vits16_15plus5_v1",
         SKU_IDS,
-        tuple(
-            math.log(values.get(sku_id, fill))
-            for sku_id in SKU_IDS
-        ),
+        tuple(math.log(values.get(sku_id, fill)) for sku_id in SKU_IDS),
         "similarity",
     )
 

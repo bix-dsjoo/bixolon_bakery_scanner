@@ -41,6 +41,7 @@ _CALIBRATION_KEYS = frozenset(
         "dino_threshold",
         "fused_margin",
         "evidence_sha256",
+        "development_identity_sha256",
     }
 )
 
@@ -59,6 +60,7 @@ class PolicyCalibration:
     dino_threshold: float
     fused_margin: float
     evidence_sha256: str
+    development_identity_sha256: str = "0" * 64
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
@@ -66,18 +68,14 @@ class PolicyCalibration:
         if not isinstance(self.calibration_id, str) or not self.calibration_id:
             raise ValueError("calibration_id must not be empty")
         if self.repvit_artifact_id != _REPVIT_ARTIFACT_ID:
-            raise ValueError(
-                f"repvit_artifact_id must be {_REPVIT_ARTIFACT_ID}"
-            )
+            raise ValueError(f"repvit_artifact_id must be {_REPVIT_ARTIFACT_ID}")
         if self.dinov3_artifact_id != _DINOV3_ARTIFACT_ID:
-            raise ValueError(
-                f"dinov3_artifact_id must be {_DINOV3_ARTIFACT_ID}"
-            )
-        if (
-            not isinstance(self.evidence_sha256, str)
-            or not _SHA256.fullmatch(self.evidence_sha256)
-        ):
-            raise ValueError("evidence_sha256 must be a lowercase SHA-256 hash")
+            raise ValueError(f"dinov3_artifact_id must be {_DINOV3_ARTIFACT_ID}")
+        for field in ("evidence_sha256", "development_identity_sha256"):
+            if not isinstance(getattr(self, field), str) or not _SHA256.fullmatch(
+                getattr(self, field)
+            ):
+                raise ValueError(f"{field} must be a lowercase SHA-256 hash")
 
         for field in ("repvit_temperature", "dinov3_temperature"):
             value = _finite_number(getattr(self, field), field)
@@ -106,6 +104,7 @@ class PolicyCalibration:
             "direct_margin": self.direct_margin,
             "direct_threshold": self.direct_threshold,
             "evidence_sha256": self.evidence_sha256,
+            "development_identity_sha256": self.development_identity_sha256,
             "fused_margin": self.fused_margin,
             "repvit_artifact_id": self.repvit_artifact_id,
             "repvit_temperature": self.repvit_temperature,
@@ -160,7 +159,9 @@ class DecisionPolicy:
             raise ValueError("provenance calibration_id does not match calibration")
         calibration_sha256 = hashlib.sha256(calibration.to_json_bytes()).hexdigest()
         if provenance.calibration_sha256 != calibration_sha256:
-            raise ValueError("provenance calibration SHA-256 does not match calibration")
+            raise ValueError(
+                "provenance calibration SHA-256 does not match calibration"
+            )
         self.calibration = calibration
         self.provenance = provenance
         self._empty_timings = StageTimings(0.0, 0.0, 0.0)
@@ -232,8 +233,7 @@ class DecisionPolicy:
             repvit_scores.sku_ids[repvit_ranked[0]]
             == dino_scores.sku_ids[dino_ranked[0]]
             and dino[dino_ranked[0]] >= self.calibration.dino_threshold
-            and fused[fused_best] - fused[fused_second]
-            >= self.calibration.fused_margin
+            and fused[fused_best] - fused[fused_second] >= self.calibration.fused_margin
         ):
             return self._sku_decision(
                 repvit_scores.sku_ids[fused_best],
@@ -360,9 +360,7 @@ def fuse_probabilities(
     if not 0.0 <= checked_alpha <= 1.0:
         raise ValueError("alpha must be between 0 and 1")
     fused_logits = checked_alpha * np.log(np.clip(repvit_values, 1e-12, 1.0))
-    fused_logits += (1.0 - checked_alpha) * np.log(
-        np.clip(dino_values, 1e-12, 1.0)
-    )
+    fused_logits += (1.0 - checked_alpha) * np.log(np.clip(dino_values, 1e-12, 1.0))
     return _softmax(fused_logits)
 
 

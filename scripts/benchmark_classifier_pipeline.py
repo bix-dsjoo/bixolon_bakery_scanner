@@ -15,7 +15,11 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
-from bakery_scanner.classification.contracts import ModelProvenance, StageTimings
+from bakery_scanner.classification.contracts import (
+    DecisionPath,
+    ModelProvenance,
+    StageTimings,
+)
 from bakery_scanner.classification.evidence import atomic_write_bytes
 from bakery_scanner.classification.runtime import ClassifierPipeline
 from bakery_scanner.contracts import Box
@@ -66,6 +70,7 @@ def aggregate_benchmark(
     timings: Sequence[StageTimings],
     *,
     warmup_count: int = 0,
+    decision_paths: Sequence[DecisionPath] | None = None,
 ) -> BenchmarkAggregate:
     """Aggregate measured rows after discarding a leading warm-up prefix."""
     if (
@@ -75,21 +80,41 @@ def aggregate_benchmark(
     ):
         raise ValueError("warmup_count must be a non-negative integer")
     rows = tuple(timings)
+    paths = tuple(decision_paths) if decision_paths is not None else None
+    if paths is not None and len(paths) != len(rows):
+        raise ValueError("decision_paths must align with timings")
     measured = rows[warmup_count:]
+    measured_paths = None if paths is None else paths[warmup_count:]
     if not measured:
         raise ValueError("benchmark requires at least one measured timing")
 
     total_p50, total_p95 = _percentiles(tuple(row.total_ms for row in measured))
-    repvit_p50, repvit_p95 = _percentiles(
-        tuple(row.repvit_ms for row in measured)
-    )
+    repvit_p50, repvit_p95 = _percentiles(tuple(row.repvit_ms for row in measured))
     invoked = tuple(row.dinov3_ms for row in measured if row.dinov3_ms > 0.0)
     if invoked:
         dinov3_p50, dinov3_p95 = _percentiles(invoked)
     else:
         dinov3_p50 = dinov3_p95 = 0.0
-    direct_rows = tuple(row.total_ms for row in measured if row.dinov3_ms == 0.0)
-    recheck_rows = tuple(row.total_ms for row in measured if row.dinov3_ms > 0.0)
+    # Only legacy callers omit paths. Online benchmark calls always supply the
+    # classifier decision path, including DINO failures that return Unknown.
+    direct_rows = tuple(
+        row.total_ms
+        for index, row in enumerate(measured)
+        if (
+            measured_paths[index] is DecisionPath.REPVIT_DIRECT
+            if measured_paths
+            else row.dinov3_ms == 0.0
+        )
+    )
+    recheck_rows = tuple(
+        row.total_ms
+        for index, row in enumerate(measured)
+        if (
+            measured_paths[index] is not DecisionPath.REPVIT_DIRECT
+            if measured_paths
+            else row.dinov3_ms > 0.0
+        )
+    )
     direct_p50, direct_p95 = _optional_percentiles(direct_rows)
     recheck_p50, recheck_p95 = _optional_percentiles(recheck_rows)
 
@@ -252,43 +277,31 @@ def load_benchmark_manifest(path: Path) -> tuple[BenchmarkInput, ...]:
             mapping = _benchmark_mapping(value, line_number)
             sample_id = mapping["sample_id"]
             if not isinstance(sample_id, str) or not sample_id:
-                raise ValueError(
-                    f"line {line_number}: sample_id must not be empty"
-                )
+                raise ValueError(f"line {line_number}: sample_id must not be empty")
             if sample_id in sample_ids:
-                raise ValueError(
-                    f"line {line_number}: duplicate sample_id {sample_id}"
-                )
+                raise ValueError(f"line {line_number}: duplicate sample_id {sample_id}")
             sample_ids.add(sample_id)
 
             image_raw = mapping["image_path"]
             if not isinstance(image_raw, str) or not image_raw:
-                raise ValueError(
-                    f"line {line_number}: image_path must not be empty"
-                )
+                raise ValueError(f"line {line_number}: image_path must not be empty")
             image_path = (manifest_path.parent / image_raw).resolve()
             if not image_path.is_file():
-                raise ValueError(
-                    f"line {line_number}: image_path does not exist"
-                )
+                raise ValueError(f"line {line_number}: image_path does not exist")
             box = _parse_box(mapping["box_xyxy"], line_number)
             try:
                 with Image.open(image_path) as image:
                     width, height = image.size
                     image.verify()
             except Exception as exc:
-                raise ValueError(
-                    f"line {line_number}: image is not readable"
-                ) from exc
+                raise ValueError(f"line {line_number}: image is not readable") from exc
             if (
                 box.x < 0.0
                 or box.y < 0.0
                 or box.x + box.width > width
                 or box.y + box.height > height
             ):
-                raise ValueError(
-                    f"line {line_number}: box is outside image bounds"
-                )
+                raise ValueError(f"line {line_number}: box is outside image bounds")
             rows.append(
                 BenchmarkInput(
                     sample_id=sample_id,
@@ -388,14 +401,34 @@ def run_benchmark(
     _preflight_models(pipeline, inputs[0])
 
     warmup_inputs = tuple(islice(cycle(inputs), warmup_count))
-    warmup_timings = tuple(
-        _infer(pipeline, item).timings for item in warmup_inputs
-    )
+    warmup_decisions = tuple(_infer(pipeline, item) for item in warmup_inputs)
     measured_decisions = tuple(_infer(pipeline, item) for item in inputs)
     aggregate = aggregate_benchmark(
-        warmup_timings
+        tuple(decision.timings for decision in warmup_decisions)
         + tuple(decision.timings for decision in measured_decisions),
         warmup_count=warmup_count,
+        decision_paths=(
+            tuple(
+                getattr(
+                    decision,
+                    "decision_path",
+                    DecisionPath.REPVIT_DIRECT
+                    if decision.timings.dinov3_ms == 0.0
+                    else DecisionPath.UNKNOWN_TOP3,
+                )
+                for decision in warmup_decisions
+            )
+            + tuple(
+                getattr(
+                    decision,
+                    "decision_path",
+                    DecisionPath.REPVIT_DIRECT
+                    if decision.timings.dinov3_ms == 0.0
+                    else DecisionPath.UNKNOWN_TOP3,
+                )
+                for decision in measured_decisions
+            )
+        ),
     )
 
     provenance = measured_decisions[0].provenance
@@ -443,6 +476,7 @@ def _provenance_identity(provenance: ModelProvenance) -> tuple[object, ...]:
         provenance.dinov3_support_sha256,
         provenance.calibration_id,
         provenance.calibration_sha256,
+        provenance.preprocess_sha256,
     )
 
 

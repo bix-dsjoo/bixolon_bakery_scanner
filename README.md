@@ -109,16 +109,26 @@ Classifier 임계값은 모델 패키지에 내장된 고정값이 아니라 독
 개발 증거 수집과 calibration 선택:
 
 ```powershell
-python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/development_manifest.jsonl --output artifacts/classification/development_evidence.jsonl
-python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
+python scripts/build_dinov3_source_manifest.py --output artifacts/classification/dinov3_source_manifest.json
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --manifest datasets/classification/development_manifest.jsonl --output artifacts/classification/development_evidence.jsonl
+python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
 ```
 
 잠긴 승인 증거 수집과 고정 정책 평가:
 
 ```powershell
-python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
-python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/locked_evidence.jsonl --calibration artifacts/classification/policy_v1.json --output artifacts/classification/locked-report.json
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
+python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --coverage-contract configs/locked_classifier_coverage_v1.json --development-evidence artifacts/classification/development_evidence.jsonl --evidence artifacts/classification/locked_evidence.jsonl --calibration artifacts/classification/policy_v1.json --output artifacts/classification/locked-report.json
 ```
+
+`build_dinov3_source_manifest.py` defaults to the authoritative support roots
+`datasets/classification/base_15class` and
+`datasets/classification/incremental_5class_crop`. Its canonical digest must
+equal `source_manifest_sha256` in the DINO support artifact; otherwise evidence
+collection, calibration, and locked evaluation fail closed. Locked release also
+requires all 20 registered SKUs, at least one unregistered crop, and every
+scenario in `configs/locked_classifier_coverage_v1.json`; a perfect subset is
+not release eligible.
 
 잠긴 보고서는 `auto_precision`, `fallback_top3_recall`,
 `assisted_success`가 적용 가능한 구간마다 1.0인지 검사하며, 하나라도

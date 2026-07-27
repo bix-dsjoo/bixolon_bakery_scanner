@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 from PIL import Image
 
@@ -12,11 +13,16 @@ from bakery_scanner.classification.evidence import (
     EvaluatedRow,
     EvidenceInput,
     EvidenceRow,
+    LockedCoverageContract,
     atomic_write_bytes,
     evaluate_rows,
     load_evidence_manifest,
     load_repvit_training_hashes,
+    load_dinov3_support_training_hashes,
+    hash_evidence_rows,
+    hash_evidence_identities,
 )
+from bakery_scanner.classification.config import ClassifierConfig, preprocess_sha256
 from bakery_scanner.classification.contracts import ModelScoreVector
 from bakery_scanner.classification.policy import PolicyCalibration
 from bakery_scanner.contracts import Box
@@ -57,6 +63,8 @@ def _manifest_row(
         "registered": registered,
         "sku_id": sku_id,
         "role": role,
+        "scenario_schema_version": 1,
+        "scenarios": ["general"],
     }
 
 
@@ -82,31 +90,58 @@ def _write_classifier_config(
         ),
         encoding="utf-8",
     )
+    repvit_checkpoint = tmp_path / "repvit.pt"
+    dino_weights = tmp_path / "dinov3.pth"
+    repvit_checkpoint.write_bytes(b"repvit")
+    dino_weights.write_bytes(b"dinov3")
+    source_manifest = tmp_path / "dino.sources.json"
+    source_payload = {"sources": [{"identity": "dino-source.png", "sha256": "d" * 64}]}
+    source_manifest.write_bytes(
+        json.dumps(source_payload, separators=(",", ":"), sort_keys=True).encode()
+    )
+    support = tmp_path / "support.pt"
+    torch.save(
+        {
+            "source_manifest_sha256": hashlib.sha256(
+                source_manifest.read_bytes()
+            ).hexdigest()
+        },
+        support,
+    )
     hashes = {
-        "repvit_checkpoint_sha256": "1" * 64,
+        "repvit_checkpoint_sha256": hashlib.sha256(
+            repvit_checkpoint.read_bytes()
+        ).hexdigest(),
         "repvit_manifest_sha256": hashlib.sha256(
             training_manifest.read_bytes()
         ).hexdigest(),
-        "dinov3_weights_sha256": "3" * 64,
-        "dinov3_support_sha256": "4" * 64,
+        "dinov3_weights_sha256": hashlib.sha256(dino_weights.read_bytes()).hexdigest(),
+        "dinov3_support_sha256": hashlib.sha256(support.read_bytes()).hexdigest(),
     }
     config = tmp_path / "classifier.yaml"
+    (tmp_path / "coverage.json").write_bytes(
+        json.dumps(
+            {"required_scenarios": ["general"], "schema_version": 1},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    )
     config.write_text(
         yaml.safe_dump(
             {
                 "schema_version": 1,
                 "repvit": {
                     "artifact_id": "repvit_m1_15plus5_v1",
-                    "checkpoint": "repvit.pt",
+                    "checkpoint": repvit_checkpoint.name,
                     "checkpoint_sha256": hashes["repvit_checkpoint_sha256"],
                     "manifest": training_manifest.name,
                     "manifest_sha256": hashes["repvit_manifest_sha256"],
                 },
                 "dinov3": {
                     "artifact_id": "dinov3_vits16_15plus5_v1",
-                    "weights": "dinov3.pth",
+                    "weights": dino_weights.name,
                     "weights_sha256": hashes["dinov3_weights_sha256"],
-                    "support": "support.pt",
+                    "support": support.name,
                     "support_sha256": hashes["dinov3_support_sha256"],
                 },
                 "preprocess": {
@@ -120,10 +155,13 @@ def _write_classifier_config(
         ),
         encoding="utf-8",
     )
-    return config, hashes
+    return config, {**hashes, "dino_source_manifest": str(source_manifest)}
 
 
-def _policy(evidence_sha256: str = "0" * 64) -> PolicyCalibration:
+def _policy(
+    evidence_sha256: str = "0" * 64,
+    development_identity_sha256: str = "0" * 64,
+) -> PolicyCalibration:
     return PolicyCalibration(
         schema_version=1,
         calibration_id="policy_v1",
@@ -137,6 +175,7 @@ def _policy(evidence_sha256: str = "0" * 64) -> PolicyCalibration:
         dino_threshold=0.5,
         fused_margin=0.1,
         evidence_sha256=evidence_sha256,
+        development_identity_sha256=development_identity_sha256,
     )
 
 
@@ -146,6 +185,7 @@ def _scored_row(
     image_sha256: str = "a" * 64,
     registered: bool = True,
     sku_id: int | None = 1,
+    provenance: dict[str, str] | None = None,
 ) -> EvidenceRow:
     return EvidenceRow(
         sample_id="sample-1",
@@ -158,6 +198,15 @@ def _scored_row(
         dinov3_values=tuple([4.0] + [0.0] * 19),
         repvit_artifact_id="repvit_m1_15plus5_v1",
         dinov3_artifact_id="dinov3_vits16_15plus5_v1",
+        repvit_checkpoint_sha256=(provenance or {}).get(
+            "repvit_checkpoint_sha256", "0" * 64
+        ),
+        repvit_manifest_sha256=(provenance or {}).get(
+            "repvit_manifest_sha256", "0" * 64
+        ),
+        dinov3_weights_sha256=(provenance or {}).get("dinov3_weights_sha256", "0" * 64),
+        dinov3_support_sha256=(provenance or {}).get("dinov3_support_sha256", "0" * 64),
+        preprocess_sha256=(provenance or {}).get("preprocess_sha256", "0" * 64),
     )
 
 
@@ -277,6 +326,19 @@ def test_training_hashes_are_loaded_from_configured_repvit_manifest(tmp_path: Pa
     assert load_repvit_training_hashes(training_manifest) == frozenset(
         {"a" * 64, "b" * 64}
     )
+
+
+def test_dino_support_source_manifest_must_match_embedded_digest(tmp_path: Path):
+    config, _ = _write_classifier_config(tmp_path)
+    loaded = ClassifierConfig.load(config)
+    source_manifest = tmp_path / "dino.sources.json"
+
+    assert load_dinov3_support_training_hashes(
+        loaded.dinov3.support, source_manifest
+    ) == {"d" * 64}
+    source_manifest.write_bytes(b'{"sources":[]}')
+    with pytest.raises(ValueError, match="does not match support"):
+        load_dinov3_support_training_hashes(loaded.dinov3.support, source_manifest)
 
 
 def test_evidence_row_requires_exact_twenty_finite_scores():
@@ -445,9 +507,21 @@ def test_locked_report_contains_requested_slices_and_exact_failures():
         "incremental_5",
         "registered",
         "unregistered",
+        "scenarios",
     }
     assert report["failures"]["automatic_errors"] == ["locked-1"]
     assert report["release_passes"] is False
+
+
+def test_locked_coverage_rejects_perfect_incomplete_subset():
+    row = _scored_row()
+    contract = LockedCoverageContract(1, ("general", "lighting"))
+
+    coverage = contract.report((row,))
+
+    assert coverage["complete"] is False
+    assert coverage["missing_registered_skus"] == list(range(2, 21))
+    assert coverage["missing_scenarios"] == ["lighting"]
 
 
 def test_calibrator_rejects_precomputed_training_evidence_before_output(
@@ -473,6 +547,8 @@ def test_calibrator_rejects_precomputed_training_evidence_before_output(
                 str(config),
                 "--evidence",
                 str(evidence),
+                "--dino-source-manifest",
+                str(tmp_path / "dino.sources.json"),
                 "--output",
                 str(output),
             ]
@@ -499,6 +575,12 @@ def test_evaluator_rejects_development_role_without_replacing_output(
                 str(config),
                 "--evidence",
                 str(evidence),
+                "--development-evidence",
+                str(evidence),
+                "--dino-source-manifest",
+                str(tmp_path / "dino.sources.json"),
+                "--coverage-contract",
+                str(tmp_path / "coverage.json"),
                 "--calibration",
                 str(calibration),
                 "--output",
@@ -514,9 +596,23 @@ def test_evaluator_reports_configured_model_hashes_and_nonzero_release(
 ):
     config, hashes = _write_classifier_config(tmp_path)
     evidence = tmp_path / "locked.jsonl"
-    _write_evidence(evidence, (_scored_row(),))
+    loaded = ClassifierConfig.load(config)
+    provenance = {
+        **{key: value for key, value in hashes.items() if key.endswith("sha256")},
+        "preprocess_sha256": preprocess_sha256(loaded.preprocess),
+    }
+    locked_row = _scored_row(provenance=provenance)
+    _write_evidence(evidence, (locked_row,))
+    development = tmp_path / "development.jsonl"
+    development_row = _scored_row(
+        role="development", image_sha256="b" * 64, provenance=provenance
+    )
+    _write_evidence(development, (development_row,))
     calibration = tmp_path / "policy.json"
-    calibration_payload = _policy().to_json_bytes()
+    calibration_payload = _policy(
+        hash_evidence_rows((development_row,)),
+        hash_evidence_identities((development_row,)),
+    ).to_json_bytes()
     calibration.write_bytes(calibration_payload)
     output = tmp_path / "report.json"
 
@@ -526,6 +622,12 @@ def test_evaluator_reports_configured_model_hashes_and_nonzero_release(
             str(config),
             "--evidence",
             str(evidence),
+            "--development-evidence",
+            str(development),
+            "--dino-source-manifest",
+            str(tmp_path / "dino.sources.json"),
+            "--coverage-contract",
+            str(tmp_path / "coverage.json"),
             "--calibration",
             str(calibration),
             "--output",
@@ -569,6 +671,12 @@ def test_evaluator_rejects_precomputed_training_evidence(
                 str(config),
                 "--evidence",
                 str(evidence),
+                "--development-evidence",
+                str(evidence),
+                "--dino-source-manifest",
+                str(tmp_path / "dino.sources.json"),
+                "--coverage-contract",
+                str(tmp_path / "coverage.json"),
                 "--calibration",
                 str(calibration),
                 "--output",

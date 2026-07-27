@@ -214,7 +214,7 @@ RepViT 직접 확정 경로에서는 DINOv3를 실행하지 않는다. DINOv3 �
 
 ```powershell
 python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/development_manifest.jsonl --output artifacts/classification/development_evidence.jsonl
-python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
+python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
 ```
 
 증거 수집은 모든 표본에 RepViT와 DINOv3를 모두 실행한다. calibration
@@ -228,7 +228,7 @@ python scripts/calibrate_classifier_policy.py --config configs/classifier_policy
 증거로 수집한 뒤 기존 calibration을 변경하지 않고 한 번 평가한다.
 
 ```powershell
-python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
+python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
 python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.yaml --evidence artifacts/classification/locked_evidence.jsonl --calibration artifacts/classification/policy_v1.json --output artifacts/classification/locked-report.json
 ```
 

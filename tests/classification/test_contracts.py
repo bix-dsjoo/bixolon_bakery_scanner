@@ -123,3 +123,28 @@ def test_json_output_is_canonical_utf8():
     decoded = json.loads(payload)
     assert decoded["box"] == [10.0, 20.0, 40.0, 60.0]
     assert decoded["provenance"]["dinov3_support_sha256"] == "3" * 64
+
+
+def test_provenance_serializes_versioned_preprocess_digest():
+    provenance = ModelProvenance(
+        repvit_artifact_id="repvit_m1_15plus5_v1",
+        repvit_sha256="0" * 64,
+        dinov3_artifact_id="dinov3_vits16_15plus5_v1",
+        dinov3_sha256="1" * 64,
+        dinov3_support_sha256="2" * 64,
+        calibration_id="policy_v1",
+        calibration_sha256="3" * 64,
+        preprocess_sha256="4" * 64,
+    )
+    result = ClassificationDecision(
+        decision="sku",
+        sku_id=1,
+        confidence=1.0,
+        box=VALID_BOX,
+        decision_path=DecisionPath.REPVIT_DIRECT,
+        top3=(),
+        provenance=provenance,
+        timings=StageTimings(0.0, 0.0, 0.0),
+    )
+
+    assert json.loads(result.to_json_bytes())["provenance"]["preprocess_sha256"] == "4" * 64

@@ -78,6 +78,7 @@ class ModelProvenance:
     dinov3_support_sha256: str
     calibration_id: str
     calibration_sha256: str
+    preprocess_sha256: str = "0" * 64
     failure_code: str | None = None
 
     def __post_init__(self) -> None:
@@ -89,6 +90,7 @@ class ModelProvenance:
             "dinov3_sha256",
             "dinov3_support_sha256",
             "calibration_sha256",
+            "preprocess_sha256",
         ):
             if not _SHA256.fullmatch(getattr(self, field)):
                 raise ValueError(f"{field} must be a lowercase SHA-256 hash")
@@ -131,7 +133,10 @@ class ClassificationDecision:
             if self.sku_id is None:
                 raise ValueError("sku decision requires sku_id")
             _require_sku_id(self.sku_id)
-            if self.decision_path not in (DecisionPath.REPVIT_DIRECT, DecisionPath.DINOV3_CONFIRMED):
+            if self.decision_path not in (
+                DecisionPath.REPVIT_DIRECT,
+                DecisionPath.DINOV3_CONFIRMED,
+            ):
                 raise ValueError("sku decision requires a SKU decision path")
             if self.top3:
                 raise ValueError("sku decision must not include top3 candidates")
@@ -140,7 +145,10 @@ class ClassificationDecision:
                 raise ValueError("unknown decision must not include sku_id")
             if self.decision_path is not DecisionPath.UNKNOWN_TOP3:
                 raise ValueError("unknown decision requires unknown_top3 path")
-            if len(self.top3) != 3 or {candidate.sku_id for candidate in self.top3}.__len__() != 3:
+            if (
+                len(self.top3) != 3
+                or {candidate.sku_id for candidate in self.top3}.__len__() != 3
+            ):
                 raise ValueError("unknown decision requires three unique candidates")
             if tuple(candidate.rank for candidate in self.top3) != (1, 2, 3):
                 raise ValueError("unknown candidates must have ranks 1, 2, 3")
@@ -161,6 +169,7 @@ class ClassificationDecision:
                 "dinov3_sha256": self.provenance.dinov3_sha256,
                 "dinov3_support_sha256": self.provenance.dinov3_support_sha256,
                 "failure_code": self.provenance.failure_code,
+                "preprocess_sha256": self.provenance.preprocess_sha256,
                 "repvit_artifact_id": self.provenance.repvit_artifact_id,
                 "repvit_sha256": self.provenance.repvit_sha256,
             },
@@ -171,8 +180,18 @@ class ClassificationDecision:
                 "total_ms": self.timings.total_ms,
             },
             "top3": [
-                {"rank": candidate.rank, "score": candidate.score, "sku_id": candidate.sku_id}
+                {
+                    "rank": candidate.rank,
+                    "score": candidate.score,
+                    "sku_id": candidate.sku_id,
+                }
                 for candidate in self.top3
             ],
         }
-        return json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")

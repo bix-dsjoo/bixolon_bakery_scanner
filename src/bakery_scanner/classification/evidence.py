@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
 import numpy as np
+import torch
 from PIL import Image
 from sklearn.model_selection import StratifiedGroupKFold
 
@@ -24,6 +25,7 @@ from .policy import (
     calibrate_repvit,
     fuse_probabilities,
 )
+from .config import ClassifierConfig, preprocess_sha256
 
 
 _SKU_IDS = tuple(range(1, 21))
@@ -39,6 +41,8 @@ _MANIFEST_KEYS = frozenset(
         "registered",
         "sku_id",
         "role",
+        "scenario_schema_version",
+        "scenarios",
     }
 )
 _EVIDENCE_KEYS = frozenset(
@@ -53,6 +57,14 @@ _EVIDENCE_KEYS = frozenset(
         "dinov3_values",
         "repvit_artifact_id",
         "dinov3_artifact_id",
+        "provenance_schema_version",
+        "repvit_checkpoint_sha256",
+        "repvit_manifest_sha256",
+        "dinov3_weights_sha256",
+        "dinov3_support_sha256",
+        "preprocess_sha256",
+        "scenario_schema_version",
+        "scenarios",
     }
 )
 
@@ -100,6 +112,8 @@ class EvidenceInput:
     sku_id: int | None
     role: Literal["development", "locked_acceptance"]
     image_sha256: str
+    scenario_schema_version: int = 1
+    scenarios: tuple[str, ...] = ("general",)
 
     def __post_init__(self) -> None:
         if not isinstance(self.sample_id, str) or not self.sample_id:
@@ -122,6 +136,7 @@ class EvidenceInput:
             self.image_sha256
         ):
             raise ValueError("image_sha256 must be a lowercase SHA-256 hash")
+        _validate_scenarios(self.scenario_schema_version, self.scenarios)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +151,14 @@ class EvidenceRow:
     dinov3_values: tuple[float, ...]
     repvit_artifact_id: str
     dinov3_artifact_id: str
+    provenance_schema_version: int = 1
+    repvit_checkpoint_sha256: str = "0" * 64
+    repvit_manifest_sha256: str = "0" * 64
+    dinov3_weights_sha256: str = "0" * 64
+    dinov3_support_sha256: str = "0" * 64
+    preprocess_sha256: str = "0" * 64
+    scenario_schema_version: int = 1
+    scenarios: tuple[str, ...] = ("general",)
 
     def __post_init__(self) -> None:
         if not isinstance(self.sample_id, str) or not self.sample_id:
@@ -158,6 +181,18 @@ class EvidenceRow:
             raise ValueError(f"repvit_artifact_id must be {_REPVIT_ARTIFACT_ID}")
         if self.dinov3_artifact_id != _DINOV3_ARTIFACT_ID:
             raise ValueError(f"dinov3_artifact_id must be {_DINOV3_ARTIFACT_ID}")
+        if self.provenance_schema_version != 1:
+            raise ValueError("provenance_schema_version must be 1")
+        for field in (
+            "repvit_checkpoint_sha256",
+            "repvit_manifest_sha256",
+            "dinov3_weights_sha256",
+            "dinov3_support_sha256",
+            "preprocess_sha256",
+        ):
+            if not _SHA256.fullmatch(getattr(self, field)):
+                raise ValueError(f"{field} must be a lowercase SHA-256 hash")
+        _validate_scenarios(self.scenario_schema_version, self.scenarios)
         object.__setattr__(
             self,
             "repvit_values",
@@ -186,6 +221,14 @@ class EvidenceRow:
                 "repvit_artifact_id": self.repvit_artifact_id,
                 "repvit_values": list(self.repvit_values),
                 "role": self.role,
+                "provenance_schema_version": self.provenance_schema_version,
+                "repvit_checkpoint_sha256": self.repvit_checkpoint_sha256,
+                "repvit_manifest_sha256": self.repvit_manifest_sha256,
+                "dinov3_weights_sha256": self.dinov3_weights_sha256,
+                "dinov3_support_sha256": self.dinov3_support_sha256,
+                "preprocess_sha256": self.preprocess_sha256,
+                "scenario_schema_version": self.scenario_schema_version,
+                "scenarios": list(self.scenarios),
                 "sample_id": self.sample_id,
                 "sku_id": self.sku_id,
             }
@@ -206,6 +249,14 @@ class EvidenceRow:
                 dinov3_values=tuple(mapping["dinov3_values"]),
                 repvit_artifact_id=mapping["repvit_artifact_id"],
                 dinov3_artifact_id=mapping["dinov3_artifact_id"],
+                provenance_schema_version=mapping["provenance_schema_version"],
+                repvit_checkpoint_sha256=mapping["repvit_checkpoint_sha256"],
+                repvit_manifest_sha256=mapping["repvit_manifest_sha256"],
+                dinov3_weights_sha256=mapping["dinov3_weights_sha256"],
+                dinov3_support_sha256=mapping["dinov3_support_sha256"],
+                preprocess_sha256=mapping["preprocess_sha256"],
+                scenario_schema_version=mapping["scenario_schema_version"],
+                scenarios=tuple(mapping["scenarios"]),
             )
         except (KeyError, TypeError) as exc:
             raise ValueError("evidence row has invalid field types") from exc
@@ -266,7 +317,7 @@ class ClassificationMetrics:
     assisted_correct: int
     assisted_failures: int
     auto_precision: float | None
-    auto_coverage: float
+    auto_coverage: float | None
     fallback_top3_recall: float | None
     assisted_success: float | None
     failure_sample_ids: tuple[str, ...]
@@ -281,6 +332,56 @@ class ClassificationMetrics:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class LockedCoverageContract:
+    """Versioned minimum coverage for a release-eligible locked evaluation."""
+
+    schema_version: int
+    required_scenarios: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _validate_scenarios(self.schema_version, self.required_scenarios)
+
+    @classmethod
+    def load(cls, path: Path) -> "LockedCoverageContract":
+        content = Path(path).read_bytes()
+        try:
+            payload = json.loads(
+                content.decode("utf-8"), object_pairs_hook=_unique_object
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("locked coverage contract must be canonical JSON") from exc
+        if not isinstance(payload, dict) or set(payload) != {
+            "schema_version",
+            "required_scenarios",
+        }:
+            raise ValueError("locked coverage contract has missing or extra keys")
+        if _canonical_json_bytes(payload) != content:
+            raise ValueError("locked coverage contract must use canonical JSON")
+        return cls(payload["schema_version"], tuple(payload["required_scenarios"]))
+
+    def report(self, rows: Sequence[EvidenceRow]) -> dict[str, object]:
+        present_skus = {row.sku_id for row in rows if row.registered}
+        present_scenarios = {scenario for row in rows for scenario in row.scenarios}
+        missing_skus = [sku for sku in _SKU_IDS if sku not in present_skus]
+        missing_scenarios = [
+            scenario
+            for scenario in self.required_scenarios
+            if scenario not in present_scenarios
+        ]
+        unregistered_count = sum(not row.registered for row in rows)
+        return {
+            "schema_version": self.schema_version,
+            "required_scenarios": list(self.required_scenarios),
+            "missing_registered_skus": missing_skus,
+            "missing_scenarios": missing_scenarios,
+            "unregistered_count": unregistered_count,
+            "complete": not missing_skus
+            and not missing_scenarios
+            and unregistered_count > 0,
+        }
 
 
 def load_evidence_manifest(
@@ -347,6 +448,8 @@ def load_evidence_manifest(
                     sku_id=mapping["sku_id"],
                     role=mapping["role"],
                     image_sha256=image_sha256,
+                    scenario_schema_version=mapping["scenario_schema_version"],
+                    scenarios=tuple(mapping["scenarios"]),
                 )
             )
         except ValueError as exc:
@@ -421,11 +524,85 @@ def load_repvit_training_hashes(
     return hashes
 
 
+def load_dinov3_support_training_hashes(
+    support_path: Path,
+    source_manifest_path: Path,
+) -> frozenset[str]:
+    """Require the canonical source identities embedded by the DINO support build."""
+    try:
+        support = torch.load(Path(support_path), map_location="cpu", weights_only=True)
+        expected = support["source_manifest_sha256"]
+    except (OSError, KeyError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            "DINOv3 support has no valid source manifest identity"
+        ) from exc
+    if not isinstance(expected, str) or not _SHA256.fullmatch(expected):
+        raise ValueError("DINOv3 support has invalid source_manifest_sha256")
+    source_path = Path(source_manifest_path).resolve()
+    try:
+        content = source_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("DINOv3 source manifest is required") from exc
+    if sha256_file(source_path) != expected:
+        raise ValueError("DINOv3 source manifest SHA-256 does not match support")
+    try:
+        payload = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("DINOv3 source manifest must be canonical JSON") from exc
+    if _canonical_json_bytes(payload) != content:
+        raise ValueError("DINOv3 source manifest must use canonical JSON")
+    try:
+        sources = payload["sources"]
+        hashes = frozenset(source["sha256"] for source in sources)
+    except (KeyError, TypeError) as exc:
+        raise ValueError("DINOv3 source manifest has invalid sources") from exc
+    if (
+        not isinstance(sources, list)
+        or len(sources) != len(hashes)
+        or any(
+            not isinstance(value, str) or not _SHA256.fullmatch(value)
+            for value in hashes
+        )
+    ):
+        raise ValueError("DINOv3 source manifest has invalid image hashes")
+    return hashes
+
+
+def validate_evidence_provenance(
+    rows: Sequence[EvidenceRow], config: ClassifierConfig
+) -> None:
+    """Check vectors against both configured digest claims and the exact files."""
+    expected = {
+        "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+        "repvit_manifest_sha256": config.repvit.manifest_sha256,
+        "dinov3_weights_sha256": config.dinov3.weights_sha256,
+        "dinov3_support_sha256": config.dinov3.support_sha256,
+        "preprocess_sha256": preprocess_sha256(config.preprocess),
+    }
+    paths = {
+        "repvit_checkpoint_sha256": config.repvit.checkpoint,
+        "repvit_manifest_sha256": config.repvit.manifest,
+        "dinov3_weights_sha256": config.dinov3.weights,
+        "dinov3_support_sha256": config.dinov3.support,
+    }
+    for field, artifact_path in paths.items():
+        if sha256_file(artifact_path) != expected[field]:
+            raise ValueError(f"configured {field} does not match its SHA-256")
+    if any(
+        getattr(row, field) != expected_hash
+        for row in rows
+        for field, expected_hash in expected.items()
+    ):
+        raise ValueError(
+            "evidence model provenance does not match configured artifacts"
+        )
+
+
 def evaluate_rows(rows: Sequence[EvaluatedRow]) -> ClassificationMetrics:
     if not rows:
         raise ValueError("evaluation requires at least one row")
     sample_ids: set[str] = set()
-    auto_count = auto_correct = auto_errors = 0
+    auto_count = auto_correct = auto_errors = registered_auto_count = 0
     fallback_denominator = fallback_correct = fallback_misses = 0
     assisted_correct = assisted_failures = 0
     registered_count = 0
@@ -439,6 +616,7 @@ def evaluate_rows(rows: Sequence[EvaluatedRow]) -> ClassificationMetrics:
         registered_count += int(row.registered)
         if row.decision == "sku":
             auto_count += 1
+            registered_auto_count += int(row.registered)
             correct = row.registered and row.predicted_sku_id == row.sku_id
             auto_correct += int(correct)
             auto_errors += int(not correct)
@@ -475,7 +653,9 @@ def evaluate_rows(rows: Sequence[EvaluatedRow]) -> ClassificationMetrics:
         assisted_correct=assisted_correct,
         assisted_failures=assisted_failures,
         auto_precision=None if auto_count == 0 else auto_correct / auto_count,
-        auto_coverage=auto_count / sample_count,
+        auto_coverage=(
+            None if registered_count == 0 else registered_auto_count / registered_count
+        ),
         fallback_top3_recall=(
             None
             if fallback_denominator == 0
@@ -618,6 +798,20 @@ def hash_evidence_rows(rows: Sequence[EvidenceRow]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def hash_evidence_identities(rows: Sequence[EvidenceRow]) -> str:
+    payload = [
+        {
+            "capture_group": row.capture_group,
+            "image_sha256": row.image_sha256,
+            "sample_id": row.sample_id,
+            "scenario_schema_version": row.scenario_schema_version,
+            "scenarios": list(row.scenarios),
+        }
+        for row in sorted(rows, key=lambda item: item.sample_id)
+    ]
+    return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -728,7 +922,7 @@ def _fit_policy(
         repvit[indices, repvit_order[:, 0]] - repvit[indices, repvit_order[:, 1]]
     )
     fused_margin = fused[indices, fused_order[:, 0]] - fused[indices, fused_order[:, 1]]
-    direct_pairs = _pareto_thresholds(
+    direct_pairs = _lossless_thresholds(
         repvit_top_probability,
         repvit_margin,
     )
@@ -738,7 +932,7 @@ def _fit_policy(
             repvit_margin >= direct_margin
         )
         recheck = ~direct
-        recheck_pairs = _pareto_thresholds(
+        recheck_pairs = _lossless_thresholds(
             dino_top_probability[recheck],
             fused_margin[recheck],
         )
@@ -794,6 +988,7 @@ def _fit_policy(
         dino_threshold=dino_threshold,
         fused_margin=fused_margin_threshold,
         evidence_sha256=evidence_sha256,
+        development_identity_sha256=hash_evidence_identities(rows),
     )
 
 
@@ -886,24 +1081,29 @@ def _nll(
     return float(-np.log(np.clip(selected, 1e-12, 1.0)).mean())
 
 
-def _pareto_thresholds(
+def _lossless_thresholds(
     first: np.ndarray,
     second: np.ndarray,
 ) -> tuple[tuple[float, float], ...]:
-    points = {
-        (float(left), float(right)) for left, right in zip(first, second, strict=True)
-    }
-    frontier: list[tuple[float, float]] = []
-    for point in sorted(points):
-        if not any(
-            other != point and other[0] <= point[0] and other[1] <= point[1]
-            for other in points
-        ):
-            frontier.append(point)
-    sentinel = (1.0, 1.0)
-    if sentinel not in frontier:
-        frontier.append(sentinel)
-    return tuple(sorted(frontier))
+    """Retain every distinct >= acceptance mask; never Pareto-prune thresholds.
+
+    A lower threshold is not dominated for safety gates: it may accept a correct
+    intermediate point while a higher threshold only appears better geometrically.
+    """
+    if first.size == 0:
+        return ((1.0, 1.0),)
+    candidates = sorted(
+        {(float(left), float(right)) for left in first for right in second}
+        | {(1.0, 1.0)}
+    )
+    retained: list[tuple[float, float]] = []
+    masks: set[bytes] = set()
+    for left, right in candidates:
+        mask = np.packbits((first >= left) & (second >= right)).tobytes()
+        if mask not in masks:
+            masks.add(mask)
+            retained.append((left, right))
+    return tuple(retained)
 
 
 def _validate_score_vector(
@@ -914,6 +1114,17 @@ def _validate_score_vector(
         raise ValueError(f"{field} must contain exactly 20 values")
     checked = tuple(_finite_float(value, field) for value in values)
     return checked
+
+
+def _validate_scenarios(version: object, scenarios: object) -> None:
+    if type(version) is not int or version != 1:
+        raise ValueError("scenario_schema_version must be 1")
+    if not isinstance(scenarios, tuple) or not scenarios:
+        raise ValueError("scenarios must be a non-empty canonical tuple")
+    if any(not isinstance(value, str) or not value.strip() for value in scenarios):
+        raise ValueError("scenarios must contain non-empty labels")
+    if tuple(sorted(set(scenarios))) != scenarios:
+        raise ValueError("scenarios must be unique and canonically ordered")
 
 
 def _require_development_rows(rows: Sequence[EvidenceRow]) -> None:
