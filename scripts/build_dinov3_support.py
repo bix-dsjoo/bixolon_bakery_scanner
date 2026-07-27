@@ -17,7 +17,10 @@ from bakery_scanner.classification.evidence import atomic_write_bytes
 from bakery_scanner.classification.local_bank import source_balanced_coreset
 from bakery_scanner.classification.preprocess import build_transform
 from bakery_scanner.data.preprocess import load_canonical_image
-from build_dinov3_source_manifest import DEFAULT_ROOTS, build_manifest
+try:  # Supports both ``python -m scripts...`` and direct script execution.
+    from scripts.build_dinov3_source_manifest import DEFAULT_ROOTS, build_manifest
+except ModuleNotFoundError:  # pragma: no cover - direct script compatibility
+    from build_dinov3_source_manifest import DEFAULT_ROOTS, build_manifest
 
 
 def _sha(path: Path) -> str:
