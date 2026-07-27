@@ -5,6 +5,8 @@ repvit:
   checkpoint_sha256: 0369c148c3b208ea41140cc220a6871367eaa8ed52b0cedfa97d39f4b2d76cfc
   manifest: ../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.manifest.json
   manifest_sha256: f2bb1787295a76ee8b2bb049223557a87a88309038c963ea1617a3c7aacf1e56
+  prototype_bank: ../artifacts/classification/repvit_m1_15plus5_v2_prototypes.pt
+  prototype_bank_sha256: 5e6c57c821ba39315942e7b3d4ac74fab74e432c3f0d92f1f7baff7824eeddf9
 dinov3:
   artifact_id: dinov3_vits16_15plus5_v1
   weights: ../models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth

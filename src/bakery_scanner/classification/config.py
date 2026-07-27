@@ -26,6 +26,8 @@ class RepViTConfig(_StrictModel):
     checkpoint_sha256: str
     manifest: Path
     manifest_sha256: str
+    prototype_bank: Path | None = None
+    prototype_bank_sha256: str | None = None
 
     @field_validator("checkpoint_sha256", "manifest_sha256")
     @classmethod
@@ -33,6 +35,14 @@ class RepViTConfig(_StrictModel):
         if not _SHA256.fullmatch(value):
             raise ValueError("must be a lowercase SHA-256 hash")
         return value
+
+    @model_validator(mode="after")
+    def _prototype_pair(self) -> "RepViTConfig":
+        if (self.prototype_bank is None) != (self.prototype_bank_sha256 is None):
+            raise ValueError("prototype_bank and prototype_bank_sha256 must be supplied together")
+        if self.prototype_bank_sha256 is not None and not _SHA256.fullmatch(self.prototype_bank_sha256):
+            raise ValueError("prototype_bank_sha256 must be a lowercase SHA-256 hash")
+        return self
 
 
 class DINOv3Config(_StrictModel):
