@@ -332,6 +332,54 @@ class DecisionPolicy:
             reason=reason,
         )
 
+    def after_local_recheck(
+        self,
+        repvit_scores: ModelScoreVector,
+        dino_global_scores: ModelScoreVector,
+        local_scores: dict[int, float],
+        *,
+        box: Box,
+    ) -> ClassificationDecision:
+        """Fuse DINO global/local retrieval without treating local as a vote."""
+        _require_score_vector(
+            repvit_scores,
+            model_id=self.calibration.repvit_artifact_id,
+            score_kind="probability",
+        )
+        _require_score_vector(
+            dino_global_scores,
+            model_id=self.calibration.dinov3_artifact_id,
+            score_kind="similarity",
+        )
+        candidate_ids = tuple(local_scores)
+        if not 1 <= len(candidate_ids) <= 7 or len(set(candidate_ids)) != len(candidate_ids):
+            raise ValueError("local scores must contain one to seven unique candidates")
+        if any(sku_id not in _SKU_IDS for sku_id in candidate_ids):
+            raise ValueError("local scores must use canonical SKU IDs")
+        local_values = tuple(_finite_number(local_scores[sku_id], "local score") for sku_id in candidate_ids)
+        repvit = calibrate_repvit(repvit_scores.values, self.calibration.repvit_temperature)
+        dino = calibrate_dinov3(dino_global_scores.values, self.calibration.dinov3_temperature)
+        local = _softmax(np.asarray(local_values, dtype=np.float64))
+        candidate_indices = tuple(sku_id - 1 for sku_id in candidate_ids)
+        candidate_global = np.asarray([dino[index] for index in candidate_indices], dtype=np.float64)
+        candidate_family = _softmax(
+            np.log(np.clip(candidate_global, 1e-12, 1.0)) + np.log(np.asarray(local))
+        )
+        candidate_repvit = _softmax(
+            np.log(np.clip(np.asarray([repvit[index] for index in candidate_indices]), 1e-12, 1.0))
+        )
+        fused = _softmax(
+            self.calibration.alpha * np.log(np.asarray(candidate_repvit))
+            + (1.0 - self.calibration.alpha) * np.log(np.asarray(candidate_family))
+        )
+        ranked = tuple(sorted(range(len(candidate_ids)), key=lambda index: (-fused[index], candidate_ids[index])))
+        best, second = ranked[0], ranked[1] if len(ranked) > 1 else ranked[0]
+        repvit_top = _rank(repvit, repvit_scores.sku_ids)[0]
+        dino_top = _rank(dino, dino_global_scores.sku_ids)[0]
+        if candidate_ids[best] == repvit_scores.sku_ids[repvit_top] == dino_global_scores.sku_ids[dino_top] and dino[dino_top] >= self.calibration.dino_threshold and fused[best] - fused[second] >= self.calibration.fused_margin:
+            return self._sku_decision(candidate_ids[best], fused[best], DecisionPath.DINOV3_CONFIRMED, box)
+        return self.after_recheck(repvit_scores, dino_global_scores, box=box)
+
     def dino_failure(
         self,
         repvit_scores: ModelScoreVector,

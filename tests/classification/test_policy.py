@@ -289,6 +289,20 @@ def test_recheck_agreement_with_weak_fused_margin_abstains():
     assert result.decision == "unknown"
 
 
+def test_local_recheck_confirms_only_when_repvit_and_dino_family_agree():
+    result = policy(
+        calibration(dino_threshold=0.20, fused_margin=0.10)
+    ).after_local_recheck(
+        probabilities({6: 0.60, 5: 0.20}),
+        similarities_from_probabilities({6: 0.60, 5: 0.20}),
+        {6: 0.90, 5: 0.10},
+        box=BOX,
+    )
+
+    assert result.decision == "sku"
+    assert result.sku_id == 6
+
+
 def test_ties_are_ranked_by_ascending_sku_id():
     result = policy(calibration(dino_threshold=1.0, fused_margin=1.0)).after_recheck(
         probabilities({}),
