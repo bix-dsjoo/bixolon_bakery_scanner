@@ -18,9 +18,11 @@ from bakery_scanner.classification.policy import (
     calibrate_repvit,
     fuse_probabilities,
 )
+from bakery_scanner.contracts import Box
 
 
 SKU_IDS = tuple(range(1, 21))
+BOX = Box(10.0, 20.0, 30.0, 40.0)
 
 
 def calibration(**overrides: object) -> PolicyCalibration:
@@ -49,6 +51,7 @@ def policy(cal: PolicyCalibration | None = None) -> DecisionPolicy:
         repvit_sha256="1" * 64,
         dinov3_artifact_id=selected.dinov3_artifact_id,
         dinov3_sha256="2" * 64,
+        dinov3_support_sha256="3" * 64,
         calibration_id=selected.calibration_id,
         calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
     )
@@ -158,29 +161,33 @@ def test_fusion_supports_alpha_endpoints():
 
 
 def test_direct_gate_skips_top3_when_threshold_and_margin_pass():
-    result = policy().direct(probabilities({6: 0.80, 5: 0.20}))
+    result = policy().direct(probabilities({6: 0.80, 5: 0.20}), box=BOX)
 
     assert result is not None
     assert result.decision_path is DecisionPath.REPVIT_DIRECT
     assert result.sku_id == 6
     assert result.confidence == pytest.approx(0.80)
     assert result.top3 == ()
+    assert result.box is BOX
 
 
 def test_direct_gate_accepts_threshold_and_margin_equality():
     result = policy(
         calibration(direct_threshold=0.05, direct_margin=0.0)
-    ).direct(probabilities({}))
+    ).direct(probabilities({}), box=BOX)
 
     assert result is not None
     assert result.sku_id == 1
 
 
 def test_direct_gate_requires_both_threshold_and_margin():
-    assert policy().direct(probabilities({6: 0.69, 5: 0.10})) is None
+    assert (
+        policy().direct(probabilities({6: 0.69, 5: 0.10}), box=BOX)
+        is None
+    )
     assert policy(
         calibration(direct_threshold=0.50, direct_margin=0.30)
-    ).direct(probabilities({6: 0.55, 5: 0.40})) is None
+    ).direct(probabilities({6: 0.55, 5: 0.40}), box=BOX) is None
 
 
 def test_disagreement_abstains_with_three_fused_candidates():
@@ -189,6 +196,7 @@ def test_disagreement_abstains_with_three_fused_candidates():
     ).after_recheck(
         probabilities({6: 0.50, 5: 0.30, 19: 0.10}),
         similarities_from_probabilities({5: 0.50, 6: 0.30, 19: 0.10}),
+        box=BOX,
     )
 
     assert result.decision == "unknown"
@@ -206,12 +214,14 @@ def test_recheck_accepts_threshold_and_margin_equality():
     ).after_recheck(
         probabilities({6: 0.40, 5: 0.30}),
         similarities_from_probabilities({6: 0.40, 5: 0.30}),
+        box=BOX,
     )
 
     assert result.decision == "sku"
     assert result.decision_path is DecisionPath.DINOV3_CONFIRMED
     assert result.sku_id == 6
     assert result.confidence == pytest.approx(0.40)
+    assert result.box is BOX
 
 
 def test_recheck_agreement_with_weak_dino_abstains():
@@ -220,6 +230,7 @@ def test_recheck_agreement_with_weak_dino_abstains():
     ).after_recheck(
         probabilities({6: 0.60, 5: 0.20}),
         similarities_from_probabilities({6: 0.50, 5: 0.20}),
+        box=BOX,
     )
 
     assert result.decision == "unknown"
@@ -231,6 +242,7 @@ def test_recheck_agreement_with_weak_fused_margin_abstains():
     ).after_recheck(
         probabilities({6: 0.45, 5: 0.35}),
         similarities_from_probabilities({6: 0.45, 5: 0.35}),
+        box=BOX,
     )
 
     assert result.decision == "unknown"
@@ -242,6 +254,7 @@ def test_ties_are_ranked_by_ascending_sku_id():
     ).after_recheck(
         probabilities({}),
         similarities_from_probabilities({}),
+        box=BOX,
     )
 
     assert [candidate.sku_id for candidate in result.top3] == [1, 2, 3]
@@ -250,7 +263,8 @@ def test_ties_are_ranked_by_ascending_sku_id():
 
 def test_dino_failure_returns_exactly_three_repvit_candidates():
     result = policy().dino_failure(
-        probabilities({19: 0.40, 6: 0.30, 5: 0.20})
+        probabilities({19: 0.40, 6: 0.30, 5: 0.20}),
+        box=BOX,
     )
 
     assert result.decision == "unknown"
@@ -262,3 +276,4 @@ def test_dino_failure_returns_exactly_three_repvit_candidates():
         (3, 5),
     ]
     assert len({item.sku_id for item in result.top3}) == 3
+    assert result.box is BOX

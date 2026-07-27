@@ -75,6 +75,7 @@ class ClassifierPipeline:
             repvit_sha256=config.repvit.checkpoint_sha256,
             dinov3_artifact_id=config.dinov3.artifact_id,
             dinov3_sha256=config.dinov3.weights_sha256,
+            dinov3_support_sha256=config.dinov3.support_sha256,
             calibration_id=calibration.calibration_id,
             calibration_sha256=hashlib.sha256(calibration_payload).hexdigest(),
         )
@@ -92,6 +93,7 @@ class ClassifierPipeline:
         image: Image.Image,
         box: Box,
     ) -> ClassificationDecision:
+        _validate_original_box(image, box)
         total_started = self._timestamp()
         crops = make_padded_crops(
             image,
@@ -102,7 +104,7 @@ class ClassifierPipeline:
         repvit_started = self._timestamp()
         repvit_scores = self.repvit.score(crops)
         repvit_finished = self._timestamp()
-        direct = self.policy.direct(repvit_scores)
+        direct = self.policy.direct(repvit_scores, box=box)
         if direct is not None:
             total_finished = self._timestamp()
             return self._with_metadata(
@@ -118,7 +120,7 @@ class ClassifierPipeline:
             dino_scores = dino.score(crops)
         except DinoInferenceError as exc:
             dinov3_finished = self._timestamp()
-            decision = self.policy.dino_failure(repvit_scores)
+            decision = self.policy.dino_failure(repvit_scores, box=box)
             total_finished = self._timestamp()
             return self._with_metadata(
                 decision,
@@ -132,7 +134,11 @@ class ClassifierPipeline:
             )
 
         dinov3_finished = self._timestamp()
-        decision = self.policy.after_recheck(repvit_scores, dino_scores)
+        decision = self.policy.after_recheck(
+            repvit_scores,
+            dino_scores,
+            box=box,
+        )
         total_finished = self._timestamp()
         return self._with_metadata(
             decision,
@@ -180,3 +186,15 @@ class ClassifierPipeline:
 
 def _milliseconds(started: float, finished: float) -> float:
     return (finished - started) * 1000.0
+
+
+def _validate_original_box(image: Image.Image, box: Box) -> None:
+    if not isinstance(box, Box):
+        raise ValueError("box must be a Box in original image coordinates")
+    if (
+        box.x < 0.0
+        or box.y < 0.0
+        or box.x + box.width > image.width
+        or box.y + box.height > image.height
+    ):
+        raise ValueError("box must stay within original image coordinates")

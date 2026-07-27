@@ -68,13 +68,15 @@ def test_direct_repvit_confirmation_never_loads_or_calls_dino():
         return RecordingRunner(_dino_scores({6: 0.8, 5: 0.2}))
 
     repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
+    original_box = _box()
     result = _pipeline(repvit=repvit, dino_loader=load_dino).infer(
-        _image(), _box()
+        _image(), original_box
     )
 
     assert result.decision_path is DecisionPath.REPVIT_DIRECT
     assert result.sku_id == 6
     assert result.confidence == pytest.approx(0.80)
+    assert result.box is original_box
     assert dino_loads == 0
 
 
@@ -109,6 +111,8 @@ def test_ambiguous_repvit_loads_dino_once_and_reuses_the_same_crops():
         == payload
     )
     assert second.decision_path is DecisionPath.UNKNOWN_TOP3
+    assert first.box == _box()
+    assert second.box == _box()
 
 
 def test_recheck_confirmation_keeps_fused_confidence_meaning():
@@ -129,6 +133,7 @@ def test_recheck_confirmation_keeps_fused_confidence_meaning():
     assert result.decision_path is DecisionPath.DINOV3_CONFIRMED
     assert result.sku_id == 6
     assert result.confidence == pytest.approx(0.40)
+    assert result.box == _box()
 
 
 def test_runtime_records_provenance_stage_timings_and_synchronizes():
@@ -148,6 +153,7 @@ def test_runtime_records_provenance_stage_timings_and_synchronizes():
     assert result.provenance == pipeline.policy.provenance
     assert result.provenance.repvit_sha256 == "1" * 64
     assert result.provenance.dinov3_sha256 == "2" * 64
+    assert result.provenance.dinov3_support_sha256 == "3" * 64
     assert result.timings.repvit_ms == pytest.approx(3.0)
     assert result.timings.dinov3_ms == pytest.approx(6.0)
     assert result.timings.total_ms == pytest.approx(12.0)
@@ -179,6 +185,7 @@ def test_dino_failure_returns_unknown_repvit_top3_and_safe_failure_code():
     ]
     assert result.provenance.failure_code == "dino_out_of_memory"
     assert b"sensitive backend detail" not in result.to_json_bytes()
+    assert result.box == _box()
 
 
 def test_dino_programming_error_is_not_converted_to_unknown():
@@ -189,6 +196,25 @@ def test_dino_programming_error_is_not_converted_to_unknown():
             repvit=repvit,
             dino_loader=ProgrammingErrorDino,
         ).infer(_image(), _box())
+
+
+@pytest.mark.parametrize(
+    "box",
+    [
+        Box(-1, 10, 40, 20),
+        Box(10, -1, 40, 20),
+        Box(61, 10, 40, 20),
+        Box(10, 61, 40, 20),
+    ],
+)
+def test_runtime_rejects_box_outside_original_image(box):
+    repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
+
+    with pytest.raises(ValueError, match="original image"):
+        _pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+        ).infer(_image(), box)
 
 
 def test_lazy_dino_initialization_failure_is_not_converted_to_unknown():
@@ -268,6 +294,7 @@ def test_load_builds_provenance_and_defers_dino_model_load(
         repvit_sha256=config.repvit.checkpoint_sha256,
         dinov3_artifact_id=config.dinov3.artifact_id,
         dinov3_sha256=config.dinov3.weights_sha256,
+        dinov3_support_sha256=config.dinov3.support_sha256,
         calibration_id=calibration.calibration_id,
         calibration_sha256=hashlib.sha256(
             calibration.to_json_bytes()
@@ -290,6 +317,7 @@ def _pipeline(
         repvit_sha256="1" * 64,
         dinov3_artifact_id=selected.dinov3_artifact_id,
         dinov3_sha256="2" * 64,
+        dinov3_support_sha256="3" * 64,
         calibration_id=selected.calibration_id,
         calibration_sha256=hashlib.sha256(
             selected.to_json_bytes()

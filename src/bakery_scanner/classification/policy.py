@@ -11,6 +11,8 @@ from typing import Sequence
 
 import numpy as np
 
+from bakery_scanner.contracts import Box
+
 from .contracts import (
     ClassificationDecision,
     DecisionPath,
@@ -166,6 +168,8 @@ class DecisionPolicy:
     def direct(
         self,
         repvit_scores: ModelScoreVector,
+        *,
+        box: Box,
     ) -> ClassificationDecision | None:
         _require_score_vector(
             repvit_scores,
@@ -186,6 +190,7 @@ class DecisionPolicy:
                 repvit_scores.sku_ids[best],
                 repvit[best],
                 DecisionPath.REPVIT_DIRECT,
+                box,
             )
         return None
 
@@ -193,6 +198,8 @@ class DecisionPolicy:
         self,
         repvit_scores: ModelScoreVector,
         dino_scores: ModelScoreVector,
+        *,
+        box: Box,
     ) -> ClassificationDecision:
         _require_score_vector(
             repvit_scores,
@@ -232,16 +239,20 @@ class DecisionPolicy:
                 repvit_scores.sku_ids[fused_best],
                 fused[fused_best],
                 DecisionPath.DINOV3_CONFIRMED,
+                box,
             )
         return self._unknown_decision(
             fused,
             repvit_scores.sku_ids,
             fused_ranked,
+            box,
         )
 
     def dino_failure(
         self,
         repvit_scores: ModelScoreVector,
+        *,
+        box: Box,
     ) -> ClassificationDecision:
         _require_score_vector(
             repvit_scores,
@@ -256,6 +267,7 @@ class DecisionPolicy:
             repvit,
             repvit_scores.sku_ids,
             _rank(repvit, repvit_scores.sku_ids),
+            box,
         )
 
     def _sku_decision(
@@ -263,11 +275,13 @@ class DecisionPolicy:
         sku_id: int,
         confidence: float,
         path: DecisionPath,
+        box: Box,
     ) -> ClassificationDecision:
         return ClassificationDecision(
             decision="sku",
             sku_id=sku_id,
             confidence=float(confidence),
+            box=box,
             decision_path=path,
             top3=(),
             provenance=self.provenance,
@@ -279,6 +293,7 @@ class DecisionPolicy:
         scores: Sequence[float],
         sku_ids: tuple[int, ...],
         ranked: Sequence[int],
+        box: Box,
     ) -> ClassificationDecision:
         top_indices = ranked[:3]
         candidates = tuple(
@@ -293,6 +308,7 @@ class DecisionPolicy:
             decision="unknown",
             sku_id=None,
             confidence=candidates[0].score,
+            box=box,
             decision_path=DecisionPath.UNKNOWN_TOP3,
             top3=candidates,
             provenance=self.provenance,

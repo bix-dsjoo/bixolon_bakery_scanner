@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
+from bakery_scanner.contracts import Box
+
 
 _SKU_IDS = tuple(range(1, 21))
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -73,6 +75,7 @@ class ModelProvenance:
     repvit_sha256: str
     dinov3_artifact_id: str
     dinov3_sha256: str
+    dinov3_support_sha256: str
     calibration_id: str
     calibration_sha256: str
     failure_code: str | None = None
@@ -81,7 +84,12 @@ class ModelProvenance:
         for field in ("repvit_artifact_id", "dinov3_artifact_id", "calibration_id"):
             if not getattr(self, field):
                 raise ValueError(f"{field} must not be empty")
-        for field in ("repvit_sha256", "dinov3_sha256", "calibration_sha256"):
+        for field in (
+            "repvit_sha256",
+            "dinov3_sha256",
+            "dinov3_support_sha256",
+            "calibration_sha256",
+        ):
             if not _SHA256.fullmatch(getattr(self, field)):
                 raise ValueError(f"{field} must be a lowercase SHA-256 hash")
 
@@ -105,12 +113,17 @@ class ClassificationDecision:
     decision: Literal["sku", "unknown"]
     sku_id: int | None
     confidence: float
+    box: Box
     decision_path: DecisionPath
     top3: tuple[SkuCandidate, ...]
     provenance: ModelProvenance
     timings: StageTimings
 
     def __post_init__(self) -> None:
+        if not isinstance(self.box, Box):
+            raise ValueError("box must be a Box")
+        if self.box.x < 0.0 or self.box.y < 0.0:
+            raise ValueError("box coordinates must be non-negative")
         _require_finite(self.confidence, "confidence")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
@@ -137,6 +150,7 @@ class ClassificationDecision:
     def to_json_bytes(self) -> bytes:
         """Return deterministic UTF-8 JSON safe for result persistence."""
         payload = {
+            "box": list(self.box.xyxy),
             "confidence": self.confidence,
             "decision": self.decision,
             "decision_path": self.decision_path.value,
@@ -145,6 +159,7 @@ class ClassificationDecision:
                 "calibration_sha256": self.provenance.calibration_sha256,
                 "dinov3_artifact_id": self.provenance.dinov3_artifact_id,
                 "dinov3_sha256": self.provenance.dinov3_sha256,
+                "dinov3_support_sha256": self.provenance.dinov3_support_sha256,
                 "failure_code": self.provenance.failure_code,
                 "repvit_artifact_id": self.provenance.repvit_artifact_id,
                 "repvit_sha256": self.provenance.repvit_sha256,
