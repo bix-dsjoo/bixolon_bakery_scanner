@@ -12,6 +12,7 @@ import torch
 from PIL import Image
 
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import CanonicalImage, canonicalize_image
 
 from .config import ClassifierConfig, preprocess_sha256
 from .contracts import ClassificationDecision, ModelProvenance, StageTimings
@@ -92,13 +93,14 @@ class ClassifierPipeline:
 
     def infer(
         self,
-        image: Image.Image,
+        image: Image.Image | CanonicalImage,
         box: Box,
     ) -> ClassificationDecision:
-        _validate_original_box(image, box)
+        frame = _canonical_frame(image)
+        _validate_visual_box(frame, box)
         total_started = self._timestamp()
         crops = make_padded_crops(
-            image,
+            frame.image,
             box,
             self.config.preprocess.paddings,
         )
@@ -111,6 +113,7 @@ class ClassifierPipeline:
             total_finished = self._timestamp()
             return self._with_metadata(
                 direct,
+                frame=frame,
                 repvit_ms=_milliseconds(repvit_started, repvit_finished),
                 dinov3_ms=0.0,
                 total_ms=_milliseconds(total_started, total_finished),
@@ -126,6 +129,7 @@ class ClassifierPipeline:
             total_finished = self._timestamp()
             return self._with_metadata(
                 decision,
+                frame=frame,
                 repvit_ms=_milliseconds(repvit_started, repvit_finished),
                 dinov3_ms=_milliseconds(
                     dinov3_started,
@@ -144,16 +148,18 @@ class ClassifierPipeline:
         total_finished = self._timestamp()
         return self._with_metadata(
             decision,
+            frame=frame,
             repvit_ms=_milliseconds(repvit_started, repvit_finished),
             dinov3_ms=_milliseconds(dinov3_started, dinov3_finished),
             total_ms=_milliseconds(total_started, total_finished),
         )
 
-    def preflight_models(self, image: Image.Image, box: Box) -> None:
+    def preflight_models(self, image: Image.Image | CanonicalImage, box: Box) -> None:
         """Load and execute both model stages before measured inference."""
-        _validate_original_box(image, box)
+        frame = _canonical_frame(image)
+        _validate_visual_box(frame, box)
         crops = make_padded_crops(
-            image,
+            frame.image,
             box,
             self.config.preprocess.paddings,
         )
@@ -177,6 +183,7 @@ class ClassifierPipeline:
         self,
         decision: ClassificationDecision,
         *,
+        frame: CanonicalImage,
         repvit_ms: float,
         dinov3_ms: float,
         total_ms: float,
@@ -184,6 +191,8 @@ class ClassifierPipeline:
     ) -> ClassificationDecision:
         provenance = replace(
             decision.provenance,
+            canonical_frame_version=frame.frame_version,
+            exif_orientation=frame.exif_orientation,
             failure_code=failure_code,
         )
         timings = StageTimings(
@@ -202,13 +211,11 @@ def _milliseconds(started: float, finished: float) -> float:
     return (finished - started) * 1000.0
 
 
-def _validate_original_box(image: Image.Image, box: Box) -> None:
-    if not isinstance(box, Box):
-        raise ValueError("box must be a Box in original image coordinates")
-    if (
-        box.x < 0.0
-        or box.y < 0.0
-        or box.x + box.width > image.width
-        or box.y + box.height > image.height
-    ):
-        raise ValueError("box must stay within original image coordinates")
+def _canonical_frame(image: Image.Image | CanonicalImage) -> CanonicalImage:
+    if isinstance(image, CanonicalImage):
+        return image
+    return canonicalize_image(image)
+
+
+def _validate_visual_box(frame: CanonicalImage, box: Box) -> None:
+    frame.require_box(box)

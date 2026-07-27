@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_PREPROCESS_SCHEMA_VERSION = 1
+_PREPROCESS_SCHEMA_VERSION = 2
 
 
 class _StrictModel(BaseModel):
@@ -69,6 +69,7 @@ def preprocess_sha256(config: PreprocessConfig) -> str:
     """Return the versioned identity of every score-affecting image transform."""
     payload = {
         "schema_version": _PREPROCESS_SCHEMA_VERSION,
+        "canonical_frame": "exif_visual_rgb_v1",
         "crop_rule": "total_padding_split_floor_ceil_clip_rgb",
         "input_size": config.input_size,
         "paddings": list(config.paddings),

@@ -21,6 +21,7 @@ from bakery_scanner.classification.evidence import (
 )
 from bakery_scanner.classification.preprocess import make_padded_crops
 from bakery_scanner.classification.repvit import RepVitM1Runner
+from bakery_scanner.data.preprocess import load_canonical_image
 
 
 class _Runner(Protocol):
@@ -38,9 +39,9 @@ def collect_rows(
     """Score every sample with both models, validating all rows in memory."""
     rows: list[EvidenceRow] = []
     for item in inputs:
-        with Image.open(item.image_path) as source:
-            image = source.convert("RGB")
-        crops = make_padded_crops(image, item.box, paddings)
+        frame = load_canonical_image(item.image_path)
+        frame.require_box(item.box)
+        crops = make_padded_crops(frame.image, item.box, paddings)
         repvit_scores = repvit.score(crops)
         dino_scores = dino.score(crops)
         rows.append(

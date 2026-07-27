@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 
@@ -77,6 +78,28 @@ def test_direct_repvit_confirmation_never_loads_or_calls_dino():
     assert result.confidence == pytest.approx(0.80)
     assert result.box is original_box
     assert dino_loads == 0
+
+
+def test_runtime_interprets_exif_oriented_input_in_visual_coordinates():
+    encoded = BytesIO()
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.new("RGB", (40, 20), "white").save(encoded, format="JPEG", exif=exif)
+    repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
+
+    result = _pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must stay lazy")).infer(
+        Image.open(BytesIO(encoded.getvalue())),
+        Box(1, 2, 10, 20),
+    )
+
+    assert result.box == Box(1, 2, 10, 20)
+    assert result.provenance.canonical_frame_version == "exif_visual_rgb_v1"
+    assert result.provenance.exif_orientation == 6
+    assert tuple(crop.size for crop in repvit.received_crops or ()) == (
+        (12, 22),
+        (12, 22),
+        (12, 24),
+    )
 
 
 def test_preflight_models_loads_and_scores_dino_before_all_direct_inference():
@@ -231,10 +254,10 @@ def test_dino_programming_error_is_not_converted_to_unknown():
         Box(10, 61, 40, 20),
     ],
 )
-def test_runtime_rejects_box_outside_original_image(box):
+def test_runtime_rejects_box_outside_canonical_visual_image(box):
     repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
 
-    with pytest.raises(ValueError, match="original image"):
+    with pytest.raises(ValueError, match="canonical visual"):
         _pipeline(
             repvit=repvit,
             dino_loader=lambda: pytest.fail("DINO must not load"),

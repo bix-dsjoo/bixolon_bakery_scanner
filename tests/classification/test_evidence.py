@@ -239,6 +239,21 @@ def test_manifest_resolves_images_validates_box_and_hash(tmp_path: Path):
     assert rows[0].image_sha256 == expected_hash
 
 
+def test_manifest_validates_boxes_against_exif_visual_dimensions(tmp_path: Path):
+    image = tmp_path / "portrait.jpg"
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.new("RGB", (40, 20), "red").save(image, format="JPEG", exif=exif)
+    row = _manifest_row(image.name)
+    row["box_xyxy"] = [1, 2, 11, 22]
+    manifest = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest, [row])
+
+    rows = load_evidence_manifest(manifest, training_image_hashes=frozenset())
+
+    assert rows[0].box == Box(1, 2, 10, 20)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

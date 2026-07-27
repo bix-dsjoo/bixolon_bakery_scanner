@@ -23,6 +23,7 @@ from bakery_scanner.classification.contracts import (
 from bakery_scanner.classification.evidence import atomic_write_bytes
 from bakery_scanner.classification.runtime import ClassifierPipeline
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import load_canonical_image
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -291,17 +292,16 @@ def load_benchmark_manifest(path: Path) -> tuple[BenchmarkInput, ...]:
             box = _parse_box(mapping["box_xyxy"], line_number)
             try:
                 with Image.open(image_path) as image:
-                    width, height = image.size
                     image.verify()
+                frame = load_canonical_image(image_path)
             except Exception as exc:
                 raise ValueError(f"line {line_number}: image is not readable") from exc
-            if (
-                box.x < 0.0
-                or box.y < 0.0
-                or box.x + box.width > width
-                or box.y + box.height > height
-            ):
-                raise ValueError(f"line {line_number}: box is outside image bounds")
+            try:
+                frame.require_box(box)
+            except ValueError as exc:
+                raise ValueError(
+                    f"line {line_number}: box is outside canonical visual image bounds"
+                ) from exc
             rows.append(
                 BenchmarkInput(
                     sample_id=sample_id,
@@ -362,18 +362,14 @@ def _parse_box(value: object, line_number: int) -> Box:
 
 
 def _infer(pipeline: ClassifierPipeline, item: BenchmarkInput):
-    with Image.open(item.image_path) as source:
-        image = source.convert("RGB")
-    return pipeline.infer(image, item.box)
+    return pipeline.infer(load_canonical_image(item.image_path), item.box)
 
 
 def _preflight_models(
     pipeline: ClassifierPipeline,
     item: BenchmarkInput,
 ) -> None:
-    with Image.open(item.image_path) as source:
-        image = source.convert("RGB")
-    pipeline.preflight_models(image, item.box)
+    pipeline.preflight_models(load_canonical_image(item.image_path), item.box)
 
 
 def _sha256_file(path: Path) -> str:

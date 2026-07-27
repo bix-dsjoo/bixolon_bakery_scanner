@@ -18,6 +18,7 @@ from PIL import Image
 from sklearn.model_selection import StratifiedGroupKFold
 
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import load_canonical_image
 
 from .policy import (
     PolicyCalibration,
@@ -425,17 +426,16 @@ def load_evidence_manifest(
         box = _parse_box(mapping["box_xyxy"], line_number)
         try:
             with Image.open(image_path) as image:
-                width, height = image.size
                 image.verify()
+            frame = load_canonical_image(image_path)
         except Exception as exc:
             raise ValueError(f"line {line_number}: image is not readable") from exc
-        if (
-            box.x < 0.0
-            or box.y < 0.0
-            or box.x + box.width > width
-            or box.y + box.height > height
-        ):
-            raise ValueError(f"line {line_number}: box is outside image bounds")
+        try:
+            frame.require_box(box)
+        except ValueError as exc:
+            raise ValueError(
+                f"line {line_number}: box is outside canonical visual image bounds"
+            ) from exc
 
         try:
             rows.append(

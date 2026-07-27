@@ -80,6 +80,8 @@ class ModelProvenance:
     calibration_sha256: str
     preprocess_sha256: str = "0" * 64
     repvit_manifest_sha256: str = "0" * 64
+    canonical_frame_version: Literal["exif_visual_rgb_v1"] = "exif_visual_rgb_v1"
+    exif_orientation: int = 1
     failure_code: str | None = None
 
     def __post_init__(self) -> None:
@@ -96,6 +98,10 @@ class ModelProvenance:
         ):
             if not _SHA256.fullmatch(getattr(self, field)):
                 raise ValueError(f"{field} must be a lowercase SHA-256 hash")
+        if self.canonical_frame_version != "exif_visual_rgb_v1":
+            raise ValueError("canonical_frame_version is invalid")
+        if type(self.exif_orientation) is not int or not 1 <= self.exif_orientation <= 8:
+            raise ValueError("exif_orientation must be an EXIF orientation value")
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,10 +173,12 @@ class ClassificationDecision:
             "provenance": {
                 "calibration_id": self.provenance.calibration_id,
                 "calibration_sha256": self.provenance.calibration_sha256,
+                "canonical_frame_version": self.provenance.canonical_frame_version,
                 "dinov3_artifact_id": self.provenance.dinov3_artifact_id,
                 "dinov3_sha256": self.provenance.dinov3_sha256,
                 "dinov3_support_sha256": self.provenance.dinov3_support_sha256,
                 "failure_code": self.provenance.failure_code,
+                "exif_orientation": self.provenance.exif_orientation,
                 "preprocess_sha256": self.provenance.preprocess_sha256,
                 "repvit_manifest_sha256": self.provenance.repvit_manifest_sha256,
                 "repvit_artifact_id": self.provenance.repvit_artifact_id,

@@ -12,7 +12,7 @@ def test_classifier_config_resolves_paths_and_pins_artifacts():
     assert config.preprocess.paddings == (0.05, 0.10, 0.15)
     assert config.runtime.device == "CUDA:0"
     assert config.runtime.precision == "FP32"
-    assert preprocess_sha256(config.preprocess) == "78094885135c6111c80e9c8e680612e5901a7e4e3f597463815b30d5573786ce"
+    assert preprocess_sha256(config.preprocess) == "69857c8c27bfc654207969c372f114569a8ce81f1040b27f47ec2613287ae73b"
 
 
 @pytest.mark.parametrize(

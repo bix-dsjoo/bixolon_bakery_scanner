@@ -206,14 +206,16 @@ def test_benchmark_command_runs_warmups_and_writes_canonical_report(
             )
 
         def preflight_models(self, image, box):
-            assert image.mode == "RGB"
+            assert image.image.mode == "RGB"
+            assert image.frame_version == "exif_visual_rgb_v1"
             assert box.xyxy == (0.0, 0.0, 20.0, 20.0)
             self.events.append("preflight_models")
 
         def infer(self, image, box):
             self.calls += 1
             self.events.append("infer")
-            assert image.mode == "RGB"
+            assert image.image.mode == "RGB"
+            assert image.frame_version == "exif_visual_rgb_v1"
             assert box.xyxy in ((0.0, 0.0, 20.0, 20.0), (1.0, 1.0, 19.0, 19.0))
             timings = (
                 _timing(total=1_000, repvit=900, dino=800)

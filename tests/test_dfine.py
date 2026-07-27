@@ -5,7 +5,10 @@ import json
 import os
 from pathlib import Path
 
+from PIL import Image
+
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import canonicalize_image
 from bakery_scanner.detectors.dfine import DFineRunner, parse_dfine_output
 
 
@@ -39,6 +42,26 @@ def test_runner_uses_injected_command_runner(tmp_path):
     runner = DFineRunner(command_runner=lambda command: calls.append(command) or {"labels": [], "boxes": [], "scores": []}, gpu_probe=lambda: (True, "NVIDIA RTX 5080"))
     assert runner.predict("model.pt", "image.png", image_id=1, image_size=(10, 10), source="dfine_n_640") == ()
     assert calls[0][0] == "dfine-predict"
+
+
+def test_runner_materializes_canonical_visual_frame_for_detector(tmp_path):
+    calls = []
+
+    def run(command):
+        path = Path(command[command.index("--image") + 1])
+        with Image.open(path) as materialized:
+            calls.append(materialized.size)
+        return {"labels": [0], "boxes": [[1, 2, 11, 22]], "scores": [0.8]}
+
+    frame = canonicalize_image(Image.new("RGB", (20, 40), "white"))
+    runner = DFineRunner(command_runner=run, gpu_probe=lambda: (True, "NVIDIA RTX 5080"))
+
+    rows = runner.predict("model.pt", frame, image_id=1, source="dfine_n_640")
+
+    assert calls == [(20, 40)]
+    assert rows[0].image_width == 20
+    assert rows[0].image_height == 40
+    assert rows[0].box == Box(1, 2, 10, 20)
 
 
 def test_runner_rejects_cpu_unavailable_and_wrong_gpu():
