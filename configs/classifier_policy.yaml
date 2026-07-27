@@ -1,0 +1,21 @@
+schema_version: 1
+repvit:
+  artifact_id: repvit_m1_15plus5_v1
+  checkpoint: ../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt
+  checkpoint_sha256: 0369c148c3b208ea41140cc220a6871367eaa8ed52b0cedfa97d39f4b2d76cfc
+  manifest: ../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.manifest.json
+  manifest_sha256: f2bb1787295a76ee8b2bb049223557a87a88309038c963ea1617a3c7aacf1e56
+dinov3:
+  artifact_id: dinov3_vits16_15plus5_v1
+  weights: ../models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+  weights_sha256: 08c60483bc63c04f533611e34bf70b120eedb7240f469bc16e9e20bf344b941d
+  support: ../models/dinov3_vits16_15plus5_v1/dinov3_vits16_15plus5_v1_support.pt
+  support_sha256: f395e38a93905a2a4e53522b8632274813604f1c5f98f4baff0cbfdf91431aea
+preprocess:
+  input_size: 224
+  paddings: [0.05, 0.10, 0.15]
+runtime:
+  device: CUDA:0
+  precision: FP32
+calibration:
+  artifact: ../artifacts/classification/policy_v1.json
