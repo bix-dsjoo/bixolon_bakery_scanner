@@ -9,6 +9,8 @@ def test_classifier_config_resolves_paths_and_pins_artifacts():
     config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
     assert config.repvit.artifact_id == "repvit_m1_15plus5_v1"
     assert config.dinov3.artifact_id == "dinov3_vits16_15plus5_v1"
+    assert config.dinov3.local_bank is not None
+    assert config.dinov3.local_bank_sha256 == "926d11da1c9b530fcc3825c1b4c5f301a9e37e6b9893a49cd31feb6b032fc631"
     assert config.preprocess.paddings == (0.05, 0.10, 0.15)
     assert config.runtime.device == "CUDA:0"
     assert config.runtime.precision == "FP32"

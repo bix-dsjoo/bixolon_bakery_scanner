@@ -51,6 +51,8 @@ class DINOv3Config(_StrictModel):
     weights_sha256: str
     support: Path
     support_sha256: str
+    local_bank: Path | None = None
+    local_bank_sha256: str | None = None
 
     @field_validator("weights_sha256", "support_sha256")
     @classmethod
@@ -58,6 +60,14 @@ class DINOv3Config(_StrictModel):
         if not _SHA256.fullmatch(value):
             raise ValueError("must be a lowercase SHA-256 hash")
         return value
+
+    @model_validator(mode="after")
+    def _local_bank_pair(self) -> "DINOv3Config":
+        if (self.local_bank is None) != (self.local_bank_sha256 is None):
+            raise ValueError("local_bank and local_bank_sha256 must be supplied together")
+        if self.local_bank_sha256 is not None and not _SHA256.fullmatch(self.local_bank_sha256):
+            raise ValueError("local_bank_sha256 must be a lowercase SHA-256 hash")
+        return self
 
 
 class PreprocessConfig(_StrictModel):
@@ -126,7 +136,7 @@ class ClassifierConfig(_StrictModel):
         payload = dict(payload)
         for section, names in {
             "repvit": ("checkpoint", "manifest", "prototype_bank"),
-            "dinov3": ("weights", "support"),
+            "dinov3": ("weights", "support", "local_bank"),
             "calibration": ("artifact",),
         }.items():
             values = dict(payload.get(section) or {})

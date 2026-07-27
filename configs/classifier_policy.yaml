@@ -13,6 +13,8 @@ dinov3:
   weights_sha256: 08c60483bc63c04f533611e34bf70b120eedb7240f469bc16e9e20bf344b941d
   support: ../artifacts/classification/dinov3_vits16_15plus5_v2_support.pt
   support_sha256: a7a64902d7144e5c50bdf6235800e972b9205b53ad9b8bfeb0583814bb91bce5
+  local_bank: ../artifacts/classification/dinov3_vits16_15plus5_v2_local_patch_bank.pt
+  local_bank_sha256: 926d11da1c9b530fcc3825c1b4c5f301a9e37e6b9893a49cd31feb6b032fc631
 preprocess:
   input_size: 224
   paddings: [0.05, 0.10, 0.15]
