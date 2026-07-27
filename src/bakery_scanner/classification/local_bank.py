@@ -17,6 +17,52 @@ _SKU_IDS = tuple(range(1, 21))
 _DIMENSION = 384
 
 
+def source_balanced_coreset(
+    source_patches: Sequence[torch.Tensor],
+    *,
+    cap: int,
+) -> tuple[torch.Tensor, tuple[int, ...]]:
+    """Select a deterministic, near-equal patch quota for every source image."""
+    if type(cap) is not int or not 1 <= cap <= 1024:
+        raise ValueError("local patch cap must be an integer between 1 and 1024")
+    sources = tuple(source_patches)
+    if not sources:
+        raise ValueError("local coreset requires at least one source")
+    for patches in sources:
+        if not isinstance(patches, torch.Tensor) or patches.ndim != 2 or patches.shape[0] == 0 or patches.shape[1] != _DIMENSION:
+            raise ValueError("local coreset source patches must have shape (N, 384)")
+        if not torch.isfinite(patches).all().item():
+            raise ValueError("local coreset source patches must be finite")
+
+    total = sum(patches.shape[0] for patches in sources)
+    target = min(cap, total)
+    selected = [0] * len(sources)
+    # Round-robin allocation prevents a capture with many images/patches from
+    # dominating a SKU.  Source order is the canonical sorted source order.
+    while sum(selected) < target:
+        progressed = False
+        for index, patches in enumerate(sources):
+            if selected[index] < patches.shape[0] and sum(selected) < target:
+                selected[index] += 1
+                progressed = True
+        if not progressed:
+            raise RuntimeError("local coreset allocation stalled")
+
+    coreset = torch.cat(
+        tuple(
+            patches.index_select(
+                0,
+                torch.linspace(0, patches.shape[0] - 1, steps=count)
+                .round()
+                .to(dtype=torch.long),
+            )
+            for patches, count in zip(sources, selected, strict=True)
+            if count
+        )
+    ).contiguous()
+    return coreset, tuple(selected)
+
+
 @dataclass(frozen=True, slots=True)
 class LocalPatchBank:
     """Normalized per-SKU patch embeddings bound to model preprocessing."""
@@ -41,7 +87,8 @@ class LocalPatchBank:
             raise ValueError("local patch bank must be a mapping")
         if payload.get("artifact_type") != "dinov3_vits16_15plus5_local_patch_bank":
             raise ValueError("local patch bank artifact_type is invalid")
-        if payload.get("schema_version") != 1:
+        schema_version = payload.get("schema_version")
+        if schema_version not in (1, 2):
             raise ValueError("local patch bank schema_version is invalid")
         if payload.get("dino_weights_sha256") != dino_weights_sha256:
             raise ValueError("local patch bank DINO weights SHA-256 mismatch")
@@ -52,6 +99,8 @@ class LocalPatchBank:
         patches = payload.get("patches")
         if not isinstance(patches, dict) or tuple(sorted(patches)) != _SKU_IDS:
             raise ValueError("local patch bank must contain every canonical SKU")
+        if schema_version == 2:
+            _validate_coreset_selection(payload.get("selection"), patches)
         validated = {sku_id: _validate_patches(value, sku_id) for sku_id, value in patches.items()}
         return cls(validated, sha256)
 
@@ -106,6 +155,45 @@ def _validate_patches(value: object, sku_id: int) -> torch.Tensor:
     if not torch.allclose(value, normalized, rtol=1e-5, atol=1e-5):
         raise ValueError(f"local patch bank SKU {sku_id} patches must be normalized")
     return normalized
+
+
+def _validate_coreset_selection(selection: object, patches: Mapping[int, torch.Tensor]) -> None:
+    if not isinstance(selection, dict) or set(selection) != {
+        "method",
+        "patch_cap_per_sku",
+        "source_image_sha256",
+        "source_patch_counts",
+        "selected_patch_counts",
+    }:
+        raise ValueError("local patch bank coreset selection is invalid")
+    cap = selection["patch_cap_per_sku"]
+    if type(cap) is not int or not 512 <= cap <= 1024:
+        raise ValueError("local patch bank coreset cap is invalid")
+    if selection["method"] != "round_robin_evenly_spaced_v1":
+        raise ValueError("local patch bank coreset method is invalid")
+    source_hashes = selection["source_image_sha256"]
+    source_counts = selection["source_patch_counts"]
+    selected_counts = selection["selected_patch_counts"]
+    if not all(isinstance(value, dict) and tuple(sorted(value)) == _SKU_IDS for value in (source_hashes, source_counts, selected_counts)):
+        raise ValueError("local patch bank coreset SKU membership is invalid")
+    for sku_id in _SKU_IDS:
+        hashes = source_hashes[sku_id]
+        available = source_counts[sku_id]
+        selected = selected_counts[sku_id]
+        if (
+            not isinstance(hashes, list)
+            or not isinstance(available, list)
+            or not isinstance(selected, list)
+            or not (len(hashes) == len(available) == len(selected))
+            or not hashes
+            or any(not isinstance(value, str) or not _SHA256.fullmatch(value) for value in hashes)
+            or any(type(value) is not int or value <= 0 for value in available)
+            or any(type(value) is not int or value < 0 for value in selected)
+            or any(chosen > total for chosen, total in zip(selected, available, strict=True))
+        ):
+            raise ValueError("local patch bank coreset source metadata is invalid")
+        if sum(selected) != min(cap, sum(available)) or patches[sku_id].shape[0] != sum(selected):
+            raise ValueError("local patch bank coreset size is invalid")
 
 
 def _file_sha256(path: Path) -> str:
