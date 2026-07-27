@@ -111,6 +111,20 @@ function Assert-WholeCaptureScenes([int[]]$ImageIds, [string]$Partition) {
     }
 }
 
+function Assert-StagedManifestMatchesCoco([int[]]$AllIds) {
+    if (-not (Test-Path -LiteralPath $StagedManifest -PathType Leaf)) { throw "Missing staged manifest: $StagedManifest" }
+    $allIdSet = @{}
+    $AllIds | ForEach-Object { $allIdSet[[int]$_] = $true }
+    $seen = @{}
+    foreach ($entry in (Get-Content -LiteralPath $StagedManifest -Raw | ConvertFrom-Json)) {
+        if ($null -eq $entry.PSObject.Properties["image_id"]) { throw "Staged manifest must exactly cover COCO image ids" }
+        $imageId = [int]$entry.image_id
+        if (-not $allIdSet.ContainsKey($imageId) -or $seen.ContainsKey($imageId)) { throw "Staged manifest must exactly cover COCO image ids" }
+        $seen[$imageId] = $true
+    }
+    if ($seen.Count -ne $allIdSet.Count) { throw "Staged manifest must exactly cover COCO image ids" }
+}
+
 function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [string]$ValidationPath) {
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { throw "Missing grouped fold manifest: $ManifestPath" }
     $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
@@ -118,6 +132,7 @@ function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [strin
     $ValidationIds = @($Manifest.validation_image_ids | ForEach-Object { [int]$_ })
     $TrainingIds = @($Manifest.training_image_ids | ForEach-Object { [int]$_ })
     $AllIds = @($Coco.images | ForEach-Object { [int]$_.id })
+    Assert-StagedManifestMatchesCoco $AllIds
     if ($ValidationIds.Count -eq 0 -or $TrainingIds.Count -eq 0 -or @($ValidationIds | Select-Object -Unique).Count -ne $ValidationIds.Count -or @($TrainingIds | Select-Object -Unique).Count -ne $TrainingIds.Count -or @($ValidationIds | Where-Object { $_ -in $TrainingIds }).Count -ne 0 -or @($ValidationIds + $TrainingIds | Where-Object { $_ -notin $AllIds }).Count -ne 0) {
         throw "Fold manifest must contain disjoint staged training and validation image ids"
     }

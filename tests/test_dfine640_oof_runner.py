@@ -35,6 +35,20 @@ def test_runner_rejects_capture_scene_split_across_fold_partitions(tmp_path):
     assert "whole capture scene" in (result.stdout + result.stderr).lower()
 
 
+def test_runner_rejects_staged_manifest_missing_a_coco_image(tmp_path):
+    """Scene isolation is meaningful only when the staged manifest covers every COCO image."""
+    annotations, staged_manifest, manifest = tmp_path / "annotations.json", tmp_path / "staged_manifest.json", tmp_path / "fold.json"
+    train, validation = tmp_path / "train.json", tmp_path / "validation.json"
+    annotations.write_text(json.dumps({"annotations": [], "categories": [], "images": [{"id": image_id, "width": 30, "height": 20} for image_id in (1, 2, 3)]}), encoding="utf-8")
+    staged_manifest.write_text(json.dumps([{"image_id": 1, "scene": {"capture_batch": "g15", "scene_number": 1}}, {"image_id": 3, "scene": {"capture_batch": "g15", "scene_number": 3}}]), encoding="utf-8")
+    manifest.write_text(json.dumps({"validation_image_ids": [1], "training_image_ids": [3]}), encoding="utf-8")
+
+    result = _run_runner_definitions(f"$StagedAnnotations = '{_powershell_literal(annotations)}'\n$StagedManifest = '{_powershell_literal(staged_manifest)}'\nWrite-FoldAnnotations '{_powershell_literal(manifest)}' '{_powershell_literal(train)}' '{_powershell_literal(validation)}'")
+
+    assert result.returncode != 0
+    assert "exactly cover coco image ids" in (result.stdout + result.stderr).lower()
+
+
 def test_runner_writes_only_manifest_training_ids(tmp_path):
     annotations, staged_manifest, manifest = tmp_path / "annotations.json", tmp_path / "staged_manifest.json", tmp_path / "fold.json"
     train, validation = tmp_path / "train.json", tmp_path / "validation.json"
