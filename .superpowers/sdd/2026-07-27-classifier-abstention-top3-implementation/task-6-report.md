@@ -212,3 +212,15 @@ matching canonical manifest is not present in this repository. Production
 calibration/evaluation therefore remains intentionally fail-closed until a
 manifest generated from the authoritative source roots hashes to that value (or
 the support artifact is rebuilt with the resulting manifest digest).
+
+## Re-review follow-up
+
+- Locked evaluation now also rejects any development/locked `capture_group`
+  intersection, in addition to image-identity overlap. This prevents adjacent
+  crops from the same capture session from leaking across the release boundary.
+- `PolicyCalibration` canonical JSON now binds RepViT checkpoint and training
+  manifest hashes, DINO weights and support hashes, and preprocessing digest.
+  Calibration CLI writes these hashes, evaluator validates them against the
+  config, and `DecisionPolicy`/online runtime compare them to result provenance.
+  Matching model IDs alone can no longer load a calibration from a different
+  checkpoint, manifest, support artifact, or preprocessing implementation.

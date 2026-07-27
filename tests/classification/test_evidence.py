@@ -161,6 +161,7 @@ def _write_classifier_config(
 def _policy(
     evidence_sha256: str = "0" * 64,
     development_identity_sha256: str = "0" * 64,
+    provenance: dict[str, str] | None = None,
 ) -> PolicyCalibration:
     return PolicyCalibration(
         schema_version=1,
@@ -176,6 +177,15 @@ def _policy(
         fused_margin=0.1,
         evidence_sha256=evidence_sha256,
         development_identity_sha256=development_identity_sha256,
+        repvit_checkpoint_sha256=(provenance or {}).get(
+            "repvit_checkpoint_sha256", "0" * 64
+        ),
+        repvit_manifest_sha256=(provenance or {}).get(
+            "repvit_manifest_sha256", "0" * 64
+        ),
+        dinov3_weights_sha256=(provenance or {}).get("dinov3_weights_sha256", "0" * 64),
+        dinov3_support_sha256=(provenance or {}).get("dinov3_support_sha256", "0" * 64),
+        preprocess_sha256=(provenance or {}).get("preprocess_sha256", "0" * 64),
     )
 
 
@@ -183,13 +193,14 @@ def _scored_row(
     *,
     role: str = "locked_acceptance",
     image_sha256: str = "a" * 64,
+    capture_group: str = "capture-1",
     registered: bool = True,
     sku_id: int | None = 1,
     provenance: dict[str, str] | None = None,
 ) -> EvidenceRow:
     return EvidenceRow(
         sample_id="sample-1",
-        capture_group="capture-1",
+        capture_group=capture_group,
         registered=registered,
         sku_id=sku_id,
         role=role,
@@ -605,13 +616,17 @@ def test_evaluator_reports_configured_model_hashes_and_nonzero_release(
     _write_evidence(evidence, (locked_row,))
     development = tmp_path / "development.jsonl"
     development_row = _scored_row(
-        role="development", image_sha256="b" * 64, provenance=provenance
+        role="development",
+        image_sha256="b" * 64,
+        capture_group="development-capture",
+        provenance=provenance,
     )
     _write_evidence(development, (development_row,))
     calibration = tmp_path / "policy.json"
     calibration_payload = _policy(
         hash_evidence_rows((development_row,)),
         hash_evidence_identities((development_row,)),
+        provenance,
     ).to_json_bytes()
     calibration.write_bytes(calibration_payload)
     output = tmp_path / "report.json"
@@ -648,6 +663,51 @@ def test_evaluator_reports_configured_model_hashes_and_nonzero_release(
         "repvit_manifest_sha256": hashes["repvit_manifest_sha256"],
     }
     assert calibration.read_bytes() == calibration_payload
+
+
+def test_evaluator_rejects_development_capture_group_overlap(tmp_path: Path):
+    config, hashes = _write_classifier_config(tmp_path)
+    loaded = ClassifierConfig.load(config)
+    provenance = {
+        **{key: value for key, value in hashes.items() if key.endswith("sha256")},
+        "preprocess_sha256": preprocess_sha256(loaded.preprocess),
+    }
+    locked = _scored_row(provenance=provenance)
+    development = _scored_row(
+        role="development", image_sha256="b" * 64, provenance=provenance
+    )
+    locked_path = tmp_path / "locked.jsonl"
+    development_path = tmp_path / "development.jsonl"
+    _write_evidence(locked_path, (locked,))
+    _write_evidence(development_path, (development,))
+    calibration = tmp_path / "policy.json"
+    calibration.write_bytes(
+        _policy(
+            hash_evidence_rows((development,)),
+            hash_evidence_identities((development,)),
+            provenance,
+        ).to_json_bytes()
+    )
+
+    with pytest.raises(ValueError, match="capture groups overlap"):
+        evaluate_main(
+            [
+                "--config",
+                str(config),
+                "--evidence",
+                str(locked_path),
+                "--development-evidence",
+                str(development_path),
+                "--dino-source-manifest",
+                str(tmp_path / "dino.sources.json"),
+                "--coverage-contract",
+                str(tmp_path / "coverage.json"),
+                "--calibration",
+                str(calibration),
+                "--output",
+                str(tmp_path / "report.json"),
+            ]
+        )
 
 
 def test_evaluator_rejects_precomputed_training_evidence(

@@ -184,6 +184,7 @@ def test_benchmark_command_runs_warmups_and_writes_canonical_report(
         dinov3_support_sha256="1" * 64,
         calibration_id="policy_v1",
         calibration_sha256="0" * 64,
+        repvit_manifest_sha256="4" * 64,
     )
 
     class _Pipeline:

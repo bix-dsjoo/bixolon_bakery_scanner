@@ -273,10 +273,16 @@ def test_load_requires_calibration_before_loading_repvit(monkeypatch, tmp_path):
 
 
 def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path):
-    calibration = _calibration()
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    calibration = _calibration(
+        repvit_checkpoint_sha256=config.repvit.checkpoint_sha256,
+        repvit_manifest_sha256=config.repvit.manifest_sha256,
+        dinov3_weights_sha256=config.dinov3.weights_sha256,
+        dinov3_support_sha256=config.dinov3.support_sha256,
+        preprocess_sha256=preprocess_sha256(config.preprocess),
+    )
     calibration_path = tmp_path / "policy.json"
     calibration_path.write_bytes(calibration.to_json_bytes())
-    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
     configured = config.model_copy(
         update={
             "calibration": config.calibration.model_copy(
@@ -318,6 +324,7 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
         calibration_id=calibration.calibration_id,
         calibration_sha256=hashlib.sha256(calibration.to_json_bytes()).hexdigest(),
         preprocess_sha256=preprocess_sha256(config.preprocess),
+        repvit_manifest_sha256=config.repvit.manifest_sha256,
     )
     pipeline.infer(_image(), _box())
     assert dino_loads == 0
@@ -364,6 +371,11 @@ def _calibration(**overrides: object) -> PolicyCalibration:
         "dino_threshold": 0.50,
         "fused_margin": 0.20,
         "evidence_sha256": "0" * 64,
+        "repvit_checkpoint_sha256": "1" * 64,
+        "repvit_manifest_sha256": "0" * 64,
+        "dinov3_weights_sha256": "2" * 64,
+        "dinov3_support_sha256": "3" * 64,
+        "preprocess_sha256": "0" * 64,
     }
     values.update(overrides)
     return PolicyCalibration(**values)

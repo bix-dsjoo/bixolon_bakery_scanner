@@ -442,6 +442,7 @@ def run_benchmark(
     if (
         provenance.repvit_artifact_id != config.repvit.artifact_id
         or provenance.repvit_sha256 != config.repvit.checkpoint_sha256
+        or provenance.repvit_manifest_sha256 != config.repvit.manifest_sha256
         or provenance.dinov3_artifact_id != config.dinov3.artifact_id
         or provenance.dinov3_sha256 != config.dinov3.weights_sha256
         or provenance.dinov3_support_sha256 != config.dinov3.support_sha256
@@ -477,6 +478,7 @@ def _provenance_identity(provenance: ModelProvenance) -> tuple[object, ...]:
         provenance.calibration_id,
         provenance.calibration_sha256,
         provenance.preprocess_sha256,
+        provenance.repvit_manifest_sha256,
     )
 
 

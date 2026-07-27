@@ -79,6 +79,7 @@ class ClassifierPipeline:
             calibration_id=calibration.calibration_id,
             calibration_sha256=hashlib.sha256(calibration_payload).hexdigest(),
             preprocess_sha256=preprocess_sha256(config.preprocess),
+            repvit_manifest_sha256=config.repvit.manifest_sha256,
         )
         policy = DecisionPolicy(calibration, provenance=provenance)
         repvit = RepVitM1Runner.load(config)

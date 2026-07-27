@@ -39,6 +39,11 @@ def calibration(**overrides: object) -> PolicyCalibration:
         "dino_threshold": 0.50,
         "fused_margin": 0.20,
         "evidence_sha256": "0" * 64,
+        "repvit_checkpoint_sha256": "1" * 64,
+        "repvit_manifest_sha256": "0" * 64,
+        "dinov3_weights_sha256": "2" * 64,
+        "dinov3_support_sha256": "3" * 64,
+        "preprocess_sha256": "0" * 64,
     }
     values.update(overrides)
     return PolicyCalibration(**values)
@@ -56,6 +61,11 @@ def policy(cal: PolicyCalibration | None = None) -> DecisionPolicy:
         calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
     )
     return DecisionPolicy(selected, provenance=provenance)
+
+
+def test_policy_rejects_calibration_from_different_checkpoint_with_same_model_id():
+    with pytest.raises(ValueError, match="repvit_sha256"):
+        policy(calibration(repvit_checkpoint_sha256="9" * 64))
 
 
 def probabilities(values: dict[int, float]) -> ModelScoreVector:
@@ -172,28 +182,26 @@ def test_direct_gate_skips_top3_when_threshold_and_margin_pass():
 
 
 def test_direct_gate_accepts_threshold_and_margin_equality():
-    result = policy(
-        calibration(direct_threshold=0.05, direct_margin=0.0)
-    ).direct(probabilities({}), box=BOX)
+    result = policy(calibration(direct_threshold=0.05, direct_margin=0.0)).direct(
+        probabilities({}), box=BOX
+    )
 
     assert result is not None
     assert result.sku_id == 1
 
 
 def test_direct_gate_requires_both_threshold_and_margin():
+    assert policy().direct(probabilities({6: 0.69, 5: 0.10}), box=BOX) is None
     assert (
-        policy().direct(probabilities({6: 0.69, 5: 0.10}), box=BOX)
+        policy(calibration(direct_threshold=0.50, direct_margin=0.30)).direct(
+            probabilities({6: 0.55, 5: 0.40}), box=BOX
+        )
         is None
     )
-    assert policy(
-        calibration(direct_threshold=0.50, direct_margin=0.30)
-    ).direct(probabilities({6: 0.55, 5: 0.40}), box=BOX) is None
 
 
 def test_disagreement_abstains_with_three_fused_candidates():
-    result = policy(
-        calibration(dino_threshold=0.20, fused_margin=0.0)
-    ).after_recheck(
+    result = policy(calibration(dino_threshold=0.20, fused_margin=0.0)).after_recheck(
         probabilities({6: 0.50, 5: 0.30, 19: 0.10}),
         similarities_from_probabilities({5: 0.50, 6: 0.30, 19: 0.10}),
         box=BOX,
@@ -225,9 +233,7 @@ def test_recheck_accepts_threshold_and_margin_equality():
 
 
 def test_recheck_agreement_with_weak_dino_abstains():
-    result = policy(
-        calibration(dino_threshold=0.51, fused_margin=0.0)
-    ).after_recheck(
+    result = policy(calibration(dino_threshold=0.51, fused_margin=0.0)).after_recheck(
         probabilities({6: 0.60, 5: 0.20}),
         similarities_from_probabilities({6: 0.50, 5: 0.20}),
         box=BOX,
@@ -237,9 +243,7 @@ def test_recheck_agreement_with_weak_dino_abstains():
 
 
 def test_recheck_agreement_with_weak_fused_margin_abstains():
-    result = policy(
-        calibration(dino_threshold=0.20, fused_margin=0.25)
-    ).after_recheck(
+    result = policy(calibration(dino_threshold=0.20, fused_margin=0.25)).after_recheck(
         probabilities({6: 0.45, 5: 0.35}),
         similarities_from_probabilities({6: 0.45, 5: 0.35}),
         box=BOX,
@@ -249,9 +253,7 @@ def test_recheck_agreement_with_weak_fused_margin_abstains():
 
 
 def test_ties_are_ranked_by_ascending_sku_id():
-    result = policy(
-        calibration(dino_threshold=1.0, fused_margin=1.0)
-    ).after_recheck(
+    result = policy(calibration(dino_threshold=1.0, fused_margin=1.0)).after_recheck(
         probabilities({}),
         similarities_from_probabilities({}),
         box=BOX,

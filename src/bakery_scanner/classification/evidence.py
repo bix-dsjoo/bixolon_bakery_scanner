@@ -10,7 +10,7 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -753,6 +753,7 @@ def select_policy(
     *,
     folds: int = 5,
     seed: int = 20260727,
+    artifact_hashes: Mapping[str, str] | None = None,
 ) -> PolicyCalibration:
     """Cross-fit development evidence, then fit one final immutable policy."""
     checked_rows = tuple(rows)
@@ -762,7 +763,9 @@ def select_policy(
     for training_indices, held_out_indices in splits:
         training = tuple(checked_rows[index] for index in training_indices)
         held_out = tuple(checked_rows[index] for index in held_out_indices)
-        fold_calibration = _fit_policy(training, hash_evidence_rows(training))
+        fold_calibration = _fit_policy(
+            training, hash_evidence_rows(training), artifact_hashes
+        )
         pooled.extend(policy_predictions(held_out, fold_calibration))
     cross_fit_metrics = evaluate_rows(tuple(pooled))
     undefined_metrics = tuple(
@@ -790,7 +793,7 @@ def select_policy(
             f"fallback_top3_misses={cross_fit_metrics.fallback_top3_misses}, "
             f"assisted_failures={cross_fit_metrics.assisted_failures}"
         )
-    return _fit_policy(checked_rows, hash_evidence_rows(checked_rows))
+    return _fit_policy(checked_rows, hash_evidence_rows(checked_rows), artifact_hashes)
 
 
 def hash_evidence_rows(rows: Sequence[EvidenceRow]) -> str:
@@ -863,6 +866,7 @@ class _ScoreArrays:
 def _fit_policy(
     rows: tuple[EvidenceRow, ...],
     evidence_sha256: str,
+    artifact_hashes: Mapping[str, str] | None = None,
 ) -> PolicyCalibration:
     registered = np.asarray([row.registered for row in rows], dtype=bool)
     if not registered.any():
@@ -975,6 +979,22 @@ def _fit_policy(
     if best is None:  # pragma: no cover - nonempty rows always yield sentinels
         raise RuntimeError("policy candidate grid is empty")
     direct_threshold, direct_margin, dino_threshold, fused_margin_threshold = best[1]
+    hashes = {
+        "repvit_checkpoint_sha256": "0" * 64,
+        "repvit_manifest_sha256": "0" * 64,
+        "dinov3_weights_sha256": "0" * 64,
+        "dinov3_support_sha256": "0" * 64,
+        "preprocess_sha256": "0" * 64,
+    }
+    if artifact_hashes is not None:
+        if set(artifact_hashes) != set(hashes) or any(
+            not isinstance(value, str) or not _SHA256.fullmatch(value)
+            for value in artifact_hashes.values()
+        ):
+            raise ValueError(
+                "artifact_hashes must contain exact lowercase SHA-256 values"
+            )
+        hashes.update(artifact_hashes)
     return PolicyCalibration(
         schema_version=1,
         calibration_id="policy_v1",
@@ -989,6 +1009,7 @@ def _fit_policy(
         fused_margin=fused_margin_threshold,
         evidence_sha256=evidence_sha256,
         development_identity_sha256=hash_evidence_identities(rows),
+        **hashes,
     )
 
 

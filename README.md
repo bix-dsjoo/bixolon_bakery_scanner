@@ -130,6 +130,11 @@ requires all 20 registered SKUs, at least one unregistered crop, and every
 scenario in `configs/locked_classifier_coverage_v1.json`; a perfect subset is
 not release eligible.
 
+The calibration JSON is canonical and binds the exact RepViT checkpoint and
+training manifest, DINO weights and support file, plus the versioned preprocessing
+digest. Online loading and locked evaluation reject a calibration whose hashes do
+not match the configured artifacts, even when model IDs are unchanged.
+
 잠긴 보고서는 `auto_precision`, `fallback_top3_recall`,
 `assisted_success`가 적용 가능한 구간마다 1.0인지 검사하며, 하나라도
 충족하지 못하면 명령이 0이 아닌 종료 코드를 반환합니다. 잠긴 결과를 보고

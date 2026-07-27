@@ -42,6 +42,11 @@ _CALIBRATION_KEYS = frozenset(
         "fused_margin",
         "evidence_sha256",
         "development_identity_sha256",
+        "repvit_checkpoint_sha256",
+        "repvit_manifest_sha256",
+        "dinov3_weights_sha256",
+        "dinov3_support_sha256",
+        "preprocess_sha256",
     }
 )
 
@@ -61,6 +66,11 @@ class PolicyCalibration:
     fused_margin: float
     evidence_sha256: str
     development_identity_sha256: str = "0" * 64
+    repvit_checkpoint_sha256: str = "0" * 64
+    repvit_manifest_sha256: str = "0" * 64
+    dinov3_weights_sha256: str = "0" * 64
+    dinov3_support_sha256: str = "0" * 64
+    preprocess_sha256: str = "0" * 64
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
@@ -71,7 +81,15 @@ class PolicyCalibration:
             raise ValueError(f"repvit_artifact_id must be {_REPVIT_ARTIFACT_ID}")
         if self.dinov3_artifact_id != _DINOV3_ARTIFACT_ID:
             raise ValueError(f"dinov3_artifact_id must be {_DINOV3_ARTIFACT_ID}")
-        for field in ("evidence_sha256", "development_identity_sha256"):
+        for field in (
+            "evidence_sha256",
+            "development_identity_sha256",
+            "repvit_checkpoint_sha256",
+            "repvit_manifest_sha256",
+            "dinov3_weights_sha256",
+            "dinov3_support_sha256",
+            "preprocess_sha256",
+        ):
             if not isinstance(getattr(self, field), str) or not _SHA256.fullmatch(
                 getattr(self, field)
             ):
@@ -105,6 +123,11 @@ class PolicyCalibration:
             "direct_threshold": self.direct_threshold,
             "evidence_sha256": self.evidence_sha256,
             "development_identity_sha256": self.development_identity_sha256,
+            "repvit_checkpoint_sha256": self.repvit_checkpoint_sha256,
+            "repvit_manifest_sha256": self.repvit_manifest_sha256,
+            "dinov3_weights_sha256": self.dinov3_weights_sha256,
+            "dinov3_support_sha256": self.dinov3_support_sha256,
+            "preprocess_sha256": self.preprocess_sha256,
             "fused_margin": self.fused_margin,
             "repvit_artifact_id": self.repvit_artifact_id,
             "repvit_temperature": self.repvit_temperature,
@@ -155,6 +178,19 @@ class DecisionPolicy:
             raise ValueError("provenance RepViT artifact does not match calibration")
         if provenance.dinov3_artifact_id != calibration.dinov3_artifact_id:
             raise ValueError("provenance DINOv3 artifact does not match calibration")
+        for provenance_field, calibration_field in (
+            ("repvit_sha256", "repvit_checkpoint_sha256"),
+            ("repvit_manifest_sha256", "repvit_manifest_sha256"),
+            ("dinov3_sha256", "dinov3_weights_sha256"),
+            ("dinov3_support_sha256", "dinov3_support_sha256"),
+            ("preprocess_sha256", "preprocess_sha256"),
+        ):
+            if getattr(provenance, provenance_field) != getattr(
+                calibration, calibration_field
+            ):
+                raise ValueError(
+                    f"provenance {provenance_field} does not match calibration"
+                )
         if provenance.calibration_id != calibration.calibration_id:
             raise ValueError("provenance calibration_id does not match calibration")
         calibration_sha256 = hashlib.sha256(calibration.to_json_bytes()).hexdigest()

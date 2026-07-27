@@ -79,6 +79,7 @@ class ModelProvenance:
     calibration_id: str
     calibration_sha256: str
     preprocess_sha256: str = "0" * 64
+    repvit_manifest_sha256: str = "0" * 64
     failure_code: str | None = None
 
     def __post_init__(self) -> None:
@@ -91,6 +92,7 @@ class ModelProvenance:
             "dinov3_support_sha256",
             "calibration_sha256",
             "preprocess_sha256",
+            "repvit_manifest_sha256",
         ):
             if not _SHA256.fullmatch(getattr(self, field)):
                 raise ValueError(f"{field} must be a lowercase SHA-256 hash")
@@ -170,6 +172,7 @@ class ClassificationDecision:
                 "dinov3_support_sha256": self.provenance.dinov3_support_sha256,
                 "failure_code": self.provenance.failure_code,
                 "preprocess_sha256": self.provenance.preprocess_sha256,
+                "repvit_manifest_sha256": self.provenance.repvit_manifest_sha256,
                 "repvit_artifact_id": self.provenance.repvit_artifact_id,
                 "repvit_sha256": self.provenance.repvit_sha256,
             },

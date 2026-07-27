@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from bakery_scanner.classification.config import ClassifierConfig
+from bakery_scanner.classification.config import ClassifierConfig, preprocess_sha256
 from bakery_scanner.classification.evidence import (
     EvaluatedRow,
     EvidenceRow,
@@ -233,10 +233,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         row.image_sha256 for row in development_rows
     ):
         raise ValueError("development and locked evidence image identities overlap")
+    if {row.capture_group for row in rows}.intersection(
+        row.capture_group for row in development_rows
+    ):
+        raise ValueError("development and locked evidence capture groups overlap")
     validate_evidence_provenance(rows, config)
     validate_evidence_provenance(development_rows, config)
     calibration_payload = args.calibration.read_bytes()
     calibration = PolicyCalibration.from_json_bytes(calibration_payload)
+    expected_calibration_hashes = {
+        "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+        "repvit_manifest_sha256": config.repvit.manifest_sha256,
+        "dinov3_weights_sha256": config.dinov3.weights_sha256,
+        "dinov3_support_sha256": config.dinov3.support_sha256,
+        "preprocess_sha256": preprocess_sha256(config.preprocess),
+    }
+    if any(
+        getattr(calibration, field) != expected
+        for field, expected in expected_calibration_hashes.items()
+    ):
+        raise ValueError("calibration model provenance does not match configuration")
     if calibration.evidence_sha256 != hash_evidence_rows(development_rows):
         raise ValueError(
             "calibration is not bound to the supplied development evidence"

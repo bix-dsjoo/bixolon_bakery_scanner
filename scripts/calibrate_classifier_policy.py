@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from bakery_scanner.classification.config import ClassifierConfig
+from bakery_scanner.classification.config import ClassifierConfig, preprocess_sha256
 from bakery_scanner.classification.evidence import (
     atomic_write_bytes,
     load_evidence_rows,
@@ -44,7 +44,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         training_image_hashes=training_hashes,
     )
     validate_evidence_provenance(rows, config)
-    calibration = select_policy(rows, folds=args.folds, seed=args.seed)
+    calibration = select_policy(
+        rows,
+        folds=args.folds,
+        seed=args.seed,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "preprocess_sha256": preprocess_sha256(config.preprocess),
+        },
+    )
     atomic_write_bytes(args.output, calibration.to_json_bytes())
     return 0
 
