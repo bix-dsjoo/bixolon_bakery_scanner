@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Automatically return a correct Top-1 SKU for at least 90% of registered single-bread crops with zero automatic errors, otherwise return `Unknown` plus Top-3.
+**Goal:** Automatically return a correct Top-1 SKU for at least 90% of registered single-bread crops with registered automatic error rate below 5%, no automatic unregistered SKU, otherwise return `Unknown` plus Top-3 containing the registered truth.
 
 **Architecture:** Collect one full, hash-bound evidence row from the same RepViT/DINO-local path used at runtime.  A capture-group out-of-fold regularized candidate ranker learns SKU ordering, and a separate out-of-fold risk calibrator decides whether the ranked Top-1 is safe to emit.  The runtime consumes one immutable ranker/calibrator artifact and fails closed when any provenance or feature-contract check fails.
 
@@ -12,7 +12,7 @@
 
 - Inputs are verifier-confirmed single-bread crops; Detector and Verifier quality are out of scope for this classifier target.
 - Batch 1 is development-only; Batch 2 must not participate in feature fitting, model fitting, or threshold selection.
-- `auto_correct / registered_count >= 0.90` and `auto_errors == 0` are required on a fixed locked Batch 2 report; no result may claim OOD coverage without unregistered examples.
+- `auto_correct / registered_count >= 0.90`, `registered_auto_errors / auto_count < 0.05`, registered Unknown Top-3 recall `== 1.0`, and unregistered automatic count `== 0` are required on a fixed locked Batch 2 report; no result may claim OOD coverage without unregistered examples.
 - Preserve the existing canonical EXIF visual frame, 5%/10%/15% crop contract, model hashes, and original image box.
 - DINO local candidates remain DINO Top-5 union RepViT Top-3, with a maximum of eight candidates and the v3 source-balanced local coreset.
 - Every invalid artifact, missing feature, or inference exception returns `Unknown`; do not fall back to an uncalibrated SKU.

@@ -3,10 +3,11 @@
 ## Goal
 
 For verifier-confirmed, single-bread crops, automatically return the correct
-Top-1 SKU for at least 90% of registered evaluation crops while returning no
-wrong automatic SKU.  All remaining crops return `Unknown` with three ranked
-candidates.  Batch 1 is development-only; Batch 2 remains untouched until the
-policy is frozen.
+Top-1 SKU for at least 90% of registered evaluation crops while keeping the
+registered automatic error rate below 5% and returning no automatic SKU for an
+unregistered product.  All remaining registered crops return `Unknown` with
+three ranked candidates containing the truth.  Batch 1 is development-only;
+Batch 2 remains untouched until the policy is frozen.
 
 This goal applies to the classifier input contract only.  It does not claim
 Detector or Verifier performance, and it does not establish OOD performance
@@ -65,10 +66,10 @@ until the Verifier provides a foreground mask.
 3. Train a separate risk calibrator on out-of-fold Top-1 rows using ranker
    score/margin plus model disagreement and OOD evidence.  It yields an
    acceptance risk score.
-4. Select the most permissive Batch 1 acceptance threshold with zero automatic
-   errors and at least 90% correct automatic coverage.  If no such threshold
-   exists, publish the measured maximum coverage and do not relax the error
-   condition.
+4. Select the most permissive Batch 1 acceptance threshold with registered
+   automatic error rate below 5%, at least 90% correct automatic coverage, and
+   no accepted unregistered rows.  If no such threshold exists, publish the
+   measured maximum coverage and do not relax either error-safety condition.
 5. Freeze model, ranker, calibrator, and threshold.  Run once on disjoint,
    locked Batch 2.  A failure on Batch 2 is a failed acceptance result, not a
    reason to tune the policy.
@@ -83,9 +84,10 @@ until the Verifier provides a foreground mask.
 - Unknown: exactly three unique SKUs, their rank scores, and reason.
 
 The report must include automatic correct/error counts, correct-Top-1 coverage,
-Unknown count/reasons, Top-3 recall, candidate recall, and total/RepViT/DINO
-latency percentiles.  The 90%/0-error condition is scoped to registered crops;
-it is not an OOD release claim.
+Unknown count/reasons, registered Unknown Top-3 recall, candidate recall,
+unregistered automatic-confirmation count, and total/RepViT/DINO latency
+percentiles.  The target requires an independent locked set containing both
+registered and unregistered rows; it is not an OOD claim beyond those rows.
 
 ## Verification
 

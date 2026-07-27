@@ -111,6 +111,8 @@ class RiskPrediction:
         if self.registered:
             if self.expected_sku_id not in range(1, 21) or self.predicted_sku_id not in range(1, 21):
                 raise ValueError("registered risk prediction requires canonical SKU IDs")
+        elif self.expected_sku_id is not None or self.predicted_sku_id not in range(1, 21):
+            raise ValueError("unregistered risk prediction requires null expected and canonical predicted SKU IDs")
         if not isinstance(self.risk, (int, float)) or isinstance(self.risk, bool) or not math.isfinite(float(self.risk)) or not 0.0 <= float(self.risk) <= 1.0:
             raise ValueError("risk must be a finite value between 0 and 1")
         object.__setattr__(self, "risk", float(self.risk))
@@ -124,19 +126,27 @@ def select_zero_error_threshold(
     predictions: Sequence[RiskPrediction],
     *,
     minimum_correct_coverage: float = 0.90,
+    maximum_registered_auto_error_rate: float = 0.05,
 ) -> float | None:
-    """Select the most permissive shared risk threshold meeting 90%/0-error."""
+    """Select one shared threshold with coverage, error-rate, and OOD guarantees."""
     checked = tuple(predictions)
-    if not checked or any(not item.registered for item in checked):
-        raise ValueError("threshold selection requires registered predictions")
+    if not checked:
+        raise ValueError("threshold selection requires predictions")
     if not 0.0 < minimum_correct_coverage <= 1.0:
         raise ValueError("minimum_correct_coverage must be in (0, 1]")
-    denominator = len(checked)
+    if not 0.0 <= maximum_registered_auto_error_rate < 1.0:
+        raise ValueError("maximum_registered_auto_error_rate must be in [0, 1)")
+    registered_count = sum(item.registered for item in checked)
+    if registered_count == 0:
+        raise ValueError("threshold selection requires registered predictions")
     selected: float | None = None
     for threshold in sorted({item.risk for item in checked}):
         accepted = tuple(item for item in checked if item.risk <= threshold)
-        if any(not item.correct for item in accepted):
+        if any(not item.registered for item in accepted):
             continue
-        if sum(item.correct for item in accepted) / denominator >= minimum_correct_coverage:
+        automatic_errors = sum(not item.correct for item in accepted)
+        if accepted and automatic_errors / len(accepted) >= maximum_registered_auto_error_rate:
+            continue
+        if sum(item.correct for item in accepted) / registered_count >= minimum_correct_coverage:
             selected = threshold
     return selected

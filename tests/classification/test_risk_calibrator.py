@@ -26,6 +26,24 @@ def test_selector_returns_none_when_zero_error_cannot_reach_90_percent_coverage(
     assert select_zero_error_threshold(predictions) is None
 
 
+def test_selector_treats_an_accepted_unregistered_product_as_an_automatic_error():
+    predictions = tuple(
+        RiskPrediction(f"correct-{index}", True, 6, 6, 0.10 + index * 0.01)
+        for index in range(9)
+    ) + (RiskPrediction("unregistered", False, None, 6, 0.15),)
+
+    assert select_zero_error_threshold(predictions) is None
+
+
+def test_selector_allows_one_registered_error_only_when_it_is_strictly_below_five_percent():
+    predictions = tuple(
+        RiskPrediction(f"correct-{index}", True, 6, 6, 0.10 + index * 0.01)
+        for index in range(20)
+    ) + (RiskPrediction("wrong", True, 6, 5, 0.31),)
+
+    assert select_zero_error_threshold(predictions) == 0.31
+
+
 def test_common_risk_calibrator_assigns_higher_risk_to_a_lower_rank_score():
     calibrator = RiskCalibrator(
         feature_mean=(0.0, 0.0),
