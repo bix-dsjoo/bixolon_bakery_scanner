@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--dino-source-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--calibration",
+        type=Path,
+        help="Optional development-only calibration artifact; does not alter config.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -82,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config.repvit.manifest, expected_sha256=config.repvit.manifest_sha256
     ) | load_dinov3_support_training_hashes(config.dinov3.support, args.dino_source_manifest)
     inputs = load_evidence_manifest(args.manifest, training_image_hashes=training_hashes)
-    pipeline = ClassifierPipeline.load(args.config)
+    pipeline = ClassifierPipeline.load(args.config, calibration_path=args.calibration)
     evaluated, decisions = evaluate_runtime_manifest(pipeline, inputs)
     metrics = evaluate_rows(evaluated).to_dict()
     report = {
@@ -91,7 +96,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "decision": decision.decision,
                 "decision_path": decision.decision_path.value,
+                "confidence": decision.confidence,
+                "expected_sku_id": item.sku_id,
                 "predicted_sku_id": decision.sku_id,
+                "registered": item.registered,
                 "sample_id": item.sample_id,
                 "timings_ms": {
                     "dinov3": decision.timings.dinov3_ms,

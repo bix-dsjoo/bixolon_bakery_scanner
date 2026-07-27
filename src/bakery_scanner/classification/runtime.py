@@ -81,10 +81,15 @@ class ClassifierPipeline:
         self.clock = clock or _CudaClock(device)
 
     @classmethod
-    def load(cls, config_path: Path) -> "ClassifierPipeline":
+    def load(
+        cls,
+        config_path: Path,
+        *,
+        calibration_path: Path | None = None,
+    ) -> "ClassifierPipeline":
         """Load strict configuration, calibration, and the primary runner."""
         config = ClassifierConfig.load(config_path)
-        calibration_payload = config.calibration.artifact.read_bytes()
+        calibration_payload = (calibration_path or config.calibration.artifact).read_bytes()
         calibration = PolicyCalibration.from_json_bytes(calibration_payload)
         provenance = ModelProvenance(
             repvit_artifact_id=config.repvit.artifact_id,

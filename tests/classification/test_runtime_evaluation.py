@@ -5,7 +5,7 @@ from bakery_scanner.classification.contracts import (
     StageTimings,
 )
 from bakery_scanner.contracts import Box
-from scripts.evaluate_classifier_runtime import evaluated_row_from_decision
+from scripts.evaluate_classifier_runtime import build_parser, evaluated_row_from_decision
 
 
 def test_runtime_sku_decision_preserves_exact_runtime_prediction():
@@ -35,3 +35,17 @@ def test_runtime_sku_decision_preserves_exact_runtime_prediction():
     assert result.decision == "sku"
     assert result.predicted_sku_id == 6
     assert result.top3 == ()
+
+
+def test_runtime_evaluator_accepts_an_exploratory_calibration_override():
+    args = build_parser().parse_args(
+        [
+            "--config", "config.yaml",
+            "--manifest", "manifest.jsonl",
+            "--dino-source-manifest", "sources.json",
+            "--calibration", "policy.json",
+            "--output", "report.json",
+        ]
+    )
+
+    assert args.calibration.name == "policy.json"
