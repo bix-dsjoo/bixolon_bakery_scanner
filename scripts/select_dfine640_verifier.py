@@ -184,8 +184,8 @@ def validate_detector_fold(config_path: Path, fold: int) -> None:
         if not isinstance(prediction, dict):
             raise ValueError("validation prediction must be an object")
         image_id = prediction.get("image_id")
-        if image_id not in validation_ids:
-            raise ValueError("validation prediction image must belong to the held-out fold")
+        if type(image_id) is not int or image_id not in validation_ids:
+            raise ValueError("validation prediction image id must belong to the held-out fold")
         if prediction.get("source") != experiment.name:
             raise ValueError("validation prediction source must match D-FINE-N 640")
         score = prediction.get("score")

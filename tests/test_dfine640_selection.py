@@ -343,6 +343,40 @@ runtime: {device: 'CUDA:0', precision: FP32, proposal_limit: 30}
         "fold": 0,
         "status": "detector_fold_validated",
     }
+    prediction.write_text(
+        json.dumps(
+            [
+                {
+                    "bbox": [1, 2, 3, 4],
+                    "image_id": True,
+                    "score": 0.9,
+                    "source": "dfine_n_640",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    receipt["prediction_sha256"] = hashlib.sha256(prediction.read_bytes()).hexdigest()
+    (run_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/select_dfine640_verifier.py",
+            "--validate-detector-fold",
+            "0",
+            "--config",
+            str(config_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "image id" in result.stderr.lower()
 
 
 def test_verifier_loader_requires_all_five_completed_artifacts(tmp_path):
