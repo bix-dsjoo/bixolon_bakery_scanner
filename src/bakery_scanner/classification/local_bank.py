@@ -73,9 +73,23 @@ class LocalPatchBank:
             raise ValueError("local patch tokens must contain finite product patches")
         selected = functional.normalize(selected.float(), dim=1)
         return {
-            sku_id: float((selected @ self.patches[sku_id].T).max(dim=1).values.mean().item())
+            sku_id: _trimmed_topk_similarity(selected, self.patches[sku_id])
             for sku_id in candidates
         }
+
+
+def _trimmed_topk_similarity(
+    query_patches: torch.Tensor,
+    reference_patches: torch.Tensor,
+) -> float:
+    """Average each query patch's top three references, then trim query outliers."""
+    similarities = query_patches @ reference_patches.T
+    top_count = min(3, reference_patches.shape[0])
+    per_query = similarities.topk(top_count, dim=1).values.mean(dim=1)
+    trim_count = int(per_query.shape[0] * 0.10)
+    if trim_count and 2 * trim_count < per_query.shape[0]:
+        per_query = per_query.sort().values[trim_count:-trim_count]
+    return float(per_query.mean().item())
 
 
 def _validate_patches(value: object, sku_id: int) -> torch.Tensor:

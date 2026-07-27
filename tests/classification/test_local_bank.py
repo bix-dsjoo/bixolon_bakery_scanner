@@ -34,3 +34,26 @@ def test_local_bank_rejects_mismatched_dino_hash_and_scores_masked_tokens(tmp_pa
 
     assert scores == {6: pytest.approx(1.0)}
     assert hashlib.sha256(path.read_bytes()).hexdigest() == bank.sha256
+
+
+def test_local_bank_averages_each_query_patch_top_three_reference_matches(tmp_path):
+    payload = _payload()
+    e0 = torch.zeros(384)
+    e0[0] = 1.0
+    e1 = torch.zeros(384)
+    e1[1] = 1.0
+    payload["patches"][6] = torch.stack(
+        (
+            e0,
+            0.8 * e0 + 0.6 * e1,
+            0.6 * e0 + 0.8 * e1,
+            e1,
+        )
+    )
+    path = tmp_path / "bank.pt"
+    torch.save(payload, path)
+    bank = LocalPatchBank.load(path, dino_weights_sha256="a" * 64, preprocess_sha256="b" * 64)
+
+    scores = bank.score((6,), torch.stack((e0, e1)), torch.tensor([True, True]))
+
+    assert scores == {6: pytest.approx(0.8)}

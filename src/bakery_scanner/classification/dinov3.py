@@ -168,6 +168,8 @@ class DinoV3Rechecker:
         crops: Sequence[Image.Image],
         product_boxes_in_crops: Sequence[Box],
         local_bank: LocalPatchBank,
+        *,
+        repvit_scores: ModelScoreVector | None = None,
     ) -> tuple[ModelScoreVector, dict[int, float]]:
         """Retrieve global Top-5, then score only their product-mask patches."""
         if len(crops) != 3 or len(product_boxes_in_crops) != 3:
@@ -190,8 +192,11 @@ class DinoV3Rechecker:
                 mean_embedding = functional.normalize(cls_tokens.mean(dim=0), dim=0)
                 similarities = self.prototypes @ mean_embedding
                 global_scores = ModelScoreVector(self.model_id, self.sku_ids, tuple(float(value) for value in similarities.cpu().tolist()), "similarity")
-                candidate_indices = sorted(range(20), key=lambda index: (-global_scores.values[index], self.sku_ids[index]))[:5]
-                candidate_ids = tuple(self.sku_ids[index] for index in candidate_indices)
+                if repvit_scores is None:
+                    candidate_indices = sorted(range(20), key=lambda index: (-global_scores.values[index], self.sku_ids[index]))[:5]
+                    candidate_ids = tuple(self.sku_ids[index] for index in candidate_indices)
+                else:
+                    candidate_ids = candidate_union(global_scores, repvit_scores)
                 masks = tuple(_product_patch_mask(box, crop.size, patch_tokens.shape[1], patch_tokens.device) for crop, box in zip(crops, product_boxes_in_crops, strict=True))
                 local_scores = local_bank.score(candidate_ids, patch_tokens.reshape(-1, _EMBEDDING_DIMENSION), torch.cat(masks))
         except torch.OutOfMemoryError as exc:
@@ -217,10 +222,18 @@ def _product_patch_mask(box: Box, crop_size: tuple[int, int], token_count: int, 
         raise ValueError("DINOv3 patch-token grid is invalid")
     if box.x < 0 or box.y < 0 or box.x + box.width > width or box.y + box.height > height:
         raise ValueError("product box must stay within its crop")
+    # A verifier foreground mask is not available yet.  Erode the box so local
+    # matching avoids the most likely tray/background boundary patches.
+    inset_x = box.width * 0.05
+    inset_y = box.height * 0.05
+    left = box.x + inset_x
+    top = box.y + inset_y
+    right = box.x + box.width - inset_x
+    bottom = box.y + box.height - inset_y
     centers_x = (torch.arange(grid, device=device) + 0.5) * width / grid
     centers_y = (torch.arange(grid, device=device) + 0.5) * height / grid
     xx, yy = torch.meshgrid(centers_x, centers_y, indexing="xy")
-    return ((xx >= box.x) & (xx <= box.x + box.width) & (yy >= box.y) & (yy <= box.y + box.height)).reshape(-1)
+    return ((xx >= left) & (xx <= right) & (yy >= top) & (yy <= bottom)).reshape(-1)
 
 
 def _validate_support(
