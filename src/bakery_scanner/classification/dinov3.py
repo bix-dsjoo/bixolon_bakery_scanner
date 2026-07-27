@@ -1,0 +1,217 @@
+"""Strict DINOv3 ViT-S/16 artifact loading and prototype scoring."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Callable, Mapping, Sequence
+
+import torch
+import torch.nn.functional as functional
+from dinov3.models.vision_transformer import vit_small
+from PIL import Image
+from torchvision import transforms
+
+from .config import ClassifierConfig
+from .contracts import ModelScoreVector
+from .preprocess import build_transform
+
+_SKU_IDS = tuple(range(1, 21))
+_EMBEDDING_DIMENSION = 384
+_PROTOTYPE_SHAPE = (20, _EMBEDDING_DIMENSION)
+_SUPPORT_ARTIFACT_TYPE = "dinov3_vits16_15plus5_global_support"
+_ARCHITECTURE = "vit_small_patch16_dinov3_storage4"
+_STORAGE_TOKEN_SHAPE = [1, 4, _EMBEDDING_DIMENSION]
+
+
+class DinoV3Rechecker:
+    def __init__(
+        self,
+        encoder: torch.nn.Module,
+        prototypes: torch.Tensor,
+        sku_ids: tuple[int, ...],
+        transform: Callable[[Image.Image], torch.Tensor],
+        model_id: str,
+        device: torch.device,
+    ) -> None:
+        if sku_ids != _SKU_IDS:
+            raise ValueError("DINOv3 SKU IDs must be 1 through 20 in canonical order")
+        _validate_prototypes(prototypes)
+        self.encoder = encoder
+        self.prototypes = prototypes.detach().to(device)
+        self.sku_ids = sku_ids
+        self.transform = transform
+        self.model_id = model_id
+        self.device = device
+
+    @classmethod
+    def load(
+        cls,
+        config: ClassifierConfig,
+        *,
+        device: torch.device | None = None,
+    ) -> "DinoV3Rechecker":
+        dinov3 = config.dinov3
+        _verify_sha256(dinov3.weights, dinov3.weights_sha256, "weights")
+        _verify_sha256(dinov3.support, dinov3.support_sha256, "support")
+        _verify_sha256(config.repvit.manifest, config.repvit.manifest_sha256, "RepViT manifest")
+
+        weights = torch.load(dinov3.weights, map_location="cpu", weights_only=True)
+        support = torch.load(dinov3.support, map_location="cpu", weights_only=True)
+        transform = build_transform(config.preprocess.input_size)
+        prototypes = _validate_support(
+            support,
+            weights=weights,
+            weights_path=dinov3.weights,
+            weights_sha256=dinov3.weights_sha256,
+            repvit_manifest=config.repvit.manifest,
+            runtime_transform=transform,
+        )
+
+        target_device = device or torch.device(config.runtime.device.lower())
+        model = vit_small(
+            patch_size=16,
+            n_storage_tokens=4,
+            mask_k_bias=True,
+            layerscale_init=1e-5,
+        )
+        if not isinstance(weights, Mapping):
+            raise ValueError("DINOv3 weights must be a state dictionary")
+        model.load_state_dict(weights, strict=True)
+        model.to(target_device).eval()
+        return cls(
+            model,
+            prototypes,
+            _SKU_IDS,
+            transform,
+            dinov3.artifact_id,
+            target_device,
+        )
+
+    def score(self, crops: Sequence[Image.Image]) -> ModelScoreVector:
+        if len(crops) != 3:
+            raise ValueError("DINOv3 requires exactly three crops")
+        batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in crops))
+        with torch.inference_mode():
+            embeddings = self.encoder(batch.to(self.device))
+            if not isinstance(embeddings, torch.Tensor) or embeddings.shape != (3, _EMBEDDING_DIMENSION):
+                raise ValueError("DINOv3 embeddings must have shape (3, 384)")
+            if not torch.isfinite(embeddings).all().item():
+                raise ValueError("DINOv3 embeddings must be finite")
+            if (embeddings.norm(dim=1) == 0).any().item():
+                raise ValueError("DINOv3 embeddings must have non-zero length")
+            embeddings = functional.normalize(embeddings, dim=1)
+            mean_embedding = embeddings.mean(dim=0)
+            if mean_embedding.norm().item() == 0:
+                raise ValueError("DINOv3 mean embedding must have non-zero length")
+            mean_embedding = functional.normalize(mean_embedding, dim=0)
+            similarities = self.prototypes @ mean_embedding
+            if not torch.isfinite(similarities).all().item():
+                raise ValueError("DINOv3 similarities must be finite")
+        values = tuple(float(value) for value in similarities.detach().cpu().tolist())
+        return ModelScoreVector(self.model_id, self.sku_ids, values, "similarity")
+
+
+def _verify_sha256(path: Path, expected: str, label: str) -> None:
+    if not path.is_file():
+        raise ValueError(f"DINOv3 {label} file is missing: {path}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
+    if digest.hexdigest() != expected:
+        raise ValueError(f"DINOv3 {label} SHA-256 mismatch")
+
+
+def _validate_support(
+    value: object,
+    *,
+    weights: object,
+    weights_path: Path,
+    weights_sha256: str,
+    repvit_manifest: Path,
+    runtime_transform: Callable[[Image.Image], torch.Tensor],
+) -> torch.Tensor:
+    if not isinstance(value, dict):
+        raise ValueError("DINOv3 support must be a mapping")
+    if value.get("artifact_type") != _SUPPORT_ARTIFACT_TYPE:
+        raise ValueError("DINOv3 support artifact_type is invalid")
+    schema_version = value.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        raise ValueError("DINOv3 support schema_version must be 1")
+
+    class_map = value.get("class_map")
+    repvit_class_map = _load_repvit_class_map(repvit_manifest)
+    if class_map != repvit_class_map:
+        raise ValueError("DINOv3 support class_map must match RepViT class_map")
+    if not isinstance(class_map, list) or tuple(row.get("id") for row in class_map) != _SKU_IDS:
+        raise ValueError("DINOv3 support class_map must use canonical SKU order")
+
+    checkpoint = value.get("dino_checkpoint")
+    expected_checkpoint = {
+        "architecture": _ARCHITECTURE,
+        "file": weights_path.name,
+        "key_count": len(weights) if isinstance(weights, Mapping) else -1,
+        "sha256": weights_sha256,
+        "storage_token_shape": _STORAGE_TOKEN_SHAPE,
+    }
+    if checkpoint != expected_checkpoint:
+        if isinstance(checkpoint, dict) and checkpoint.get("sha256") != weights_sha256:
+            raise ValueError("DINOv3 support-declared checkpoint SHA-256 mismatch")
+        raise ValueError("DINOv3 support dino_checkpoint metadata is invalid")
+
+    runtime_metadata = _describe_transform(runtime_transform)
+    if value.get("transform") != runtime_metadata:
+        raise ValueError("DINOv3 support transform metadata does not match runtime transform")
+
+    prototypes = value.get("prototypes")
+    _validate_prototypes(prototypes)
+    return prototypes
+
+
+def _load_repvit_class_map(path: Path) -> list[dict[str, object]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        class_map = payload["class_map"]
+    except (OSError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ValueError("RepViT manifest class_map is invalid") from exc
+    if not isinstance(class_map, list) or not all(isinstance(row, dict) for row in class_map):
+        raise ValueError("RepViT manifest class_map is invalid")
+    return class_map
+
+
+def _validate_prototypes(value: object) -> None:
+    if not isinstance(value, torch.Tensor) or tuple(value.shape) != _PROTOTYPE_SHAPE:
+        raise ValueError("DINOv3 prototypes must have shape (20, 384)")
+    if value.dtype != torch.float32:
+        raise ValueError("DINOv3 prototypes must use float32")
+    if not torch.isfinite(value).all().item():
+        raise ValueError("DINOv3 prototypes must be finite")
+    norms = value.norm(dim=1)
+    if not torch.allclose(norms, torch.ones_like(norms), rtol=1e-5, atol=1e-5):
+        raise ValueError("DINOv3 prototypes must be unit-length")
+
+
+def _describe_transform(
+    value: Callable[[Image.Image], torch.Tensor],
+) -> dict[str, object]:
+    if not isinstance(value, transforms.Compose) or len(value.transforms) != 3:
+        raise ValueError("DINOv3 runtime transform structure is invalid")
+    resize, to_tensor, normalize = value.transforms
+    if (
+        not isinstance(resize, transforms.Resize)
+        or not isinstance(to_tensor, transforms.ToTensor)
+        or not isinstance(normalize, transforms.Normalize)
+    ):
+        raise ValueError("DINOv3 runtime transform structure is invalid")
+    size = [resize.size, resize.size] if isinstance(resize.size, int) else list(resize.size)
+    interpolation = getattr(resize.interpolation, "value", str(resize.interpolation).lower())
+    return {
+        "antialias": resize.antialias,
+        "image_mode": "RGB",
+        "input_size": size,
+        "mean": list(normalize.mean),
+        "resize_interpolation": interpolation,
+        "std": list(normalize.std),
+    }
