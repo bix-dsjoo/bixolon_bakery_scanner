@@ -171,6 +171,23 @@ class DinoV3Rechecker:
         *,
         repvit_scores: ModelScoreVector | None = None,
     ) -> tuple[ModelScoreVector, dict[int, float]]:
+        global_scores, local_scores, _, _ = self.score_global_and_local_evidence(
+            crops,
+            product_boxes_in_crops,
+            local_bank,
+            repvit_scores=repvit_scores,
+        )
+        return global_scores, local_scores
+
+    def score_global_and_local_evidence(
+        self,
+        crops: Sequence[Image.Image],
+        product_boxes_in_crops: Sequence[Box],
+        local_bank: LocalPatchBank,
+        *,
+        repvit_scores: ModelScoreVector | None = None,
+    ) -> tuple[ModelScoreVector, dict[int, float], int, float]:
+        """Return local scores plus the exact product-token evidence volume."""
         """Retrieve global Top-5, then score only their product-mask patches."""
         if len(crops) != 3 or len(product_boxes_in_crops) != 3:
             raise ValueError("DINOv3 local scoring requires three crops and three product boxes")
@@ -198,10 +215,13 @@ class DinoV3Rechecker:
                 else:
                     candidate_ids = candidate_union(global_scores, repvit_scores)
                 masks = tuple(_product_patch_mask(box, crop.size, patch_tokens.shape[1], patch_tokens.device) for crop, box in zip(crops, product_boxes_in_crops, strict=True))
-                local_scores = local_bank.score(candidate_ids, patch_tokens.reshape(-1, _EMBEDDING_DIMENSION), torch.cat(masks))
+                product_mask = torch.cat(masks)
+                local_scores = local_bank.score(candidate_ids, patch_tokens.reshape(-1, _EMBEDDING_DIMENSION), product_mask)
         except torch.OutOfMemoryError as exc:
             raise DinoInferenceError("dino_out_of_memory", "DINOv3 inference exhausted device memory") from exc
-        return global_scores, local_scores
+        product_patch_count = int(product_mask.sum().item())
+        product_patch_ratio = product_patch_count / product_mask.numel()
+        return global_scores, local_scores, product_patch_count, product_patch_ratio
 
 
 def _verify_sha256(path: Path, expected: str, label: str) -> None:

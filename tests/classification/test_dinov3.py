@@ -147,6 +147,23 @@ def test_dinov3_local_scores_only_global_top_five_candidates(tmp_path):
     assert global_scores.score_kind == "similarity"
 
 
+def test_dinov3_local_evidence_reports_selected_product_patch_count_and_ratio(tmp_path):
+    patches = {sku_id: torch.nn.functional.normalize(torch.ones((1, 384)) * sku_id, dim=1) for sku_id in _SKU_IDS}
+    bank_path = tmp_path / "local.pt"
+    torch.save({"artifact_type": "dinov3_vits16_15plus5_local_patch_bank", "schema_version": 1, "dino_weights_sha256": "a" * 64, "preprocess_sha256": "b" * 64, "canonical_frame_version": "exif_visual_rgb_v1", "patches": patches}, bank_path)
+    bank = LocalPatchBank.load(bank_path, dino_weights_sha256="a" * 64, preprocess_sha256="b" * 64)
+    runner = DinoV3Rechecker(FeatureEncoder(), torch.eye(384, dtype=torch.float32)[:20], _SKU_IDS, build_transform(224), "dinov3_vits16_15plus5_v1", torch.device("cpu"))
+
+    _, _, count, ratio = runner.score_global_and_local_evidence(
+        tuple(Image.new("RGB", (32, 32)) for _ in range(3)),
+        (Box(0, 0, 32, 32),) * 3,
+        bank,
+    )
+
+    assert count == 432
+    assert ratio == pytest.approx(432 / 588)
+
+
 def test_dinov3_local_scores_the_union_of_global_and_repvit_candidates(tmp_path):
     patches = {sku_id: torch.nn.functional.normalize(torch.ones((1, 384)) * sku_id, dim=1) for sku_id in _SKU_IDS}
     bank_path = tmp_path / "local.pt"
