@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2
 
-from bakery_scanner.contracts import Box, BreadProposal, VerifierState
+from bakery_scanner.contracts import Box, BreadProposal, SceneKey, VerifierState
 from bakery_scanner.detectors.proposal_policy import retain_raw_proposals
 from bakery_scanner.verifier.data import (
     VerifierExample,
@@ -118,10 +118,11 @@ def build_verifier_receipt(
     config: Path,
     fold: int,
     seed: int,
+    verifier_predictions: Path | None = None,
 ) -> dict[str, object]:
     """Build the immutable fold receipt, including Task 2 public metadata."""
     _require_fold(fold)
-    return {
+    receipt = {
         "checkpoint_sha256": _sha256_file(checkpoint),
         "class_order": list(CLASS_ORDER),
         "config_sha256": _sha256_file(config),
@@ -134,6 +135,20 @@ def build_verifier_receipt(
         "status": "completed",
         "training_examples": verifier_generation_metadata(seed=seed).to_dict(),
     }
+    if verifier_predictions is not None:
+        receipt["verifier_predictions_sha256"] = _sha256_file(verifier_predictions)
+    return receipt
+
+
+def verifier_receipt_core_sha256(receipt: Mapping[str, object]) -> str:
+    """Hash the receipt portion that predates its prediction artifact.
+
+    Prediction rows point at this core because a full receipt also commits to
+    the prediction file, which would otherwise create an impossible hash cycle.
+    """
+    core = dict(receipt)
+    core.pop("verifier_predictions_sha256", None)
+    return hashlib.sha256(_canonical_json_bytes(core)).hexdigest()
 
 
 def write_verifier_predictions(
@@ -188,14 +203,23 @@ class VerifierOofRunner:
         annotations: Path | None = None,
         images: Path | None = None,
         detector_predictions: Path | None = None,
+        fold_root: Path | None = None,
+        staged_manifest: Path | None = None,
     ) -> None:
         """Train on manifest training IDs, then infer target-fold candidates."""
         if device != "cuda:0":
             raise ValueError("verifier training requires device cuda:0")
-        if annotations is None or images is None or detector_predictions is None:
+        if (
+            annotations is None
+            or images is None
+            or detector_predictions is None
+            or fold_root is None
+            or staged_manifest is None
+        ):
             raise ValueError(
-                "annotations, images, and detector_predictions are required"
+                "annotations, images, detector_predictions, fold_root, and staged_manifest are required"
             )
+        _validate_five_fold_integrity(Path(fold_root), Path(staged_manifest))
         _require_cuda0_rtx5080()
 
         manifest_path = Path(train_manifest)
@@ -207,6 +231,11 @@ class VerifierOofRunner:
             annotations_path=Path(annotations),
             detector_predictions_path=Path(detector_predictions),
         )
+        configured_manifest = (
+            Path(fold_root) / f"fold-{fold_inputs.fold}" / "manifest.json"
+        )
+        if manifest_path.resolve() != configured_manifest.resolve():
+            raise ValueError("training manifest must be the configured target-fold manifest")
         examples = tuple(
             build_verifier_examples(
                 image_ids=fold_inputs.training_image_ids,
@@ -273,14 +302,25 @@ class VerifierOofRunner:
             fold=fold_inputs.fold,
             seed=self.config.seed,
         )
-        receipt_path = output_path / "receipt.json"
-        _write_canonical_json(receipt_path, receipt)
+        prediction_path = output_path / "verifier_predictions.json"
         write_verifier_predictions(
-            output_path / "verifier_predictions.json",
+            prediction_path,
             predictions=predictions,
             fold=fold_inputs.fold,
             validation_image_ids=fold_inputs.validation_image_ids,
-            verifier_receipt_sha256=_sha256_file(receipt_path),
+            verifier_receipt_sha256=verifier_receipt_core_sha256(receipt),
+        )
+        receipt_path = output_path / "receipt.json"
+        _write_canonical_json(
+            receipt_path,
+            build_verifier_receipt(
+                checkpoint=checkpoint_path,
+                fold_manifest=manifest_path,
+                config=config_path,
+                fold=fold_inputs.fold,
+                seed=self.config.seed,
+                verifier_predictions=prediction_path,
+            ),
         )
 
 
@@ -532,6 +572,166 @@ def _load_fold_inputs(
     )
 
 
+def validate_completed_verifier_fold(
+    *,
+    run_root: Path,
+    fold_manifest: Path,
+    annotations: Path,
+    detector_predictions: Path,
+) -> None:
+    """Reject any completed verifier artifact not exactly tied to its candidates."""
+    run_root = Path(run_root)
+    inputs = _load_fold_inputs(
+        manifest_path=Path(fold_manifest),
+        annotations_path=Path(annotations),
+        detector_predictions_path=Path(detector_predictions),
+    )
+    receipt_path = run_root / "receipt.json"
+    prediction_path = run_root / "verifier_predictions.json"
+    checkpoint_path = run_root / "verifier.pt"
+    config_path = run_root / "verifier_config.json"
+    receipt = _read_json_object(receipt_path, "verifier receipt")
+    required = {
+        "checkpoint_sha256": _sha256_file(checkpoint_path),
+        "config_sha256": _sha256_file(config_path),
+        "fold_manifest_sha256": _sha256_file(Path(fold_manifest)),
+        "fold": inputs.fold,
+        "model_name": MODEL_NAME,
+        "device": "cuda:0",
+        "status": "completed",
+        "verifier_predictions_sha256": _sha256_file(prediction_path),
+    }
+    if any(receipt.get(key) != value for key, value in required.items()):
+        raise ValueError("verifier receipt identity or artifact hash mismatch")
+    if receipt.get("class_order") != list(CLASS_ORDER):
+        raise ValueError("verifier receipt class order is invalid")
+    config = _read_json_object(config_path, "verifier config")
+    if config.get("class_order") != list(CLASS_ORDER):
+        raise ValueError("verifier config class order is invalid")
+    _validate_prediction_rows(
+        rows=_read_json_array(prediction_path, "verifier predictions"),
+        candidates=inputs.candidates,
+        fold=inputs.fold,
+        receipt_core_sha256=verifier_receipt_core_sha256(receipt),
+    )
+
+
+def _validate_prediction_rows(
+    *,
+    rows: Sequence[object],
+    candidates: Sequence[BreadProposal],
+    fold: int,
+    receipt_core_sha256: str,
+) -> None:
+    expected = {(candidate.image_id, candidate.box) for candidate in candidates}
+    observed: set[tuple[int, Box]] = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "bbox", "fold", "image_id", "probabilities", "verifier_receipt_sha256"
+        }:
+            raise ValueError("verifier prediction row has invalid fields")
+        image_id, bbox = row["image_id"], row["bbox"]
+        if isinstance(image_id, bool) or not isinstance(image_id, int):
+            raise ValueError("verifier prediction image ID is invalid")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError("verifier prediction bbox is invalid")
+        try:
+            prediction = VerifierPrediction(
+                image_id=image_id,
+                crop_xywh=Box(*bbox),
+                probabilities=tuple(row["probabilities"]),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("verifier prediction probabilities or geometry are invalid") from exc
+        if row["fold"] != fold or row["verifier_receipt_sha256"] != receipt_core_sha256:
+            raise ValueError("verifier prediction fold or receipt reference is invalid")
+        identity = (prediction.image_id, prediction.crop_xywh)
+        if identity in observed:
+            raise ValueError("duplicate verifier prediction candidate")
+        observed.add(identity)
+    if observed != expected:
+        raise ValueError("verifier predictions do not exactly match the retained D-FINE candidate set")
+
+
+def _validate_five_fold_integrity(fold_root: Path, staged_manifest_path: Path) -> None:
+    """Require exact grouped five-fold coverage and complement training sets."""
+    staged_rows = _read_json_array(Path(staged_manifest_path), "staged manifest")
+    scene_by_id: dict[int, SceneKey] = {}
+    ids_by_scene: dict[SceneKey, frozenset[int]] = {}
+    mutable_scene_ids: dict[SceneKey, set[int]] = {}
+    for row in staged_rows:
+        if not isinstance(row, dict) or not isinstance(row.get("scene"), dict):
+            raise ValueError("staged manifest must map every image to a capture scene")
+        image_id = row.get("image_id")
+        if isinstance(image_id, bool) or not isinstance(image_id, int) or image_id <= 0 or image_id in scene_by_id:
+            raise ValueError("staged manifest image IDs must be unique positive integers")
+        try:
+            scene = SceneKey(row["scene"]["capture_batch"], row["scene"]["scene_number"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("staged manifest contains an invalid capture scene") from exc
+        scene_by_id[image_id] = scene
+        mutable_scene_ids.setdefault(scene, set()).add(image_id)
+    if not scene_by_id:
+        raise ValueError("staged manifest must not be empty")
+    ids_by_scene = {scene: frozenset(ids) for scene, ids in mutable_scene_ids.items()}
+
+    manifests: dict[int, tuple[frozenset[int], frozenset[int], frozenset[SceneKey], frozenset[SceneKey]]] = {}
+    for fold in range(5):
+        path = Path(fold_root) / f"fold-{fold}" / "manifest.json"
+        manifest = _read_json_object(path, "fold manifest")
+        if manifest.get("index") != fold:
+            raise ValueError("configured fold manifest index is invalid")
+        training = _positive_int_set(manifest.get("training_image_ids"), "training_image_ids")
+        validation = _positive_int_set(manifest.get("validation_image_ids"), "validation_image_ids")
+        training_scenes = _scene_set(manifest.get("training_scenes"), "training_scenes")
+        validation_scenes = _scene_set(manifest.get("validation_scenes"), "validation_scenes")
+        if not training or not validation or training & validation:
+            raise ValueError("configured fold training and validation IDs must be disjoint")
+        if not training | validation <= scene_by_id.keys():
+            raise ValueError("configured fold IDs must exist in staged manifest")
+        _require_whole_capture_scenes(validation, validation_scenes, scene_by_id, ids_by_scene, "validation")
+        _require_whole_capture_scenes(training, training_scenes, scene_by_id, ids_by_scene, "training")
+        manifests[fold] = (training, validation, training_scenes, validation_scenes)
+    validation_union = frozenset().union(*(row[1] for row in manifests.values()))
+    if validation_union != frozenset(scene_by_id) or sum(len(row[1]) for row in manifests.values()) != len(validation_union):
+        raise ValueError("five configured validation folds must exactly cover each staged image once")
+    for fold, (training, _, training_scenes, _) in manifests.items():
+        other_validations = frozenset().union(*(row[1] for other, row in manifests.items() if other != fold))
+        other_scenes = frozenset().union(*(row[3] for other, row in manifests.items() if other != fold))
+        if training != other_validations or training_scenes != other_scenes:
+            raise ValueError("training IDs and scenes must exactly equal the other four configured folds")
+
+
+def _scene_set(value: object, label: str) -> frozenset[SceneKey]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be an array")
+    try:
+        scenes = frozenset(
+            SceneKey(row["capture_batch"], row["scene_number"])
+            for row in value
+            if isinstance(row, dict)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must contain valid capture scenes") from exc
+    if len(scenes) != len(value):
+        raise ValueError(f"{label} must contain unique capture scenes")
+    return scenes
+
+
+def _require_whole_capture_scenes(
+    image_ids: frozenset[int],
+    scenes: frozenset[SceneKey],
+    scene_by_id: Mapping[int, SceneKey],
+    ids_by_scene: Mapping[SceneKey, frozenset[int]],
+    partition: str,
+) -> None:
+    if {scene_by_id[image_id] for image_id in image_ids} != scenes:
+        raise ValueError(f"{partition} scenes do not match selected image IDs")
+    for scene in scenes:
+        if not ids_by_scene[scene] <= image_ids:
+            raise ValueError(f"{partition} fold must contain every image from a whole capture scene")
+
+
 def _write_training_examples(path: Path, examples: Sequence[VerifierExample]) -> None:
     _write_canonical_json(
         path,
@@ -615,33 +815,64 @@ def _sha256_file(path: Path) -> str:
 
 def _write_canonical_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ),
-        encoding="utf-8",
-    )
+    path.write_bytes(_canonical_json_bytes(payload))
+
+
+def _canonical_json_bytes(payload: object) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train one grouped OOF MobileNetV4 verifier fold on cuda:0."
     )
-    parser.add_argument("--fold-manifest", type=Path, required=True)
-    parser.add_argument("--annotations", type=Path, required=True)
-    parser.add_argument("--images", type=Path, required=True)
-    parser.add_argument("--detector-predictions", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--fold-manifest", type=Path)
+    parser.add_argument("--annotations", type=Path)
+    parser.add_argument("--images", type=Path)
+    parser.add_argument("--detector-predictions", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--fold-root", type=Path)
+    parser.add_argument("--staged-manifest", type=Path)
+    parser.add_argument("--run-root", type=Path)
+    parser.add_argument("--validate-fold-integrity", action="store_true")
+    parser.add_argument("--validate-completed-fold", action="store_true")
     parser.add_argument("--device", default="cuda:0")
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    if args.validate_fold_integrity:
+        if args.fold_root is None or args.staged_manifest is None:
+            raise ValueError("fold_root and staged_manifest are required for integrity validation")
+        _validate_five_fold_integrity(args.fold_root, args.staged_manifest)
+        return 0
+    if args.validate_completed_fold:
+        if None in (args.run_root, args.fold_manifest, args.annotations, args.detector_predictions):
+            raise ValueError("run_root, fold_manifest, annotations, and detector_predictions are required")
+        validate_completed_verifier_fold(
+            run_root=args.run_root,
+            fold_manifest=args.fold_manifest,
+            annotations=args.annotations,
+            detector_predictions=args.detector_predictions,
+        )
+        return 0
+    if None in (
+        args.fold_manifest,
+        args.annotations,
+        args.images,
+        args.detector_predictions,
+        args.output_dir,
+        args.fold_root,
+        args.staged_manifest,
+    ):
+        raise ValueError("all fold training arguments are required")
     VerifierOofRunner().train(
         args.fold_manifest,
         args.output_dir,
@@ -649,6 +880,8 @@ def main() -> int:
         annotations=args.annotations,
         images=args.images,
         detector_predictions=args.detector_predictions,
+        fold_root=args.fold_root,
+        staged_manifest=args.staged_manifest,
     )
     return 0
 

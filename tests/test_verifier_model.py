@@ -13,9 +13,12 @@ from bakery_scanner.verifier.model import (
     VerifierOofRunner,
     VerifierPrediction,
     _load_fold_inputs,
+    _validate_five_fold_integrity,
     build_mobilenetv4_verifier,
     build_verifier_receipt,
     classify_verifier_batch,
+    validate_completed_verifier_fold,
+    verifier_receipt_core_sha256,
     write_verifier_predictions,
 )
 
@@ -233,3 +236,183 @@ def test_fold_input_rejects_non_dfine_validation_candidate(tmp_path: Path):
             annotations_path=annotations,
             detector_predictions_path=candidates,
         )
+
+
+def _write_minimal_verifier_artifact(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """Build a real on-disk artifact with one retained D-FINE candidate."""
+    manifest = tmp_path / "manifest.json"
+    annotations = tmp_path / "annotations.json"
+    candidates = tmp_path / "validation_predictions.json"
+    run_root = tmp_path / "verifier-run"
+    manifest.write_text(
+        json.dumps({"index": 2, "training_image_ids": [1], "validation_image_ids": [2]}),
+        encoding="utf-8",
+    )
+    annotations.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"file_name": "one.png", "height": 100, "id": 1, "width": 100},
+                    {"file_name": "two.png", "height": 100, "id": 2, "width": 100},
+                ],
+                "annotations": [{"bbox": [10, 10, 20, 20], "image_id": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidates.write_text(
+        json.dumps(
+            [{"bbox": [30, 30, 20, 20], "image_id": 2, "score": 0.9, "source": "dfine_n_640"}]
+        ),
+        encoding="utf-8",
+    )
+    run_root.mkdir()
+    checkpoint = run_root / "verifier.pt"
+    config = run_root / "verifier_config.json"
+    checkpoint.write_bytes(b"checkpoint")
+    config.write_text(
+        json.dumps({"class_order": list(CLASS_ORDER)}), encoding="utf-8"
+    )
+    core_receipt = build_verifier_receipt(
+        checkpoint=checkpoint, fold_manifest=manifest, config=config, fold=2, seed=20260724
+    )
+    prediction_path = run_root / "verifier_predictions.json"
+    prediction_path.write_text(
+        json.dumps(
+            [
+                {
+                    "bbox": [30, 30, 20, 20],
+                    "fold": 2,
+                    "image_id": 2,
+                    "probabilities": [0.1, 0.2, 0.3, 0.4],
+                    "verifier_receipt_sha256": verifier_receipt_core_sha256(core_receipt),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    receipt = build_verifier_receipt(
+        checkpoint=checkpoint,
+        fold_manifest=manifest,
+        config=config,
+        fold=2,
+        seed=20260724,
+        verifier_predictions=prediction_path,
+    )
+    (run_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    return run_root, manifest, annotations, candidates
+
+
+def _refresh_prediction_receipt(run_root: Path, manifest: Path) -> None:
+    receipt = build_verifier_receipt(
+        checkpoint=run_root / "verifier.pt",
+        fold_manifest=manifest,
+        config=run_root / "verifier_config.json",
+        fold=2,
+        seed=20260724,
+        verifier_predictions=run_root / "verifier_predictions.json",
+    )
+    (run_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+
+def test_completed_verifier_reuse_rejects_subset_or_duplicate_predictions(tmp_path: Path):
+    run_root, manifest, annotations, candidates = _write_minimal_verifier_artifact(tmp_path)
+    (run_root / "verifier_predictions.json").write_text("[]", encoding="utf-8")
+    _refresh_prediction_receipt(run_root, manifest)
+
+    with pytest.raises(ValueError, match="candidate set"):
+        validate_completed_verifier_fold(
+            run_root=run_root,
+            fold_manifest=manifest,
+            annotations=annotations,
+            detector_predictions=candidates,
+        )
+
+
+def test_completed_verifier_reuse_rejects_bad_probability(tmp_path: Path):
+    run_root, manifest, annotations, candidates = _write_minimal_verifier_artifact(tmp_path)
+    rows = json.loads((run_root / "verifier_predictions.json").read_text(encoding="utf-8"))
+    rows[0]["probabilities"] = [0.1, 0.2, 0.3, 0.5]
+    (run_root / "verifier_predictions.json").write_text(json.dumps(rows), encoding="utf-8")
+    _refresh_prediction_receipt(run_root, manifest)
+
+    with pytest.raises(ValueError, match="probabilities"):
+        validate_completed_verifier_fold(
+            run_root=run_root,
+            fold_manifest=manifest,
+            annotations=annotations,
+            detector_predictions=candidates,
+        )
+
+
+def test_completed_verifier_reuse_rejects_fabricated_candidate_geometry(tmp_path: Path):
+    run_root, manifest, annotations, candidates = _write_minimal_verifier_artifact(tmp_path)
+    rows = json.loads((run_root / "verifier_predictions.json").read_text(encoding="utf-8"))
+    rows[0]["bbox"] = [31, 30, 20, 20]
+    (run_root / "verifier_predictions.json").write_text(json.dumps(rows), encoding="utf-8")
+    _refresh_prediction_receipt(run_root, manifest)
+
+    with pytest.raises(ValueError, match="candidate set"):
+        validate_completed_verifier_fold(
+            run_root=run_root,
+            fold_manifest=manifest,
+            annotations=annotations,
+            detector_predictions=candidates,
+        )
+
+
+def _write_five_fold_manifests(root: Path, groups: tuple[tuple[int, ...], ...]) -> Path:
+    staged_manifest = root / "staged_manifest.json"
+    staged_rows = []
+    for group_index, group in enumerate(groups, start=1):
+        for image_id in group:
+            staged_rows.append(
+                {"image_id": image_id, "scene": {"capture_batch": "batch", "scene_number": group_index}}
+            )
+    staged_manifest.write_text(json.dumps(staged_rows), encoding="utf-8")
+    for fold, validation in enumerate(groups):
+        training = tuple(image_id for index, group in enumerate(groups) if index != fold for image_id in group)
+        (root / f"fold-{fold}").mkdir()
+        (root / f"fold-{fold}" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "index": fold,
+                    "training_image_ids": list(training),
+                    "validation_image_ids": list(validation),
+                    "training_scenes": [
+                        {"capture_batch": "batch", "scene_number": index + 1}
+                        for index in range(5) if index != fold
+                    ],
+                    "validation_scenes": [{"capture_batch": "batch", "scene_number": fold + 1}],
+                }
+            ),
+            encoding="utf-8",
+        )
+    return staged_manifest
+
+
+def test_five_fold_integrity_rejects_missing_other_fold_training_group(tmp_path: Path):
+    staged_manifest = _write_five_fold_manifests(tmp_path, ((1,), (2,), (3,), (4,), (5,)))
+    fold_zero = tmp_path / "fold-0" / "manifest.json"
+    row = json.loads(fold_zero.read_text(encoding="utf-8"))
+    row["training_image_ids"] = [2, 3, 4]
+    row["training_scenes"] = [
+        {"capture_batch": "batch", "scene_number": scene_number}
+        for scene_number in (2, 3, 4)
+    ]
+    fold_zero.write_text(json.dumps(row), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="other four"):
+        _validate_five_fold_integrity(tmp_path, staged_manifest)
+
+
+def test_five_fold_integrity_rejects_capture_scene_split(tmp_path: Path):
+    staged_manifest = _write_five_fold_manifests(tmp_path, ((1, 2), (3,), (4,), (5,), (6,)))
+    fold_zero = tmp_path / "fold-0" / "manifest.json"
+    row = json.loads(fold_zero.read_text(encoding="utf-8"))
+    row["validation_image_ids"] = [1]
+    row["training_image_ids"] = [2, 3, 4, 5, 6]
+    fold_zero.write_text(json.dumps(row), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="whole capture scene"):
+        _validate_five_fold_integrity(tmp_path, staged_manifest)

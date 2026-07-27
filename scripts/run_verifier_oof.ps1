@@ -20,6 +20,7 @@ $VerifierRoot = "artifacts/box_system/verifiers"
 $StagedRoot = "artifacts/box_system/staged"
 $Annotations = Join-Path $StagedRoot "annotations.json"
 $Images = Join-Path $StagedRoot "images"
+$StagedManifest = Join-Path $StagedRoot "staged_manifest.json"
 
 function Get-Sha256([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -120,7 +121,8 @@ function Test-CompletedVerifierFold([int]$Fold, [System.Collections.IDictionary]
     if (
         $Receipt.checkpoint_sha256 -ne (Get-Sha256 $CheckpointPath) -or
         $Receipt.config_sha256 -ne (Get-Sha256 $ConfigPath) -or
-        $Receipt.fold_manifest_sha256 -ne (Get-Sha256 $DetectorFold.ManifestPath)
+        $Receipt.fold_manifest_sha256 -ne (Get-Sha256 $DetectorFold.ManifestPath) -or
+        $Receipt.verifier_predictions_sha256 -ne (Get-Sha256 $PredictionPath)
     ) {
         throw "Verifier receipt hash mismatch for $RunId"
     }
@@ -132,23 +134,14 @@ function Test-CompletedVerifierFold([int]$Fold, [System.Collections.IDictionary]
     ) {
         throw "Verifier receipt contract is incomplete for $RunId"
     }
-    $ReceiptHash = Get-Sha256 $ReceiptPath
-    $ValidationSet = @{}
-    $DetectorFold.ValidationIds | ForEach-Object { $ValidationSet[[int]$_] = $true }
-    $Rows = @(Get-Content -LiteralPath $PredictionPath -Raw | ConvertFrom-Json)
-    foreach ($Row in $Rows) {
-        $Probabilities = @($Row.probabilities | ForEach-Object { [double]$_ })
-        $ProbabilitySum = ($Probabilities | Measure-Object -Sum).Sum
-        if (
-            [int]$Row.fold -ne $Fold -or
-            -not $ValidationSet.ContainsKey([int]$Row.image_id) -or
-            @($Row.bbox).Count -ne 4 -or
-            $Probabilities.Count -ne 4 -or
-            [Math]::Abs($ProbabilitySum - 1.0) -gt 0.000001 -or
-            $Row.verifier_receipt_sha256 -ne $ReceiptHash
-        ) {
-            throw "Verifier predictions violate the held-out fold contract for $RunId"
-        }
+    & $Python -m bakery_scanner.verifier.model `
+        --validate-completed-fold `
+        --run-root $RunRoot `
+        --fold-manifest $DetectorFold.ManifestPath `
+        --annotations $Annotations `
+        --detector-predictions $DetectorFold.PredictionPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Verifier predictions violate the immutable held-out fold contract for $RunId"
     }
     return $true
 }
@@ -161,6 +154,14 @@ if (-not (Test-Path -LiteralPath $Annotations -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $Images -PathType Container)) {
     throw "Missing staged images: $Images"
+}
+if (-not (Test-Path -LiteralPath $StagedManifest -PathType Leaf)) {
+    throw "Missing staged manifest: $StagedManifest"
+}
+
+& $Python -m bakery_scanner.verifier.model --validate-fold-integrity --fold-root $FoldRoot --staged-manifest $StagedManifest
+if ($LASTEXITCODE -ne 0) {
+    throw "Configured verifier folds violate grouped five-fold integrity"
 }
 
 & $Python -c "import torch; assert torch.cuda.is_available() and 'RTX 5080' in torch.cuda.get_device_name(0)"
@@ -186,6 +187,8 @@ foreach ($Fold in 0..4) {
         --images $Images `
         --detector-predictions $DetectorFold.PredictionPath `
         --output-dir $RunRoot `
+        --fold-root $FoldRoot `
+        --staged-manifest $StagedManifest `
         --device $Device
     if ($LASTEXITCODE -ne 0) {
         throw "Failed verifier OOF fold $Fold (exit $LASTEXITCODE)"
