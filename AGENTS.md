@@ -58,7 +58,9 @@ Verifier, Classifier, 조건부 DINOv3 재확인으로 구성한다.
 
 ## 데이터 계약
 
-모든 단계는 원본 이미지 좌표계를 보존한다. 경계 상자는
+모든 단계는 EXIF orientation을 적용한 뒤 RGB로 변환한 시각적 원본 이미지
+좌표계를 보존한다. raw JPEG 픽셀 좌표는 기본 결과 계약이 아니며, 필요할 때만
+orientation provenance를 사용해 선택적으로 export한다. 경계 상자는
 `[x_min, y_min, x_max, y_max]` 형식을 사용하며 유효한 이미지 범위 안에
 있어야 한다.
 
