@@ -130,6 +130,7 @@ class ClassificationDecision:
     top3: tuple[SkuCandidate, ...]
     provenance: ModelProvenance
     timings: StageTimings
+    unknown_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.box, Box):
@@ -150,6 +151,8 @@ class ClassificationDecision:
                 raise ValueError("sku decision requires a SKU decision path")
             if self.top3:
                 raise ValueError("sku decision must not include top3 candidates")
+            if self.unknown_reason is not None:
+                raise ValueError("sku decision must not include unknown_reason")
         elif self.decision == "unknown":
             if self.sku_id is not None:
                 raise ValueError("unknown decision must not include sku_id")
@@ -162,6 +165,10 @@ class ClassificationDecision:
                 raise ValueError("unknown decision requires three unique candidates")
             if tuple(candidate.rank for candidate in self.top3) != (1, 2, 3):
                 raise ValueError("unknown candidates must have ranks 1, 2, 3")
+            if self.unknown_reason is not None and (
+                not isinstance(self.unknown_reason, str) or not self.unknown_reason
+            ):
+                raise ValueError("unknown_reason must be a non-empty string when supplied")
         else:
             raise ValueError("decision must be sku or unknown")
 
@@ -201,6 +208,7 @@ class ClassificationDecision:
                 }
                 for candidate in self.top3
             ],
+            "unknown_reason": self.unknown_reason,
         }
         return json.dumps(
             payload,

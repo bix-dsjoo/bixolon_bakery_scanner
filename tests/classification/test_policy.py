@@ -245,6 +245,7 @@ def test_disagreement_abstains_with_three_fused_candidates():
 
     assert result.decision == "unknown"
     assert result.decision_path is DecisionPath.UNKNOWN_TOP3
+    assert result.unknown_reason == "cross_model_disagreement"
     assert [candidate.sku_id for candidate in result.top3] == [6, 5, 19]
 
 
@@ -307,6 +308,7 @@ def test_dino_failure_returns_exactly_three_repvit_candidates():
 
     assert result.decision == "unknown"
     assert result.decision_path is DecisionPath.UNKNOWN_TOP3
+    assert result.unknown_reason == "dino_inference_failed"
     assert result.confidence == pytest.approx(0.40)
     assert [(item.rank, item.sku_id) for item in result.top3] == [
         (1, 19),

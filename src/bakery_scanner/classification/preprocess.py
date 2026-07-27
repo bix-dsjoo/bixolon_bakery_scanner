@@ -20,7 +20,28 @@ def make_padded_crops(
     return tuple(_crop_one(rgb, box, padding) for padding in paddings)
 
 
+def make_padded_crops_with_product_boxes(
+    image: Image.Image,
+    box: Box,
+    paddings: tuple[float, ...],
+) -> tuple[tuple[Image.Image, ...], tuple[Box, ...]]:
+    """Return padded crops and the verified product box in each crop frame."""
+    rgb = image.convert("RGB")
+    crops: list[Image.Image] = []
+    product_boxes: list[Box] = []
+    for padding in paddings:
+        left, top, right, bottom = _crop_bounds(rgb, box, padding)
+        crops.append(rgb.crop((left, top, right, bottom)))
+        product_boxes.append(Box(box.x - left, box.y - top, box.width, box.height))
+    return tuple(crops), tuple(product_boxes)
+
+
 def _crop_one(image: Image.Image, box: Box, padding: float) -> Image.Image:
+    left, top, right, bottom = _crop_bounds(image, box, padding)
+    return image.crop((left, top, right, bottom))
+
+
+def _crop_bounds(image: Image.Image, box: Box, padding: float) -> tuple[int, int, int, int]:
     if not math.isfinite(padding) or padding < 0.0:
         raise ValueError("padding must be a finite non-negative value")
     horizontal = padding * box.width / 2.0
@@ -31,7 +52,7 @@ def _crop_one(image: Image.Image, box: Box, padding: float) -> Image.Image:
     bottom = min(image.height, math.ceil(box.y + box.height + vertical))
     if right <= left or bottom <= top:
         raise ValueError("box must intersect the image after clipping")
-    return image.crop((left, top, right, bottom))
+    return left, top, right, bottom
 
 
 def build_transform(input_size: int) -> transforms.Compose:

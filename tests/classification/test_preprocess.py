@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from bakery_scanner.classification.preprocess import make_padded_crops
+from bakery_scanner.classification.preprocess import make_padded_crops, make_padded_crops_with_product_boxes
 from bakery_scanner.contracts import Box
 
 
@@ -38,3 +38,18 @@ def test_crops_are_deterministic_pixel_for_pixel():
     first = make_padded_crops(image, box, (0.05, 0.10, 0.15))
     second = make_padded_crops(image, box, (0.05, 0.10, 0.15))
     assert [crop.tobytes() for crop in first] == [crop.tobytes() for crop in second]
+
+
+def test_padded_crops_return_the_product_box_in_each_crop_coordinate_frame():
+    crops, product_boxes = make_padded_crops_with_product_boxes(
+        Image.new("RGB", (100, 80)),
+        Box(20, 30, 40, 20),
+        (0.05, 0.10, 0.15),
+    )
+
+    assert [crop.size for crop in crops] == [(42, 22), (44, 22), (46, 24)]
+    assert product_boxes == (
+        Box(1, 1, 40, 20),
+        Box(2, 1, 40, 20),
+        Box(3, 2, 40, 20),
+    )

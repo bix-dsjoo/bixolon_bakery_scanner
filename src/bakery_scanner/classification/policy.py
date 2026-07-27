@@ -311,12 +311,13 @@ class DecisionPolicy:
         fused_ranked = _rank(fused, repvit_scores.sku_ids)
         fused_best, fused_second = fused_ranked[:2]
 
-        if (
-            repvit_scores.sku_ids[repvit_ranked[0]]
-            == dino_scores.sku_ids[dino_ranked[0]]
-            and dino[dino_ranked[0]] >= self.calibration.dino_threshold
-            and fused[fused_best] - fused[fused_second] >= self.calibration.fused_margin
-        ):
+        if repvit_scores.sku_ids[repvit_ranked[0]] != dino_scores.sku_ids[dino_ranked[0]]:
+            reason = "cross_model_disagreement"
+        elif dino[dino_ranked[0]] < self.calibration.dino_threshold:
+            reason = "dino_low_confidence"
+        elif fused[fused_best] - fused[fused_second] < self.calibration.fused_margin:
+            reason = "fused_low_margin"
+        else:
             return self._sku_decision(
                 repvit_scores.sku_ids[fused_best],
                 fused[fused_best],
@@ -328,6 +329,7 @@ class DecisionPolicy:
             repvit_scores.sku_ids,
             fused_ranked,
             box,
+            reason=reason,
         )
 
     def dino_failure(
@@ -350,6 +352,7 @@ class DecisionPolicy:
             repvit_scores.sku_ids,
             _rank(repvit, repvit_scores.sku_ids),
             box,
+            reason="dino_inference_failed",
         )
 
     def _sku_decision(
@@ -376,6 +379,8 @@ class DecisionPolicy:
         sku_ids: tuple[int, ...],
         ranked: Sequence[int],
         box: Box,
+        *,
+        reason: str,
     ) -> ClassificationDecision:
         top_indices = ranked[:3]
         candidates = tuple(
@@ -395,6 +400,7 @@ class DecisionPolicy:
             top3=candidates,
             provenance=self.provenance,
             timings=self._empty_timings,
+            unknown_reason=reason,
         )
 
 
