@@ -104,7 +104,7 @@ class EvidenceInput:
     def __post_init__(self) -> None:
         if not isinstance(self.sample_id, str) or not self.sample_id:
             raise ValueError("sample_id must not be empty")
-        if not isinstance(self.capture_group, str) or not self.capture_group:
+        if not isinstance(self.capture_group, str) or not self.capture_group.strip():
             raise ValueError("capture_group must not be empty")
         if not isinstance(self.image_path, Path) or not self.image_path.is_absolute():
             raise ValueError("image_path must be an absolute Path")
@@ -140,7 +140,7 @@ class EvidenceRow:
     def __post_init__(self) -> None:
         if not isinstance(self.sample_id, str) or not self.sample_id:
             raise ValueError("sample_id must not be empty")
-        if not isinstance(self.capture_group, str) or not self.capture_group:
+        if not isinstance(self.capture_group, str) or not self.capture_group.strip():
             raise ValueError("capture_group must not be empty")
         registered, sku_id, role = _validate_label(
             registered=self.registered,
@@ -356,8 +356,15 @@ def load_evidence_manifest(
     return tuple(rows)
 
 
-def load_evidence_rows(path: Path) -> tuple[EvidenceRow, ...]:
+def load_evidence_rows(
+    path: Path,
+    *,
+    training_image_hashes: frozenset[str] | None = None,
+) -> tuple[EvidenceRow, ...]:
     evidence_path = Path(path).resolve()
+    checked_training_hashes = frozenset(training_image_hashes or ())
+    if any(not _SHA256.fullmatch(value) for value in checked_training_hashes):
+        raise ValueError("training image hashes must be lowercase SHA-256 values")
     rows: list[EvidenceRow] = []
     sample_ids: set[str] = set()
     image_hashes: set[str] = set()
@@ -370,6 +377,8 @@ def load_evidence_rows(path: Path) -> tuple[EvidenceRow, ...]:
             raise ValueError(f"line {line_number}: duplicate sample_id {row.sample_id}")
         if row.image_sha256 in image_hashes:
             raise ValueError(f"line {line_number}: duplicate image SHA-256")
+        if row.image_sha256 in checked_training_hashes:
+            raise ValueError(f"line {line_number}: image is present in RepViT training")
         sample_ids.add(row.sample_id)
         image_hashes.add(row.image_sha256)
         rows.append(row)
@@ -378,9 +387,18 @@ def load_evidence_rows(path: Path) -> tuple[EvidenceRow, ...]:
     return tuple(rows)
 
 
-def load_repvit_training_hashes(path: Path) -> frozenset[str]:
+def load_repvit_training_hashes(
+    path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> frozenset[str]:
     """Load the exact training image identities from a RepViT manifest."""
     training_manifest = Path(path).resolve()
+    if expected_sha256 is not None:
+        if not _SHA256.fullmatch(expected_sha256):
+            raise ValueError("expected RepViT manifest hash must be lowercase SHA-256")
+        if sha256_file(training_manifest) != expected_sha256:
+            raise ValueError("RepViT training manifest SHA-256 mismatch")
     try:
         payload = json.loads(
             training_manifest.read_text(encoding="utf-8"),
@@ -567,6 +585,20 @@ def select_policy(
         fold_calibration = _fit_policy(training, hash_evidence_rows(training))
         pooled.extend(policy_predictions(held_out, fold_calibration))
     cross_fit_metrics = evaluate_rows(tuple(pooled))
+    undefined_metrics = tuple(
+        name
+        for name in (
+            "auto_precision",
+            "fallback_top3_recall",
+            "assisted_success",
+        )
+        if getattr(cross_fit_metrics, name) is None
+    )
+    if undefined_metrics:
+        raise ValueError(
+            "cross-fit development has undefined applicable release metrics: "
+            + ", ".join(undefined_metrics)
+        )
     if (
         cross_fit_metrics.auto_errors
         or cross_fit_metrics.fallback_top3_misses

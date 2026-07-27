@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
+from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.evidence import (
     EvaluatedRow,
     EvidenceRow,
@@ -13,10 +14,21 @@ from bakery_scanner.classification.evidence import (
     canonical_json_bytes,
     evaluate_rows,
     load_evidence_rows,
+    load_repvit_training_hashes,
     policy_predictions,
     sha256_file,
 )
 from bakery_scanner.classification.policy import PolicyCalibration
+
+
+_ARTIFACT_HASH_KEYS = frozenset(
+    {
+        "repvit_checkpoint_sha256",
+        "repvit_manifest_sha256",
+        "dinov3_weights_sha256",
+        "dinov3_support_sha256",
+    }
+)
 
 
 def _empty_metrics() -> dict[str, object]:
@@ -60,12 +72,20 @@ def build_evaluation_report(
     *,
     calibration_sha256: str,
     evidence_sha256: str,
+    artifact_hashes: Mapping[str, str],
 ) -> dict[str, object]:
     """Build canonical locked-set slices without selecting any parameters."""
     if len(rows) != len(evaluated) or not rows:
         raise ValueError("report requires one evaluated result per evidence row")
     if any(row.role != "locked_acceptance" for row in rows):
         raise ValueError("locked evaluation accepts locked_acceptance rows only")
+    if set(artifact_hashes) != _ARTIFACT_HASH_KEYS or any(
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in artifact_hashes.values()
+    ):
+        raise ValueError("artifact_hashes must contain exact lowercase SHA-256 values")
     overall = evaluate_rows(tuple(evaluated))
     automatic_errors = [
         outcome.sample_id
@@ -128,8 +148,12 @@ def build_evaluation_report(
         "artifacts": {
             "calibration_sha256": calibration_sha256,
             "dinov3_artifact_id": first.dinov3_artifact_id,
+            "dinov3_support_sha256": artifact_hashes["dinov3_support_sha256"],
+            "dinov3_weights_sha256": artifact_hashes["dinov3_weights_sha256"],
             "evidence_sha256": evidence_sha256,
             "repvit_artifact_id": first.repvit_artifact_id,
+            "repvit_checkpoint_sha256": artifact_hashes["repvit_checkpoint_sha256"],
+            "repvit_manifest_sha256": artifact_hashes["repvit_manifest_sha256"],
         },
         "failures": {
             "assisted_failures": assisted_failures,
@@ -146,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate an existing policy once on locked acceptance evidence."
     )
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -154,7 +179,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    rows = load_evidence_rows(args.evidence)
+    config = ClassifierConfig.load(args.config)
+    training_hashes = load_repvit_training_hashes(
+        config.repvit.manifest,
+        expected_sha256=config.repvit.manifest_sha256,
+    )
+    rows = load_evidence_rows(
+        args.evidence,
+        training_image_hashes=training_hashes,
+    )
     if any(row.role != "locked_acceptance" for row in rows):
         raise ValueError("locked evaluation accepts locked_acceptance rows only")
     calibration_payload = args.calibration.read_bytes()
@@ -165,6 +198,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         evaluated,
         calibration_sha256=sha256_file(args.calibration),
         evidence_sha256=sha256_file(args.evidence),
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+        },
     )
     atomic_write_bytes(args.output, canonical_json_bytes(report))
     return 0 if report["release_passes"] else 1

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from PIL import Image
 
 from bakery_scanner.classification.evidence import (
@@ -17,9 +18,14 @@ from bakery_scanner.classification.evidence import (
     load_repvit_training_hashes,
 )
 from bakery_scanner.classification.contracts import ModelScoreVector
+from bakery_scanner.classification.policy import PolicyCalibration
 from bakery_scanner.contracts import Box
+from scripts.calibrate_classifier_policy import main as calibrate_main
 from scripts.collect_classifier_evidence import collect_rows
-from scripts.evaluate_classifier_policy import build_evaluation_report
+from scripts.evaluate_classifier_policy import (
+    build_evaluation_report,
+    main as evaluate_main,
+)
 
 
 def _write_image(path: Path, color: str = "red") -> str:
@@ -52,6 +58,111 @@ def _manifest_row(
         "sku_id": sku_id,
         "role": role,
     }
+
+
+def _write_classifier_config(
+    tmp_path: Path,
+    *,
+    training_hashes: tuple[str, ...] = (),
+) -> tuple[Path, dict[str, str]]:
+    training_manifest = tmp_path / "repvit.manifest.json"
+    training_manifest.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "identity": f"training-{index}.png",
+                        "sha256": image_hash,
+                        "sku_id": 1,
+                    }
+                    for index, image_hash in enumerate(training_hashes)
+                ]
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    hashes = {
+        "repvit_checkpoint_sha256": "1" * 64,
+        "repvit_manifest_sha256": hashlib.sha256(
+            training_manifest.read_bytes()
+        ).hexdigest(),
+        "dinov3_weights_sha256": "3" * 64,
+        "dinov3_support_sha256": "4" * 64,
+    }
+    config = tmp_path / "classifier.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "repvit": {
+                    "artifact_id": "repvit_m1_15plus5_v1",
+                    "checkpoint": "repvit.pt",
+                    "checkpoint_sha256": hashes["repvit_checkpoint_sha256"],
+                    "manifest": training_manifest.name,
+                    "manifest_sha256": hashes["repvit_manifest_sha256"],
+                },
+                "dinov3": {
+                    "artifact_id": "dinov3_vits16_15plus5_v1",
+                    "weights": "dinov3.pth",
+                    "weights_sha256": hashes["dinov3_weights_sha256"],
+                    "support": "support.pt",
+                    "support_sha256": hashes["dinov3_support_sha256"],
+                },
+                "preprocess": {
+                    "input_size": 224,
+                    "paddings": [0.05, 0.10, 0.15],
+                },
+                "runtime": {"device": "CUDA:0", "precision": "FP32"},
+                "calibration": {"artifact": "policy.json"},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return config, hashes
+
+
+def _policy(evidence_sha256: str = "0" * 64) -> PolicyCalibration:
+    return PolicyCalibration(
+        schema_version=1,
+        calibration_id="policy_v1",
+        repvit_artifact_id="repvit_m1_15plus5_v1",
+        dinov3_artifact_id="dinov3_vits16_15plus5_v1",
+        repvit_temperature=1.0,
+        dinov3_temperature=1.0,
+        alpha=0.5,
+        direct_threshold=0.5,
+        direct_margin=0.1,
+        dino_threshold=0.5,
+        fused_margin=0.1,
+        evidence_sha256=evidence_sha256,
+    )
+
+
+def _scored_row(
+    *,
+    role: str = "locked_acceptance",
+    image_sha256: str = "a" * 64,
+    registered: bool = True,
+    sku_id: int | None = 1,
+) -> EvidenceRow:
+    return EvidenceRow(
+        sample_id="sample-1",
+        capture_group="capture-1",
+        registered=registered,
+        sku_id=sku_id,
+        role=role,
+        image_sha256=image_sha256,
+        repvit_values=tuple([0.8] + [0.2 / 19] * 19),
+        dinov3_values=tuple([4.0] + [0.0] * 19),
+        repvit_artifact_id="repvit_m1_15plus5_v1",
+        dinov3_artifact_id="dinov3_vits16_15plus5_v1",
+    )
+
+
+def _write_evidence(path: Path, rows: tuple[EvidenceRow, ...]) -> None:
+    path.write_bytes(b"".join(row.to_json_bytes() + b"\n" for row in rows))
 
 
 def test_manifest_resolves_images_validates_box_and_hash(tmp_path: Path):
@@ -93,6 +204,22 @@ def test_manifest_rejects_invalid_rows(
 
     with pytest.raises(ValueError, match=message):
         load_evidence_manifest(manifest, training_image_hashes=frozenset())
+
+
+def test_evidence_rows_reject_whitespace_only_capture_group():
+    with pytest.raises(ValueError, match="capture_group"):
+        EvidenceRow(
+            sample_id="sample-1",
+            capture_group="   ",
+            registered=True,
+            sku_id=1,
+            role="development",
+            image_sha256="a" * 64,
+            repvit_values=tuple([0.8] + [0.2 / 19] * 19),
+            dinov3_values=tuple([4.0] + [0.0] * 19),
+            repvit_artifact_id="repvit_m1_15plus5_v1",
+            dinov3_artifact_id="dinov3_vits16_15plus5_v1",
+        )
 
 
 def test_manifest_rejects_duplicate_ids_and_duplicate_image_content(tmp_path: Path):
@@ -303,6 +430,12 @@ def test_locked_report_contains_requested_slices_and_exact_failures():
         evaluated,
         calibration_sha256="b" * 64,
         evidence_sha256="c" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": "d" * 64,
+            "repvit_manifest_sha256": "e" * 64,
+            "dinov3_weights_sha256": "f" * 64,
+            "dinov3_support_sha256": "0" * 64,
+        },
     )
 
     assert set(report["metrics"]) == {
@@ -315,3 +448,132 @@ def test_locked_report_contains_requested_slices_and_exact_failures():
     }
     assert report["failures"]["automatic_errors"] == ["locked-1"]
     assert report["release_passes"] is False
+
+
+def test_calibrator_rejects_precomputed_training_evidence_before_output(
+    tmp_path: Path,
+):
+    leaked_hash = "a" * 64
+    config, _ = _write_classifier_config(
+        tmp_path,
+        training_hashes=(leaked_hash,),
+    )
+    evidence = tmp_path / "development.jsonl"
+    _write_evidence(
+        evidence,
+        (_scored_row(role="development", image_sha256=leaked_hash),),
+    )
+    output = tmp_path / "policy.json"
+    output.write_bytes(b"existing")
+
+    with pytest.raises(ValueError, match="RepViT training"):
+        calibrate_main(
+            [
+                "--config",
+                str(config),
+                "--evidence",
+                str(evidence),
+                "--output",
+                str(output),
+            ]
+        )
+
+    assert output.read_bytes() == b"existing"
+
+
+def test_evaluator_rejects_development_role_without_replacing_output(
+    tmp_path: Path,
+):
+    config, _ = _write_classifier_config(tmp_path)
+    evidence = tmp_path / "development.jsonl"
+    _write_evidence(evidence, (_scored_row(role="development"),))
+    calibration = tmp_path / "policy.json"
+    calibration.write_bytes(_policy().to_json_bytes())
+    output = tmp_path / "report.json"
+    output.write_bytes(b"existing")
+
+    with pytest.raises(ValueError, match="locked_acceptance"):
+        evaluate_main(
+            [
+                "--config",
+                str(config),
+                "--evidence",
+                str(evidence),
+                "--calibration",
+                str(calibration),
+                "--output",
+                str(output),
+            ]
+        )
+
+    assert output.read_bytes() == b"existing"
+
+
+def test_evaluator_reports_configured_model_hashes_and_nonzero_release(
+    tmp_path: Path,
+):
+    config, hashes = _write_classifier_config(tmp_path)
+    evidence = tmp_path / "locked.jsonl"
+    _write_evidence(evidence, (_scored_row(),))
+    calibration = tmp_path / "policy.json"
+    calibration_payload = _policy().to_json_bytes()
+    calibration.write_bytes(calibration_payload)
+    output = tmp_path / "report.json"
+
+    exit_code = evaluate_main(
+        [
+            "--config",
+            str(config),
+            "--evidence",
+            str(evidence),
+            "--calibration",
+            str(calibration),
+            "--output",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_bytes())
+    assert exit_code == 1
+    assert report["artifacts"] == {
+        "calibration_sha256": hashlib.sha256(calibration_payload).hexdigest(),
+        "dinov3_artifact_id": "dinov3_vits16_15plus5_v1",
+        "dinov3_support_sha256": hashes["dinov3_support_sha256"],
+        "dinov3_weights_sha256": hashes["dinov3_weights_sha256"],
+        "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+        "repvit_artifact_id": "repvit_m1_15plus5_v1",
+        "repvit_checkpoint_sha256": hashes["repvit_checkpoint_sha256"],
+        "repvit_manifest_sha256": hashes["repvit_manifest_sha256"],
+    }
+    assert calibration.read_bytes() == calibration_payload
+
+
+def test_evaluator_rejects_precomputed_training_evidence(
+    tmp_path: Path,
+):
+    leaked_hash = "a" * 64
+    config, _ = _write_classifier_config(
+        tmp_path,
+        training_hashes=(leaked_hash,),
+    )
+    evidence = tmp_path / "locked.jsonl"
+    _write_evidence(evidence, (_scored_row(image_sha256=leaked_hash),))
+    calibration = tmp_path / "policy.json"
+    calibration.write_bytes(_policy().to_json_bytes())
+    output = tmp_path / "report.json"
+
+    with pytest.raises(ValueError, match="RepViT training"):
+        evaluate_main(
+            [
+                "--config",
+                str(config),
+                "--evidence",
+                str(evidence),
+                "--calibration",
+                str(calibration),
+                "--output",
+                str(output),
+            ]
+        )
+
+    assert not output.exists()
