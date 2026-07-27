@@ -5,14 +5,14 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from itertools import combinations
+import json
 from typing import Mapping, Sequence
 
 from bakery_scanner.contracts import Box, VerifierState
 
 
-CANONICAL_IMAGE_WIDTH = 1152
-CANONICAL_IMAGE_HEIGHT = 1536
-MAX_OTHER_GROUND_TRUTH_OVERLAP = 0.05
+ALGORITHM = "deterministic_four_state_verifier_crops"
+ALGORITHM_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +22,69 @@ class VerifierExample:
     state: VerifierState
 
 
+@dataclass(frozen=True, slots=True)
+class VerifierGenerationMetadata:
+    """Canonical, serializable receipt for verifier crop generation."""
+
+    algorithm: str
+    version: int
+    seed: int
+    canonical_image_width: int
+    canonical_image_height: int
+    overlap_measure: str
+    overlap_threshold: float
+    exactly_one_strategy: str
+    partial_strategy: str
+    partial_fraction: float
+    multiple_strategy: str
+    invalid_strategy: str
+    invalid_crop_cap: float
+    invalid_grid_minimum_step: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "algorithm": self.algorithm,
+            "canonical_image_height": self.canonical_image_height,
+            "canonical_image_width": self.canonical_image_width,
+            "exactly_one_strategy": self.exactly_one_strategy,
+            "invalid_crop_cap": self.invalid_crop_cap,
+            "invalid_grid_minimum_step": self.invalid_grid_minimum_step,
+            "invalid_strategy": self.invalid_strategy,
+            "multiple_strategy": self.multiple_strategy,
+            "overlap_measure": self.overlap_measure,
+            "overlap_threshold": self.overlap_threshold,
+            "partial_fraction": self.partial_fraction,
+            "partial_strategy": self.partial_strategy,
+            "seed": self.seed,
+            "version": self.version,
+        }
+
+    def to_json_bytes(self) -> bytes:
+        return json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+
+
+def verifier_generation_metadata(*, seed: int) -> VerifierGenerationMetadata:
+    """Return the complete, stable generation receipt for ``seed``."""
+    return VerifierGenerationMetadata(
+        algorithm=ALGORITHM,
+        version=ALGORITHM_VERSION,
+        seed=seed,
+        canonical_image_width=1152,
+        canonical_image_height=1536,
+        overlap_measure="intersection_over_ground_truth_area",
+        overlap_threshold=0.05,
+        exactly_one_strategy="clamped_target_box",
+        partial_strategy="right_half_without_full_or_multiple_overlap",
+        partial_fraction=0.5,
+        multiple_strategy="clamped_pair_envelope",
+        invalid_strategy="seeded_grid_first_non_overlapping",
+        invalid_crop_cap=64.0,
+        invalid_grid_minimum_step=1,
+    )
+
+
 def build_verifier_examples(
     *,
     image_ids: frozenset[int],
@@ -29,7 +92,8 @@ def build_verifier_examples(
     seed: int,
 ) -> Sequence[VerifierExample]:
     """Return deterministic four-state crop metadata restricted to ``image_ids``."""
-    rng = random.Random(seed)
+    metadata = verifier_generation_metadata(seed=seed)
+    rng = random.Random(metadata.seed)
     examples: list[VerifierExample] = []
     for image_id in sorted(image_ids):
         boxes = tuple(ground_truth.get(image_id, ()))
@@ -38,52 +102,59 @@ def build_verifier_examples(
         if any(not isinstance(box, Box) for box in boxes):
             raise ValueError("ground_truth must contain Box values")
 
-        exact = _exactly_one_crop(boxes, rng)
+        exact = _exactly_one_crop(boxes, rng, metadata)
         if exact is not None:
             examples.append(VerifierExample(image_id, exact, VerifierState.EXACTLY_ONE))
 
-        partial = _partial_crop(boxes, rng)
+        partial = _partial_crop(boxes, rng, metadata)
         if partial is not None:
             examples.append(VerifierExample(image_id, partial, VerifierState.PARTIAL))
 
-        multiple = _multiple_crop(boxes, rng)
+        multiple = _multiple_crop(boxes, rng, metadata)
         if multiple is not None:
             examples.append(VerifierExample(image_id, multiple, VerifierState.MULTIPLE))
 
-        invalid = _invalid_crop(boxes, rng)
+        invalid = _invalid_crop(boxes, rng, metadata)
         if invalid is not None:
             examples.append(VerifierExample(image_id, invalid, VerifierState.INVALID))
     return tuple(examples)
 
 
-def _exactly_one_crop(boxes: tuple[Box, ...], rng: random.Random) -> Box | None:
+def _exactly_one_crop(
+    boxes: tuple[Box, ...], rng: random.Random, metadata: VerifierGenerationMetadata
+) -> Box | None:
     candidates = list(boxes)
     rng.shuffle(candidates)
     for candidate in candidates:
-        crop = _clamp(candidate)
-        contained = sum(_fully_contains(crop, box) for box in boxes)
-        if contained != 1:
-            continue
-        if all(
-            box == candidate
-            or _ground_truth_overlap(crop, box) <= MAX_OTHER_GROUND_TRUTH_OVERLAP
-            for box in boxes
-        ):
+        crop = _clamp(candidate, metadata)
+        if _state_for_crop(crop, boxes, metadata) is VerifierState.EXACTLY_ONE:
             return crop
     return None
 
 
-def _partial_crop(boxes: tuple[Box, ...], rng: random.Random) -> Box | None:
+def _partial_crop(
+    boxes: tuple[Box, ...], rng: random.Random, metadata: VerifierGenerationMetadata
+) -> Box | None:
     candidates = list(boxes)
     rng.shuffle(candidates)
     for box in candidates:
-        crop = _clamp(Box(box.x + box.width / 2, box.y, box.width / 2, box.height))
-        if 0 < _ground_truth_overlap(crop, box) < 1:
+        crop = _clamp(
+            Box(
+                box.x + box.width * (1 - metadata.partial_fraction),
+                box.y,
+                box.width * metadata.partial_fraction,
+                box.height,
+            ),
+            metadata,
+        )
+        if _state_for_crop(crop, boxes, metadata) is VerifierState.PARTIAL:
             return crop
     return None
 
 
-def _multiple_crop(boxes: tuple[Box, ...], rng: random.Random) -> Box | None:
+def _multiple_crop(
+    boxes: tuple[Box, ...], rng: random.Random, metadata: VerifierGenerationMetadata
+) -> Box | None:
     pairs = list(combinations(boxes, 2))
     rng.shuffle(pairs)
     for first, second in pairs:
@@ -91,35 +162,35 @@ def _multiple_crop(boxes: tuple[Box, ...], rng: random.Random) -> Box | None:
         top = min(first.y, second.y)
         right = max(first.x + first.width, second.x + second.width)
         bottom = max(first.y + first.height, second.y + second.height)
-        crop = _clamp(Box(left, top, right - left, bottom - top))
-        if (
-            _ground_truth_overlap(crop, first) > MAX_OTHER_GROUND_TRUTH_OVERLAP
-            and _ground_truth_overlap(crop, second) > MAX_OTHER_GROUND_TRUTH_OVERLAP
-        ):
+        crop = _clamp(Box(left, top, right - left, bottom - top), metadata)
+        if _state_for_crop(crop, boxes, metadata) is VerifierState.MULTIPLE:
             return crop
     return None
 
 
-def _invalid_crop(boxes: tuple[Box, ...], rng: random.Random) -> Box | None:
-    edge = min(64.0, *(min(box.width, box.height) for box in boxes))
+def _invalid_crop(
+    boxes: tuple[Box, ...], rng: random.Random, metadata: VerifierGenerationMetadata
+) -> Box | None:
+    edge = min(metadata.invalid_crop_cap, *(min(box.width, box.height) for box in boxes))
+    step = max(metadata.invalid_grid_minimum_step, int(edge))
     positions = [
         (x, y)
-        for y in range(0, CANONICAL_IMAGE_HEIGHT - int(edge) + 1, int(edge))
-        for x in range(0, CANONICAL_IMAGE_WIDTH - int(edge) + 1, int(edge))
+        for y in range(0, metadata.canonical_image_height - step + 1, step)
+        for x in range(0, metadata.canonical_image_width - step + 1, step)
     ]
     rng.shuffle(positions)
     for x, y in positions:
         crop = Box(x, y, edge, edge)
-        if all(_ground_truth_overlap(crop, box) == 0 for box in boxes):
+        if _state_for_crop(crop, boxes, metadata) is VerifierState.INVALID:
             return crop
     return None
 
 
-def _clamp(box: Box) -> Box:
-    width = min(box.width, CANONICAL_IMAGE_WIDTH)
-    height = min(box.height, CANONICAL_IMAGE_HEIGHT)
-    x = min(max(box.x, 0.0), CANONICAL_IMAGE_WIDTH - width)
-    y = min(max(box.y, 0.0), CANONICAL_IMAGE_HEIGHT - height)
+def _clamp(box: Box, metadata: VerifierGenerationMetadata) -> Box:
+    width = min(box.width, metadata.canonical_image_width)
+    height = min(box.height, metadata.canonical_image_height)
+    x = min(max(box.x, 0.0), metadata.canonical_image_width - width)
+    y = min(max(box.y, 0.0), metadata.canonical_image_height - height)
     return Box(x, y, width, height)
 
 
@@ -140,3 +211,23 @@ def _ground_truth_overlap(crop: Box, ground_truth: Box) -> float:
     return max(0.0, right - left) * max(0.0, bottom - top) / (
         ground_truth.width * ground_truth.height
     )
+
+
+def _state_for_crop(
+    crop: Box, boxes: tuple[Box, ...], metadata: VerifierGenerationMetadata
+) -> VerifierState | None:
+    overlaps = tuple(_ground_truth_overlap(crop, box) for box in boxes)
+    contained = tuple(_fully_contains(crop, box) for box in boxes)
+    if all(overlap == 0 for overlap in overlaps):
+        return VerifierState.INVALID
+    if sum(contained) == 1 and all(
+        overlap <= metadata.overlap_threshold
+        for overlap, is_contained in zip(overlaps, contained)
+        if not is_contained
+    ):
+        return VerifierState.EXACTLY_ONE
+    if sum(overlap > metadata.overlap_threshold for overlap in overlaps) >= 2:
+        return VerifierState.MULTIPLE
+    if not any(contained) and any(overlap > 0 for overlap in overlaps):
+        return VerifierState.PARTIAL
+    return None

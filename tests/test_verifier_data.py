@@ -1,8 +1,8 @@
+import json
+
 from bakery_scanner.contracts import Box
-from bakery_scanner.verifier.data import (
-    VerifierState,
-    build_verifier_examples,
-)
+from bakery_scanner.verifier import data as verifier_data
+from bakery_scanner.verifier.data import VerifierState, build_verifier_examples
 
 
 def _ground_truth_overlap(crop: Box, ground_truth: Box) -> float:
@@ -22,6 +22,28 @@ def _is_fully_contained(inner: Box, outer: Box) -> bool:
         and inner.x + inner.width <= outer.x + outer.width
         and inner.y + inner.height <= outer.y + outer.height
     )
+
+
+def _matching_states(crop: Box, ground_truth: tuple[Box, ...]) -> set[VerifierState]:
+    overlaps = [_ground_truth_overlap(crop, box) for box in ground_truth]
+    contained = [_is_fully_contained(box, crop) for box in ground_truth]
+    states: set[VerifierState] = set()
+    if all(overlap == 0 for overlap in overlaps):
+        states.add(VerifierState.INVALID)
+    if sum(contained) == 1 and all(
+        overlap <= 0.05 for overlap, is_contained in zip(overlaps, contained)
+        if not is_contained
+    ):
+        states.add(VerifierState.EXACTLY_ONE)
+    if (
+        not any(contained)
+        and any(overlap > 0 for overlap in overlaps)
+        and sum(overlap > 0.05 for overlap in overlaps) < 2
+    ):
+        states.add(VerifierState.PARTIAL)
+    if sum(overlap > 0.05 for overlap in overlaps) >= 2:
+        states.add(VerifierState.MULTIPLE)
+    return states
 
 
 def test_examples_cover_four_states_deterministically():
@@ -95,3 +117,61 @@ def test_training_examples_never_include_validation_image():
     )
 
     assert {row.image_id for row in train_examples}.isdisjoint(validation_ids)
+
+
+def test_partial_examples_reject_overlapping_multiple_boxes():
+    boxes = {
+        1: (
+            Box(100, 100, 80, 80),
+            Box(130, 105, 80, 80),
+        )
+    }
+
+    examples = build_verifier_examples(
+        image_ids=frozenset({1}), ground_truth=boxes, seed=7
+    )
+
+    assert VerifierState.PARTIAL not in {row.state for row in examples}
+    assert all(
+        _matching_states(row.crop_xywh, boxes[row.image_id]) == {row.state}
+        for row in examples
+    )
+
+
+def test_generation_metadata_is_canonical_and_seed_specific():
+    first = verifier_data.verifier_generation_metadata(seed=7)
+    second = verifier_data.verifier_generation_metadata(seed=7)
+    expected = {
+        "algorithm": "deterministic_four_state_verifier_crops",
+        "canonical_image_height": 1536,
+        "canonical_image_width": 1152,
+        "exactly_one_strategy": "clamped_target_box",
+        "invalid_crop_cap": 64.0,
+        "invalid_grid_minimum_step": 1,
+        "invalid_strategy": "seeded_grid_first_non_overlapping",
+        "multiple_strategy": "clamped_pair_envelope",
+        "overlap_measure": "intersection_over_ground_truth_area",
+        "overlap_threshold": 0.05,
+        "partial_fraction": 0.5,
+        "partial_strategy": "right_half_without_full_or_multiple_overlap",
+        "seed": 7,
+        "version": 1,
+    }
+
+    assert first == second
+    assert first.to_dict() == expected
+    assert json.loads(first.to_json_bytes()) == expected
+    assert first.to_json_bytes() == json.dumps(
+        expected, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert verifier_data.verifier_generation_metadata(seed=8).to_dict()["seed"] == 8
+
+
+def test_invalid_crop_generation_supports_subpixel_ground_truth_boxes():
+    boxes = {1: (Box(100.1, 100.1, 0.5, 0.5),)}
+
+    examples = build_verifier_examples(
+        image_ids=frozenset({1}), ground_truth=boxes, seed=7
+    )
+
+    assert VerifierState.INVALID in {row.state for row in examples}
