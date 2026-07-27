@@ -15,6 +15,7 @@ from torchvision import transforms
 
 from .config import ClassifierConfig
 from .contracts import ModelScoreVector
+from .errors import DinoInferenceError
 from .preprocess import build_transform
 
 _SKU_IDS = tuple(range(1, 21))
@@ -92,23 +93,38 @@ class DinoV3Rechecker:
     def score(self, crops: Sequence[Image.Image]) -> ModelScoreVector:
         if len(crops) != 3:
             raise ValueError("DINOv3 requires exactly three crops")
-        batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in crops))
-        with torch.inference_mode():
-            embeddings = self.encoder(batch.to(self.device))
-            if not isinstance(embeddings, torch.Tensor) or embeddings.shape != (3, _EMBEDDING_DIMENSION):
-                raise ValueError("DINOv3 embeddings must have shape (3, 384)")
-            if not torch.isfinite(embeddings).all().item():
-                raise ValueError("DINOv3 embeddings must be finite")
-            if (embeddings.norm(dim=1) == 0).any().item():
-                raise ValueError("DINOv3 embeddings must have non-zero length")
-            embeddings = functional.normalize(embeddings, dim=1)
-            mean_embedding = embeddings.mean(dim=0)
-            if mean_embedding.norm().item() == 0:
-                raise ValueError("DINOv3 mean embedding must have non-zero length")
-            mean_embedding = functional.normalize(mean_embedding, dim=0)
-            similarities = self.prototypes @ mean_embedding
-            if not torch.isfinite(similarities).all().item():
-                raise ValueError("DINOv3 similarities must be finite")
+        try:
+            batch = torch.stack(
+                tuple(self.transform(crop.convert("RGB")) for crop in crops)
+            )
+            with torch.inference_mode():
+                embeddings = self.encoder(batch.to(self.device))
+                if not isinstance(embeddings, torch.Tensor) or embeddings.shape != (
+                    3,
+                    _EMBEDDING_DIMENSION,
+                ):
+                    raise ValueError("DINOv3 embeddings must have shape (3, 384)")
+                if not torch.isfinite(embeddings).all().item():
+                    raise ValueError("DINOv3 embeddings must be finite")
+                if (embeddings.norm(dim=1) == 0).any().item():
+                    raise ValueError(
+                        "DINOv3 embeddings must have non-zero length"
+                    )
+                embeddings = functional.normalize(embeddings, dim=1)
+                mean_embedding = embeddings.mean(dim=0)
+                if mean_embedding.norm().item() == 0:
+                    raise ValueError(
+                        "DINOv3 mean embedding must have non-zero length"
+                    )
+                mean_embedding = functional.normalize(mean_embedding, dim=0)
+                similarities = self.prototypes @ mean_embedding
+                if not torch.isfinite(similarities).all().item():
+                    raise ValueError("DINOv3 similarities must be finite")
+        except torch.OutOfMemoryError as exc:
+            raise DinoInferenceError(
+                "dino_out_of_memory",
+                "DINOv3 inference exhausted device memory",
+            ) from exc
         values = tuple(float(value) for value in similarities.detach().cpu().tolist())
         return ModelScoreVector(self.model_id, self.sku_ids, values, "similarity")
 

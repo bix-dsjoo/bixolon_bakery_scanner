@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -17,12 +16,10 @@ from bakery_scanner.contracts import Box
 from .config import ClassifierConfig
 from .contracts import ClassificationDecision, ModelProvenance, StageTimings
 from .dinov3 import DinoV3Rechecker
+from .errors import DinoInferenceError
 from .policy import DecisionPolicy, PolicyCalibration
 from .preprocess import make_padded_crops
 from .repvit import RepVitM1Runner
-
-
-_FAILURE_CODE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 
 class _ScoreRunner(Protocol):
@@ -33,16 +30,6 @@ class _Clock(Protocol):
     def __call__(self) -> float: ...
 
     def synchronize(self) -> None: ...
-
-
-class DinoInferenceError(RuntimeError):
-    """An explicitly classified, recoverable DINOv3 inference failure."""
-
-    def __init__(self, code: str, detail: str | None = None) -> None:
-        if not isinstance(code, str) or not _FAILURE_CODE.fullmatch(code):
-            raise ValueError("DINO inference failure code must be snake_case")
-        super().__init__(detail or code)
-        self.code = code
 
 
 class _CudaClock:

@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as functional
 from PIL import Image
 
+from bakery_scanner.classification import DinoInferenceError
 from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.dinov3 import DinoV3Rechecker
 from bakery_scanner.classification.preprocess import build_transform
@@ -43,6 +44,15 @@ class RecordingEncoder(torch.nn.Module):
 
     def forward(self, batch: torch.Tensor) -> torch.Tensor:
         return torch.zeros((batch.shape[0], 384), dtype=torch.float32)
+
+
+class FailingEncoder(torch.nn.Module):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+        raise self.error
 
 
 def test_dinov3_averages_normalized_embeddings_then_scores_prototypes():
@@ -107,6 +117,27 @@ def test_dinov3_rejects_non_finite_embeddings():
     runner = _runner(embeddings)
     with pytest.raises(ValueError, match="finite"):
         runner.score(tuple(Image.new("RGB", (32, 32)) for _ in range(3)))
+
+
+def test_dinov3_classifies_out_of_memory_as_recoverable_inference_failure():
+    runner = _runner_with_encoder(
+        FailingEncoder(torch.OutOfMemoryError("backend allocation detail"))
+    )
+
+    with pytest.raises(DinoInferenceError) as captured:
+        runner.score(tuple(Image.new("RGB", (32, 32)) for _ in range(3)))
+
+    assert captured.value.code == "dino_out_of_memory"
+    assert isinstance(captured.value.__cause__, torch.OutOfMemoryError)
+
+
+def test_dinov3_preserves_unclassified_runtime_errors():
+    runner = _runner_with_encoder(FailingEncoder(RuntimeError("bad operator")))
+
+    with pytest.raises(RuntimeError, match="bad operator") as captured:
+        runner.score(tuple(Image.new("RGB", (32, 32)) for _ in range(3)))
+
+    assert not isinstance(captured.value, DinoInferenceError)
 
 
 def test_dinov3_rejects_non_finite_prototypes():
@@ -214,8 +245,12 @@ def test_real_dinov3_artifact_loads_and_scores_twenty_classes():
 
 
 def _runner(embeddings: torch.Tensor) -> DinoV3Rechecker:
+    return _runner_with_encoder(FixedEncoder(embeddings))
+
+
+def _runner_with_encoder(encoder: torch.nn.Module) -> DinoV3Rechecker:
     return DinoV3Rechecker(
-        FixedEncoder(embeddings),
+        encoder,
         torch.eye(384, dtype=torch.float32)[:20],
         _SKU_IDS,
         build_transform(224),

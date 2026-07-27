@@ -9,11 +9,13 @@ from .contracts import (
     SkuCandidate,
     StageTimings,
 )
+from .errors import DinoInferenceError
 
 __all__ = [
     "ClassificationDecision",
     "ClassifierConfig",
     "DecisionPath",
+    "DinoInferenceError",
     "ModelProvenance",
     "ModelScoreVector",
     "SkuCandidate",

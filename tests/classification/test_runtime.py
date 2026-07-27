@@ -5,19 +5,20 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 from PIL import Image
 
+from bakery_scanner.classification import DinoInferenceError
 from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.contracts import (
     DecisionPath,
     ModelProvenance,
     ModelScoreVector,
 )
+from bakery_scanner.classification.dinov3 import DinoV3Rechecker
 from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibration
-from bakery_scanner.classification.runtime import (
-    ClassifierPipeline,
-    DinoInferenceError,
-)
+from bakery_scanner.classification.preprocess import build_transform
+from bakery_scanner.classification.runtime import ClassifierPipeline
 from bakery_scanner.contracts import Box
 
 
@@ -36,9 +37,9 @@ class RecordingRunner:
         return self.scores
 
 
-class ExplicitlyFailingDino:
-    def score(self, crops: tuple[Image.Image, ...]) -> ModelScoreVector:
-        raise DinoInferenceError("dino_cuda_oom", "sensitive backend detail")
+class OutOfMemoryEncoder(torch.nn.Module):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+        raise torch.OutOfMemoryError("sensitive backend detail")
 
 
 class ProgrammingErrorDino:
@@ -155,10 +156,18 @@ def test_runtime_records_provenance_stage_timings_and_synchronizes():
 
 def test_dino_failure_returns_unknown_repvit_top3_and_safe_failure_code():
     repvit = RecordingRunner(_repvit_scores({19: 0.40, 6: 0.30, 5: 0.20}))
+    real_dino = DinoV3Rechecker(
+        OutOfMemoryEncoder(),
+        torch.eye(384, dtype=torch.float32)[:20],
+        SKU_IDS,
+        build_transform(224),
+        "dinov3_vits16_15plus5_v1",
+        torch.device("cpu"),
+    )
 
     result = _pipeline(
         repvit=repvit,
-        dino_loader=ExplicitlyFailingDino,
+        dino_loader=lambda: real_dino,
     ).infer(_image(), _box())
 
     assert result.decision == "unknown"
@@ -168,7 +177,7 @@ def test_dino_failure_returns_unknown_repvit_top3_and_safe_failure_code():
         (2, 6),
         (3, 5),
     ]
-    assert result.provenance.failure_code == "dino_cuda_oom"
+    assert result.provenance.failure_code == "dino_out_of_memory"
     assert b"sensitive backend detail" not in result.to_json_bytes()
 
 
