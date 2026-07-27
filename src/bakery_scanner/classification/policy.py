@@ -378,7 +378,17 @@ class DecisionPolicy:
         dino_top = _rank(dino, dino_global_scores.sku_ids)[0]
         if candidate_ids[best] == repvit_scores.sku_ids[repvit_top] == dino_global_scores.sku_ids[dino_top] and dino[dino_top] >= self.calibration.dino_threshold and fused[best] - fused[second] >= self.calibration.fused_margin:
             return self._sku_decision(candidate_ids[best], fused[best], DecisionPath.DINOV3_CONFIRMED, box)
-        return self.after_recheck(repvit_scores, dino_global_scores, box=box)
+        # Local matching is an additional DINO-family consistency check.  Falling
+        # back to global-only confirmation here would allow a local disagreement
+        # to silently turn into an automatic SKU decision.
+        global_fused = fuse_probabilities(repvit, dino, self.calibration.alpha)
+        return self._unknown_decision(
+            global_fused,
+            repvit_scores.sku_ids,
+            _rank(global_fused, repvit_scores.sku_ids),
+            box,
+            reason="dino_local_disagreement",
+        )
 
     def dino_failure(
         self,
