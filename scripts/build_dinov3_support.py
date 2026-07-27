@@ -16,7 +16,7 @@ from bakery_scanner.classification.dinov3 import _ARCHITECTURE, _STORAGE_TOKEN_S
 from bakery_scanner.classification.evidence import atomic_write_bytes
 from bakery_scanner.classification.preprocess import build_transform
 from bakery_scanner.data.preprocess import load_canonical_image
-from scripts.build_dinov3_source_manifest import DEFAULT_ROOTS, build_manifest
+from build_dinov3_source_manifest import DEFAULT_ROOTS, build_manifest
 
 
 def _sha(path: Path) -> str:
