@@ -1,9 +1,13 @@
 param([string]$Config = "configs/box_system.yaml")
 $ErrorActionPreference = "Stop"
 $env:CUDA_VISIBLE_DEVICES = "0"
+$HostPython = "C:\Users\OMEN\AppData\Local\Programs\Python\Python311\python.exe"
 function Invoke-Checked([scriptblock]$Command, [string]$Description) { & $Command; if ($LASTEXITCODE -ne 0) { throw "Failed: $Description (exit $LASTEXITCODE)" } }
 function Write-Utf8NoBom([string]$Path, [string]$Value) {
     [IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
+}
+function Convert-ToInvariantYamlFloat([double]$Value) {
+    return $Value.ToString("0.############################", [Globalization.CultureInfo]::InvariantCulture)
 }
 function Convert-ToPosixRelativePath([string]$FromDirectory, [string]$TargetPath) {
     $From = (Resolve-Path -LiteralPath $FromDirectory).Path.TrimEnd("\") + "\"
@@ -25,13 +29,20 @@ Invoke-Checked { & .venvs/rtmdet/Scripts/python.exe -c "import torch; assert tor
 $Variants = @(
     @{ Name = "dfine_n_640"; Backend = "dfine"; Size = 640; Template = "configs/upstream/dfine_bread.yml" },
     @{ Name = "dfine_n_768"; Backend = "dfine"; Size = 768; Template = "configs/upstream/dfine_bread.yml" },
-    @{ Name = "rtmdet_tiny_640"; Backend = "rtmdet"; Size = 640; Template = "configs/upstream/rtmdet_tiny_bread.py" },
-    @{ Name = "rtmdet_tiny_768"; Backend = "rtmdet"; Size = 768; Template = "configs/upstream/rtmdet_tiny_bread.py" }
+    @{ Name = "rtmdet_tiny_640"; Backend = "rtmdet"; Size = 640; Template = "configs/upstream/rtmdet_tiny_bread.py"; TrainBatch = 16; EvalBatch = 8; LearningRate = 0.00025 },
+    @{ Name = "rtmdet_tiny_768"; Backend = "rtmdet"; Size = 768; Template = "configs/upstream/rtmdet_tiny_bread.py"; TrainBatch = 8; EvalBatch = 4; LearningRate = 0.000125 }
 )
 $Seeds = @(20260724, 20260725, 20260726)
 $ArtifactRoot = "artifacts/box_system/detectors"
 $StagedRoot = "artifacts/box_system/staged"
 $StagedAnnotations = Join-Path $StagedRoot "annotations.json"
+# Calibrated single-GPU defaults. These deliberately override the pinned
+# D-FINE COCO configuration, whose 128/256 total batches assume multi-GPU.
+# GPU profiles completed on 2026-07-27 keep 16 stable at both 640 and 768.
+$DFineTrainBatchSize = 16
+$DFineValidationBatchSize = 16
+$DFineBaseLearningRate = 0.0001
+$DFineBackboneLearningRate = 0.00005
 $GeneratedConfigRoot = "configs/generated/detector-matrix"
 if (-not (Test-Path $StagedAnnotations)) { throw "Stage the existing COCO images before detector training: $StagedAnnotations" }
 
@@ -65,9 +76,9 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
         $ValidationConfigPath = Convert-ToPosixRepositoryPath $ValidationAnnotations
         $ImagesConfigPath = Convert-ToPosixRepositoryPath (Join-Path $StagedRoot "images")
         $DFineBaseConfigPath = Convert-ToPosixRelativePath $GeneratedConfigRoot "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml"
-        $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", $TrainConfigPath).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", $ValidationConfigPath).Replace("__INJECTED_IMAGES_DIR__", $ImagesConfigPath).Replace("__INJECTED_DFINE_BASE__", $DFineBaseConfigPath)
+        $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", $TrainConfigPath).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", $ValidationConfigPath).Replace("__INJECTED_IMAGES_DIR__", $ImagesConfigPath).Replace("__INJECTED_DFINE_BASE__", $DFineBaseConfigPath).Replace("__INJECTED_DFINE_TRAIN_BATCH__", [string]$DFineTrainBatchSize).Replace("__INJECTED_DFINE_VAL_BATCH__", [string]$DFineValidationBatchSize).Replace("__INJECTED_DFINE_BASE_LR__", (Convert-ToInvariantYamlFloat $DFineBaseLearningRate)).Replace("__INJECTED_DFINE_BACKBONE_LR__", (Convert-ToInvariantYamlFloat $DFineBackboneLearningRate))
     } else {
-        $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py"))
+        $ConfigText = $ConfigText.Replace("__INJECTED_TRAIN_ANNOTATIONS__", (Resolve-Path $TrainAnnotations)).Replace("__INJECTED_VALIDATION_ANNOTATIONS__", (Resolve-Path $ValidationAnnotations)).Replace("__INJECTED_DATA_ROOT__", (Resolve-Path $StagedRoot)).Replace("__INJECTED_IMAGES_DIR__", (Resolve-Path (Join-Path $StagedRoot "images"))).Replace("__INJECTED_MMD_BASE__", (Resolve-Path "third_party/mmdetection/configs/rtmdet/rtmdet_tiny_8xb32-300e_coco.py")).Replace("__INJECTED_RTMDET_TRAIN_BATCH__", [string]$Variant.TrainBatch).Replace("__INJECTED_RTMDET_VAL_BATCH__", [string]$Variant.EvalBatch).Replace("__INJECTED_RTMDET_TEST_BATCH__", [string]$Variant.EvalBatch).Replace("__INJECTED_RTMDET_BASE_LR__", (Convert-ToInvariantYamlFloat $Variant.LearningRate))
     }
     $ConfigText = $ConfigText.Replace("__INJECTED_INPUT_SIZE__", [string]$Variant.Size).Replace("__INJECTED_SEED__", [string]$Seed)
     Write-Utf8NoBom -Path $RunConfig -Value $ConfigText
@@ -93,11 +104,11 @@ foreach ($Variant in $Variants) { foreach ($Seed in $Seeds) { foreach ($Fold in 
     }
     $InputFormat = if ($Variant.Backend -eq "rtmdet") { "mmdet-pickle" } else { "dfine-coco-json" }
     $ProcessedPath = Join-Path $RunRoot "processed_validation_image_ids.json"
-    Invoke-Checked { & python scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --output $PredictionPath --processed-output $ProcessedPath } "canonicalize $RunId"
+    Invoke-Checked { & $HostPython scripts/canonicalize_validation_predictions.py --backend $Variant.Backend --source $Variant.Name --input $RawPredictionPath --input-format $InputFormat --annotations $ValidationAnnotations --output $PredictionPath --processed-output $ProcessedPath } "canonicalize $RunId"
     if (-not (Test-Path $PredictionPath)) { throw "Missing canonical validation artifact for ${RunId}: $PredictionPath" }
     $Receipt = [ordered]@{ run_id = $RunId; variant = $Variant.Name; seed = $Seed; fold = $Fold; fold_manifest_sha256 = (Get-FileHash $ManifestPath -Algorithm SHA256).Hash.ToLower(); config_sha256 = (Get-FileHash $RunConfig -Algorithm SHA256).Hash.ToLower(); prediction_sha256 = (Get-FileHash $PredictionPath -Algorithm SHA256).Hash.ToLower(); processed_images_sha256 = (Get-FileHash $ProcessedPath -Algorithm SHA256).Hash.ToLower(); status = "completed" }
     Write-Utf8NoBom -Path (Join-Path $RunRoot "receipt.json") -Value ($Receipt | ConvertTo-Json -Compress)
 } } }
 
 # Validate that all 60 receipts/artifacts form one globally leak-safe OOF set.
-Invoke-Checked { & python scripts/collect_oof_evidence.py --detector-root $ArtifactRoot --fold-root "artifacts/box_system/folds" --output (Join-Path $ArtifactRoot "oof_predictions.json") } "collect global OOF evidence"
+Invoke-Checked { & $HostPython scripts/collect_oof_evidence.py --detector-root $ArtifactRoot --fold-root "artifacts/box_system/folds" --output (Join-Path $ArtifactRoot "oof_predictions.json") } "collect global OOF evidence"

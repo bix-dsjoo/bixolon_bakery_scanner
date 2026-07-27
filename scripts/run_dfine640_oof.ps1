@@ -7,6 +7,7 @@ $ArtifactRoot = "artifacts/box_system/detectors"
 $FoldRoot = "artifacts/box_system/folds"
 $StagedRoot = "artifacts/box_system/staged"
 $StagedAnnotations = Join-Path $StagedRoot "annotations.json"
+$StagedManifest = Join-Path $StagedRoot "staged_manifest.json"
 $GeneratedConfigRoot = "configs/generated/detector-matrix"
 $Template = "configs/upstream/dfine_bread.yml"
 $Variant = "dfine_n_640"
@@ -84,14 +85,49 @@ function Test-CompletedFold([int]$Fold) {
     return $true
 }
 
+function Assert-RequiredFoldZero() {
+    if (-not (Test-CompletedFold 0)) { throw "Required completed fold 0 handoff artifact is absent; do not retrain fold 0" }
+}
+
+function Assert-WholeCaptureScenes([int[]]$ImageIds, [string]$Partition) {
+    if (-not (Test-Path -LiteralPath $StagedManifest -PathType Leaf)) { throw "Missing staged manifest: $StagedManifest" }
+    $entries = Get-Content -LiteralPath $StagedManifest -Raw | ConvertFrom-Json
+    $idsByScene = @{}
+    foreach ($entry in $entries) {
+        $imageId = [int]$entry.image_id
+        $scene = $entry.scene
+        if ($null -eq $scene -or [string]::IsNullOrWhiteSpace([string]$scene.capture_batch)) { throw "Staged manifest must map every image to a capture scene" }
+        $sceneKey = "$($scene.capture_batch)|$($scene.scene_number)"
+        if (-not $idsByScene.ContainsKey($sceneKey)) { $idsByScene[$sceneKey] = @() }
+        $idsByScene[$sceneKey] += $imageId
+    }
+    $selected = @{}
+    $ImageIds | ForEach-Object { $selected[[int]$_] = $true }
+    foreach ($sceneImageIds in $idsByScene.Values) {
+        $selectedMembers = @($sceneImageIds | Where-Object { $selected[[int]$_] })
+        if ($selectedMembers.Count -gt 0 -and $selectedMembers.Count -ne $sceneImageIds.Count) {
+            throw "$Partition fold must contain every image from a whole capture scene"
+        }
+    }
+}
+
 function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [string]$ValidationPath) {
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { throw "Missing grouped fold manifest: $ManifestPath" }
     $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
     $Coco = Get-Content -LiteralPath $StagedAnnotations -Raw | ConvertFrom-Json
     $ValidationIds = @($Manifest.validation_image_ids | ForEach-Object { [int]$_ })
+    $TrainingIds = @($Manifest.training_image_ids | ForEach-Object { [int]$_ })
+    $AllIds = @($Coco.images | ForEach-Object { [int]$_.id })
+    if ($ValidationIds.Count -eq 0 -or $TrainingIds.Count -eq 0 -or @($ValidationIds | Select-Object -Unique).Count -ne $ValidationIds.Count -or @($TrainingIds | Select-Object -Unique).Count -ne $TrainingIds.Count -or @($ValidationIds | Where-Object { $_ -in $TrainingIds }).Count -ne 0 -or @($ValidationIds + $TrainingIds | Where-Object { $_ -notin $AllIds }).Count -ne 0) {
+        throw "Fold manifest must contain disjoint staged training and validation image ids"
+    }
+    Assert-WholeCaptureScenes $ValidationIds "validation"
+    Assert-WholeCaptureScenes $TrainingIds "training"
     $ValidationSet = @{}
     $ValidationIds | ForEach-Object { $ValidationSet[$_] = $true }
-    $TrainImages = @($Coco.images | Where-Object { -not $ValidationSet[[int]$_.id] })
+    $TrainingSet = @{}
+    $TrainingIds | ForEach-Object { $TrainingSet[$_] = $true }
+    $TrainImages = @($Coco.images | Where-Object { $TrainingSet[[int]$_.id] })
     $ValidationImages = @($Coco.images | Where-Object { $ValidationSet[[int]$_.id] })
     if ($TrainImages.Count -eq 0 -or $ValidationImages.Count -eq 0) { throw "Fold must train on four groups and validate one group" }
     $TrainIds = @{}
@@ -105,9 +141,10 @@ function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [strin
 if (-not (Test-Path -LiteralPath $StagedAnnotations -PathType Leaf)) { throw "Stage the existing COCO images before detector training: $StagedAnnotations" }
 if (-not (Test-Path -LiteralPath $DFinePython -PathType Leaf)) { throw "Missing pinned D-FINE Python: $DFinePython" }
 if (-not (Test-Path -LiteralPath $HostPython -PathType Leaf)) { throw "Missing host Python for canonicalization: $HostPython" }
+Assert-RequiredFoldZero
 $GpuVerified = $false
 
-foreach ($Fold in 0..4) {
+foreach ($Fold in 1..4) {
     if (Test-CompletedFold $Fold) {
         Write-Host "Reusing validated completed $Variant fold $Fold"
         continue
@@ -142,8 +179,10 @@ foreach ($Fold in 0..4) {
         Replace("__INJECTED_SEED__", [string]$Seed).
         Replace("__INJECTED_DFINE_TRAIN_BATCH__", [string]$TrainBatchSize).
         Replace("__INJECTED_DFINE_VAL_BATCH__", [string]$ValidationBatchSize).
-        Replace("__INJECTED_DFINE_BASE_LR__", "0.0001").
-        Replace("__INJECTED_DFINE_BACKBONE_LR__", "0.00005")
+        Replace("__INJECTED_DFINE_BASE_LR__", $BaseLearningRate.ToString("0.0000", [Globalization.CultureInfo]::InvariantCulture)).
+        Replace("__INJECTED_DFINE_BACKBONE_LR__", $BackboneLearningRate.ToString("0.00000", [Globalization.CultureInfo]::InvariantCulture))
+    $UnresolvedPlaceholders = @("__INJECTED_DFINE_BASE__", "__INJECTED_IMAGES_DIR__", "__INJECTED_TRAIN_ANNOTATIONS__", "__INJECTED_VALIDATION_ANNOTATIONS__", "__INJECTED_INPUT_SIZE__", "__INJECTED_SEED__", "__INJECTED_DFINE_TRAIN_BATCH__", "__INJECTED_DFINE_VAL_BATCH__", "__INJECTED_DFINE_BASE_LR__", "__INJECTED_DFINE_BACKBONE_LR__") | Where-Object { $ConfigText.Contains($_) }
+    if ($UnresolvedPlaceholders.Count -ne 0) { throw "Generated D-FINE config contains unresolved placeholders: $($UnresolvedPlaceholders -join ', ')" }
     Write-Utf8NoBom -Path $RunConfig -Value $ConfigText
 
     $RawPredictionPath = Join-Path $RunRoot "validation_predictions.raw.json"

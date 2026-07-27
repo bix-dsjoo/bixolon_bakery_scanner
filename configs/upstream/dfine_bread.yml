@@ -5,8 +5,30 @@ num_classes: 1
 # Convert COCO category id 1 to D-FINE's single model label 0.
 remap_mscoco_category: true
 seed: 20260724
+# The upstream include fixes this to 640. Keep encoder position embeddings and
+# decoder anchors aligned with the generated 640 or 768 transforms.
+eval_spatial_size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]
+# The pinned N config uses global batch 128 with base/backbone LR
+# 0.0008/0.0004. The one-GPU batch 16 profile keeps the same 1:2 ratio
+# after linear scaling.
+optimizer:
+  lr: __INJECTED_DFINE_BASE_LR__
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: __INJECTED_DFINE_BACKBONE_LR__
+    -
+      params: '^(?=.*backbone)(?=.*norm|bn).*$'
+      lr: __INJECTED_DFINE_BACKBONE_LR__
+      weight_decay: 0.
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
+      weight_decay: 0.
 # D-FINE's documented dataloader fields bind COCO JSON and image folders.
 train_dataloader:
+  # This value is injected by the GPU experiment runner. Do not inherit the
+  # upstream multi-GPU COCO batch size on a single RTX 5080.
+  total_batch_size: __INJECTED_DFINE_TRAIN_BATCH__
   dataset:
     img_folder: __INJECTED_IMAGES_DIR__
     ann_file: __INJECTED_TRAIN_ANNOTATIONS__
@@ -28,6 +50,7 @@ train_dataloader:
   collate_fn:
     base_size: __INJECTED_INPUT_SIZE__
 val_dataloader:
+  total_batch_size: __INJECTED_DFINE_VAL_BATCH__
   dataset:
     img_folder: __INJECTED_IMAGES_DIR__
     ann_file: __INJECTED_VALIDATION_ANNOTATIONS__

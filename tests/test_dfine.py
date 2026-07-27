@@ -57,6 +57,76 @@ def test_dfine_overlay_exposes_injectable_640_and_768_input_size_contract():
     assert "base_size" in overlay
 
 
+def test_dfine_overlay_injects_eval_spatial_size_for_the_selected_variant():
+    """A 768 run must not retain the inherited 640 eval anchors."""
+    overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+
+    assert "eval_spatial_size: [__INJECTED_INPUT_SIZE__, __INJECTED_INPUT_SIZE__]" in overlay
+
+
+def test_dfine_matrix_injects_explicit_train_and_validation_batch_sizes():
+    """D-FINE must not inherit a multi-GPU total batch size for one RTX 5080."""
+    overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+    script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+
+    assert "__INJECTED_DFINE_TRAIN_BATCH__" in overlay
+    assert "__INJECTED_DFINE_VAL_BATCH__" in overlay
+    assert '.Replace("__INJECTED_DFINE_TRAIN_BATCH__",' in script
+    assert '.Replace("__INJECTED_DFINE_VAL_BATCH__",' in script
+
+
+def test_dfine_matrix_injects_explicit_base_learning_rate():
+    """D-FINE must not inherit the upstream multi-GPU learning rate."""
+    overlay = Path("configs/upstream/dfine_bread.yml").read_text(encoding="utf-8")
+    script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+
+    assert "__INJECTED_DFINE_BASE_LR__" in overlay
+    assert "__INJECTED_DFINE_BACKBONE_LR__" in overlay
+    assert '.Replace("__INJECTED_DFINE_BASE_LR__",' in script
+    assert '.Replace("__INJECTED_DFINE_BACKBONE_LR__",' in script
+
+
+def test_dfine_matrix_uses_an_explicit_interpreter_for_cpu_postprocessing():
+    """Post-training JSON tools must not depend on the Windows PATH alias."""
+    script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+
+    assert '$HostPython = "C:\\Users\\OMEN\\AppData\\Local\\Programs\\Python\\Python311\\python.exe"' in script
+    assert "& $HostPython scripts/canonicalize_validation_predictions.py" in script
+    assert "& $HostPython scripts/collect_oof_evidence.py" in script
+    assert "& python scripts/canonicalize_validation_predictions.py" not in script
+    assert "& python scripts/collect_oof_evidence.py" not in script
+
+
+def test_dfine_matrix_passes_the_held_out_coco_annotations_to_canonicalization():
+    """Canonical OOF boxes must be clipped against the validation image bounds."""
+    script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+
+    canonicalize = next(line for line in script.splitlines() if "canonicalize_validation_predictions.py" in line)
+    assert "--annotations $ValidationAnnotations" in canonicalize
+
+
+def test_dfine_matrix_serializes_small_learning_rates_as_plain_invariant_yaml_decimals(tmp_path):
+    """YAML 1.1 must receive a plain decimal, never a scientific-notation string."""
+    script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")
+    helper = re.search(r"(?ms)^function Convert-ToInvariantYamlFloat\b.*?^}\s*$", script)
+    assert helper, "matrix script needs a Convert-ToInvariantYamlFloat helper"
+
+    smoke = tmp_path / "invariant-yaml-float.ps1"
+    smoke.write_text(
+        helper.group(0)
+        + "\n$result = Convert-ToInvariantYamlFloat 0.00005"
+        + "\nif ($result -cne '0.00005') { Write-Error \"expected plain decimal, got: $result\"; exit 1 }\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(smoke)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 @pytest.mark.parametrize("size", (640, 768))
 def test_dfine_overlay_keeps_terminal_tensor_and_box_transforms_for_each_input_size(size):
     """Resize must not replace D-FINE's tensor/box terminal transforms."""
@@ -83,7 +153,11 @@ def test_dfine_pinned_config_transforms_a_dataset_sample_to_tensor_with_normaliz
         .replace("__INJECTED_IMAGES_DIR__", "artifacts/box_system/staged/images")
         .replace("__INJECTED_TRAIN_ANNOTATIONS__", "artifacts/box_system/staged/annotations.json")
         .replace("__INJECTED_VALIDATION_ANNOTATIONS__", "artifacts/box_system/staged/annotations.json")
-        .replace("__INJECTED_INPUT_SIZE__", str(size)),
+        .replace("__INJECTED_INPUT_SIZE__", str(size))
+        .replace("__INJECTED_DFINE_TRAIN_BATCH__", "16")
+        .replace("__INJECTED_DFINE_VAL_BATCH__", "16")
+        .replace("__INJECTED_DFINE_BASE_LR__", "0.0001")
+        .replace("__INJECTED_DFINE_BACKBONE_LR__", "0.00005"),
         encoding="utf-8",
     )
     probe = (
@@ -138,8 +212,10 @@ def test_matrix_writes_dfine_include_and_data_paths_relative_to_their_consumers(
     generated_root.mkdir(parents=True)
     base_config = Path("third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml").resolve()
     images = Path("artifacts/box_system/staged/images").resolve()
-    train = Path("artifacts/box_system/detectors/dfine_n_640-seed20260724-fold0/fold-data/train.json").resolve()
-    validation = Path("artifacts/box_system/detectors/dfine_n_640-seed20260724-fold0/fold-data/validation.json").resolve()
+    # The matrix owns generated fold files; use the permanent staged COCO
+    # artifact to exercise path conversion without depending on a live run.
+    train = Path("artifacts/box_system/staged/annotations.json").resolve()
+    validation = Path("artifacts/box_system/staged/annotations.json").resolve()
 
     helper = re.search(r"(?ms)^function Convert-ToPosixRelativePath\b.*?^}\s*^function Convert-ToPosixRepositoryPath\b.*?^}\s*$", script)
     assert helper, "matrix script needs separate D-FINE include and repository-data path helpers"
@@ -178,6 +254,10 @@ def test_matrix_writes_dfine_include_and_data_paths_relative_to_their_consumers(
         .replace("__INJECTED_TRAIN_ANNOTATIONS__", train_relative)
         .replace("__INJECTED_VALIDATION_ANNOTATIONS__", validation_relative)
         .replace("__INJECTED_INPUT_SIZE__", "640")
+        .replace("__INJECTED_DFINE_TRAIN_BATCH__", "16")
+        .replace("__INJECTED_DFINE_VAL_BATCH__", "16")
+        .replace("__INJECTED_DFINE_BASE_LR__", "0.0001")
+        .replace("__INJECTED_DFINE_BACKBONE_LR__", "0.00005")
     )
     config_path = generated_root / "dfine.yml"
     config_path.write_text(rendered, encoding="utf-8")

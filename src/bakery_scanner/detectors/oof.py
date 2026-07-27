@@ -114,6 +114,8 @@ def load_complete_oof_artifact(
             raise ValueError("fold validation scenes do not match staged manifest")
         if {scenes_by_image[item] for item in training_ids} != train_scenes:
             raise ValueError("fold training scenes do not match staged manifest")
+        _require_whole_capture_scenes(validation_ids, validation_scenes, scenes_by_image, "validation")
+        _require_whole_capture_scenes(training_ids, train_scenes, scenes_by_image, "training")
         processed = _positive_int_set(_read_json_array(processed_path, "processed validation image ids"), "processed validation image ids")
         if processed != validation_ids:
             raise ValueError("processed validation image ids do not exactly match the fold")
@@ -348,9 +350,11 @@ def _scene_set(value: object, label: str) -> frozenset[SceneKey]:
 
 def _load_staged_images(staged_root: Path) -> tuple[dict[int, tuple[int, int]], dict[int, SceneKey]]:
     annotations = _read_json_object(staged_root / "annotations.json", "staged annotations")
-    images = annotations.get("images")
-    if not isinstance(images, list):
-        raise ValueError("staged annotations images must be an array")
+    images, annotation_rows = annotations.get("images"), annotations.get("annotations")
+    if not isinstance(images, list) or not isinstance(annotation_rows, list):
+        raise ValueError("staged annotations require images and annotations arrays")
+    if len(images) != 299 or len(annotation_rows) != 1410:
+        raise ValueError("staged dataset must contain exactly 299 images and 1410 annotations")
     sizes: dict[int, tuple[int, int]] = {}
     for image in images:
         if not isinstance(image, dict):
@@ -374,6 +378,18 @@ def _load_staged_images(staged_root: Path) -> tuple[dict[int, tuple[int, int]], 
     if set(sizes) != set(scenes):
         raise ValueError("staged annotations and manifest image ids must match")
     return sizes, scenes
+
+
+def _require_whole_capture_scenes(
+    image_ids: frozenset[int],
+    selected_scenes: frozenset[SceneKey],
+    scenes_by_image: Mapping[int, SceneKey],
+    partition: str,
+) -> None:
+    for scene in selected_scenes:
+        scene_image_ids = frozenset(image_id for image_id, image_scene in scenes_by_image.items() if image_scene == scene)
+        if not scene_image_ids <= image_ids:
+            raise ValueError(f"{partition} fold must contain every image from a whole capture scene")
 
 
 def _require_global_fold_coverage(
