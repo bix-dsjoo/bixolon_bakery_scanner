@@ -24,9 +24,10 @@ def retain_raw_proposals(proposals: Iterable[BreadProposal]) -> tuple[BreadPropo
             by_image_source.setdefault((proposal.image_id, proposal.source), []).append(proposal)
     retained: list[BreadProposal] = []
     for key in sorted(by_image_source):
-        retained.extend(sorted(by_image_source[key], key=_canonical_order)[:RAW_PROPOSAL_LIMIT])
+        retained.extend(sorted(by_image_source[key], key=canonical_proposal_order)[:RAW_PROPOSAL_LIMIT])
     return tuple(retained)
 
 
-def _canonical_order(proposal: BreadProposal) -> tuple[float, float, float, float, float]:
+def canonical_proposal_order(proposal: BreadProposal) -> tuple[float, float, float, float, float]:
+    """Return the deterministic score and source-coordinate ordering key."""
     return (-proposal.score, proposal.box.y, proposal.box.x, proposal.box.height, proposal.box.width)
