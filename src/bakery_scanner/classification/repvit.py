@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -17,6 +18,13 @@ from .contracts import ModelScoreVector
 from .preprocess import build_transform
 
 _SKU_IDS = tuple(range(1, 21))
+
+
+@dataclass(frozen=True, slots=True)
+class RepVitEvidence:
+    scores: ModelScoreVector
+    feature: torch.Tensor
+    crop_disagreement: float
 
 
 class RepVitM1Runner:
@@ -66,10 +74,32 @@ class RepVitM1Runner:
             if not torch.isfinite(logits).all().item():
                 raise ValueError("RepViT logits must be finite")
             probabilities = logits.softmax(dim=1).mean(dim=0)
+        return ModelScoreVector(self.model_id, self.sku_ids, tuple(float(value) for value in probabilities.detach().cpu().tolist()), "probability")
+
+    def score_with_evidence(self, crops: Sequence[Image.Image]) -> RepVitEvidence:
+        if len(crops) != 3:
+            raise ValueError("RepViT requires exactly three crops")
+        batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in crops))
+        with torch.inference_mode():
+            model_input = batch.to(self.device)
+            features = self.model.forward_features(model_input)
+            if features.ndim != 4 or features.shape[:2] != (3, 384):
+                raise ValueError("RepViT features must have shape (3, 384, H, W)")
+            pooled = torch.nn.functional.normalize(features.mean(dim=(2, 3)), dim=1)
+            logits = self.model.forward_head(features, pre_logits=False)
+            if logits.shape != (3, 20):
+                raise ValueError("RepViT logits must have shape (3, 20)")
+            if not torch.isfinite(logits).all().item():
+                raise ValueError("RepViT logits must be finite")
+            probabilities = logits.softmax(dim=1).mean(dim=0)
             if not torch.isfinite(probabilities).all().item():
                 raise ValueError("RepViT probabilities must be finite")
         values = tuple(float(value) for value in probabilities.detach().cpu().tolist())
-        return ModelScoreVector(self.model_id, self.sku_ids, values, "probability")
+        return RepVitEvidence(
+            ModelScoreVector(self.model_id, self.sku_ids, values, "probability"),
+            pooled.mean(dim=0).detach().cpu(),
+            float((probabilities - logits.softmax(dim=1)).abs().mean().detach().cpu()),
+        )
 
 
 def _verify_sha256(path: Path, expected: str, label: str) -> None:
