@@ -18,6 +18,7 @@ from bakery_scanner.classification.contracts import (
 from bakery_scanner.classification.dinov3 import DinoV3Rechecker
 from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibration
 from bakery_scanner.classification.preprocess import build_transform
+from bakery_scanner.classification.repvit import RepVitEvidence
 from bakery_scanner.classification.runtime import ClassifierPipeline
 from bakery_scanner.contracts import Box
 
@@ -26,8 +27,9 @@ SKU_IDS = tuple(range(1, 21))
 
 
 class RecordingRunner:
-    def __init__(self, scores: ModelScoreVector) -> None:
+    def __init__(self, scores: ModelScoreVector, *, crop_disagreement: float = 0.01) -> None:
         self.scores = scores
+        self.crop_disagreement = crop_disagreement
         self.received_crops: tuple[Image.Image, ...] | None = None
         self.call_count = 0
 
@@ -35,6 +37,23 @@ class RecordingRunner:
         self.call_count += 1
         self.received_crops = crops
         return self.scores
+
+    def score_with_evidence(self, crops: tuple[Image.Image, ...]) -> RepVitEvidence:
+        scores = self.score(crops)
+        return RepVitEvidence(
+            scores=scores,
+            feature=torch.ones(384),
+            crop_disagreement=self.crop_disagreement,
+        )
+
+
+class FixedPrototypeBank:
+    def __init__(self, distance: float = 0.02) -> None:
+        self.distance = distance
+
+    def distances(self, feature: torch.Tensor) -> tuple[float, ...]:
+        assert tuple(feature.shape) == (384,)
+        return (self.distance,) + (1.0,) * 19
 
 
 class OutOfMemoryEncoder(torch.nn.Module):
@@ -162,6 +181,25 @@ def test_ambiguous_repvit_loads_dino_once_and_reuses_the_same_crops():
     assert second.decision_path is DecisionPath.UNKNOWN_TOP3
     assert first.box == _box()
     assert second.box == _box()
+
+
+def test_unsafe_repvit_prototype_distance_defers_to_dino():
+    repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
+    dino_loads = 0
+
+    def load_dino() -> RecordingRunner:
+        nonlocal dino_loads
+        dino_loads += 1
+        return RecordingRunner(_dino_scores({6: 0.70, 5: 0.20}))
+
+    result = _pipeline(
+        repvit=repvit,
+        dino_loader=load_dino,
+        prototype_bank=FixedPrototypeBank(0.21),
+    ).infer(_image(), _box())
+
+    assert result.decision_path is DecisionPath.DINOV3_CONFIRMED
+    assert dino_loads == 1
 
 
 def test_recheck_confirmation_keeps_fused_confidence_meaning():
@@ -303,6 +341,8 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
         dinov3_weights_sha256=config.dinov3.weights_sha256,
         dinov3_support_sha256=config.dinov3.support_sha256,
         preprocess_sha256=preprocess_sha256(config.preprocess),
+        repvit_prototype_sha256=config.repvit.prototype_bank_sha256,
+        direct_max_prototype_distance=2.0,
     )
     calibration_path = tmp_path / "policy.json"
     calibration_path.write_bytes(calibration.to_json_bytes())
@@ -328,7 +368,7 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
     def load_dino(loaded_config):
         nonlocal dino_loads
         dino_loads += 1
-        return RecordingRunner(_dino_scores({6: 0.8, 5: 0.2}))
+        return RecordingRunner(_dino_scores({6: 0.7, 5: 0.2}))
 
     monkeypatch.setattr(
         "bakery_scanner.classification.runtime.DinoV3Rechecker.load",
@@ -348,6 +388,7 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
         calibration_sha256=hashlib.sha256(calibration.to_json_bytes()).hexdigest(),
         preprocess_sha256=preprocess_sha256(config.preprocess),
         repvit_manifest_sha256=config.repvit.manifest_sha256,
+        repvit_prototype_sha256=config.repvit.prototype_bank_sha256,
     )
     pipeline.infer(_image(), _box())
     assert dino_loads == 0
@@ -359,6 +400,7 @@ def _pipeline(
     dino_loader,
     calibration: PolicyCalibration | None = None,
     clock=None,
+    prototype_bank: FixedPrototypeBank | None = None,
 ) -> ClassifierPipeline:
     selected = calibration or _calibration()
     provenance = ModelProvenance(
@@ -377,12 +419,13 @@ def _pipeline(
         dino_loader=dino_loader,
         policy=DecisionPolicy(selected, provenance=provenance),
         clock=clock,
+        prototype_bank=prototype_bank or FixedPrototypeBank(),
     )
 
 
 def _calibration(**overrides: object) -> PolicyCalibration:
     values: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "calibration_id": "policy_v1",
         "repvit_artifact_id": "repvit_m1_15plus5_v1",
         "dinov3_artifact_id": "dinov3_vits16_15plus5_v1",
@@ -391,11 +434,14 @@ def _calibration(**overrides: object) -> PolicyCalibration:
         "alpha": 0.60,
         "direct_threshold": 0.70,
         "direct_margin": 0.30,
+        "direct_max_crop_disagreement": 0.30,
+        "direct_max_prototype_distance": 0.20,
         "dino_threshold": 0.50,
         "fused_margin": 0.20,
         "evidence_sha256": "0" * 64,
         "repvit_checkpoint_sha256": "1" * 64,
         "repvit_manifest_sha256": "0" * 64,
+        "repvit_prototype_sha256": "0" * 64,
         "dinov3_weights_sha256": "2" * 64,
         "dinov3_support_sha256": "3" * 64,
         "preprocess_sha256": "0" * 64,

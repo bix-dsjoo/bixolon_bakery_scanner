@@ -80,6 +80,7 @@ class ModelProvenance:
     calibration_sha256: str
     preprocess_sha256: str = "0" * 64
     repvit_manifest_sha256: str = "0" * 64
+    repvit_prototype_sha256: str = "0" * 64
     canonical_frame_version: Literal["exif_visual_rgb_v1"] = "exif_visual_rgb_v1"
     exif_orientation: int = 1
     failure_code: str | None = None
@@ -95,6 +96,7 @@ class ModelProvenance:
             "calibration_sha256",
             "preprocess_sha256",
             "repvit_manifest_sha256",
+            "repvit_prototype_sha256",
         ):
             if not _SHA256.fullmatch(getattr(self, field)):
                 raise ValueError(f"{field} must be a lowercase SHA-256 hash")
@@ -181,6 +183,7 @@ class ClassificationDecision:
                 "exif_orientation": self.provenance.exif_orientation,
                 "preprocess_sha256": self.provenance.preprocess_sha256,
                 "repvit_manifest_sha256": self.provenance.repvit_manifest_sha256,
+                "repvit_prototype_sha256": self.provenance.repvit_prototype_sha256,
                 "repvit_artifact_id": self.provenance.repvit_artifact_id,
                 "repvit_sha256": self.provenance.repvit_sha256,
             },

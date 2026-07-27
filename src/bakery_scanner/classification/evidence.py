@@ -968,8 +968,8 @@ def _fit_policy(
             )
         hashes.update(artifact_hashes)
     return PolicyCalibration(
-        schema_version=1,
-        calibration_id="policy_v1",
+        schema_version=2,
+        calibration_id="policy_v2",
         repvit_artifact_id=_REPVIT_ARTIFACT_ID,
         dinov3_artifact_id=_DINOV3_ARTIFACT_ID,
         repvit_temperature=repvit_temperature,
@@ -977,6 +977,10 @@ def _fit_policy(
         alpha=alpha,
         direct_threshold=direct_threshold,
         direct_margin=direct_margin,
+        # Legacy evidence rows do not yet contain direct OOD measurements.
+        # Keep their selection semantics until Task 4 makes those fields mandatory.
+        direct_max_crop_disagreement=1.0,
+        direct_max_prototype_distance=2.0,
         dino_threshold=dino_threshold,
         fused_margin=fused_margin_threshold,
         evidence_sha256=evidence_sha256,

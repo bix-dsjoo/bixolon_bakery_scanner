@@ -38,12 +38,15 @@ _CALIBRATION_KEYS = frozenset(
         "alpha",
         "direct_threshold",
         "direct_margin",
+        "direct_max_crop_disagreement",
+        "direct_max_prototype_distance",
         "dino_threshold",
         "fused_margin",
         "evidence_sha256",
         "development_identity_sha256",
         "repvit_checkpoint_sha256",
         "repvit_manifest_sha256",
+        "repvit_prototype_sha256",
         "dinov3_weights_sha256",
         "dinov3_support_sha256",
         "preprocess_sha256",
@@ -62,19 +65,22 @@ class PolicyCalibration:
     alpha: float
     direct_threshold: float
     direct_margin: float
+    direct_max_crop_disagreement: float
+    direct_max_prototype_distance: float
     dino_threshold: float
     fused_margin: float
     evidence_sha256: str
     development_identity_sha256: str = "0" * 64
     repvit_checkpoint_sha256: str = "0" * 64
     repvit_manifest_sha256: str = "0" * 64
+    repvit_prototype_sha256: str = "0" * 64
     dinov3_weights_sha256: str = "0" * 64
     dinov3_support_sha256: str = "0" * 64
     preprocess_sha256: str = "0" * 64
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise ValueError("schema_version must be 1")
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("schema_version must be 2")
         if not isinstance(self.calibration_id, str) or not self.calibration_id:
             raise ValueError("calibration_id must not be empty")
         if self.repvit_artifact_id != _REPVIT_ARTIFACT_ID:
@@ -86,6 +92,7 @@ class PolicyCalibration:
             "development_identity_sha256",
             "repvit_checkpoint_sha256",
             "repvit_manifest_sha256",
+            "repvit_prototype_sha256",
             "dinov3_weights_sha256",
             "dinov3_support_sha256",
             "preprocess_sha256",
@@ -104,6 +111,7 @@ class PolicyCalibration:
             "alpha",
             "direct_threshold",
             "direct_margin",
+            "direct_max_crop_disagreement",
             "dino_threshold",
             "fused_margin",
         ):
@@ -111,6 +119,13 @@ class PolicyCalibration:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{field} must be between 0 and 1")
             object.__setattr__(self, field, value)
+        prototype_distance = _finite_number(
+            self.direct_max_prototype_distance,
+            "direct_max_prototype_distance",
+        )
+        if not 0.0 <= prototype_distance <= 2.0:
+            raise ValueError("direct_max_prototype_distance must be between 0 and 2")
+        object.__setattr__(self, "direct_max_prototype_distance", prototype_distance)
 
     def to_json_bytes(self) -> bytes:
         payload = {
@@ -120,11 +135,14 @@ class PolicyCalibration:
             "dinov3_artifact_id": self.dinov3_artifact_id,
             "dinov3_temperature": self.dinov3_temperature,
             "direct_margin": self.direct_margin,
+            "direct_max_crop_disagreement": self.direct_max_crop_disagreement,
+            "direct_max_prototype_distance": self.direct_max_prototype_distance,
             "direct_threshold": self.direct_threshold,
             "evidence_sha256": self.evidence_sha256,
             "development_identity_sha256": self.development_identity_sha256,
             "repvit_checkpoint_sha256": self.repvit_checkpoint_sha256,
             "repvit_manifest_sha256": self.repvit_manifest_sha256,
+            "repvit_prototype_sha256": self.repvit_prototype_sha256,
             "dinov3_weights_sha256": self.dinov3_weights_sha256,
             "dinov3_support_sha256": self.dinov3_support_sha256,
             "preprocess_sha256": self.preprocess_sha256,
@@ -165,6 +183,27 @@ class PolicyCalibration:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class DirectEvidence:
+    """RepViT-only safety evidence for direct SKU confirmation."""
+
+    crop_disagreement: float
+    nearest_prototype_distance: float
+
+    def __post_init__(self) -> None:
+        disagreement = _finite_number(self.crop_disagreement, "crop_disagreement")
+        distance = _finite_number(
+            self.nearest_prototype_distance,
+            "nearest_prototype_distance",
+        )
+        if not 0.0 <= disagreement <= 1.0:
+            raise ValueError("crop_disagreement must be between 0 and 1")
+        if not 0.0 <= distance <= 2.0:
+            raise ValueError("nearest_prototype_distance must be between 0 and 2")
+        object.__setattr__(self, "crop_disagreement", disagreement)
+        object.__setattr__(self, "nearest_prototype_distance", distance)
+
+
 class DecisionPolicy:
     """Apply a validated calibration artifact to canonical model scores."""
 
@@ -181,6 +220,7 @@ class DecisionPolicy:
         for provenance_field, calibration_field in (
             ("repvit_sha256", "repvit_checkpoint_sha256"),
             ("repvit_manifest_sha256", "repvit_manifest_sha256"),
+            ("repvit_prototype_sha256", "repvit_prototype_sha256"),
             ("dinov3_sha256", "dinov3_weights_sha256"),
             ("dinov3_support_sha256", "dinov3_support_sha256"),
             ("preprocess_sha256", "preprocess_sha256"),
@@ -206,6 +246,7 @@ class DecisionPolicy:
         self,
         repvit_scores: ModelScoreVector,
         *,
+        evidence: "DirectEvidence",
         box: Box,
     ) -> ClassificationDecision | None:
         _require_score_vector(
@@ -222,6 +263,10 @@ class DecisionPolicy:
         if (
             repvit[best] >= self.calibration.direct_threshold
             and repvit[best] - repvit[second] >= self.calibration.direct_margin
+            and evidence.crop_disagreement
+            <= self.calibration.direct_max_crop_disagreement
+            and evidence.nearest_prototype_distance
+            <= self.calibration.direct_max_prototype_distance
         ):
             return self._sku_decision(
                 repvit_scores.sku_ids[best],
@@ -230,6 +275,7 @@ class DecisionPolicy:
                 box,
             )
         return None
+
 
     def after_recheck(
         self,

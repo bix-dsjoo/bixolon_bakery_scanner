@@ -20,11 +20,20 @@ from .dinov3 import DinoV3Rechecker
 from .errors import DinoInferenceError
 from .policy import DecisionPolicy, PolicyCalibration
 from .preprocess import make_padded_crops
-from .repvit import RepVitM1Runner
+from .policy import DirectEvidence
+from .repvit import RepVitM1Runner, RepVitPrototypeBank
 
 
 class _ScoreRunner(Protocol):
     def score(self, crops: tuple[Image.Image, ...]): ...
+
+
+class _RepVitRunner(_ScoreRunner, Protocol):
+    def score_with_evidence(self, crops: tuple[Image.Image, ...]): ...
+
+
+class _PrototypeBank(Protocol):
+    def distances(self, feature: torch.Tensor) -> tuple[float, ...]: ...
 
 
 class _Clock(Protocol):
@@ -52,14 +61,16 @@ class ClassifierPipeline:
         self,
         *,
         config: ClassifierConfig,
-        repvit: _ScoreRunner,
+        repvit: _RepVitRunner,
         dino_loader: Callable[[], _ScoreRunner],
         policy: DecisionPolicy,
+        prototype_bank: _PrototypeBank,
         clock: _Clock | None = None,
     ) -> None:
         self.config = config
         self.repvit = repvit
         self.policy = policy
+        self.prototype_bank = prototype_bank
         self._dino_loader = dino_loader
         self._dino: _ScoreRunner | None = None
         device = torch.device(config.runtime.device.lower())
@@ -81,14 +92,24 @@ class ClassifierPipeline:
             calibration_sha256=hashlib.sha256(calibration_payload).hexdigest(),
             preprocess_sha256=preprocess_sha256(config.preprocess),
             repvit_manifest_sha256=config.repvit.manifest_sha256,
+            repvit_prototype_sha256=config.repvit.prototype_bank_sha256 or "0" * 64,
         )
         policy = DecisionPolicy(calibration, provenance=provenance)
         repvit = RepVitM1Runner.load(config)
+        if config.repvit.prototype_bank is None or config.repvit.prototype_bank_sha256 is None:
+            raise ValueError("RepViT prototype bank is required for safe direct decisions")
+        prototype_bank = RepVitPrototypeBank.load(
+            config.repvit.prototype_bank,
+            checkpoint_sha256=config.repvit.checkpoint_sha256,
+            expected_preprocess_sha256=preprocess_sha256(config.preprocess),
+            expected_sha256=config.repvit.prototype_bank_sha256,
+        )
         return cls(
             config=config,
             repvit=repvit,
             dino_loader=lambda: DinoV3Rechecker.load(config),
             policy=policy,
+            prototype_bank=prototype_bank,
         )
 
     def infer(
@@ -106,9 +127,19 @@ class ClassifierPipeline:
         )
 
         repvit_started = self._timestamp()
-        repvit_scores = self.repvit.score(crops)
+        repvit_evidence = self.repvit.score_with_evidence(crops)
+        repvit_scores = repvit_evidence.scores
         repvit_finished = self._timestamp()
-        direct = self.policy.direct(repvit_scores, box=box)
+        direct = self.policy.direct(
+            repvit_scores,
+            evidence=DirectEvidence(
+                crop_disagreement=repvit_evidence.crop_disagreement,
+                nearest_prototype_distance=min(
+                    self.prototype_bank.distances(repvit_evidence.feature)
+                ),
+            ),
+            box=box,
+        )
         if direct is not None:
             total_finished = self._timestamp()
             return self._with_metadata(
@@ -163,7 +194,7 @@ class ClassifierPipeline:
             box,
             self.config.preprocess.paddings,
         )
-        self.repvit.score(crops)
+        self.repvit.score_with_evidence(crops)
         self._get_dino().score(crops)
         self.clock.synchronize()
 

@@ -12,6 +12,7 @@ from bakery_scanner.classification.contracts import (
     ModelScoreVector,
 )
 from bakery_scanner.classification.policy import (
+    DirectEvidence,
     DecisionPolicy,
     PolicyCalibration,
     calibrate_dinov3,
@@ -27,7 +28,7 @@ BOX = Box(10.0, 20.0, 30.0, 40.0)
 
 def calibration(**overrides: object) -> PolicyCalibration:
     values: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "calibration_id": "policy_v1",
         "repvit_artifact_id": "repvit_m1_15plus5_v1",
         "dinov3_artifact_id": "dinov3_vits16_15plus5_v1",
@@ -36,11 +37,14 @@ def calibration(**overrides: object) -> PolicyCalibration:
         "alpha": 0.60,
         "direct_threshold": 0.70,
         "direct_margin": 0.30,
+        "direct_max_crop_disagreement": 0.30,
+        "direct_max_prototype_distance": 0.20,
         "dino_threshold": 0.50,
         "fused_margin": 0.20,
         "evidence_sha256": "0" * 64,
         "repvit_checkpoint_sha256": "1" * 64,
         "repvit_manifest_sha256": "0" * 64,
+        "repvit_prototype_sha256": "0" * 64,
         "dinov3_weights_sha256": "2" * 64,
         "dinov3_support_sha256": "3" * 64,
         "preprocess_sha256": "0" * 64,
@@ -81,6 +85,10 @@ def probabilities(values: dict[int, float]) -> ModelScoreVector:
     )
 
 
+def safe_direct_evidence() -> DirectEvidence:
+    return DirectEvidence(crop_disagreement=0.01, nearest_prototype_distance=0.02)
+
+
 def similarities_from_probabilities(values: dict[int, float]) -> ModelScoreVector:
     remaining = 1.0 - sum(values.values())
     unassigned = 20 - len(values)
@@ -112,7 +120,7 @@ def test_calibration_is_canonical_and_bound_to_artifacts():
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("schema_version", 2, "schema_version"),
+        ("schema_version", 1, "schema_version"),
         ("repvit_artifact_id", "repvit_other", "repvit_artifact_id"),
         ("dinov3_artifact_id", "dinov3_other", "dinov3_artifact_id"),
         ("evidence_sha256", "ABC", "evidence_sha256"),
@@ -171,7 +179,9 @@ def test_fusion_supports_alpha_endpoints():
 
 
 def test_direct_gate_skips_top3_when_threshold_and_margin_pass():
-    result = policy().direct(probabilities({6: 0.80, 5: 0.20}), box=BOX)
+    result = policy().direct(
+        probabilities({6: 0.80, 5: 0.20}), evidence=safe_direct_evidence(), box=BOX
+    )
 
     assert result is not None
     assert result.decision_path is DecisionPath.REPVIT_DIRECT
@@ -183,7 +193,7 @@ def test_direct_gate_skips_top3_when_threshold_and_margin_pass():
 
 def test_direct_gate_accepts_threshold_and_margin_equality():
     result = policy(calibration(direct_threshold=0.05, direct_margin=0.0)).direct(
-        probabilities({}), box=BOX
+        probabilities({}), evidence=safe_direct_evidence(), box=BOX
     )
 
     assert result is not None
@@ -191,13 +201,39 @@ def test_direct_gate_accepts_threshold_and_margin_equality():
 
 
 def test_direct_gate_requires_both_threshold_and_margin():
-    assert policy().direct(probabilities({6: 0.69, 5: 0.10}), box=BOX) is None
+    assert policy().direct(
+        probabilities({6: 0.69, 5: 0.10}), evidence=safe_direct_evidence(), box=BOX
+    ) is None
     assert (
         policy(calibration(direct_threshold=0.50, direct_margin=0.30)).direct(
-            probabilities({6: 0.55, 5: 0.40}), box=BOX
+            probabilities({6: 0.55, 5: 0.40}), evidence=safe_direct_evidence(), box=BOX
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        DirectEvidence(crop_disagreement=0.31, nearest_prototype_distance=0.02),
+        DirectEvidence(crop_disagreement=0.01, nearest_prototype_distance=0.21),
+    ],
+)
+def test_direct_gate_abstains_when_non_score_evidence_is_unsafe(
+    evidence: DirectEvidence,
+):
+    result = policy(
+        calibration(
+            direct_max_crop_disagreement=0.30,
+            direct_max_prototype_distance=0.20,
+        )
+    ).direct(
+        probabilities({6: 0.80, 5: 0.20}),
+        evidence=evidence,
+        box=BOX,
+    )
+
+    assert result is None
 
 
 def test_disagreement_abstains_with_three_fused_candidates():

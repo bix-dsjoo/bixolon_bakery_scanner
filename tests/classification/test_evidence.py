@@ -164,8 +164,8 @@ def _policy(
     provenance: dict[str, str] | None = None,
 ) -> PolicyCalibration:
     return PolicyCalibration(
-        schema_version=1,
-        calibration_id="policy_v1",
+        schema_version=2,
+        calibration_id="policy_v2",
         repvit_artifact_id="repvit_m1_15plus5_v1",
         dinov3_artifact_id="dinov3_vits16_15plus5_v1",
         repvit_temperature=1.0,
@@ -173,6 +173,8 @@ def _policy(
         alpha=0.5,
         direct_threshold=0.5,
         direct_margin=0.1,
+        direct_max_crop_disagreement=1.0,
+        direct_max_prototype_distance=2.0,
         dino_threshold=0.5,
         fused_margin=0.1,
         evidence_sha256=evidence_sha256,

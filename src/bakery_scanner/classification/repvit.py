@@ -32,7 +32,8 @@ class RepVitPrototypeBank:
     prototypes: torch.Tensor
 
     @classmethod
-    def load(cls, path: Path, *, checkpoint_sha256: str, expected_preprocess_sha256: str) -> "RepVitPrototypeBank":
+    def load(cls, path: Path, *, checkpoint_sha256: str, expected_preprocess_sha256: str, expected_sha256: str) -> "RepVitPrototypeBank":
+        _verify_sha256(path, expected_sha256, "prototype bank")
         payload = torch.load(path, map_location="cpu", weights_only=True)
         if not isinstance(payload, dict) or payload.get("artifact_type") != "repvit_m1_15plus5_feature_prototypes":
             raise ValueError("RepViT prototype artifact is invalid")

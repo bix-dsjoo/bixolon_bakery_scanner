@@ -125,13 +125,14 @@ class ClassifierConfig(_StrictModel):
         base = config_path.parent
         payload = dict(payload)
         for section, names in {
-            "repvit": ("checkpoint", "manifest"),
+            "repvit": ("checkpoint", "manifest", "prototype_bank"),
             "dinov3": ("weights", "support"),
             "calibration": ("artifact",),
         }.items():
             values = dict(payload.get(section) or {})
             for name in names:
-                values[name] = _resolve_path(base, values.get(name))
+                if values.get(name) is not None:
+                    values[name] = _resolve_path(base, values.get(name))
             payload[section] = values
         result = cls.model_validate(payload)
         if "locked_acceptance" in result.calibration.artifact.parts:
