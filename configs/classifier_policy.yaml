@@ -9,8 +9,8 @@ dinov3:
   artifact_id: dinov3_vits16_15plus5_v1
   weights: ../models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
   weights_sha256: 08c60483bc63c04f533611e34bf70b120eedb7240f469bc16e9e20bf344b941d
-  support: ../models/dinov3_vits16_15plus5_v1/dinov3_vits16_15plus5_v1_support.pt
-  support_sha256: f395e38a93905a2a4e53522b8632274813604f1c5f98f4baff0cbfdf91431aea
+  support: ../artifacts/classification/dinov3_vits16_15plus5_v2_support.pt
+  support_sha256: a7a64902d7144e5c50bdf6235800e972b9205b53ad9b8bfeb0583814bb91bce5
 preprocess:
   input_size: 224
   paddings: [0.05, 0.10, 0.15]
