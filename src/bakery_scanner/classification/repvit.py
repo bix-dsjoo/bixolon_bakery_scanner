@@ -27,6 +27,29 @@ class RepVitEvidence:
     crop_disagreement: float
 
 
+@dataclass(frozen=True, slots=True)
+class RepVitPrototypeBank:
+    prototypes: torch.Tensor
+
+    @classmethod
+    def load(cls, path: Path, *, checkpoint_sha256: str, expected_preprocess_sha256: str) -> "RepVitPrototypeBank":
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(payload, dict) or payload.get("artifact_type") != "repvit_m1_15plus5_feature_prototypes":
+            raise ValueError("RepViT prototype artifact is invalid")
+        if payload.get("checkpoint_sha256") != checkpoint_sha256 or payload.get("preprocess_sha256") != expected_preprocess_sha256:
+            raise ValueError("RepViT prototype artifact provenance mismatch")
+        value = payload.get("prototypes")
+        if not isinstance(value, torch.Tensor) or tuple(value.shape) != (20, 384) or not torch.isfinite(value).all().item():
+            raise ValueError("RepViT prototypes must have shape (20, 384)")
+        return cls(torch.nn.functional.normalize(value.float(), dim=1))
+
+    def distances(self, feature: torch.Tensor) -> tuple[float, ...]:
+        if tuple(feature.shape) != (384,) or not torch.isfinite(feature).all().item():
+            raise ValueError("RepViT feature must have shape (384,)")
+        vector = torch.nn.functional.normalize(feature.float(), dim=0)
+        return tuple(float(value) for value in (1.0 - self.prototypes @ vector).tolist())
+
+
 class RepVitM1Runner:
     def __init__(
         self,
