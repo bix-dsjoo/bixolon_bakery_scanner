@@ -22,13 +22,13 @@ def soft_nms(proposals: Sequence[BreadProposal], policy: SoftNmsPolicy) -> tuple
     _validate_policy(policy)
     _reject_duplicate_coordinates(proposals)
 
-    by_image: dict[int, list[BreadProposal]] = {}
+    by_image_source: dict[tuple[int, str], list[BreadProposal]] = {}
     for proposal in proposals:
-        by_image.setdefault(proposal.image_id, []).append(proposal)
+        by_image_source.setdefault((proposal.image_id, proposal.source), []).append(proposal)
 
     decayed: list[BreadProposal] = []
-    for image_id in sorted(by_image):
-        decayed.extend(_soft_nms_image(by_image[image_id], policy))
+    for key in sorted(by_image_source):
+        decayed.extend(_soft_nms_image(by_image_source[key], policy))
     return tuple(decayed)
 
 
@@ -68,9 +68,9 @@ def _validate_policy(policy: SoftNmsPolicy) -> None:
 
 
 def _reject_duplicate_coordinates(proposals: Sequence[BreadProposal]) -> None:
-    seen: set[tuple[int, float, float, float, float]] = set()
+    seen: set[tuple[int, str, float, float, float, float]] = set()
     for proposal in proposals:
-        coordinate = (proposal.image_id, proposal.box.x, proposal.box.y, proposal.box.width, proposal.box.height)
+        coordinate = (proposal.image_id, proposal.source, proposal.box.x, proposal.box.y, proposal.box.width, proposal.box.height)
         if coordinate in seen:
             raise ValueError("duplicate candidate coordinates")
         seen.add(coordinate)
