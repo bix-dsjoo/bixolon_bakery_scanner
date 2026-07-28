@@ -39,3 +39,13 @@ def test_matrix_runs_rtm_gpu_guard_immediately_before_train_and_test():
     guard = __import__("pathlib").Path("scripts/require_rtx5080.py").read_text(encoding="utf-8")
     assert script.count("scripts/require_rtx5080.py") == 2
     assert "torch.cuda.current_device() != 0" in guard and "CUDA_VISIBLE_DEVICES" in guard
+
+
+def test_rtmdet_overlay_requires_explicit_batch_lr_and_no_inherited_pipeline_switch_hook():
+    overlay = __import__("pathlib").Path("configs/upstream/rtmdet_tiny_bread.py").read_text(encoding="utf-8")
+    assert "__INJECTED_RTMDET_TRAIN_BATCH__" in overlay
+    assert "__INJECTED_RTMDET_VAL_BATCH__" in overlay
+    assert "__INJECTED_RTMDET_TEST_BATCH__" in overlay
+    assert "__INJECTED_RTMDET_BASE_LR__" in overlay
+    assert "custom_hooks" in overlay
+    assert "PipelineSwitchHook" not in overlay

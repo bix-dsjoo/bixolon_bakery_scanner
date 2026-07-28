@@ -9,10 +9,10 @@ The online bakery-scanner inference pipeline is fixed as follows:
 
 ```text
 Scan image
-  -> Detector: D-FINE
-  -> Verifier: confirm each candidate represents exactly one bread
-  -> Classifier: RepViT
-  -> DINOv3 recheck only for low-confidence or confusable classifications
+  -> Detector: D-FINE-N
+  -> Verifier: ConvNeXt-Tiny confirms each candidate represents exactly one bread
+  -> Classifier: RepViT-M1 (`repvit_m1_15plus5_v1`)
+  -> DINOv3 ViT-S/16 (`dinov3_vits16_15plus5_v1`) recheck only for low-confidence or confusable classifications
   -> item, quantity, position, confidence, and decision path
 ```
 
@@ -21,40 +21,45 @@ offline experiments if a later, independently evaluated change is proposed.
 
 ## Stage contracts
 
-### Detector: D-FINE
+### Detector: D-FINE-N
 
-D-FINE proposes every plausible bread location. Its output is candidate
-evidence, not a final item count or product classification. Every encoded
-input is first EXIF-transposed and converted to RGB; that visually oriented
-image is the original-image coordinate frame. Candidate boxes return to this
-canonical frame after model resize, letterbox, or perspective normalization is
-reversed. EXIF orientation is never reversed during ordinary inference.
+D-FINE-N proposes every plausible bread location. Its output is candidate
+evidence, not a final item count or product classification. Candidate boxes
+remain in original-image coordinates after normalization is reversed.
 
-### Verifier
+### Verifier: ConvNeXt-Tiny
 
 The verifier assesses each candidate as `invalid`, `exactly_one`, `partial`,
 or `multiple`. Only `exactly_one` candidates become final object regions.
 It owns removal of non-bread detections and resolution of duplicate, split,
 and merged boxes; it does not classify product type.
 
-### Classifier: RepViT
+### Classifier: RepViT-M1
 
-RepViT receives only verified regions. It returns ranked product candidates,
+RepViT-M1 receives only verified regions. It returns ranked product candidates,
 calibrated confidence, and the separation between the leading candidates.
 Direct classification is permitted only when the versioned calibration
 criteria are met.
 
-### Conditional DINOv3
+The initial classifier artifact is
+`models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt`, accompanied by its
+20-SKU class-map and training-provenance manifest.
 
-DINOv3 is invoked only when RepViT confidence or candidate separation does
+### Conditional DINOv3 ViT-S/16
+
+DINOv3 is invoked only when RepViT-M1 confidence or candidate separation does
 not meet the calibrated direct-decision criteria, including declared
 confusable product pairs. It confirms a registered product only with
 sufficient reference-match evidence; otherwise the result is `Unknown`.
 
+The initial recheck artifact is `models/dinov3_vits16_15plus5_v1`, consisting
+of the DINOv3 ViT-S/16 pretrained weights and the 20-SKU prototype support
+file.
+
 ## Final result contract
 
 Each final object contains a registered product ID or `Unknown`, an in-bounds
-canonical visual-original-image box in `[x_min, y_min, x_max, y_max]` form, decision
+original-image box in `[x_min, y_min, x_max, y_max]` form, decision
 confidence, and one decision path: `classifier_direct`, `dinov3_recheck`, or
 `unknown`. Product-level quantities must sum to the number of final object
 regions.

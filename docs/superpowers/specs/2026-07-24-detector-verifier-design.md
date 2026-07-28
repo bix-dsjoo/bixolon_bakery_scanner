@@ -1,5 +1,7 @@
 # Bakery Scanner Detector + Verifier 설계
 
+> **2026-07-27 대체 안내:** 이 문서는 D-FINE/RTMDet detector/verifier 실험의 역사적 맥락을 보존합니다. 최종 온라인 모델 선정은 [2026-07-27-final-inference-pipeline-design.md](2026-07-27-final-inference-pipeline-design.md)를 기준으로 합니다.
+
 - 작성일: 2026-07-24
 - 상태: 사용자 승인 완료, 구현 계획 작성 전
 - 대상 환경: Windows 11, Intel Core Ultra 9 285K, RAM 64GB, CPU 추론

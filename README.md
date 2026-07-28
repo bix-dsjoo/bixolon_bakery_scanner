@@ -19,39 +19,55 @@ Bakery Scanner는 검출, 영역 검증, 제품 분류, 조건부 재확인을 �
 ```text
 스캔 이미지
   → Detector: D-FINE-N
-  → Verifier: ConvNeXt-Tiny
+  → MobileNetV4 Box Assurance first pass
+  → conditional ConvNeXt-Tiny Box Assurance recheck
+  → final component resolver
   → Classifier: RepViT-M1 (`repvit_m1_15plus5_v1`)
-  → 저신뢰·난분류 결과만 DINOv3 ViT-S/16 (`dinov3_vits16_15plus5_v1`) 재확인
+  → Conditional recheck: DINOv3 ViT-S/16 (`dinov3_vits16_15plus5_v1`)
   → 품목·수량·위치 결과
 ```
 
-### 1. Detector
+### 1. Detector: D-FINE-N
 
-D-FINE-N이 입력 이미지에서 빵의 위치와 후보 박스를 검출합니다.
+D-FINE-N이 입력 이미지에서 빵의 위치와 후보 박스를 recall-first로 검출합니다.
 이 단계의 출력은 최종 결과가 아니라 Verifier가 확인할 후보 집합입니다.
+낮은 점수 후보도 Box Assurance 전에 제거하지 않습니다.
 
-### 2. Verifier
+### 2. Box Assurance: MobileNetV4 first pass, conditional ConvNeXt-Tiny
 
-ConvNeXt-Tiny Verifier는 Detector의 후보 박스를 검증하고 필요한 보정과
-정리를 수행합니다.
-누락된 빵, 하나의 빵을 가리키는 중복 박스, 여러 빵을 합친 박스, 배경이나
-비대상 물체의 오검출을 제거하여 빵 하나당 하나의 최종 대상 영역을
-확정합니다.
+MobileNetV4가 모든 후보를 배치로 평가하여 `INVALID`, `EXACTLY_ONE`,
+`PARTIAL`, `MULTIPLE` 상태와 box quality 및 원본 좌표계 box delta를 냅니다.
+conditional ConvNeXt-Tiny는 MobileNetV4의 confidence/quality가 부족하거나
+`PARTIAL`/`MULTIPLE` 또는 후보 관계 그래프와의 충돌일 때만 재확인합니다.
 
-### 3. Classifier
+### 3. Final component resolver
 
-검증된 각 빵 영역은 `repvit_m1_15plus5_v1` RepViT-M1 Classifier로
-전달됩니다. Classifier는 제품 종류와 보정된 분류 신뢰도를 산출하며,
-신뢰도와 클래스 간 분리도가 모두 충분한 결과만 즉시 확정합니다.
+후보 관계 그래프는 중복, 부분, 병합의 가능성을 보여 주지만 hard NMS는 최종
+결정이 아닙니다. final component resolver가 중복과 실제 overlap을 구분합니다.
+따라서 실제로 겹친 두 빵을 제거하지 않으며, 분리 후보를 복구할 수 없는 병합
+구성요소 또는 충분한 근거 없이 충돌한 결과는 `Unknown`으로 남깁니다.
+`Unknown`은 빵으로 조용히 집계하지 않습니다.
 
-### 4. DINOv3 재확인
+### 4. Classifier: RepViT-M1
 
-DINOv3 ViT-S/16 `dinov3_vits16_15plus5_v1`은 모든 대상에 실행하지
-않습니다. 분류 신뢰도가 낮거나 서로 유사한 제품을 구분하기 어려운
-경우에만 재확인을 수행합니다.
+검증된 각 빵 영역은 RepViT-M1 기반 Classifier로만 전달됩니다.
+Classifier는 제품 종류와 분류 신뢰도를 산출하며, 신뢰도가 충분하고 혼동
+가능성이 낮은 결과는 즉시 사용합니다.
+
+현재 우선 적용하는 Classifier 산출물은
+`models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt`입니다.
+
+### 5. Conditional DINOv3 ViT-S/16 재확인
+
+DINOv3는 모든 대상에 실행하지 않습니다. 분류 신뢰도가 낮거나 서로
+유사한 제품을 구분하기 어려운 경우에만 재확인을 수행합니다.
 
 - 등록 제품임이 충분히 확인되면 해당 품목으로 확정합니다.
 - 등록 제품으로 확정할 근거가 부족하면 `Unknown`으로 처리합니다.
+
+현재 우선 적용하는 재확인 산출물은
+`models/dinov3_vits16_15plus5_v1`의 사전학습 가중치와 20품목 prototype
+support 파일입니다.
 
 이 조건부 경로는 정확도를 보완하면서 평균 추론 시간을 제한합니다.
 
@@ -73,102 +89,26 @@ DINOv3 ViT-S/16 `dinov3_vits16_15plus5_v1`은 모든 대상에 실행하지
 
 ### 정확성
 
-고정된 운영 조건과 사전에 잠근 승인 평가셋에서 다음 오류가 각각 0건이어야
+잠긴 299장 승인 평가셋에서 IoU 0.50 및 0.75 모두 다음 오류가 각각 0건이어야
 합니다.
 
 - 오분류
 - 누락
 - 중복 집계
 - 비대상 물체 검출
+- split 오류
+- merge 오류
 
-여기서 오인율 0%는 검증된 운영 범위의 출하 기준입니다. 검증되지 않은
-모든 환경과 입력에 대한 절대적 무오류 보장을 의미하지 않습니다.
+또한 이미지별 최종 박스 수가 GT 빵 수와 일치하고, 최종 박스에 `Unknown`이
+없어야 합니다. 이 수치는 실제 empty-tray, overlap, obstruction 데이터가 없는
+현재 개발 전용 범위의 결과입니다. 그러므로 이 미관측 조건을 포함한 운영상
+100% 보장으로 표현하지 않습니다.
 
 ### 성능
 
-현재 기준 PC의 GPU에서 Detector부터 최종 집계까지 전체 파이프라인의
-이미지당 추론 시간 **0.5초 이하**를 목표로 합니다. 정확성 승인 기준을
+현재 RTX 5080 GPU에서 warm-up 후 Detector부터 최종 집계까지 전체 파이프라인의
+E2E p95 **0.5초 이하**가 승인 게이트입니다. 정확성 승인 기준을
 훼손하는 속도 최적화는 허용하지 않습니다.
-
-## Classifier 보정·승인·벤치마크
-
-Classifier 임계값은 모델 패키지에 내장된 고정값이 아니라 독립적인 개발
-증거에서 선택해 버전된 calibration 산출물로 저장합니다. 입력 JSONL은
-원본 이미지 경로와 원본 좌표계의 `box_xyxy`를 사용합니다.
-
-- `development_manifest.jsonl`: RepViT 학습 이미지와 겹치지 않는
-  `role=development` 표본입니다. 두 모델의 점수를 수집하고 grouped
-  cross-fit으로 calibration을 선택하는 용도입니다.
-- `locked_acceptance_manifest.jsonl`: 파라미터 선택에 사용하지 않은
-  `role=locked_acceptance` 표본입니다. calibration을 고정한 뒤 한 번
-  평가하는 출하 승인 용도입니다.
-- `benchmark_manifest.jsonl`: `sample_id`, `image_path`, `box_xyxy`를
-  필수로 갖는 분류기 전용 성능 표본입니다. 선택적으로 `registered`와
-  `sku_id`를 함께 기록할 수 있지만 벤치마크는 정답률을 계산하지 않습니다.
-
-개발 증거 수집과 calibration 선택:
-
-```powershell
-python scripts/build_dinov3_source_manifest.py --output artifacts/classification/dinov3_source_manifest.json
-python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --manifest datasets/classification/development_manifest.jsonl --output artifacts/classification/development_evidence.jsonl
-python scripts/calibrate_classifier_policy.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --evidence artifacts/classification/development_evidence.jsonl --output artifacts/classification/policy_v1.json
-```
-
-잠긴 승인 증거 수집과 고정 정책 평가:
-
-```powershell
-python scripts/collect_classifier_evidence.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --manifest datasets/classification/locked_acceptance_manifest.jsonl --output artifacts/classification/locked_evidence.jsonl
-python scripts/evaluate_classifier_policy.py --config configs/classifier_policy.yaml --dino-source-manifest artifacts/classification/dinov3_source_manifest.json --coverage-contract configs/locked_classifier_coverage_v1.json --development-evidence artifacts/classification/development_evidence.jsonl --evidence artifacts/classification/locked_evidence.jsonl --calibration artifacts/classification/policy_v1.json --output artifacts/classification/locked-report.json
-```
-
-`build_dinov3_source_manifest.py` defaults to the authoritative support roots
-`datasets/classification/base_15class` and
-`datasets/classification/incremental_5class_crop`. Its canonical digest must
-equal `source_manifest_sha256` in the DINO support artifact; otherwise evidence
-collection, calibration, and locked evaluation fail closed. Locked release also
-requires all 20 registered SKUs, at least one unregistered crop, and every
-scenario in `configs/locked_classifier_coverage_v1.json`; a perfect subset is
-not release eligible.
-
-The calibration JSON is canonical and binds the exact RepViT checkpoint and
-training manifest, DINO weights and support file, plus the versioned preprocessing
-digest. Online loading and locked evaluation reject a calibration whose hashes do
-not match the configured artifacts, even when model IDs are unchanged.
-
-잠긴 보고서는 `auto_precision`, `fallback_top3_recall`,
-`assisted_success`가 적용 가능한 구간마다 1.0인지 검사하며, 하나라도
-충족하지 못하면 명령이 0이 아닌 종료 코드를 반환합니다. 잠긴 결과를 보고
-임계값을 조정했다면 새 잠금 평가셋으로 다시 검증해야 합니다.
-
-분류기 전용 GPU 벤치마크:
-
-```powershell
-python scripts/benchmark_classifier_pipeline.py --config configs/classifier_policy.yaml --manifest datasets/classification/benchmark_manifest.jsonl --warmup 20 --output artifacts/classification/benchmark.json
-```
-
-측정 전에 manifest의 첫 유효 crop으로 RepViT와 DINOv3를 각각 한 번
-명시적으로 실행합니다. 따라서 manifest가 전부 직접 확정 표본이어도
-DINOv3 모델 로드, artifact 검증과 첫 GPU kernel 실행이 측정 구간에
-들어가지 않습니다. 이 고정 preflight 1회는 `model_preflight_count=1`로
-기록하며 사용자가 지정한 `warmup_count`에는 포함하지 않습니다. 이후
-`--warmup` 횟수만큼 전체 정책 경로를 추가 실행하고 이 행들도 집계에서
-제외합니다.
-
-보고서는 warm-up을 제외한 혼합 전체·RepViT p50/p95, 실제 재확인 행의
-DINOv3 p50/p95와 DINOv3 실행률을 기록합니다. 또한 RepViT 직접 확정
-경로와 DINOv3 재확인 경로의 측정 표본 수 및 전체 latency p50/p95를
-각각 분리합니다. 측정 표본에 한 경로가 없으면 해당 경로 percentile은
-`null`입니다. 장치·정밀도 및 실제로 로드·검증한 모델·calibration 해시도
-함께 기록합니다.
-
-이 수치는 검증된 crop 이후의 Classifier만 측정하므로 Detector와
-Verifier를 포함하는 0.5초 전체 파이프라인 목표의 합격 근거로 사용할 수
-없습니다.
-
-현재 모델 패키지 자체만으로 `auto_precision=100%` 또는
-`fallback_top3_recall=100%`가 증명되는 것은 아닙니다. 학습과 독립적인
-개발 데이터 및 잠긴 승인 데이터의 실제 결과가 있어야
-`assisted_success=100%`를 포함한 출하 기준을 판정할 수 있습니다.
 
 ## 핵심 원칙
 

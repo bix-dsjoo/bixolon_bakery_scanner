@@ -1,0 +1,60 @@
+# Overlay for the pinned D-FINE checkout. Fold paths are injected per run.
+__include__:
+  - ../../../third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml
+num_classes: 1
+# Convert COCO category id 1 to D-FINE's single model label 0.
+remap_mscoco_category: true
+seed: 20260724
+# The upstream include fixes this to 640. Keep encoder position embeddings and
+# decoder anchors aligned with the generated 640 or 768 transforms.
+eval_spatial_size: [640, 640]
+# The pinned N config uses global batch 128 with base/backbone LR
+# 0.0008/0.0004. The one-GPU batch 16 profile keeps the same 1:2 ratio
+# after linear scaling.
+optimizer:
+  lr: 0.0001
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.00005
+    -
+      params: '^(?=.*backbone)(?=.*norm|bn).*$'
+      lr: 0.00005
+      weight_decay: 0.
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
+      weight_decay: 0.
+# D-FINE's documented dataloader fields bind COCO JSON and image folders.
+train_dataloader:
+  # This value is injected by the GPU experiment runner. Do not inherit the
+  # upstream multi-GPU COCO batch size on a single RTX 5080.
+  total_batch_size: 16
+  dataset:
+    img_folder: artifacts/box_system/staged/images
+    ann_file: artifacts/box_system/detectors/dfine_n_640-seed20260724-fold4/fold-data/train.json
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [640, 640]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 72
+        ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+  collate_fn:
+    base_size: 640
+val_dataloader:
+  total_batch_size: 16
+  dataset:
+    img_folder: artifacts/box_system/staged/images
+    ann_file: artifacts/box_system/detectors/dfine_n_640-seed20260724-fold4/fold-data/validation.json
+    transforms:
+      ops:
+        - {type: Resize, size: [640, 640]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

@@ -11,9 +11,7 @@ from typing import Any, Protocol
 
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage
-
-_SCORE_FLOOR = 0.001
-_PROPOSAL_LIMIT = 30
+from bakery_scanner.detectors.proposal_policy import RAW_SCORE_FLOOR, retain_raw_proposals
 
 
 def parse_dfine_output(
@@ -224,14 +222,15 @@ def _parse_xyxy(image_id: int, image_size: tuple[int, int], labels: Sequence[int
         x1, y1, x2, y2 = (float(value) for value in xyxy)
         if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
             raise ValueError("prediction coordinates must be valid xyxy within image bounds")
-        if score < _SCORE_FLOOR:
+        candidates.append(BreadProposal(image_id, source, float(score), Box(x1, y1, x2 - x1, y2 - y1), width, height))
+    for candidate in candidates:
+        if candidate.score < RAW_SCORE_FLOOR:
             continue
-        identity = (x1, y1, x2, y2)
+        identity = (candidate.box.x, candidate.box.y, candidate.box.x + candidate.box.width, candidate.box.y + candidate.box.height)
         if identity in seen:
             raise ValueError("duplicate prediction coordinates")
         seen.add(identity)
-        candidates.append(BreadProposal(image_id, source, float(score), Box(x1, y1, x2 - x1, y2 - y1), width, height))
-    return tuple(sorted(candidates, key=lambda row: (-row.score, row.box.y, row.box.x, row.box.height, row.box.width))[:_PROPOSAL_LIMIT])
+    return retain_raw_proposals(candidates)
 
 
 def _subprocess_runner(command: tuple[str, ...]) -> dict[str, Any]:

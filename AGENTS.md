@@ -3,14 +3,14 @@
 ## 미션
 
 이 저장소의 모든 작업은 스캔 이미지에서 빵의 품목, 수량, 위치를 정확하게
-추론하는 CPU 파이프라인 완성을 목표로 한다. 최종 시스템은 Detector,
+추론하는 GPU 파이프라인 완성을 목표로 한다. 최종 시스템은 Detector,
 Verifier, Classifier, 조건부 DINOv3 재확인으로 구성한다.
 
 우선순위는 다음과 같다.
 
 1. 오분류, 누락, 중복, 비대상 검출 방지
 2. 결정적이고 재현 가능한 결과
-3. 현재 기준 PC CPU에서 전체 추론 0.5초 이하
+3. 현재 기준 PC GPU에서 전체 추론 0.5초 이하
 4. 유지보수성과 구현 단순성
 
 정확성을 희생하여 지연 시간 목표를 맞추지 않는다.
@@ -21,40 +21,61 @@ Verifier, Classifier, 조건부 DINOv3 재확인으로 구성한다.
 
 ```text
 입력 이미지
-  → Detector (D-FINE / RTMDet)
-  → Verifier
-  → Classifier (MobileNetV4 / RepViT)
-  → 필요한 경우에만 DINOv3
+  → Detector: D-FINE-N
+  → Box Assurance first pass: MobileNetV4
+  → conditional ConvNeXt-Tiny Box Assurance recheck
+  → final component resolver
+  → Classifier: RepViT-M1 (`repvit_m1_15plus5_v1`)
+  → Conditional recheck: DINOv3 ViT-S/16 (`dinov3_vits16_15plus5_v1`)
   → 대상별 결과와 품목별 집계
 ```
 
-### Detector
+### Detector: D-FINE-N
 
-- 빵으로 보이는 모든 위치와 후보 박스를 생성한다.
+- D-FINE-N은 빵으로 보이는 모든 위치와 후보 박스를 생성한다.
 - Detector 출력은 검증 전 후보이며 최종 제품 결과로 사용하지 않는다.
 - 낮은 점수 후보를 너무 일찍 제거하여 recall을 훼손하지 않는다.
 - 모델별 좌표와 점수를 공통 후보 계약으로 정규화한다.
+- 낮은 점수 후보도 Box Assurance 전에는 버리지 않는 recall-first 단계다.
 
-### Verifier
+### Box Assurance: MobileNetV4 first pass and conditional ConvNeXt-Tiny
 
-- 후보가 정확히 하나의 대상 빵을 나타내는지 확인한다.
-- 누락, 중복, 병합 박스, 분할 박스, 비대상 오검출을 해결한다.
-- 최종 영역은 실제 빵 하나당 하나만 존재해야 한다.
-- 제품 종류 분류 책임을 Verifier에 섞지 않는다.
+- MobileNetV4는 모든 후보를 배치로 평가하는 첫 Box Assurance 단계다.
+- 각 후보는 `INVALID`, `EXACTLY_ONE`, `PARTIAL`, `MULTIPLE` 상태, 보정된 box
+  quality, 원본 좌표계 box delta와 판정 경로를 낸다.
+- conditional ConvNeXt-Tiny는 MobileNetV4의 confidence 또는 box quality가
+  부족하거나, `PARTIAL`/`MULTIPLE`이거나, 후보 관계 그래프와 충돌할 때만
+  재확인한다. 제품 종류 분류 책임을 Box Assurance에 섞지 않는다.
 
-### Classifier
+### Final component resolver
 
-- 검증된 빵 영역만 입력받는다.
+- 후보 관계 그래프의 IoU, 포함 관계, 중심 거리 정보는 중복/부분/병합 가능성의
+  증거일 뿐이며, hard NMS는 최종 억제 결정에 사용하지 않는다.
+- final component resolver가 중복과 실제 overlap을 판정한다. 따라서 실제로
+  겹친 두 빵을 중복으로 제거하지 않는다.
+- `INVALID`는 제거하고, 호환되는 `EXACTLY_ONE` 후보는 구성요소 내 최고
+  quality를 유지한다. `PARTIAL`은 보정 후 지역 관계를 다시 평가한다.
+- `MULTIPLE`은 독립 후보를 복구할 수 있을 때만 분리한다. 불가능하거나 두
+  assurance 모델이 충분한 근거 없이 충돌하면 해당 구성요소는 `Unknown`이다.
+- `Unknown`은 빵으로 조용히 집계하지 않으며, 잠긴 평가셋에서는 오류다.
+
+### Classifier: RepViT-M1
+
+- RepViT-M1은 검증된 빵 영역만 입력받는다.
 - 제품 종류와 보정된 분류 신뢰도를 출력한다.
 - 충분한 신뢰도와 클래스 간 분리도를 모두 만족한 결과만 직접 확정한다.
 - 신뢰도 기준을 코드 여러 곳에 하드코딩하지 않는다.
+- 우선 적용 산출물은
+  `models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt`이다.
 
-### DINOv3 재확인
+### Conditional DINOv3 ViT-S/16 재확인
 
 - 모든 영역에 기본 실행하지 않는다.
 - 저신뢰 결과 또는 제품 간 구분이 어려운 결과에만 실행한다.
 - 등록 제품과의 일치 근거가 충분할 때만 해당 품목으로 확정한다.
 - 충분히 확신할 수 없으면 반드시 `Unknown`을 반환한다.
+- 우선 적용 산출물은 `models/dinov3_vits16_15plus5_v1`의 사전학습
+  가중치와 20품목 prototype support 파일이다.
 
 ## 데이터 계약
 
@@ -86,13 +107,22 @@ orientation provenance를 사용해 선택적으로 export한다. 경계 상자�
 누락, 중복, 비대상 검출이 각각 0건인 것이다. 이 기준은 검증된 운영 범위에
 적용하며 미관측 입력에 대한 절대 보장으로 표현하지 않는다.
 
+잠긴 299장 승인 평가셋의 출하 게이트는 IoU 0.50 및 0.75에서 오분류, 누락,
+중복, 비대상, split, merge가 각각 0건이고 모든 이미지의 최종 박스 수가 GT와
+일치하는 것이다. 최종 박스에는 `Unknown`이 없어야 하며, 이 조건은 RTX 5080
+GPU warm E2E p95가 0.5초 이하일 때만 충족한다.
+
+개발 전용 한계: 현재 데이터에는 실제 empty-tray, overlap, obstruction 사례가
+없다. 따라서 위 결과는 해당 299장 잠긴 평가셋에만 적용되며 이 미관측 조건에
+대한 운영상 100% 보장은 주장하지 않는다.
+
 ## 성능 규칙
 
 - 성능 지표는 모델 한 개가 아니라 입력부터 최종 집계까지 전체 지연
   시간으로 측정한다.
-- 현재 기준 PC CPU에서 이미지당 0.5초 이하를 목표로 한다.
+- 현재 기준 RTX 5080 GPU에서 warm E2E p95 이미지당 0.5초 이하를 목표로 한다.
 - 각 단계의 지연 시간을 별도로 기록하여 병목을 확인할 수 있어야 한다.
-- DINOv3 조건부 실행률과 전체 지연 시간의 백분위 통계를 함께 확인한다.
+- conditional ConvNeXt-Tiny 및 DINOv3 실행률과 전체 지연 시간의 백분위 통계를 함께 확인한다.
 - 저정밀도 변환, 입력 해상도 축소, 후보 제한 등 최적화는 정확성 회귀가
   없음을 검증한 뒤 채택한다.
 
@@ -115,7 +145,7 @@ orientation provenance를 사용해 선택적으로 export한다. 경계 상자�
 2. 통합 테스트: 전체 단계 순서와 단계 간 입출력
 3. 회귀 테스트: 누락, 중복, 비대상, 유사 제품, 저신뢰 사례
 4. 정확성 평가: 전체 및 시나리오별 오류 건수
-5. 성능 평가: CPU warm-up 이후 전체 지연 시간과 단계별 지연 시간
+5. 성능 평가: GPU warm-up 이후 전체 지연 시간과 단계별 지연 시간
 
 평가 결과를 확인하지 않은 채 정확도나 속도 향상을 주장하지 않는다.
 승인 평가셋을 보고 모델이나 임계값을 조정한 경우 새로운 잠금 평가셋으로
@@ -128,6 +158,6 @@ orientation provenance를 사용해 선택적으로 export한다. 경계 상자�
 - 요청된 동작과 단계별 계약이 구현되어 있다.
 - 관련 자동화 테스트가 통과한다.
 - 오분류, 누락, 중복, 비대상 검출 회귀가 없다.
-- 성능 관련 변경은 동일한 CPU 조건의 전후 수치가 있다.
+- 성능 관련 변경은 동일한 GPU 조건의 전후 수치가 있다.
 - 최종 출력의 품목, 수량, 위치, 신뢰도, 판정 경로가 일관된다.
 - 문서와 설정이 실제 동작과 모순되지 않는다.
