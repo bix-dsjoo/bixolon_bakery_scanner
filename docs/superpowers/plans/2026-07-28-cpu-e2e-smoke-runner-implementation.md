@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship a portable Windows ZIP that runs a deterministic CPU-only, ten-image functional smoke test and produces an explicitly non-release E2E report.
+**Goal:** Ship a portable Windows ZIP that runs a deterministic CPU-only, ten-image MobileNetV4-only functional smoke test and produces an explicitly non-release report.
 
-**Architecture:** `bakery_scanner.e2e.cpu_smoke` owns deterministic input selection, CPU-only preflight, dependency-injected pipeline execution, and report construction. `scripts/run_e2e_smoke.py` is a thin CLI that resolves all package-relative paths. `scripts/package_cpu_smoke.ps1` creates a ZIP containing code, pinned dependency metadata, required CPU assets, and launch documentation without an input image directory.
+**Architecture:** `bakery_scanner.e2e.cpu_smoke` owns deterministic input selection, CPU-only preflight, dependency-injected pipeline execution, and report construction. A MobileNetV4-only adapter converts every candidate that would require ConvNeXt-Tiny recheck to assurance `Unknown`. `scripts/run_e2e_smoke.py` is a thin CLI that resolves all package-relative paths. `scripts/package_cpu_smoke.ps1` creates a ZIP containing code, pinned dependency metadata, required CPU assets, and launch documentation without an input image directory.
 
 **Tech Stack:** Python 3.11, PyTorch CPU, Pillow, PyYAML, PowerShell `Compress-Archive`, pytest.
 
@@ -12,7 +12,8 @@
 
 - CPU mode is a functional smoke test only; it must never present CPU latency or partial data as a release result.
 - At most 10 supported images may be processed, in stable case-insensitive filename order.
-- The detector, assurance cascade, resolver, RepViT, and conditional DINO path must be supplied as one pipeline; cached OOF boxes and classifier-only replay are forbidden.
+- The detector, MobileNetV4 assurance, resolver, RepViT, and conditional DINO path must be supplied as one pipeline; cached OOF boxes and classifier-only replay are forbidden.
+- ConvNeXt-Tiny is intentionally absent. A candidate requiring recheck must become `Unknown`; the report must state this limitation.
 - A missing runtime, model, or artifact must fail before output creation with a stable diagnostic.
 - The ZIP contains no user image directory and resolves all supplied paths relative to its extracted root or command-line arguments.
 
@@ -137,7 +138,7 @@ Expected: FAIL because the CPU factory and CLI do not exist.
 
 - [ ] **Step 4: Implement the CPU factory with the real pipeline components.**
 
-Load every Torch model with `map_location="cpu"`, call `.eval()`, and construct `E2EPipeline` with the D-FINE CPU adapter, `TorchAssuranceRunner` MobileNetV4/ConvNeXt adapters, and `ClassifierPipeline.load` configured with `runtime.device: cpu`. Do not use cached boxes. Make the D-FINE worker command explicit in the asset manifest so a missing compatible worker produces preflight failure rather than a fallback prediction.
+Load every Torch model with `map_location="cpu"`, call `.eval()`, and construct the MobileNetV4-only pipeline with the D-FINE CPU adapter, `TorchAssuranceRunner` MobileNetV4 adapter, and `ClassifierPipeline.load` configured with `runtime.device: cpu`. Candidates that require ConvNeXt-Tiny become `assurance_unknown`; do not use cached boxes. Make the D-FINE worker command explicit in the asset manifest so a missing compatible worker produces preflight failure rather than a fallback prediction.
 
 - [ ] **Step 5: Implement the CLI and verify GREEN.**
 

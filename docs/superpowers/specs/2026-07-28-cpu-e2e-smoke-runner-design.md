@@ -5,23 +5,26 @@
 
 ## Goal
 
-Provide a deterministic, CPU-only functional smoke runner that executes the
-complete bakery-scanner pipeline for at most ten images from a supplied image
-directory. The runner must be usable on another PC without relying on this
-workspace's absolute paths.
+Provide a deterministic, CPU-only functional smoke runner that executes D-FINE,
+MobileNetV4 box assurance, component resolution, RepViT, and conditional
+DINOv3 for at most ten images from a supplied image directory. The runner must
+be usable on another PC without relying on this workspace's absolute paths.
 
 ## Scope and non-goals
 
-The runner exists only to confirm that the detector, box-assurance cascade,
+The runner exists only to confirm that the detector, MobileNetV4 assurance,
 component resolver, classifier, and conditional DINO recheck can be connected
-and invoked on CPU. It is not a release evaluation and must not claim the
+and invoked on CPU. It intentionally does not load ConvNeXt-Tiny because no
+ConvNeXt-Tiny assurance checkpoint is available. It is not a release evaluation and must not claim the
 locked 299-image accuracy gate, RTX 5080 latency target, or production
 readiness.
 
 The runner does not silently substitute cached OOF boxes, synthetic
 predictions, or classifier-only replay for detector execution. A required
 model, artifact, executable, or CPU-compatible runtime that is unavailable
-causes a precise preflight failure.
+causes a precise preflight failure. Any MobileNetV4 candidate that would
+require ConvNeXt-Tiny recheck becomes `Unknown`; it must not be upgraded to a
+registered product without the missing recheck.
 
 ## Command interface
 
@@ -51,7 +54,7 @@ The runner constructs the same logical sequence as the production contract:
 Canonical input image
   -> D-FINE-N detector on CPU
   -> MobileNetV4 assurance for every candidate on CPU
-  -> conditional ConvNeXt-Tiny assurance on CPU
+  -> recheck-required candidate becomes assurance Unknown
   -> final component resolver
   -> RepViT-M1 classifier on CPU
   -> conditional DINOv3 ViT-S/16 recheck on CPU
@@ -82,8 +85,9 @@ The JSON report contains schema version, explicit `scope` set to
 `cpu_functional_smoke_only`, selected input count, per-image final objects,
 per-SKU count aggregate, stage timings, conditional ConvNeXt/DINO invocation
 counts, and environment provenance. It also includes a limitations field that
-states that CPU timings are not comparable with RTX 5080 E2E release metrics
-and that this runner provides no accuracy certification.
+states that CPU timings are not comparable with RTX 5080 E2E release metrics,
+that ConvNeXt-Tiny recheck is absent, and that this runner provides no accuracy
+certification.
 
 ## Tests
 
