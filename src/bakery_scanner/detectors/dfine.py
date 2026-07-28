@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Protocol
 
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage
@@ -92,6 +94,107 @@ class DFineRunner:
     def export_onnx(self, model: str | Path, output: str | Path) -> dict[str, Any]:
         _require_rtx_5080("cuda:0", self._gpu_probe)
         return self._command_runner(("dfine-export-onnx", "--model", str(model), "--output", str(output), "--device", "cuda:0"))
+
+
+class _PersistentTransport(Protocol):
+    """One request/response exchange with a preloaded D-FINE worker."""
+
+    def request(self, payload: dict[str, object]) -> dict[str, Any]: ...
+
+
+class JsonLineDFineTransport:
+    """Synchronous JSONL bridge to a preloaded D-FINE venv worker."""
+
+    def __init__(
+        self,
+        command: tuple[str, ...],
+        *,
+        process_factory: Callable[..., Any] | None = None,
+    ) -> None:
+        if not command or any(not isinstance(value, str) or not value for value in command):
+            raise ValueError("D-FINE worker command must be a non-empty string tuple")
+        factory = process_factory or subprocess.Popen
+        self._process = factory(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        if self._process.stdin is None or self._process.stdout is None:
+            raise RuntimeError("D-FINE worker requires stdin and stdout pipes")
+
+    def request(self, payload: dict[str, object]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {"image", "image_id"}:
+            raise ValueError("D-FINE worker request requires image and image_id")
+        if not isinstance(payload["image"], str) or not payload["image"] or type(payload["image_id"]) is not int or payload["image_id"] <= 0:
+            raise ValueError("D-FINE worker request image fields are invalid")
+        if self._process.poll() is not None:
+            raise RuntimeError("D-FINE worker exited before processing a request")
+        self._process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        self._process.stdin.flush()
+        line = self._process.stdout.readline()
+        if not line:
+            raise RuntimeError("D-FINE worker returned no response")
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("D-FINE worker response is not valid JSON") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError("D-FINE worker response must be an object")
+        if "error" in response:
+            raise RuntimeError(f"D-FINE worker inference failed: {response['error']}")
+        return response
+
+    def close(self) -> None:
+        if self._process.poll() is None:
+            self._process.terminate()
+
+
+class PersistentDFineRunner:
+    """Detector adapter backed by one already-warm D-FINE process.
+
+    The transport owns process startup and its checkpoint lifetime.  This
+    boundary keeps D-FINE imports in the pinned environment while ensuring an
+    E2E image request does not reload model weights.
+    """
+
+    def __init__(
+        self,
+        transport: _PersistentTransport,
+        *,
+        source: str,
+        gpu_probe: Callable[[], tuple[bool, str]] | None = None,
+    ) -> None:
+        if not isinstance(source, str) or not source:
+            raise ValueError("source must be a non-empty detector identifier")
+        self._transport = transport
+        self.source = source
+        self._gpu_probe = gpu_probe or _default_gpu_probe
+
+    def predict(self, image_id: int, image: CanonicalImage) -> tuple[BreadProposal, ...]:
+        _require_rtx_5080("cuda:0", self._gpu_probe)
+        if not isinstance(image, CanonicalImage):
+            raise TypeError("persistent D-FINE inference requires a CanonicalImage")
+        with NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            materialized = Path(handle.name)
+        try:
+            image.image.save(materialized, format="PNG")
+            payload = self._transport.request({"image": str(materialized), "image_id": image_id})
+            if not isinstance(payload, dict):
+                raise TypeError("persistent D-FINE transport must return an object")
+            return parse_dfine_output(
+                image_id,
+                image.visual_size,
+                payload["labels"],
+                payload["boxes"],
+                payload["scores"],
+                self.source,
+            )
+        finally:
+            materialized.unlink(missing_ok=True)
 
 
 def _require_rtx_5080(device: str, probe: Callable[[], tuple[bool, str]]) -> None:

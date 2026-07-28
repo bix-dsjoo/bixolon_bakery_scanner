@@ -3,13 +3,14 @@ import subprocess
 import re
 import json
 import os
+from io import StringIO
 from pathlib import Path
 
 from PIL import Image
 
 from bakery_scanner.contracts import Box
 from bakery_scanner.data.preprocess import canonicalize_image
-from bakery_scanner.detectors.dfine import DFineRunner, parse_dfine_output
+from bakery_scanner.detectors.dfine import DFineRunner, JsonLineDFineTransport, PersistentDFineRunner, parse_dfine_output
 
 
 def test_dfine_xyxy_is_normalized_to_source_xywh():
@@ -62,6 +63,49 @@ def test_runner_materializes_canonical_visual_frame_for_detector(tmp_path):
     assert rows[0].image_width == 20
     assert rows[0].image_height == 40
     assert rows[0].box == Box(1, 2, 10, 20)
+
+
+def test_persistent_runner_reuses_transport_and_materializes_canonical_frame():
+    requests = []
+
+    class Transport:
+        def request(self, payload):
+            image_path = Path(payload["image"])
+            assert image_path.is_file()
+            with Image.open(image_path) as image:
+                requests.append((payload["image_id"], image.size))
+            return {"labels": [0], "boxes": [[1, 2, 11, 22]], "scores": [0.8]}
+
+    runner = PersistentDFineRunner(Transport(), source="dfine_n_640", gpu_probe=lambda: (True, "RTX 5080"))
+    frame = canonicalize_image(Image.new("RGB", (20, 40), "white"))
+
+    rows = runner.predict(1, frame)
+
+    assert requests == [(1, (20, 40))]
+    assert rows[0].box == Box(1, 2, 10, 20)
+
+
+def test_json_line_transport_keeps_one_worker_process_for_requests():
+    created = []
+
+    class Process:
+        def __init__(self):
+            self.stdin = StringIO()
+            self.stdout = StringIO('{"boxes":[],"labels":[],"scores":[]}\n')
+            self.stderr = StringIO("")
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    def factory(command, **kwargs):
+        created.append((command, kwargs))
+        return Process()
+
+    transport = JsonLineDFineTransport(("dfine-python", "server.py"), process_factory=factory)
+
+    assert transport.request({"image": "image.png", "image_id": 1}) == {"boxes": [], "labels": [], "scores": []}
+    assert created[0][0] == ("dfine-python", "server.py")
 
 
 def test_runner_rejects_cpu_unavailable_and_wrong_gpu():
