@@ -55,3 +55,24 @@ def test_run_evaluation_aggregates_both_required_iou_gates():
     assert report.iou75.matched_count == 1
     assert report.iou75.false_negative_count == 1
     assert report.latency.mean_ms == pytest.approx(150.0)
+
+
+def test_evaluation_separates_duplicate_non_target_split_merge_and_misclassification():
+    ground_truth = (
+        SkuGroundTruth(1, Box(0, 0, 10, 10), 6),
+        SkuGroundTruth(1, Box(20, 0, 10, 10), 7),
+    )
+    predictions = (
+        FinalObject(Box(0, 0, 10, 10), 8, 0.9, "repvit_direct", ()),
+        FinalObject(Box(0, 0, 10, 10), 6, 0.8, "repvit_direct", ()),
+        FinalObject(Box(20, 0, 10, 10), 7, 0.7, "repvit_direct", ()),
+        FinalObject(Box(40, 0, 10, 10), 7, 0.6, "repvit_direct", ()),
+    )
+
+    metrics = evaluate_image(ground_truth, predictions, iou_threshold=0.5)
+
+    assert metrics.misclassification_count == 1
+    assert metrics.duplicate_count == 1
+    assert metrics.non_target_count == 1
+    assert metrics.split_error_count == 1
+    assert metrics.merge_error_count == 0

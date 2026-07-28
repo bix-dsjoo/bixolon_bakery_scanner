@@ -9,6 +9,8 @@ from typing import Mapping
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from bakery_scanner.evaluation import match_boxes
+
 from .contracts import FinalObject, SkuGroundTruth
 
 
@@ -22,6 +24,11 @@ class ImageMetrics:
     false_positive_count: int
     false_negative_count: int
     unknown_count: int
+    misclassification_count: int
+    duplicate_count: int
+    non_target_count: int
+    split_error_count: int
+    merge_error_count: int
 
     @property
     def top1_accuracy(self) -> float:
@@ -74,9 +81,15 @@ def evaluate_image(
     """Measure final objects against SKU GT with maximum-cardinality IoU matching."""
     if not 0.0 < iou_threshold <= 1.0:
         raise ValueError("iou_threshold must be in (0, 1]")
-    matches = _match(ground_truth, predictions, iou_threshold)
+    box_match = match_boxes(
+        tuple(row.box for row in ground_truth),
+        tuple(row.box for row in predictions),
+        iou_threshold,
+    )
+    matches = box_match.pairs
     top1 = 0
     top3 = 0
+    misclassification = 0
     for ground_truth_index, prediction_index in matches:
         expected = ground_truth[ground_truth_index].sku_id
         prediction = predictions[prediction_index]
@@ -85,6 +98,8 @@ def evaluate_image(
             top3 += 1
         elif prediction.sku_id is None and expected in prediction.top3:
             top3 += 1
+        elif prediction.sku_id is not None:
+            misclassification += 1
     return ImageMetrics(
         ground_truth_count=len(ground_truth),
         final_count=len(predictions),
@@ -94,6 +109,11 @@ def evaluate_image(
         false_positive_count=len(predictions) - len(matches),
         false_negative_count=len(ground_truth) - len(matches),
         unknown_count=sum(prediction.sku_id is None for prediction in predictions),
+        misclassification_count=misclassification,
+        duplicate_count=len(box_match.duplicates),
+        non_target_count=len(box_match.false_positives),
+        split_error_count=box_match.split_errors,
+        merge_error_count=box_match.merge_errors,
     )
 
 
@@ -175,6 +195,11 @@ def _aggregate(values: object) -> ImageMetrics:
         false_positive_count=sum(row.false_positive_count for row in rows),
         false_negative_count=sum(row.false_negative_count for row in rows),
         unknown_count=sum(row.unknown_count for row in rows),
+        misclassification_count=sum(row.misclassification_count for row in rows),
+        duplicate_count=sum(row.duplicate_count for row in rows),
+        non_target_count=sum(row.non_target_count for row in rows),
+        split_error_count=sum(row.split_error_count for row in rows),
+        merge_error_count=sum(row.merge_error_count for row in rows),
     )
 
 
