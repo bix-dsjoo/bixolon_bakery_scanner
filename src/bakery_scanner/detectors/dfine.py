@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from bakery_scanner.contracts import Box, BreadProposal
+from bakery_scanner.data.preprocess import CanonicalImage
 
 _SCORE_FLOOR = 0.001
 _PROPOSAL_LIMIT = 30
@@ -35,8 +37,55 @@ class DFineRunner:
         _require_rtx_5080(device, self._gpu_probe)
         return self._command_runner(("dfine-train", "--config", str(config), "--output", str(output), "--device", device))
 
-    def predict(self, model: str | Path, image: str | Path, *, image_id: int, image_size: tuple[int, int], source: str) -> tuple[BreadProposal, ...]:
+    def predict(
+        self,
+        model: str | Path,
+        image: str | Path | CanonicalImage,
+        *,
+        image_id: int,
+        image_size: tuple[int, int] | None = None,
+        source: str,
+    ) -> tuple[BreadProposal, ...]:
         _require_rtx_5080("cuda:0", self._gpu_probe)
+        if isinstance(image, CanonicalImage):
+            if image_size is not None and image_size != image.visual_size:
+                raise ValueError("D-FINE image_size must match canonical visual size")
+            return self._predict_canonical(model, image, image_id=image_id, source=source)
+        if image_size is None:
+            raise ValueError("D-FINE image_size is required for an encoded image path")
+        return self._predict_path(model, image, image_id=image_id, image_size=image_size, source=source)
+
+    def _predict_canonical(
+        self,
+        model: str | Path,
+        frame: CanonicalImage,
+        *,
+        image_id: int,
+        source: str,
+    ) -> tuple[BreadProposal, ...]:
+        with NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            materialized = Path(handle.name)
+        try:
+            frame.image.save(materialized, format="PNG")
+            return self._predict_path(
+                model,
+                materialized,
+                image_id=image_id,
+                image_size=frame.visual_size,
+                source=source,
+            )
+        finally:
+            materialized.unlink(missing_ok=True)
+
+    def _predict_path(
+        self,
+        model: str | Path,
+        image: str | Path,
+        *,
+        image_id: int,
+        image_size: tuple[int, int],
+        source: str,
+    ) -> tuple[BreadProposal, ...]:
         payload = self._command_runner(("dfine-predict", "--model", str(model), "--image", str(image), "--device", "cuda:0"))
         return parse_dfine_output(image_id, image_size, payload["labels"], payload["boxes"], payload["scores"], source)
 
