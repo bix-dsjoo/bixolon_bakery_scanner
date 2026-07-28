@@ -40,6 +40,13 @@ class _OverlayJob:
     filename: str
 
 
+@dataclass(frozen=True, slots=True)
+class _StagedImage:
+    file_name: str
+    width: int
+    height: int
+
+
 def render_error_overlay(
     *,
     image: Path,
@@ -152,17 +159,10 @@ def _overlay_jobs(report_path: Path, staged_root: Path) -> tuple[_OverlayJob, ..
     policies = report.get("policies")
     if not isinstance(images, dict) or not isinstance(policies, dict):
         raise ValueError("report must contain images and policies objects")
-    error_image_ids = tuple(
-        image_id
-        for image_id in sorted((_report_image_id(key) for key in images))
-        if _image_has_reported_error(images[str(image_id)])
-    )
-    if not error_image_ids:
-        return ()
     annotations = _read_json_object(Path(staged_root) / "annotations.json", "staged annotations")
-    image_files = _annotation_images(annotations)
+    staged_images = _annotation_images(annotations)
     jobs: list[_OverlayJob] = []
-    for image_id in error_image_ids:
+    for image_id in sorted(_report_image_id(key) for key in images):
         row = images[str(image_id)]
         if not isinstance(row, dict):
             raise ValueError("report image entries must be objects")
@@ -170,11 +170,13 @@ def _overlay_jobs(report_path: Path, staged_root: Path) -> tuple[_OverlayJob, ..
         policy = policies.get(str(fold))
         if not isinstance(policy, dict):
             raise ValueError("report must contain a policy for every image fold")
-        source_image_path = image_files.get(image_id)
-        if source_image_path is None:
+        staged_image = staged_images.get(image_id)
+        if staged_image is None:
             raise ValueError("staged annotations must contain every report image id")
         ground_truth = _report_boxes(row.get("ground_truth_boxes"), "ground_truth_boxes")
         predictions = _report_boxes(row.get("prediction_boxes"), "prediction_boxes")
+        _validate_bounds(ground_truth, staged_image.width, staged_image.height)
+        _validate_bounds(predictions, staged_image.width, staged_image.height)
         for threshold in _THRESHOLDS:
             reported = _reported_errors(row, threshold)
             actual = _error_counts(match_boxes(ground_truth, predictions, threshold))
@@ -193,22 +195,14 @@ def _overlay_jobs(report_path: Path, staged_root: Path) -> tuple[_OverlayJob, ..
                     threshold=threshold,
                     policy=policy,
                     error_categories=categories,
-                    source_image_path=source_image_path,
-                    image=Path(staged_root) / "images" / source_image_path,
+                    source_image_path=staged_image.file_name,
+                    image=Path(staged_root) / "images" / staged_image.file_name,
                     ground_truth=ground_truth,
                     predictions=predictions,
                     filename=filename,
                 )
             )
     return tuple(jobs)
-
-
-def _image_has_reported_error(row: object) -> bool:
-    if not isinstance(row, dict):
-        raise ValueError("report image entries must be objects")
-    return any(
-        any(_reported_errors(row, threshold).values()) for threshold in _THRESHOLDS
-    )
 
 
 def _reported_errors(row: Mapping[str, object], threshold: float) -> dict[str, int]:
@@ -221,11 +215,11 @@ def _reported_errors(row: Mapping[str, object], threshold: float) -> dict[str, i
     return {field: _nonnegative_int(values[field], f"{field} error count") for field in _ERROR_FIELDS}
 
 
-def _annotation_images(annotations: Mapping[str, object]) -> dict[int, str]:
+def _annotation_images(annotations: Mapping[str, object]) -> dict[int, _StagedImage]:
     rows = annotations.get("images")
     if not isinstance(rows, list):
         raise ValueError("staged annotations images must be an array")
-    files: dict[int, str] = {}
+    files: dict[int, _StagedImage] = {}
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("staged annotation images must be objects")
@@ -238,7 +232,11 @@ def _annotation_images(annotations: Mapping[str, object]) -> dict[int, str]:
             raise ValueError("staged image file_name must stay below staged images")
         if image_id in files:
             raise ValueError("staged annotation image ids must be unique")
-        files[image_id] = path.as_posix()
+        files[image_id] = _StagedImage(
+            file_name=path.as_posix(),
+            width=_positive_int(row.get("width"), "staged image width"),
+            height=_positive_int(row.get("height"), "staged image height"),
+        )
     return files
 
 
