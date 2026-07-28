@@ -10,7 +10,7 @@ def test_classifier_config_resolves_paths_and_pins_artifacts():
     assert config.repvit.artifact_id == "repvit_m1_15plus5_v1"
     assert config.dinov3.artifact_id == "dinov3_vits16_15plus5_v1"
     assert config.dinov3.local_bank is not None
-    assert config.dinov3.local_bank_sha256 == "8e490f78e40601bc409952460ccd4343faa6525ea6bb4c88dedc042cf36ae0a6"
+    assert config.dinov3.local_bank_sha256 == "79886645009a3109ee605afac54e4613750d4e9b03119102fb761b9660393694"
     assert config.preprocess.paddings == (0.05, 0.10, 0.15)
     assert config.runtime.device == "CUDA:0"
     assert config.runtime.precision == "FP32"
