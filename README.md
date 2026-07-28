@@ -21,6 +21,10 @@ The package includes DINOv3 source at the audited commit recorded in
 `dino/COMMIT.txt`; installers do not require Git or download
 DINOv3 source/model weights.
 
+The portable lock also includes the complete, exact-pinned runtime closure of
+`third_party/D-FINE/requirements.txt`. A failed Python smoke run stops before
+the PowerShell launcher reads its output report.
+
 스캔 이미지 한 장에서 빵의 **품목, 수량, 위치**를 빠르고 정확하게
 추론하는 GPU 기반 비전 파이프라인입니다.
 

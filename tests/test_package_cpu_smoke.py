@@ -72,11 +72,14 @@ def test_requirements_pin_cpu_runtime_and_dfine_import_dependencies() -> None:
         "timm==1.0.28",
         "PyYAML==6.0.3",
         "pydantic==2.13.4",
-        "tensorboard==2.20.0",
+        "tensorboard==2.21.0",
         "numpy==2.4.4",
         "scipy==1.17.1",
         "scikit-learn==1.9.0",
-        "faster-coco-eval==1.7.0",
+        "faster-coco-eval==1.7.2",
+        "calflops==0.3.2",
+        "transformers==5.14.1",
+        "loguru==0.7.3",
         "ftfy==6.3.1",
         "omegaconf==2.3.1",
         "antlr4-python3-runtime==4.9.3",
@@ -100,6 +103,35 @@ def test_requirements_pin_cpu_runtime_and_dfine_import_dependencies() -> None:
         "Jinja2==3.1.6",
         "MarkupSafe==3.0.3",
         "mpmath==1.3.0",
+        "absl-py==2.5.0",
+        "accelerate==1.14.0",
+        "annotated-doc==0.0.5",
+        "anyio==4.14.2",
+        "certifi==2026.7.22",
+        "click==8.4.2",
+        "colorama==0.4.6",
+        "grpcio==1.83.0",
+        "h11==0.16.0",
+        "hf-xet==1.5.2",
+        "httpcore==1.0.9",
+        "httpx==0.28.1",
+        "huggingface-hub==1.25.1",
+        "idna==3.18",
+        "Markdown==3.10.2",
+        "markdown-it-py==4.2.0",
+        "mdurl==0.1.2",
+        "protobuf==7.35.1",
+        "psutil==7.2.2",
+        "Pygments==2.20.0",
+        "rich==15.0.0",
+        "safetensors==0.8.0",
+        "shellingham==1.5.4",
+        "tensorboard-data-server==0.7.2",
+        "tokenizers==0.22.2",
+        "tqdm==4.70.0",
+        "typer==0.27.0",
+        "Werkzeug==3.1.8",
+        "win32-setctime==1.2.0",
     ]
     installer = (PORTABLE / "install_cpu_smoke.ps1").read_text(encoding="utf-8")
     assert "function Invoke-Checked" in installer
@@ -114,6 +146,18 @@ def test_requirements_pin_cpu_runtime_and_dfine_import_dependencies() -> None:
     assert "github.com/facebookresearch/dinov3" not in installer
 
 
+def test_runner_fails_before_reading_report_after_a_python_error() -> None:
+    """Catch a failed smoke runner being obscured by a missing report.json."""
+    runner = (PORTABLE / "run_batch2_cpu_smoke.ps1").read_text(encoding="utf-8")
+    invoke = "& $python (Join-Path $root 'scripts\\run_e2e_smoke.py')"
+    failure_check = "if ($LASTEXITCODE -ne 0)"
+    report_read = "$report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json"
+
+    assert invoke in runner
+    assert failure_check in runner
+    assert runner.index(invoke) < runner.index(failure_check) < runner.index(report_read)
+
+
 @pytest.mark.skipif(
     os.environ.get("RUN_CPU_SMOKE_CLEAN_INSTALL_TEST") != "1",
     reason="set RUN_CPU_SMOKE_CLEAN_INSTALL_TEST=1 to exercise the pinned network install",
@@ -124,6 +168,7 @@ def test_clean_installed_runtime_imports_cpu_factory_and_classifier_pipeline() -
         root = Path(directory) / "package-root"
         shutil.copytree(ROOT / "src", root / "src")
         shutil.copytree(ROOT / "dino", root / "dino")
+        shutil.copytree(ROOT / "third_party" / "D-FINE", root / "third_party" / "D-FINE")
         shutil.copy2(ROOT / "pyproject.toml", root / "pyproject.toml")
         venv = Path(directory) / "venv"
         local_temp = Path(directory) / "local-pip-temp"
@@ -163,6 +208,16 @@ def test_clean_installed_runtime_imports_cpu_factory_and_classifier_pipeline() -
         )
         subprocess.run(
             [str(python), "-c", "from bakery_scanner.e2e.cpu_factory import CpuSmokeAssets; from bakery_scanner.classification.runtime import ClassifierPipeline"],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import sys; from pathlib import Path; checkout = Path(sys.argv[1]); sys.path.insert(0, str(checkout)); from src.core import YAMLConfig; print(YAMLConfig.__module__)",
+                str(root / "third_party" / "D-FINE"),
+            ],
             check=True,
             env=environment,
         )

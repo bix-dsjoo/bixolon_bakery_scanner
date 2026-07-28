@@ -8,6 +8,11 @@ The DINOv3 source is bundled at `dino` and pinned by `dino/COMMIT.txt` to commit
 `6876159a11b4df116f30f667f8c9888617df0751`. Installation does not require
 Git or a DINOv3 network download.
 
+`requirements-cpu.txt` locks the complete runtime closure of
+`third_party/D-FINE/requirements.txt`, including `calflops`, `transformers`,
+and `loguru`. If the Python smoke runner exits unsuccessfully, the launcher
+stops immediately and does not attempt to read `report.json`.
+
 From the extracted package root, run:
 
 ```powershell

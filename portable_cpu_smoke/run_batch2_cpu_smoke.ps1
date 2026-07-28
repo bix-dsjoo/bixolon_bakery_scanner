@@ -20,6 +20,9 @@ while (Test-Path -LiteralPath $output) {
 New-Item -ItemType Directory -Path $results -Force | Out-Null
 
 & $python (Join-Path $root 'scripts\run_e2e_smoke.py') --package-root $root --profile batch2_e3_m3_h3 --output $output --device cpu
+if ($LASTEXITCODE -ne 0) {
+    throw "CPU smoke runner failed with exit code $LASTEXITCODE"
+}
 
 $reportPath = Join-Path $output 'report.json'
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
