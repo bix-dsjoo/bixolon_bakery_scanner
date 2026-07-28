@@ -26,6 +26,34 @@ def test_dfine_xyxy_is_normalized_to_source_xywh():
     assert rows[0].class_name == "bread"
 
 
+def test_dfine_parser_clamps_positive_edge_overshoot_before_raw_score_retention():
+    """Small D-FINE edge overshoot must not invalidate an otherwise usable box."""
+    rows = parse_dfine_output(
+        image_id=7,
+        image_size=(100, 80),
+        labels=[0, 0],
+        boxes=[[-0.25, 2, 100.75, 80.25], [20, 10, 30, 20]],
+        scores=[0.8, 0.0009],
+        source="dfine_n_640",
+    )
+
+    assert len(rows) == 1
+    assert rows[0].box == Box(0, 2, 100, 78)
+    assert rows[0].score == 0.8
+
+
+def test_dfine_parser_rejects_boxes_without_a_positive_in_frame_area():
+    with pytest.raises(ValueError, match="valid xyxy"):
+        parse_dfine_output(
+            image_id=7,
+            image_size=(100, 80),
+            labels=[0],
+            boxes=[[100, 10, 120, 20]],
+            scores=[0.8],
+            source="dfine_n_640",
+        )
+
+
 def test_dfine_parser_rejects_unknown_classes_and_caps_canonical_candidates():
     with pytest.raises(ValueError, match="class"):
         parse_dfine_output(1, (100, 80), [1], [[0, 0, 10, 10]], [.5], "dfine_n_768")

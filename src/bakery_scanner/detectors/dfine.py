@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -242,7 +243,11 @@ def _parse_xyxy(image_id: int, image_size: tuple[int, int], labels: Sequence[int
         if len(xyxy) != 4:
             raise ValueError("prediction coordinates must contain four values")
         x1, y1, x2, y2 = (float(value) for value in xyxy)
-        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+        if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+            raise ValueError("prediction coordinates must be valid xyxy within image bounds")
+        x1, x2 = max(0.0, min(x1, width)), max(0.0, min(x2, width))
+        y1, y2 = max(0.0, min(y1, height)), max(0.0, min(y2, height))
+        if not (x1 < x2 and y1 < y2):
             raise ValueError("prediction coordinates must be valid xyxy within image bounds")
         candidates.append(BreadProposal(image_id, source, float(score), Box(x1, y1, x2 - x1, y2 - y1), width, height))
     for candidate in candidates:
