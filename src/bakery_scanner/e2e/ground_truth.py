@@ -7,8 +7,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Mapping
 
+from PIL import Image
+
 from bakery_scanner.config import ScannerConfig
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import normalize_capture
 
 from .contracts import SkuGroundTruth
 
@@ -33,24 +36,36 @@ def load_source_sku_ground_truth(
     for source in config.dataset.sources:
         coco = _read_object(source.annotations, f"{source.name} annotations")
         category_ids = _validate_categories(coco.get("categories"), expected_categories, source.name)
-        image_stems = _source_image_stems(coco.get("images"), source.name)
+        source_images = _source_images(coco.get("images"), source.name)
+        annotations_by_image: dict[int, list[dict[str, object]]] = defaultdict(list)
         for row in _require_rows(coco.get("annotations"), f"{source.name} annotations"):
             image_id = row.get("image_id")
             category_id = row.get("category_id")
             bbox = row.get("bbox")
-            if type(image_id) is not int or image_id not in image_stems:
+            if type(image_id) is not int or image_id not in source_images:
                 raise ValueError(f"{source.name} annotation image_id is invalid")
             if type(category_id) is not int or category_id not in category_ids:
                 raise ValueError(f"{source.name} annotation category_id is invalid")
             if not isinstance(bbox, list) or len(bbox) != 4:
                 raise ValueError(f"{source.name} annotation bbox must be xywh")
-            staged_id = staged_ids.get((source.name, image_stems[image_id]))
+            annotations_by_image[image_id].append(row)
+        for image_id, annotations in annotations_by_image.items():
+            stem, file_name = source_images[image_id]
+            staged_id = staged_ids.get((source.name, stem))
             if staged_id is None:
                 raise ValueError(f"{source.name} annotation has no staged image identity")
-            try:
-                labels[staged_id].append(SkuGroundTruth(staged_id, Box(*bbox), category_id))
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{source.name} annotation geometry is invalid") from exc
+            with Image.open(source.images / file_name) as image:
+                normalized = normalize_capture(
+                    image,
+                    (config.canonical_frame.width, config.canonical_frame.height),
+                )
+            for row in annotations:
+                try:
+                    source_box = Box(*row["bbox"])
+                    canonical_box = normalized.source_box_to_canonical(source_box)
+                    labels[staged_id].append(SkuGroundTruth(staged_id, canonical_box, row["category_id"]))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{source.name} annotation geometry is invalid") from exc
     result = {image_id: tuple(rows) for image_id, rows in labels.items()}
     if set(result) != set(staged_ids.values()) or any(not rows for rows in result.values()):
         raise ValueError("source SKU labels must cover every staged image")
@@ -96,15 +111,15 @@ def _validate_categories(value: object, expected: Mapping[int, str], source: str
     return ids
 
 
-def _source_image_stems(value: object, source: str) -> dict[int, str]:
-    result: dict[int, str] = {}
+def _source_images(value: object, source: str) -> dict[int, tuple[str, str]]:
+    result: dict[int, tuple[str, str]] = {}
     for row in _require_rows(value, f"{source} images"):
         image_id, file_name = row.get("id"), row.get("file_name")
         if type(image_id) is not int or image_id <= 0 or not isinstance(file_name, str) or not Path(file_name).stem:
             raise ValueError(f"{source} image identity is invalid")
         if image_id in result:
             raise ValueError(f"{source} images contain duplicate IDs")
-        result[image_id] = Path(file_name).stem
+        result[image_id] = (Path(file_name).stem, file_name)
     return result
 
 
