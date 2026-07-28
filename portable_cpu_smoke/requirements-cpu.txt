@@ -1,10 +1,13 @@
 torch==2.13.0+cpu
 torchvision==0.28.0+cpu
 Pillow==12.2.0
+opencv-python==5.0.0.93
 timm==1.0.28
 PyYAML==6.0.3
 pydantic==2.13.4
 tensorboard==2.20.0
 numpy==2.4.4
 scipy==1.17.1
+scikit-learn==1.9.0
 faster-coco-eval==1.7.0
+dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6876159a11b4df116f30f667f8c9888617df0751

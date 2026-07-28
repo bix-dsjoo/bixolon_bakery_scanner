@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import tempfile
 import zipfile
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,16 +64,69 @@ def test_requirements_pin_cpu_runtime_and_dfine_import_dependencies() -> None:
         "torch==2.13.0+cpu",
         "torchvision==0.28.0+cpu",
         "Pillow==12.2.0",
+        "opencv-python==5.0.0.93",
         "timm==1.0.28",
         "PyYAML==6.0.3",
         "pydantic==2.13.4",
         "tensorboard==2.20.0",
         "numpy==2.4.4",
         "scipy==1.17.1",
+        "scikit-learn==1.9.0",
         "faster-coco-eval==1.7.0",
+        "dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6876159a11b4df116f30f667f8c9888617df0751",
     ]
     installer = (PORTABLE / "install_cpu_smoke.ps1").read_text(encoding="utf-8")
     assert "function Invoke-Checked" in installer
+    assert "--no-cache-dir" in installer
+    assert "$env:PIP_CACHE_DIR" in installer
+    assert "$env:TEMP" in installer
+    assert "$env:TMP" in installer
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_CPU_SMOKE_CLEAN_INSTALL_TEST") != "1",
+    reason="set RUN_CPU_SMOKE_CLEAN_INSTALL_TEST=1 to exercise the pinned network install",
+)
+def test_clean_installed_runtime_imports_cpu_factory_and_classifier_pipeline() -> None:
+    """Catch a pinned runtime that installs but cannot import the actual smoke composition."""
+    with tempfile.TemporaryDirectory(prefix="bcs-", dir=Path(tempfile.gettempdir()).anchor) as directory:
+        root = Path(directory) / "package-root"
+        shutil.copytree(ROOT / "src", root / "src")
+        shutil.copy2(ROOT / "pyproject.toml", root / "pyproject.toml")
+        venv = Path(directory) / "venv"
+        local_temp = Path(directory) / "local-pip-temp"
+        local_cache = Path(directory) / "local-pip-cache"
+        environment = os.environ | {
+            "PIP_CACHE_DIR": str(local_cache),
+            "TEMP": str(local_temp),
+            "TMP": str(local_temp),
+            "PYTHONPATH": "",
+        }
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, env=environment)
+        python = venv / "Scripts" / "python.exe"
+        requirements = (PORTABLE / "requirements-cpu.txt").read_text(encoding="utf-8").splitlines()
+        torch_requirements = requirements[:2]
+        other_requirements = requirements[2:]
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--no-cache-dir", "--index-url", "https://download.pytorch.org/whl/cpu", *torch_requirements],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--no-cache-dir", *other_requirements],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--no-cache-dir", "--no-deps", str(root)],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            [str(python), "-c", "from bakery_scanner.e2e.cpu_factory import CpuSmokeAssets; from bakery_scanner.classification.runtime import ClassifierPipeline"],
+            check=True,
+            env=environment,
+        )
 
 
 def test_packager_writes_hash_coverage_and_refuses_an_existing_zip(tmp_path: Path) -> None:
