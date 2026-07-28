@@ -1,0 +1,71 @@
+diff --git a/src/solver/det_engine.py b/src/solver/det_engine.py
+index b877b09..5bc86cf 100644
+--- a/src/solver/det_engine.py
++++ b/src/solver/det_engine.py
+@@ -6,6 +6,8 @@ Modified from DETR (https://github.com/facebookresearch/detr/blob/main/engine.py
+ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+ """
+ 
++import json
++import os
+ import math
+ import sys
+ from typing import Dict, Iterable, List
+@@ -180,6 +182,8 @@ def evaluate(
+ 
+     output_dir = kwargs.get("output_dir", None)
+     num_visualization_sample_batch = kwargs.get("num_visualization_sample_batch", 1)
++    oof_predictions = []
++    processed_image_ids = []
+ 
+     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+         global_step = epoch * len(data_loader) + i
+@@ -200,6 +204,21 @@ def evaluate(
+ 
+         results = postprocessor(outputs, orig_target_sizes)
+ 
++        for target, output in zip(targets, results):
++            processed_image_ids.append(target["image_id"].item())
++            for box, score, label in zip(
++                output["boxes"].tolist(), output["scores"].tolist(), output["labels"].tolist()
++            ):
++                x1, y1, x2, y2 = box
++                oof_predictions.append(
++                    {
++                        "image_id": target["image_id"].item(),
++                        "category_id": int(label),
++                        "bbox": [x1, y1, x2 - x1, y2 - y1],
++                        "score": score,
++                    }
++                )
++
+         # if 'segm' in postprocessor.keys():
+         #     target_sizes = torch.stack([t["size"] for t in targets], dim=0)
+         #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
+@@ -229,6 +248,26 @@ def evaluate(
+                 {"boxes": result["boxes"], "labels": labels, "scores": result["scores"]}
+             )
+ 
++    gathered_processed_image_ids = [None] * dist_utils.get_world_size()
++    gathered_oof_predictions = [None] * dist_utils.get_world_size()
++    if torch.distributed.is_available() and torch.distributed.is_initialized():
++        torch.distributed.all_gather_object(gathered_processed_image_ids, processed_image_ids)
++        torch.distributed.all_gather_object(gathered_oof_predictions, oof_predictions)
++    else:
++        gathered_processed_image_ids = [processed_image_ids]
++        gathered_oof_predictions = [oof_predictions]
++
++    oof_path = os.environ.get("DFINE_OOF_PREDICTIONS")
++    if oof_path and dist_utils.is_main_process():
++        with open(oof_path, "w", encoding="utf-8") as handle:
++            json.dump(
++                {
++                    "predictions": [prediction for rows in gathered_oof_predictions for prediction in rows],
++                    "processed_image_ids": [image_id for rows in gathered_processed_image_ids for image_id in rows],
++                },
++                handle,
++            )
++
+     # Conf matrix, F1, Precision, Recall, box IoU
+     metrics = Validator(gt, preds).compute_metrics()
+     print("Metrics:", metrics)
