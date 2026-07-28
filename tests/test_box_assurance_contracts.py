@@ -1,10 +1,12 @@
 import pytest
 import torch
+from PIL import Image
 
 from bakery_scanner.contracts import Box, BreadProposal, VerifierState
 from bakery_scanner.verifier.assurance import (
     AssuranceBackend,
     BoxAssurancePrediction,
+    TorchAssuranceRunner,
     build_assurance_model,
 )
 
@@ -46,3 +48,20 @@ def test_model_has_state_quality_and_delta_heads():
     assert state.shape == (2, 4)
     assert quality.shape == (2,)
     assert delta.shape == (2, 4)
+
+
+def test_torch_runner_converts_batched_heads_to_assurance_predictions():
+    class Model(torch.nn.Module):
+        def forward(self, images):
+            return (
+                torch.tensor([[0.0, 3.0, 0.0, 0.0]], device=images.device),
+                torch.tensor([0.0], device=images.device),
+                torch.tensor([[0.1, 0.2, 0.3, 0.4]], device=images.device),
+            )
+
+    runner = TorchAssuranceRunner(Model(), AssuranceBackend.MOBILENETV4, device="cpu")
+    predictions = runner.predict((_proposal(),), Image.new("RGB", (100, 100), "white"))
+
+    assert predictions[0].predicted_state is VerifierState.EXACTLY_ONE
+    assert predictions[0].quality == pytest.approx(0.5)
+    assert predictions[0].box_delta == pytest.approx((0.1, 0.2, 0.3, 0.4))

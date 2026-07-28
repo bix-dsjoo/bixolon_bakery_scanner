@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
+import numpy as np
 import torch
+from PIL import Image
 from torch import nn
 
 from bakery_scanner.contracts import Box, BreadProposal, VerifierState
@@ -116,6 +118,73 @@ def build_assurance_model(backend: AssuranceBackend, *, pretrained: bool = False
     if not isinstance(backend, AssuranceBackend):
         raise ValueError("backend must be an AssuranceBackend")
     return AssuranceModel(backend, pretrained=pretrained)
+
+
+class TorchAssuranceRunner:
+    """Batch a three-head assurance model over detector candidates."""
+
+    def __init__(
+        self,
+        model: nn.Module,
+        backend: AssuranceBackend,
+        *,
+        device: str = "cuda:0",
+        batch_size: int = 64,
+    ) -> None:
+        if not isinstance(backend, AssuranceBackend):
+            raise ValueError("backend must be an AssuranceBackend")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        self.model = model.to(device).eval()
+        self.backend = backend
+        self.device = torch.device(device)
+        self.batch_size = batch_size
+
+    def predict(
+        self,
+        candidates: tuple[BreadProposal, ...],
+        image: object,
+    ) -> tuple[BoxAssurancePrediction, ...]:
+        if not candidates:
+            return ()
+        frame = image.image if hasattr(image, "image") and isinstance(getattr(image, "image"), Image.Image) else image
+        if not isinstance(frame, Image.Image):
+            raise TypeError("assurance runner requires a PIL or CanonicalImage frame")
+        crops = tuple(_assurance_crop(frame, candidate) for candidate in candidates)
+        rows: list[BoxAssurancePrediction] = []
+        with torch.inference_mode():
+            for start in range(0, len(candidates), self.batch_size):
+                batch = torch.stack(crops[start : start + self.batch_size]).to(self.device)
+                state_logits, quality_logits, deltas = self.model(batch)
+                if state_logits.shape != (len(batch), 4) or quality_logits.shape != (len(batch),) or deltas.shape != (len(batch), 4):
+                    raise ValueError("assurance model must return [N,4], [N], and [N,4] heads")
+                probabilities = torch.softmax(state_logits, dim=1).cpu()
+                qualities = torch.sigmoid(quality_logits).cpu()
+                corrections = deltas.cpu()
+                for offset, candidate in enumerate(candidates[start : start + self.batch_size]):
+                    rows.append(
+                        BoxAssurancePrediction(
+                            candidate,
+                            self.backend,
+                            tuple(float(value) for value in probabilities[offset].tolist()),
+                            float(qualities[offset]),
+                            tuple(float(value) for value in corrections[offset].tolist()),
+                        )
+                    )
+        return tuple(rows)
+
+
+def _assurance_crop(frame: Image.Image, candidate: BreadProposal) -> torch.Tensor:
+    if frame.size != (candidate.image_width, candidate.image_height):
+        raise ValueError("assurance frame dimensions must match detector candidate coordinates")
+    box = candidate.box
+    left, top = math.floor(box.x), math.floor(box.y)
+    right, bottom = math.ceil(box.x + box.width), math.ceil(box.y + box.height)
+    crop = frame.convert("RGB").crop((left, top, right, bottom)).resize((224, 224), Image.Resampling.BICUBIC)
+    values = torch.from_numpy(np.asarray(crop, dtype=np.float32).copy()).permute(2, 0, 1) / 255.0
+    mean = torch.tensor((0.485, 0.456, 0.406), dtype=values.dtype).view(3, 1, 1)
+    std = torch.tensor((0.229, 0.224, 0.225), dtype=values.dtype).view(3, 1, 1)
+    return (values - mean) / std
 
 
 @dataclass(frozen=True, slots=True)
