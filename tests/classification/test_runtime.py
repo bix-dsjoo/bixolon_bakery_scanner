@@ -91,6 +91,14 @@ class FullEvidenceDino(LocalRecordingDino):
         return scores, local, 32, 0.5
 
 
+class DisagreeingFullEvidenceDino(FullEvidenceDino):
+    def score_global_and_local_evidence(self, crops, product_boxes, local_bank, *, repvit_scores):
+        scores, _, patch_count, patch_ratio = super().score_global_and_local_evidence(
+            crops, product_boxes, local_bank, repvit_scores=repvit_scores,
+        )
+        return scores, {6: 0.10, 5: 0.90, 4: 0.01}, patch_count, patch_ratio
+
+
 class StepClock:
     def __init__(self, values: tuple[float, ...]) -> None:
         self._values = iter(values)
@@ -247,7 +255,7 @@ def test_recheck_uses_local_dino_scores_and_crop_relative_product_boxes():
     )
 
 
-def test_runtime_fusion_policy_uses_dino_evidence_and_records_fusion_artifact():
+def test_runtime_fusion_local_agreement_uses_dino_evidence_despite_risk_abstention():
     config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
     selected = _calibration(direct_threshold=0.99)
     provenance = ModelProvenance(
@@ -257,9 +265,9 @@ def test_runtime_fusion_policy_uses_dino_evidence_and_records_fusion_artifact():
         calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
     )
     fusion = FusionPolicyArtifact(
-        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
         risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
-        risk_threshold=0.6,
+        risk_threshold=0.2,
         development_evidence_sha256="0" * 64,
         artifact_hashes={
             "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
@@ -270,6 +278,7 @@ def test_runtime_fusion_policy_uses_dino_evidence_and_records_fusion_artifact():
             "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
             "preprocess_sha256": preprocess_sha256(config.preprocess),
         },
+        decision_rule="fusion_local_agree_v1",
     )
     dino = FullEvidenceDino(_dino_scores({6: 0.60, 5: 0.20}))
     pipeline = ClassifierPipeline(
@@ -283,7 +292,49 @@ def test_runtime_fusion_policy_uses_dino_evidence_and_records_fusion_artifact():
 
     assert dino.call_count == 1
     assert result.decision_path is DecisionPath.FUSION_RANKED
+    assert result.sku_id == 6
     assert result.provenance.calibration_id == "fusion_policy_v1"
+
+
+def test_runtime_records_high_margin_consensus_abstention_reason():
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    selected = _calibration(direct_threshold=0.99)
+    provenance = ModelProvenance(
+        repvit_artifact_id=selected.repvit_artifact_id, repvit_sha256="1" * 64,
+        dinov3_artifact_id=selected.dinov3_artifact_id, dinov3_sha256="2" * 64,
+        dinov3_support_sha256="3" * 64, calibration_id=selected.calibration_id,
+        calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
+    )
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (2.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": preprocess_sha256(config.preprocess),
+        },
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    pipeline = ClassifierPipeline(
+        config=config, repvit=RecordingRunner(_repvit_scores({6: 0.6, 5: 0.2})),
+        dino_loader=lambda: DisagreeingFullEvidenceDino(_dino_scores({6: 0.6, 5: 0.2})),
+        policy=DecisionPolicy(selected, provenance=provenance), prototype_bank=FixedPrototypeBank(),
+        local_bank=object(), fusion_policy=fusion,
+        fusion_provenance=replace(provenance, calibration_id="fusion_policy_v1", calibration_sha256="9" * 64),
+    )
+
+    result = pipeline.infer(_image(), _box())
+
+    assert result.decision == "unknown"
+    assert result.unknown_reason == "fusion_global_consensus_margin"
 
 
 def test_recheck_confirmation_keeps_fused_confidence_meaning():

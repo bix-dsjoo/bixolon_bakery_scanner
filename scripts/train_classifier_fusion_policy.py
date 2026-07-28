@@ -22,11 +22,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260727)
+    parser.add_argument(
+        "--decision-rule",
+        choices=(
+            "risk_threshold_v1",
+            "fusion_local_agree_v1",
+            "fusion_local_or_global_consensus_margin_v1",
+        ),
+        default="risk_threshold_v1",
+        help="Immutable SKU acceptance rule to encode in the generated policy artifact.",
+    )
+    parser.add_argument(
+        "--consensus-margin-floor",
+        type=float,
+        help="Required first-to-second fusion-score floor for the global-consensus rule.",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.decision_rule == "fusion_local_or_global_consensus_margin_v1":
+        if args.consensus_margin_floor is None:
+            raise ValueError("the global-consensus rule requires --consensus-margin-floor")
+        schema_version = 3
+    else:
+        if args.consensus_margin_floor is not None:
+            raise ValueError("--consensus-margin-floor only applies to the global-consensus rule")
+        schema_version = 2
     config = ClassifierConfig.load(args.config)
     rows = load_full_evidence_rows(args.evidence)
     if any(row.role != "development" or not row.registered for row in rows):
@@ -50,6 +73,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256 or "0" * 64,
             "preprocess_sha256": preprocess_sha256(config.preprocess),
         },
+        decision_rule=args.decision_rule,
+        schema_version=schema_version,
+        consensus_margin_floor=args.consensus_margin_floor,
     )
     atomic_write_bytes(args.output, policy.to_json_bytes())
     return 0
