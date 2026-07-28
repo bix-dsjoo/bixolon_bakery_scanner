@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from math import ceil
+import math
+from numbers import Real
 from pathlib import Path
 from statistics import mean, median
 from typing import Protocol
@@ -80,9 +82,7 @@ def run_cpu_smoke(
         if getattr(inference, "image_id", None) != image_id:
             raise ValueError("pipeline result image ID must match CPU smoke input")
         stage_timings = getattr(inference, "stage_timings_ms", None)
-        if not isinstance(stage_timings, Mapping):
-            raise ValueError("pipeline result must expose validated stage_timings_ms")
-        timings = {key: float(stage_timings[key]) for key in _STAGE_TIMING_KEYS}
+        timings = _validate_stage_timings(stage_timings)
         for key, value in timings.items():
             stage_values[key].append(value)
         final_objects = tuple(getattr(inference, "final_objects", ()))
@@ -146,3 +146,17 @@ def _summarize_timings(values: list[float]) -> dict[str, float | int]:
         "median": median(ordered),
         "p95": ordered[ceil(0.95 * len(ordered)) - 1],
     }
+
+
+def _validate_stage_timings(stage_timings: object) -> dict[str, float]:
+    """Validate the timing contract even for protocol-conforming foreign results."""
+    if not isinstance(stage_timings, Mapping):
+        raise ValueError("stage_timings_ms must be a mapping with required stage timings")
+    if set(stage_timings) != set(_STAGE_TIMING_KEYS):
+        raise ValueError("stage_timings_ms must contain exactly the required stage timings")
+    if any(
+        isinstance(value, bool) or not isinstance(value, Real) or value < 0 or not math.isfinite(value)
+        for value in stage_timings.values()
+    ):
+        raise ValueError("stage_timings_ms values must be finite non-negative numbers")
+    return {key: float(stage_timings[key]) for key in _STAGE_TIMING_KEYS}

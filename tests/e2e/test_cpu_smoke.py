@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,3 +119,71 @@ def test_run_cpu_smoke_summarizes_nine_stage_timings(tmp_path: Path):
 def test_e2e_inference_rejects_missing_or_invalid_stage_timing(timing: dict[str, float]):
     with pytest.raises(ValueError, match="stage_timings_ms"):
         E2EInference(1, (), convnext_invocations=0, stage_timings_ms=timing)
+
+
+@pytest.mark.parametrize(
+    "stage_timings_ms",
+    [
+        {
+            "detector": -1.0,
+            "mobile_assurance": 0.0,
+            "resolver": 0.0,
+            "repvit": 0.0,
+            "dinov3": 0.0,
+            "total": 0.0,
+        },
+        {
+            "detector": float("nan"),
+            "mobile_assurance": 0.0,
+            "resolver": 0.0,
+            "repvit": 0.0,
+            "dinov3": 0.0,
+            "total": 0.0,
+        },
+        {
+            "detector": float("inf"),
+            "mobile_assurance": 0.0,
+            "resolver": 0.0,
+            "repvit": 0.0,
+            "dinov3": 0.0,
+            "total": 0.0,
+        },
+        {
+            "detector": 0.0,
+            "mobile_assurance": 0.0,
+            "resolver": 0.0,
+            "repvit": 0.0,
+            "dinov3": 0.0,
+        },
+        {
+            "detector": 0.0,
+            "mobile_assurance": 0.0,
+            "resolver": 0.0,
+            "repvit": 0.0,
+            "dinov3": 0.0,
+            "total": 0.0,
+            "unexpected": 1.0,
+        },
+    ],
+)
+def test_run_cpu_smoke_rejects_invalid_protocol_stage_timings(
+    tmp_path: Path,
+    stage_timings_ms: dict[str, float],
+):
+    class InvalidTimingPipeline:
+        def infer(self, image_id: int, image: object) -> object:
+            return SimpleNamespace(
+                image_id=image_id,
+                final_objects=(),
+                convnext_invocations=0,
+                dino_invocations=0,
+                stage_timings_ms=stage_timings_ms,
+            )
+
+    with pytest.raises(ValueError, match="stage_timings_ms"):
+        run_cpu_smoke(
+            InvalidTimingPipeline(),
+            (tmp_path / "one.jpg",),
+            load_image=lambda _: object(),
+            provenance={"device": "cpu"},
+        )
