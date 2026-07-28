@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
 from bakery_scanner.config import ScannerConfig
 from bakery_scanner.detectors.detector_only_selection import (
     cross_fit_detector_only_policies,
+    DetectorOnlyReportProvenance,
     write_detector_only_report,
 )
 from bakery_scanner.detectors.experiments import DetectorExperiment
@@ -54,6 +56,10 @@ def main() -> None:
         ground_truth=staged.ground_truth,
         scenarios=staged.scenarios,
         policies=policies,
+        provenance=_report_provenance(
+            staged_root=config.artifact_root / "staged",
+            fold_root=config.artifact_root / "folds",
+        ),
         expected_staged_images=config.dataset.expected_images,
         expected_staged_boxes=config.dataset.expected_boxes,
     )
@@ -122,6 +128,28 @@ def _load_image_folds(fold_root: Path) -> dict[int, int]:
                 raise ValueError("validation folds must not overlap")
             folds[image_id] = fold
     return folds
+
+
+def _report_provenance(
+    *,
+    staged_root: Path,
+    fold_root: Path,
+) -> DetectorOnlyReportProvenance:
+    return DetectorOnlyReportProvenance(
+        staged_annotations_sha256=_sha256_file(staged_root / "annotations.json"),
+        staged_manifest_sha256=_sha256_file(staged_root / "staged_manifest.json"),
+        fold_manifest_sha256={
+            fold: _sha256_file(fold_root / f"fold-{fold}" / "manifest.json")
+            for fold in range(_FOLD_COUNT)
+        },
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ValueError(f"provenance artifact is unreadable: {path}") from exc
 
 
 if __name__ == "__main__":

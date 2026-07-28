@@ -10,6 +10,7 @@ import pytest
 from bakery_scanner.contracts import Box, BreadProposal, SceneKey
 from bakery_scanner.detectors.detector_only_selection import (
     DetectorOnlyPolicy,
+    DetectorOnlyReportProvenance,
     assert_locked_zero_error,
     cross_fit_detector_only_policies,
     write_detector_only_report,
@@ -104,6 +105,17 @@ def _report_with_duplicate_at_75():
     )
 
 
+def _report_provenance():
+    return DetectorOnlyReportProvenance(
+        staged_annotations_sha256="a" * 64,
+        staged_manifest_sha256="b" * 64,
+        fold_manifest_sha256={
+            fold: f"{fold + 1:x}" * 64
+            for fold in range(5)
+        },
+    )
+
+
 def test_fold_zero_policy_excludes_fold_zero_candidates_and_labels():
     artifact, folds, fold_image_ids, ground_truth = _selection_fixture()
 
@@ -154,6 +166,7 @@ def test_report_marks_detector_only_failure_without_operational_claim(tmp_path):
         ground_truth=ground_truth,
         scenarios={image_id: frozenset({"fixture"}) for image_id in folds},
         policies=policies,
+        provenance=_report_provenance(),
         expected_staged_images=5,
         expected_staged_boxes=5,
     )
@@ -182,6 +195,17 @@ def test_report_marks_detector_only_failure_without_operational_claim(tmp_path):
         "native": 1,
         "recall_top30": 1,
     }
+    assert "path" not in payload["artifacts"]
+    assert payload["provenance"] == {
+        "fold_manifest_sha256": {
+            str(fold): f"{fold + 1:x}" * 64
+            for fold in range(5)
+        },
+        "staged": {
+            "annotations.json": "a" * 64,
+            "staged_manifest.json": "b" * 64,
+        },
+    }
     assert "independent acceptance" in payload["limitations"]["acceptance"].lower()
     assert "empty-tray" in payload["limitations"]["unobserved_conditions"]
     assert "overlap" in payload["limitations"]["unobserved_conditions"]
@@ -199,6 +223,7 @@ def test_report_marks_detector_only_failure_without_operational_claim(tmp_path):
             ground_truth=ground_truth,
             scenarios={image_id: frozenset({"fixture"}) for image_id in folds},
             policies=policies,
+            provenance=_report_provenance(),
             expected_staged_images=5,
             expected_staged_boxes=5,
         )
@@ -227,6 +252,45 @@ def test_report_rejects_policy_that_claims_target_fold_calibration(tmp_path):
             ground_truth=ground_truth,
             scenarios={image_id: frozenset() for image_id in folds},
             policies=policies,
+            provenance=_report_provenance(),
+            expected_staged_images=5,
+            expected_staged_boxes=5,
+        )
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    (
+        None,
+        DetectorOnlyReportProvenance(
+            staged_annotations_sha256="not-a-sha256",
+            staged_manifest_sha256="b" * 64,
+            fold_manifest_sha256={fold: f"{fold + 1:x}" * 64 for fold in range(5)},
+        ),
+        DetectorOnlyReportProvenance(
+            staged_annotations_sha256="a" * 64,
+            staged_manifest_sha256="b" * 64,
+            fold_manifest_sha256=None,
+        ),
+    ),
+)
+def test_report_rejects_missing_or_invalid_provenance(tmp_path, provenance):
+    artifact, folds, _, ground_truth = _selection_fixture()
+    policies = cross_fit_detector_only_policies(
+        artifact,
+        folds=folds,
+        ground_truth=ground_truth,
+    )
+
+    with pytest.raises(ValueError, match="provenance"):
+        write_detector_only_report(
+            output=tmp_path / "missing-provenance.json",
+            detector_oof=artifact,
+            folds=folds,
+            ground_truth=ground_truth,
+            scenarios={image_id: frozenset() for image_id in folds},
+            policies=policies,
+            provenance=provenance,
             expected_staged_images=5,
             expected_staged_boxes=5,
         )

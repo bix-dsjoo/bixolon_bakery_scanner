@@ -73,6 +73,13 @@ class DetectorOnlyPolicy:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class DetectorOnlyReportProvenance:
+    staged_annotations_sha256: str
+    staged_manifest_sha256: str
+    fold_manifest_sha256: Mapping[int, str]
+
+
 def cross_fit_detector_only_policies(
     detector_oof: OofArtifact,
     *,
@@ -174,6 +181,7 @@ def write_detector_only_report(
     ground_truth: Mapping[int, Sequence[Box]],
     scenarios: Mapping[int, frozenset[str]],
     policies: Mapping[int, DetectorOnlyPolicy],
+    provenance: DetectorOnlyReportProvenance | None = None,
     expected_staged_images: int = 299,
     expected_staged_boxes: int = 1410,
 ) -> Path:
@@ -186,6 +194,7 @@ def write_detector_only_report(
     if set(scenarios) != set(ground_truth):
         raise ValueError("scenarios must cover exactly every staged image")
     _validate_policies(policies, folds)
+    _validate_provenance(provenance)
     image_count = len(ground_truth)
     box_count = sum(len(boxes) for boxes in ground_truth.values())
     if image_count != expected_staged_images or box_count != expected_staged_boxes:
@@ -231,7 +240,6 @@ def write_detector_only_report(
     }
     payload = {
         "artifacts": {
-            "path": str(detector_oof.path),
             "runs": {
                 str(fold): {
                     "candidate_counts": {
@@ -311,6 +319,16 @@ def write_detector_only_report(
                 "sigma": policies[fold].sigma,
             }
             for fold in range(5)
+        },
+        "provenance": {
+            "fold_manifest_sha256": {
+                str(fold): provenance.fold_manifest_sha256[fold]
+                for fold in range(5)
+            },
+            "staged": {
+                "annotations.json": provenance.staged_annotations_sha256,
+                "staged_manifest.json": provenance.staged_manifest_sha256,
+            },
         },
         "proposal_policy": {
             "raw_proposal_limit_per_image_source": RAW_PROPOSAL_LIMIT,
@@ -511,6 +529,26 @@ def _validate_policies(
             raise ValueError(
                 "policy calibration_image_ids must equal the four non-target folds"
             )
+
+
+def _validate_provenance(provenance: DetectorOnlyReportProvenance | None) -> None:
+    if not isinstance(provenance, DetectorOnlyReportProvenance):
+        raise ValueError("provenance is required for the staged and fold artifacts")
+    if (
+        not isinstance(provenance.staged_annotations_sha256, str)
+        or _SHA256.fullmatch(provenance.staged_annotations_sha256) is None
+        or not isinstance(provenance.staged_manifest_sha256, str)
+        or _SHA256.fullmatch(provenance.staged_manifest_sha256) is None
+        or not isinstance(provenance.fold_manifest_sha256, Mapping)
+        or set(provenance.fold_manifest_sha256) != _FOLDS
+        or any(
+            not isinstance(value, str) or _SHA256.fullmatch(value) is None
+            for value in provenance.fold_manifest_sha256.values()
+        )
+    ):
+        raise ValueError(
+            "provenance requires staged and five fold manifest SHA-256 hashes"
+        )
 
 
 def _held_out_predictions(
