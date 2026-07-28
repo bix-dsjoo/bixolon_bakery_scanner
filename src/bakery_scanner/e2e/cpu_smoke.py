@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import time
 from collections import Counter
 from collections.abc import Callable, Mapping
+from math import ceil
 from pathlib import Path
+from statistics import mean, median
 from typing import Protocol
 
 
@@ -13,6 +14,14 @@ _IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png"})
 _LIMITATION = (
     "CPU functional smoke output is not a release evaluation and CPU timings "
     "are not comparable to RTX 5080 E2E release metrics."
+)
+_STAGE_TIMING_KEYS = (
+    "detector",
+    "mobile_assurance",
+    "resolver",
+    "repvit",
+    "dinov3",
+    "total",
 )
 
 
@@ -62,15 +71,20 @@ def run_cpu_smoke(
 
     aggregate: Counter[int] = Counter()
     rows: list[dict[str, object]] = []
+    stage_values = {key: [] for key in _STAGE_TIMING_KEYS}
     total_convnext = 0
     total_dino = 0
     for image_id, path in enumerate(images, start=1):
         image = load_image(path)
-        started = time.perf_counter()
         inference = pipeline.infer(image_id, image)
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
         if getattr(inference, "image_id", None) != image_id:
             raise ValueError("pipeline result image ID must match CPU smoke input")
+        stage_timings = getattr(inference, "stage_timings_ms", None)
+        if not isinstance(stage_timings, Mapping):
+            raise ValueError("pipeline result must expose validated stage_timings_ms")
+        timings = {key: float(stage_timings[key]) for key in _STAGE_TIMING_KEYS}
+        for key, value in timings.items():
+            stage_values[key].append(value)
         final_objects = tuple(getattr(inference, "final_objects", ()))
         objects: list[dict[str, object]] = []
         for item in final_objects:
@@ -98,7 +112,8 @@ def run_cpu_smoke(
                 "image_id": image_id,
                 "input_name": path.name,
                 "final_objects": objects,
-                "total_ms": elapsed_ms,
+                "stage_timings_ms": timings,
+                "total_ms": timings["total"],
                 "convnext_invocations": convnext_count,
                 "dino_invocations": dino_count,
             }
@@ -109,10 +124,25 @@ def run_cpu_smoke(
         "scope": "cpu_functional_smoke_only",
         "limitations": _LIMITATION,
         "provenance": dict(sorted(provenance.items())),
+        "input_count": len(images),
         "images": rows,
+        "timing_summary_ms": {
+            key: _summarize_timings(values) for key, values in stage_values.items()
+        },
         "aggregate": {str(sku_id): count for sku_id, count in sorted(aggregate.items())},
         "conditional_invocations": {
             "convnext": total_convnext,
             "dinov3": total_dino,
         },
+    }
+
+
+def _summarize_timings(values: list[float]) -> dict[str, float | int]:
+    """Summarize measured timings with the nearest-rank p95 convention."""
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "mean": mean(ordered),
+        "median": median(ordered),
+        "p95": ordered[ceil(0.95 * len(ordered)) - 1],
     }

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from collections.abc import Mapping
+from numbers import Real
+from types import MappingProxyType
 from typing import Protocol
 
 from bakery_scanner.contracts import Box, BreadProposal
@@ -20,6 +24,11 @@ from bakery_scanner.verifier.assurance import (
 from .contracts import FinalObject
 
 
+_STAGE_TIMING_KEYS = frozenset(
+    {"detector", "mobile_assurance", "resolver", "repvit", "dinov3", "total"}
+)
+
+
 class DetectorRunner(Protocol):
     def predict(self, image_id: int, image: object) -> tuple[BreadProposal, ...]: ...
 
@@ -34,6 +43,7 @@ class E2EInference:
     final_objects: tuple[FinalObject, ...]
     convnext_invocations: int
     dino_invocations: int = 0
+    stage_timings_ms: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         if type(self.image_id) is not int or self.image_id <= 0:
@@ -43,6 +53,19 @@ class E2EInference:
             raise ValueError("final_objects must contain FinalObject values")
         if type(self.dino_invocations) is not int or self.dino_invocations < 0:
             raise ValueError("dino_invocations must be a non-negative integer")
+        if self.stage_timings_ms is None:
+            return
+        if not isinstance(self.stage_timings_ms, Mapping):
+            raise ValueError("stage_timings_ms must be a mapping with all required stage timings")
+        timings = dict(self.stage_timings_ms)
+        if set(timings) != _STAGE_TIMING_KEYS:
+            raise ValueError("stage_timings_ms must contain exactly the required stage timings")
+        if any(
+            isinstance(value, bool) or not isinstance(value, Real) or value < 0 or not math.isfinite(value)
+            for value in timings.values()
+        ):
+            raise ValueError("stage_timings_ms values must be finite non-negative numbers")
+        object.__setattr__(self, "stage_timings_ms", MappingProxyType(timings))
 
 
 class E2EPipeline:

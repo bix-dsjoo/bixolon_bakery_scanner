@@ -47,6 +47,14 @@ def test_run_cpu_smoke_marks_unknowns_unaggregated(tmp_path: Path):
                 ),
                 convnext_invocations=1,
                 dino_invocations=0,
+                stage_timings_ms={
+                    "detector": 1.0,
+                    "mobile_assurance": 2.0,
+                    "resolver": 3.0,
+                    "repvit": 4.0,
+                    "dinov3": 0.0,
+                    "total": 10.0,
+                },
             )
 
     report = run_cpu_smoke(
@@ -60,3 +68,53 @@ def test_run_cpu_smoke_marks_unknowns_unaggregated(tmp_path: Path):
     assert report["aggregate"] == {"1": 1}
     assert report["images"][0]["final_objects"][1]["sku_id"] is None
     assert "not a release evaluation" in report["limitations"]
+
+
+def test_run_cpu_smoke_summarizes_nine_stage_timings(tmp_path: Path):
+    paths = tuple(tmp_path / f"{index}.jpg" for index in range(9))
+
+    class ProfilePipeline:
+        def infer(self, image_id: int, image: object) -> E2EInference:
+            return E2EInference(
+                image_id,
+                (),
+                convnext_invocations=0,
+                stage_timings_ms={
+                    "detector": float(image_id),
+                    "mobile_assurance": float(image_id),
+                    "resolver": float(image_id),
+                    "repvit": float(image_id),
+                    "dinov3": 0.0,
+                    "total": float(image_id),
+                },
+            )
+
+    report = run_cpu_smoke(
+        ProfilePipeline(),
+        paths,
+        load_image=lambda _: object(),
+        provenance={"device": "cpu"},
+    )
+
+    assert report["input_count"] == 9
+    assert report["images"][8]["total_ms"] == pytest.approx(9.0)
+    assert report["timing_summary_ms"]["total"] == {
+        "count": 9,
+        "mean": pytest.approx(5.0),
+        "median": pytest.approx(5.0),
+        "p95": pytest.approx(9.0),
+    }
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        {"detector": -1.0},
+        {"detector": float("inf")},
+        {"detector": float("nan")},
+        {},
+    ],
+)
+def test_e2e_inference_rejects_missing_or_invalid_stage_timing(timing: dict[str, float]):
+    with pytest.raises(ValueError, match="stage_timings_ms"):
+        E2EInference(1, (), convnext_invocations=0, stage_timings_ms=timing)
