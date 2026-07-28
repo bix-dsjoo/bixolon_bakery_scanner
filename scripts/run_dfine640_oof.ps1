@@ -1,14 +1,18 @@
+param(
+    [string]$ArtifactRoot = "artifacts/box_system/detectors",
+    [string]$FoldRoot = "artifacts/box_system/folds",
+    [string]$StagedRoot = "artifacts/box_system/staged",
+    [string]$GeneratedConfigRoot = "configs/generated/detector-matrix",
+    [switch]$SkipFoldZeroRequirement
+)
+
 $ErrorActionPreference = "Stop"
 $env:CUDA_VISIBLE_DEVICES = "0"
 
 $DFinePython = ".venvs/dfine/Scripts/python.exe"
 $HostPython = "C:\Users\OMEN\AppData\Local\Programs\Python\Python311\python.exe"
-$ArtifactRoot = "artifacts/box_system/detectors"
-$FoldRoot = "artifacts/box_system/folds"
-$StagedRoot = "artifacts/box_system/staged"
 $StagedAnnotations = Join-Path $StagedRoot "annotations.json"
 $StagedManifest = Join-Path $StagedRoot "staged_manifest.json"
-$GeneratedConfigRoot = "configs/generated/detector-matrix"
 $Template = "configs/upstream/dfine_bread.yml"
 $Variant = "dfine_n_640"
 $Seed = 20260724
@@ -156,10 +160,13 @@ function Write-FoldAnnotations([string]$ManifestPath, [string]$TrainPath, [strin
 if (-not (Test-Path -LiteralPath $StagedAnnotations -PathType Leaf)) { throw "Stage the existing COCO images before detector training: $StagedAnnotations" }
 if (-not (Test-Path -LiteralPath $DFinePython -PathType Leaf)) { throw "Missing pinned D-FINE Python: $DFinePython" }
 if (-not (Test-Path -LiteralPath $HostPython -PathType Leaf)) { throw "Missing host Python for canonicalization: $HostPython" }
-Assert-RequiredFoldZero
+if (-not $SkipFoldZeroRequirement) {
+    Assert-RequiredFoldZero
+}
 $GpuVerified = $false
+$FoldValues = if ($SkipFoldZeroRequirement) { 0..4 } else { 1..4 }
 
-foreach ($Fold in 1..4) {
+foreach ($Fold in $FoldValues) {
     if (Test-CompletedFold $Fold) {
         Write-Host "Reusing validated completed $Variant fold $Fold"
         continue
