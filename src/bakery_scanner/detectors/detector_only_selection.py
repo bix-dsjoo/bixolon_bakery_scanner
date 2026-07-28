@@ -553,4 +553,4 @@ def _evaluation_payload(report: EvaluationReport) -> dict[str, object]:
 
 
 def _box_payload(box: Box) -> list[float]:
-    return [box.x, box.y, box.width, box.height]
+    return list(box.xyxy)

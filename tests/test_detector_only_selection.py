@@ -187,7 +187,7 @@ def test_report_marks_detector_only_failure_without_operational_claim(tmp_path):
     assert "overlap" in payload["limitations"]["unobserved_conditions"]
     assert "obstruction" in payload["limitations"]["unobserved_conditions"]
     assert payload["images"]["1"]["ground_truth_boxes"] == [
-        [10.0, 20.0, 15.0, 15.0]
+        [10.0, 20.0, 25.0, 35.0]
     ]
     assert payload["images"]["1"]["prediction_boxes"] == []
 
