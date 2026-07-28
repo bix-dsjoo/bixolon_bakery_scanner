@@ -1,0 +1,10 @@
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
+Pillow==12.2.0
+timm==1.0.28
+PyYAML==6.0.3
+pydantic==2.13.4
+tensorboard==2.20.0
+numpy==2.4.4
+scipy==1.17.1
+faster-coco-eval==1.7.0

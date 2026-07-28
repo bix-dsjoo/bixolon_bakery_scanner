@@ -1,5 +1,22 @@
 # Bixolon Bakery Scanner
 
+## Portable Batch2 CPU smoke
+
+The portable CPU functional smoke ZIP is built with:
+
+```powershell
+.\scripts\package_cpu_smoke.ps1 -OutputPath C:\temp\batch2-cpu-smoke.zip
+```
+
+After extraction on Windows 10/11 with network access and Python 3.11, run
+`portable_cpu_smoke\install_cpu_smoke.ps1`, then
+`portable_cpu_smoke\run_batch2_cpu_smoke.ps1`. This is CPU-only; CUDA is not
+supported. The fixed bundle has exactly nine Batch2 inputs. Its `report.json`
+shows only E/M/H means, while `inference.json` retains audit fields and
+`overlays` contains the rendered boxes. This smoke run uses metadata-rebound
+policy and a legacy-four-state zero-delta assurance adapter; it is neither a
+release gate nor an accuracy certification.
+
 스캔 이미지 한 장에서 빵의 **품목, 수량, 위치**를 빠르고 정확하게
 추론하는 GPU 기반 비전 파이프라인입니다.
 
