@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 
 from .metrics import EvaluationReport, ImageMetrics
+from .release_gate import evaluate_release_gate
 
 
 def evaluation_payload(report: EvaluationReport, *, scope: str) -> dict[str, object]:
     if scope != "grouped_oof_development_only":
         raise ValueError("only grouped_oof_development_only evaluation scope is supported")
+    gate = evaluate_release_gate(report)
     return {
         "schema_version": 1,
         "scope": scope,
@@ -24,6 +26,7 @@ def evaluation_payload(report: EvaluationReport, *, scope: str) -> dict[str, obj
             "p50": report.latency.p50_ms,
             "p95": report.latency.p95_ms,
         },
+        "release_gate": {"passed": gate.passed, "reasons": list(gate.reasons)},
     }
 
 

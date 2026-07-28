@@ -20,3 +20,4 @@ def test_canonical_evaluation_payload_contains_requested_metrics(tmp_path):
     assert persisted["metrics"]["iou_0.50"]["unknown_count"] == 1
     assert persisted["metrics"]["iou_0.50"]["top3_accuracy"] == 1.0
     assert persisted["latency_ms"]["mean"] == 25.0
+    assert persisted["release_gate"]["passed"] is False
