@@ -50,6 +50,8 @@ def main() -> None:
         type=Path,
         default=Path("configs/generated/detector-matrix"),
     )
+    parser.add_argument("--expected-images", type=int, default=299)
+    parser.add_argument("--expected-boxes", type=int, default=1410)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--validate-detector-fold", type=int, choices=range(5))
     parser.add_argument("--output", type=Path)
@@ -81,6 +83,8 @@ def main() -> None:
         staged_root=args.staged_root,
         config_root=args.detector_config_root,
         expected_experiments=experiments,
+        expected_images=args.expected_images,
+        expected_boxes=args.expected_boxes,
     )
     verifier_oof = load_complete_verifier_oof_artifact(
         verifier_root=args.verifier_root,
