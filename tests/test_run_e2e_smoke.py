@@ -95,3 +95,56 @@ def test_cli_failure_leaves_no_requested_output_directory(monkeypatch, tmp_path:
     assert main() == 1
     assert not output.exists()
     assert json.loads(capsys.readouterr().err)["stage"] == "inference"
+
+
+def test_cli_does_not_publish_output_when_overlay_write_fails(monkeypatch, tmp_path: Path):
+    """The requested output is absent until every overlay has been written."""
+    samples = tuple(tmp_path / f"g20_b02_{group}_{index:04d}.jpg" for group in "emh" for index in range(1, 4))
+    for sample in samples:
+        sample.write_bytes(b"image")
+    output = tmp_path / "out"
+
+    class Pipeline:
+        def infer(self, image_id: int, image: object):
+            return SimpleNamespace(
+                image_id=image_id, final_objects=(), convnext_invocations=0, dino_invocations=0,
+                stage_timings_ms={"detector": 0.0, "mobile_assurance": 0.0, "resolver": 0.0, "repvit": 0.0, "dinov3": 0.0, "total": 1.0},
+            )
+
+    monkeypatch.setattr("scripts.run_e2e_smoke.CpuSmokeAssets.from_root", lambda root: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr("scripts.run_e2e_smoke.preflight_cpu_assets", lambda assets: {"device": "cpu"})
+    monkeypatch.setattr("scripts.run_e2e_smoke.build_cpu_pipeline", lambda assets: (Pipeline(), lambda: None))
+    monkeypatch.setattr("scripts.run_e2e_smoke.resolve_batch2_e3_m3_h3", lambda source: samples)
+    monkeypatch.setattr("scripts.run_e2e_smoke._load_image", lambda path: object())
+    monkeypatch.setattr("scripts.run_e2e_smoke._write_overlay", lambda image, objects, path: (_ for _ in ()).throw(OSError("overlay write failed")))
+    monkeypatch.setattr(sys, "argv", ["run_e2e_smoke.py", "--package-root", str(tmp_path), "--output", str(output)])
+
+    assert main() == 1
+    assert not output.exists()
+
+
+def test_cli_does_not_publish_output_when_json_write_fails(monkeypatch, tmp_path: Path):
+    """The requested output is absent when either report JSON cannot be written."""
+    samples = tuple(tmp_path / f"g20_b02_{group}_{index:04d}.jpg" for group in "emh" for index in range(1, 4))
+    for sample in samples:
+        sample.write_bytes(b"image")
+    output = tmp_path / "out"
+
+    class Pipeline:
+        def infer(self, image_id: int, image: object):
+            return SimpleNamespace(
+                image_id=image_id, final_objects=(), convnext_invocations=0, dino_invocations=0,
+                stage_timings_ms={"detector": 0.0, "mobile_assurance": 0.0, "resolver": 0.0, "repvit": 0.0, "dinov3": 0.0, "total": 1.0},
+            )
+
+    monkeypatch.setattr("scripts.run_e2e_smoke.CpuSmokeAssets.from_root", lambda root: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr("scripts.run_e2e_smoke.preflight_cpu_assets", lambda assets: {"device": "cpu"})
+    monkeypatch.setattr("scripts.run_e2e_smoke.build_cpu_pipeline", lambda assets: (Pipeline(), lambda: None))
+    monkeypatch.setattr("scripts.run_e2e_smoke.resolve_batch2_e3_m3_h3", lambda source: samples)
+    monkeypatch.setattr("scripts.run_e2e_smoke._load_image", lambda path: object())
+    monkeypatch.setattr("scripts.run_e2e_smoke._write_overlay", lambda image, objects, path: path.write_bytes(b"png"))
+    monkeypatch.setattr("scripts.run_e2e_smoke._write_json", lambda path, payload: (_ for _ in ()).throw(OSError("JSON write failed")), raising=False)
+    monkeypatch.setattr(sys, "argv", ["run_e2e_smoke.py", "--package-root", str(tmp_path), "--output", str(output)])
+
+    assert main() == 1
+    assert not output.exists()

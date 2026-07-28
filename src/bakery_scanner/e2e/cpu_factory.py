@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hashlib
 import importlib
 from pathlib import Path
+import subprocess
 import sys
 
 import torch
@@ -147,9 +148,10 @@ def preflight_cpu_assets(assets: CpuSmokeAssets) -> dict[str, str]:
     )
     if missing:
         raise FileNotFoundError("CPU smoke assets are missing: " + ", ".join(missing))
-    for module in ("torch", "PIL", "timm", "yaml"):
+    for module in ("torch", "torchvision", "PIL", "timm", "yaml"):
         if importlib.util.find_spec(module) is None:
             raise RuntimeError(f"CPU smoke dependency is unavailable: {module}")
+    _validate_dfine_worker_imports(assets)
 
     config = _load_classifier_config(assets.classifier_config)
     configured = {
@@ -247,6 +249,31 @@ def _validate_calibration_provenance(config_path: Path) -> PolicyCalibration:
     )
     DecisionPolicy(calibration, provenance=provenance)
     return calibration
+
+
+def _validate_dfine_worker_imports(assets: CpuSmokeAssets) -> None:
+    """Verify the worker's pinned-checkout imports before starting its JSONL process."""
+    probe = (
+        "import sys; from pathlib import Path; "
+        "checkout = Path(sys.argv[1]); "
+        "import torch; import torchvision; from PIL import Image; "
+        "sys.path.insert(0, str(checkout)); "
+        "from src.core import YAMLConfig"
+    )
+    try:
+        completed = subprocess.run(
+            (sys.executable, "-c", probe, str(assets.dfine_checkout)),
+            cwd=assets.root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"D-FINE worker imports could not be verified: {exc}") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "unknown import failure"
+        raise RuntimeError(f"D-FINE worker imports failed: {detail}")
 
 
 def _sha256(path: Path) -> str:

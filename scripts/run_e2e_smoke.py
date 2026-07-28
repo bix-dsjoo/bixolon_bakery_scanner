@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
 from typing import Sequence
+from uuid import uuid4
 
 from PIL import Image, ImageDraw
 
@@ -31,7 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if output.exists():
         _error("arguments", FileExistsError(f"refusing to overwrite existing output: {output}"))
         return 2
-    created = False
+    staging: Path | None = None
     close = None
     try:
         assets = CpuSmokeAssets.from_root(args.package_root)
@@ -41,21 +43,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         close = getattr(pipeline, "close", None)
         warmup()
         pipeline.infer(1, _load_image(images[0]))
-        output.mkdir(parents=True)
-        created = True
+        staging = output.parent / f".{output.name}.staging-{uuid4().hex}"
+        staging.mkdir(parents=True)
         report = run_cpu_smoke(pipeline, images, load_image=_load_image, provenance=provenance)
-        overlays = output / "overlays"
+        overlays = staging / "overlays"
         overlays.mkdir()
         for path, row in zip(images, report["images"], strict=True):
             _write_overlay(_load_image(path), row["final_objects"], overlays / f"{path.stem}.png")
-        (output / "inference.json").write_text(json.dumps(report, allow_nan=False, indent=2), encoding="utf-8")
+        _write_json(staging / "inference.json", report)
         totals = [float(row["total_ms"]) for row in report["images"]]
         summary = {"E": sum(totals[:3]) / 3, "M": sum(totals[3:6]) / 3, "H": sum(totals[6:]) / 3}
-        (output / "report.json").write_text(json.dumps(summary, allow_nan=False, indent=2), encoding="utf-8")
+        _write_json(staging / "report.json", summary)
+        os.replace(staging, output)
+        staging = None
         return 0
     except Exception as exc:
-        if created:
-            shutil.rmtree(output)
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
         _error("inference", exc)
         return 1
     finally:
@@ -75,6 +79,10 @@ def _write_overlay(image, objects, path: Path) -> None:
         left, top, right, bottom = item["box_xyxy"]
         draw.rectangle((left, top, right, bottom), outline="red", width=3)
     frame.save(path, format="PNG")
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, allow_nan=False, indent=2), encoding="utf-8")
 
 
 def _error(stage: str, exc: Exception) -> None:

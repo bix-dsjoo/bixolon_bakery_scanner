@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 from PIL import Image
 
+import bakery_scanner.e2e.cpu_factory as cpu_factory
 from bakery_scanner.classification.runtime import ClassifierPipeline
 from bakery_scanner.classification.policy import PolicyCalibration
 from bakery_scanner.contracts import Box, BreadProposal
@@ -84,7 +86,21 @@ def test_preflight_names_package_relative_missing_repvit(tmp_path: Path):
         preflight_cpu_assets(assets)
 
 
-def test_rebound_cpu_smoke_policy_changes_only_manifest_metadata():
+def test_preflight_rejects_missing_dfine_worker_dependency_before_worker_starts(monkeypatch):
+    """D-FINE worker imports are checked before the JSONL worker can be created."""
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setattr(
+        cpu_factory,
+        "subprocess",
+        SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr="ModuleNotFoundError: No module named 'torchvision'")),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="D-FINE worker imports"):
+        preflight_cpu_assets(CpuSmokeAssets.from_root(root))
+
+
+def test_rebound_cpu_smoke_policy_changes_only_manifest_metadata(monkeypatch):
     """The rebind preserves threshold semantics while fixing only stale metadata."""
     root = Path(__file__).resolve().parents[2]
     original_path = root / "artifacts" / "e2e_current_source" / "classification" / "policy_fail_closed.json"
@@ -105,6 +121,7 @@ def test_rebound_cpu_smoke_policy_changes_only_manifest_metadata():
     with pytest.raises(ValueError, match="RepViT manifest SHA-256 mismatch"):
         ClassifierPipeline.load(root / "configs" / "classifier_policy.yaml")
 
+    monkeypatch.setattr(cpu_factory, "_validate_dfine_worker_imports", lambda assets: None)
     provenance = preflight_cpu_assets(CpuSmokeAssets.from_root(root))
 
     assert provenance["calibration_id"] == rebound["calibration_id"]
