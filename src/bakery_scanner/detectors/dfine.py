@@ -29,9 +29,16 @@ def parse_dfine_output(
 class DFineRunner:
     """Thin command-backed adapter; importing D-FINE remains isolated to its venv."""
 
-    def __init__(self, command_runner: Callable[[tuple[str, ...]], dict[str, Any]] | None = None, gpu_probe: Callable[[], tuple[bool, str]] | None = None) -> None:
+    def __init__(
+        self,
+        command_runner: Callable[[tuple[str, ...]], dict[str, Any]] | None = None,
+        gpu_probe: Callable[[], tuple[bool, str]] | None = None,
+        *,
+        device: str = "cuda:0",
+    ) -> None:
         self._command_runner = command_runner or _subprocess_runner
         self._gpu_probe = gpu_probe or _default_gpu_probe
+        self._device = _normalize_inference_device(device)
 
     def train(self, config: str | Path, output: str | Path, *, device: str = "cuda:0") -> dict[str, Any]:
         _require_rtx_5080(device, self._gpu_probe)
@@ -46,7 +53,7 @@ class DFineRunner:
         image_size: tuple[int, int] | None = None,
         source: str,
     ) -> tuple[BreadProposal, ...]:
-        _require_rtx_5080("cuda:0", self._gpu_probe)
+        _require_inference_device(self._device, self._gpu_probe)
         if isinstance(image, CanonicalImage):
             if image_size is not None and image_size != image.visual_size:
                 raise ValueError("D-FINE image_size must match canonical visual size")
@@ -86,7 +93,7 @@ class DFineRunner:
         image_size: tuple[int, int],
         source: str,
     ) -> tuple[BreadProposal, ...]:
-        payload = self._command_runner(("dfine-predict", "--model", str(model), "--image", str(image), "--device", "cuda:0"))
+        payload = self._command_runner(("dfine-predict", "--model", str(model), "--image", str(image), "--device", self._device))
         return parse_dfine_output(image_id, image_size, payload["labels"], payload["boxes"], payload["scores"], source)
 
     def export_onnx(self, model: str | Path, output: str | Path) -> dict[str, Any]:
@@ -165,15 +172,17 @@ class PersistentDFineRunner:
         *,
         source: str,
         gpu_probe: Callable[[], tuple[bool, str]] | None = None,
+        device: str = "cuda:0",
     ) -> None:
         if not isinstance(source, str) or not source:
             raise ValueError("source must be a non-empty detector identifier")
         self._transport = transport
         self.source = source
         self._gpu_probe = gpu_probe or _default_gpu_probe
+        self._device = _normalize_inference_device(device)
 
     def predict(self, image_id: int, image: CanonicalImage) -> tuple[BreadProposal, ...]:
-        _require_rtx_5080("cuda:0", self._gpu_probe)
+        _require_inference_device(self._device, self._gpu_probe)
         if not isinstance(image, CanonicalImage):
             raise TypeError("persistent D-FINE inference requires a CanonicalImage")
         with NamedTemporaryFile(suffix=".png", delete=False) as handle:
@@ -201,6 +210,19 @@ def _require_rtx_5080(device: str, probe: Callable[[], tuple[bool, str]]) -> Non
     available, name = probe()
     if not available or "RTX 5080" not in name:
         raise RuntimeError("RTX 5080 CUDA device 0 is required")
+
+
+def _normalize_inference_device(device: str) -> str:
+    normalized = device.lower()
+    if normalized not in {"cpu", "cuda:0"}:
+        raise ValueError("D-FINE inference device must be cpu or cuda:0")
+    return normalized
+
+
+def _require_inference_device(device: str, probe: Callable[[], tuple[bool, str]]) -> None:
+    if device == "cpu":
+        return
+    _require_rtx_5080(device, probe)
 
 
 def _default_gpu_probe() -> tuple[bool, str]:

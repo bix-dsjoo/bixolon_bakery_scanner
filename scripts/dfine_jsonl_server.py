@@ -1,7 +1,8 @@
 """Keep one pinned D-FINE model warm and serve single-image JSONL requests.
 
-Run this only with ``.venvs/dfine/Scripts/python.exe``.  Stdout is reserved
-for one JSON response per request; diagnostics go to stderr.
+Run this with a compatible D-FINE Python environment. Stdout is reserved for
+one JSON response per request; diagnostics go to stderr. ``cuda:0`` remains
+the production path; ``cpu`` is for functional smoke checks only.
 """
 
 from __future__ import annotations
@@ -50,14 +51,16 @@ def main() -> int:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
-    if args.device != "cuda:0":
-        raise ValueError("D-FINE JSONL server requires cuda:0")
+    if args.device not in {"cpu", "cuda:0"}:
+        raise ValueError("D-FINE JSONL server device must be cpu or cuda:0")
 
     import torch
     from PIL import Image
     import torchvision.transforms as transforms
 
-    if not torch.cuda.is_available() or "RTX 5080" not in torch.cuda.get_device_name(0):
+    if args.device == "cuda:0" and (
+        not torch.cuda.is_available() or "RTX 5080" not in torch.cuda.get_device_name(0)
+    ):
         raise RuntimeError("D-FINE JSONL server requires RTX 5080 cuda:0")
     model = _load_model(args.config.resolve(), args.checkpoint.resolve(), args.device)
     preprocess = transforms.Compose((transforms.Resize((640, 640)), transforms.ToTensor()))

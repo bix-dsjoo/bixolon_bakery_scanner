@@ -45,6 +45,27 @@ def test_runner_uses_injected_command_runner(tmp_path):
     assert calls[0][0] == "dfine-predict"
 
 
+def test_runner_allows_cpu_smoke_inference_without_gpu_probe():
+    commands = []
+    runner = DFineRunner(
+        command_runner=lambda command: commands.append(command) or {"labels": [0], "boxes": [[1, 2, 20, 30]], "scores": [0.8]},
+        gpu_probe=lambda: (_ for _ in ()).throw(AssertionError("CPU must not probe GPU")),
+        device="cpu",
+    )
+
+    proposals = runner.predict("model.pth", "image.jpg", image_id=1, image_size=(100, 100), source="dfine_n_640")
+
+    assert len(proposals) == 1
+    assert commands == [("dfine-predict", "--model", "model.pth", "--image", "image.jpg", "--device", "cpu")]
+
+
+def test_dfine_jsonl_server_allows_cpu_but_keeps_rtx_guard_for_cuda():
+    server = Path("scripts/dfine_jsonl_server.py").read_text(encoding="utf-8")
+
+    assert 'if args.device not in {"cpu", "cuda:0"}:' in server
+    assert 'if args.device == "cuda:0" and (' in server
+
+
 def test_runner_materializes_canonical_visual_frame_for_detector(tmp_path):
     calls = []
 
