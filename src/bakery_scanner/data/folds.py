@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from sklearn.model_selection import StratifiedGroupKFold
@@ -50,6 +54,38 @@ def build_scene_folds(dataset: StagedDataset, fold_count: int = 5, seed: int = 2
     return tuple(manifests)
 
 
+def write_fold_manifests(folds: tuple[FoldManifest, ...], output: Path) -> None:
+    """Persist complete fold manifests without replacing an existing run."""
+    if not folds:
+        raise ValueError("at least one fold manifest is required")
+    output = Path(output)
+    if output.exists():
+        raise FileExistsError(f"refusing to replace existing fold manifests: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.write-", dir=output.parent))
+    try:
+        for fold in folds:
+            fold_directory = temporary / f"fold-{fold.index}"
+            fold_directory.mkdir()
+            payload = {
+                "index": fold.index,
+                "manifest_hash": fold.manifest_hash,
+                "source_hashes": list(fold.source_hashes),
+                "training_image_ids": list(fold.training_image_ids),
+                "training_scenes": _scene_payload_from_scenes(fold.training_scenes),
+                "validation_image_ids": list(fold.validation_image_ids),
+                "validation_scenes": _scene_payload_from_scenes(fold.validation_scenes),
+            }
+            (fold_directory / "manifest.json").write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+        os.replace(temporary, output)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
 def _stratum(box_count: int, overlap_proxy: bool) -> str:
     count_bin = "0-2" if box_count <= 2 else "3-5" if box_count <= 5 else "6+"
     return f"{count_bin}:{int(overlap_proxy)}"
@@ -57,4 +93,8 @@ def _stratum(box_count: int, overlap_proxy: bool) -> str:
 
 def _scene_payload(rows: tuple[object, ...]) -> list[dict[str, object]]:
     scenes = sorted({row.scene for row in rows})  # type: ignore[attr-defined]
+    return _scene_payload_from_scenes(scenes)
+
+
+def _scene_payload_from_scenes(scenes: tuple[SceneKey, ...] | list[SceneKey]) -> list[dict[str, object]]:
     return [{"capture_batch": scene.capture_batch, "scene_number": scene.scene_number} for scene in scenes]

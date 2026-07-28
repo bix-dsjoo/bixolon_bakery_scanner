@@ -1,0 +1,27 @@
+seed: 20260724
+artifact_root: ../artifacts/e2e_current_source
+canonical_frame:
+  width: 1152
+  height: 1536
+dataset:
+  sources:
+    - name: group_15class
+      images: ../datasets/detection/group_15class/images
+      annotations: ../datasets/detection/group_15class/annotations/instances.json
+    - name: group_20class_batch01
+      images: ../datasets/detection/group_20class_batch01/images
+      annotations: ../datasets/detection/group_20class_batch01/annotations/instances.json
+    - name: group_20class_batch02
+      images: ../datasets/detection/group_20class_batch02/images
+      annotations: ../datasets/detection/group_20class_batch02/annotations/instances.json
+  expected_images: 299
+  expected_boxes: 1409
+  folds: 5
+detectors:
+  seeds: [20260724]
+  variants:
+    - {name: dfine_n_640, backend: dfine, input_size: 640, role: primary}
+runtime:
+  device: CUDA:0
+  precision: FP32
+  proposal_limit: 30
