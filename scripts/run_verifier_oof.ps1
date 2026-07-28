@@ -1,5 +1,9 @@
 param(
-    [string]$Device = "cuda:0"
+    [string]$Device = "cuda:0",
+    [string]$FoldRoot = "artifacts/box_system/folds",
+    [string]$DetectorRoot = "artifacts/box_system/detectors",
+    [string]$VerifierRoot = "artifacts/box_system/verifiers",
+    [string]$StagedRoot = "artifacts/box_system/staged"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,10 +18,6 @@ $env:PYTHONPATH = "src"
 $Python = "C:\Users\OMEN\AppData\Local\Programs\Python\Python311\python.exe"
 $Seed = 20260724
 $ModelName = "mobilenetv4_conv_small"
-$FoldRoot = "artifacts/box_system/folds"
-$DetectorRoot = "artifacts/box_system/detectors"
-$VerifierRoot = "artifacts/box_system/verifiers"
-$StagedRoot = "artifacts/box_system/staged"
 $Annotations = Join-Path $StagedRoot "annotations.json"
 $Images = Join-Path $StagedRoot "images"
 $StagedManifest = Join-Path $StagedRoot "staged_manifest.json"
