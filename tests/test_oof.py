@@ -6,7 +6,7 @@ import pytest
 
 from bakery_scanner.contracts import Box, BreadProposal, SceneKey
 from bakery_scanner.detectors.experiments import DetectorExperiment
-from bakery_scanner.detectors.oof import OofArtifact, collect_oof_predictions, load_complete_oof_artifact, select_complementary_pair
+from bakery_scanner.detectors.oof import OofArtifact, _load_staged_images, collect_oof_predictions, load_complete_oof_artifact, select_complementary_pair
 
 _HASH = "a" * 64
 
@@ -107,6 +107,18 @@ def test_load_complete_oof_artifact_rejects_non_frozen_staged_counts(tmp_path):
 
     with pytest.raises(ValueError, match="299 images and 1410 annotations"):
         load_complete_oof_artifact(detector_root=detector_root, fold_root=fold_root, staged_root=staged_root, expected_experiments=(experiment,))
+
+
+def test_staged_loader_accepts_explicit_current_source_box_count(tmp_path):
+    staged_root = tmp_path / "staged"
+    _write_required_staged_dataset(staged_root)
+    annotations = json.loads((staged_root / "annotations.json").read_text(encoding="utf-8"))
+    annotations["annotations"].pop()
+    (staged_root / "annotations.json").write_text(json.dumps(annotations), encoding="utf-8")
+
+    sizes, scenes = _load_staged_images(staged_root, expected_images=299, expected_boxes=1409)
+
+    assert len(sizes) == len(scenes) == 299
 
 
 def _matrix_runs() -> tuple[FakeRun, ...]:

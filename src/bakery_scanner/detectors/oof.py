@@ -64,6 +64,8 @@ def load_complete_oof_artifact(
     staged_root: Path,
     expected_experiments: Iterable[DetectorExperiment],
     config_root: Path | None = None,
+    expected_images: int = 299,
+    expected_boxes: int = 1410,
 ) -> OofArtifact:
     """Load only receipts whose held-out predictions are complete and hash-consistent.
 
@@ -78,7 +80,11 @@ def load_complete_oof_artifact(
         raise ValueError("expected detector matrix must be non-empty and unique")
     detector_root, fold_root, staged_root = Path(detector_root), Path(fold_root), Path(staged_root)
     config_root = Path(config_root) if config_root is not None else None
-    image_sizes, scenes_by_image = _load_staged_images(staged_root)
+    image_sizes, scenes_by_image = _load_staged_images(
+        staged_root,
+        expected_images=expected_images,
+        expected_boxes=expected_boxes,
+    )
     rows: list[OofPrediction] = []
     training: dict[str, frozenset[SceneKey]] = {}
     validation_ids_by_run: dict[str, frozenset[int]] = {}
@@ -348,13 +354,18 @@ def _scene_set(value: object, label: str) -> frozenset[SceneKey]:
     return result
 
 
-def _load_staged_images(staged_root: Path) -> tuple[dict[int, tuple[int, int]], dict[int, SceneKey]]:
+def _load_staged_images(
+    staged_root: Path,
+    *,
+    expected_images: int = 299,
+    expected_boxes: int = 1410,
+) -> tuple[dict[int, tuple[int, int]], dict[int, SceneKey]]:
     annotations = _read_json_object(staged_root / "annotations.json", "staged annotations")
     images, annotation_rows = annotations.get("images"), annotations.get("annotations")
     if not isinstance(images, list) or not isinstance(annotation_rows, list):
         raise ValueError("staged annotations require images and annotations arrays")
-    if len(images) != 299 or len(annotation_rows) != 1410:
-        raise ValueError("staged dataset must contain exactly 299 images and 1410 annotations")
+    if len(images) != expected_images or len(annotation_rows) != expected_boxes:
+        raise ValueError(f"staged dataset must contain exactly {expected_images} images and {expected_boxes} annotations")
     sizes: dict[int, tuple[int, int]] = {}
     for image in images:
         if not isinstance(image, dict):
