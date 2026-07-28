@@ -138,7 +138,7 @@ class ClassifierPipeline:
                 raise ValueError("fusion policy artifacts do not match classifier config")
             fusion_provenance = replace(
                 provenance,
-                calibration_id="fusion_policy_v1",
+                calibration_id=f"fusion_policy_{fusion_policy.decision_rule}",
                 calibration_sha256=hashlib.sha256(fusion_payload).hexdigest(),
             )
         repvit = RepVitM1Runner.load(config)
@@ -341,7 +341,15 @@ class ClassifierPipeline:
                 for index, (sku_id, score) in enumerate(zip(ranked.sku_ids[:3], ranked.scores[:3], strict=True), start=1)
             ),
             provenance=self.fusion_provenance, timings=StageTimings(0.0, 0.0, 0.0),
-            unknown_reason="fusion_risk_threshold",
+            unknown_reason=(
+                "fusion_local_disagreement"
+                if self.fusion_policy.decision_rule == "fusion_local_agree_v1"
+                else (
+                    "fusion_global_consensus_margin"
+                    if self.fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
+                    else "fusion_risk_threshold"
+                )
+            ),
         )
 
     def _with_metadata(
