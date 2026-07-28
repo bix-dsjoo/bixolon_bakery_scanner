@@ -54,16 +54,12 @@ class E2EPipeline:
         classifier: SkuClassifier,
         *,
         assurance_policy: AssurancePolicy | None = None,
-        unknown_top3: tuple[int, int, int] = (1, 2, 3),
     ) -> None:
-        if len(unknown_top3) != 3 or len(set(unknown_top3)) != 3 or any(item not in range(1, 21) for item in unknown_top3):
-            raise ValueError("unknown_top3 must contain three distinct SKU IDs")
         self.detector = detector
         self.mobile_assurance = mobile_assurance
         self.convnext_assurance = convnext_assurance
         self.classifier = classifier
         self.assurance_policy = assurance_policy or AssurancePolicy()
-        self.unknown_top3 = unknown_top3
 
     def infer(self, image_id: int, image: object) -> E2EInference:
         proposals = tuple(self.detector.predict(image_id, image))
@@ -86,7 +82,7 @@ class E2EPipeline:
                 self.assurance_policy,
             ):
                 if resolved.outcome is ResolutionOutcome.UNKNOWN:
-                    final.append(FinalObject(resolved.box, None, resolved.confidence, "unknown_top3", self.unknown_top3))
+                    final.append(FinalObject(resolved.box, None, resolved.confidence, "assurance_unknown", ()))
                 else:
                     decision = self.classifier.infer(image, resolved.box)
                     final.append(_final_from_classifier(decision))

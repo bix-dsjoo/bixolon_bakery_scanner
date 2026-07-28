@@ -51,12 +51,16 @@ class FinalObject:
         object.__setattr__(self, "confidence", confidence)
         top3 = tuple(self.top3)
         if self.sku_id is None:
-            if self.decision_path != "unknown_top3":
-                raise ValueError("Unknown decision requires unknown_top3 path")
-            if len(top3) != 3 or len(set(top3)) != 3:
-                raise ValueError("Unknown decision requires three distinct ranked SKUs")
-            for sku_id in top3:
-                _require_sku_id(sku_id, field="top3 SKU")
+            if self.decision_path == "unknown_top3":
+                if len(top3) != 3 or len(set(top3)) != 3:
+                    raise ValueError("classifier Unknown requires three distinct ranked SKUs")
+                for sku_id in top3:
+                    _require_sku_id(sku_id, field="top3 SKU")
+            elif self.decision_path == "assurance_unknown":
+                if top3:
+                    raise ValueError("assurance Unknown must not invent classifier Top-3 evidence")
+            else:
+                raise ValueError("Unknown decision requires a recognized unknown path")
         else:
             _require_sku_id(self.sku_id, field="sku_id")
             if self.decision_path not in _SKU_PATHS or top3:

@@ -73,4 +73,5 @@ def test_multiple_assurance_result_becomes_unknown_without_classifier_call():
 
     assert classifier.calls == 0
     assert output.final_objects[0].sku_id is None
-    assert output.final_objects[0].top3 == (1, 2, 3)
+    assert output.final_objects[0].decision_path == "assurance_unknown"
+    assert output.final_objects[0].top3 == ()
