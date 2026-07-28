@@ -14,7 +14,8 @@ from typing import Protocol
 
 _IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png"})
 _LIMITATION = (
-    "CPU functional smoke output is not a release evaluation and CPU timings "
+    "CPU functional smoke output uses legacy_four_state_zero_delta assurance; "
+    "it is not a release evaluation or accuracy certification, and CPU timings "
     "are not comparable to RTX 5080 E2E release metrics."
 )
 _STAGE_TIMING_KEYS = (

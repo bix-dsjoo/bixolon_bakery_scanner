@@ -103,3 +103,40 @@ def test_mobile_only_pipeline_returns_unknown_when_convnext_recheck_would_be_req
     assert output.convnext_invocations == 0
     assert output.final_objects[0].sku_id is None
     assert output.final_objects[0].decision_path == "assurance_unknown"
+
+
+def test_mobile_only_pipeline_records_live_stage_timing_mapping(monkeypatch):
+    """Each live E2E stage contributes its measured duration to the public mapping."""
+    proposal = _proposal()
+    clock = iter((0.0, 0.0, 0.001, 0.001, 0.003, 0.003, 0.006, 0.010))
+    monkeypatch.setattr("bakery_scanner.e2e.runtime.time.perf_counter", lambda: next(clock))
+
+    class Detector:
+        def predict(self, image_id, image):
+            return (proposal,)
+
+    class Mobile:
+        def predict(self, candidates, image):
+            return (_prediction(candidates[0], VerifierState.EXACTLY_ONE),)
+
+    class Classifier:
+        def infer(self, image, box):
+            return SimpleNamespace(
+                sku_id=6,
+                confidence=0.9,
+                box=box,
+                decision_path=DecisionPath.REPVIT_DIRECT,
+                top3=(),
+                timings=SimpleNamespace(repvit_ms=7.0, dinov3_ms=11.0),
+            )
+
+    output = MobileOnlyE2EPipeline(Detector(), Mobile(), Classifier()).infer(1, object())
+
+    assert output.stage_timings_ms == {
+        "detector": 1.0,
+        "mobile_assurance": 2.0,
+        "resolver": 3.0,
+        "repvit": 7.0,
+        "dinov3": 11.0,
+        "total": 10.0,
+    }

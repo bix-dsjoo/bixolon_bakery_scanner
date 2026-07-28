@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import time
 from collections.abc import Mapping
 from numbers import Real
 from types import MappingProxyType
@@ -138,10 +139,16 @@ class MobileOnlyE2EPipeline:
         self.assurance_policy = assurance_policy or AssurancePolicy()
 
     def infer(self, image_id: int, image: object) -> E2EInference:
+        total_started = time.perf_counter()
+        detector_started = time.perf_counter()
         proposals = tuple(self.detector.predict(image_id, image))
+        detector_ms = _milliseconds(detector_started, time.perf_counter())
         if any(proposal.image_id != image_id for proposal in proposals):
             raise ValueError("detector proposals must belong to the requested image")
+        mobile_started = time.perf_counter()
         first = tuple(self.mobile_assurance.predict(proposals, image))
+        mobile_ms = _milliseconds(mobile_started, time.perf_counter())
+        resolver_started = time.perf_counter()
         recheck = frozenset(
             select_convnext_rechecks(proposals, first, policy=self.assurance_policy)
         )
@@ -153,26 +160,44 @@ class MobileOnlyE2EPipeline:
             )
             for prediction in first
         }
+        resolved_objects = []
+        for component in build_proposal_components(proposals):
+            resolved_objects.extend(
+                resolve_component(
+                    component,
+                    tuple(predictions[proposal] for proposal in component.members),
+                    self.assurance_policy,
+                )
+            )
+        resolver_ms = _milliseconds(resolver_started, time.perf_counter())
         final: list[FinalObject] = []
         dino_invocations = 0
-        for component in build_proposal_components(proposals):
-            for resolved in resolve_component(
-                component,
-                tuple(predictions[proposal] for proposal in component.members),
-                self.assurance_policy,
-            ):
-                if resolved.outcome is ResolutionOutcome.UNKNOWN:
-                    final.append(FinalObject(resolved.box, None, resolved.confidence, "assurance_unknown", ()))
-                else:
-                    decision = self.classifier.infer(image, resolved.box)
-                    final.append(_final_from_classifier(decision))
-                    if getattr(getattr(decision, "timings", None), "dinov3_ms", 0.0) > 0.0:
-                        dino_invocations += 1
+        repvit_ms = 0.0
+        dinov3_ms = 0.0
+        for resolved in resolved_objects:
+            if resolved.outcome is ResolutionOutcome.UNKNOWN:
+                final.append(FinalObject(resolved.box, None, resolved.confidence, "assurance_unknown", ()))
+            else:
+                decision = self.classifier.infer(image, resolved.box)
+                final.append(_final_from_classifier(decision))
+                timings = getattr(decision, "timings", None)
+                repvit_ms += float(getattr(timings, "repvit_ms", 0.0))
+                dinov3_ms += float(getattr(timings, "dinov3_ms", 0.0))
+                if getattr(timings, "dinov3_ms", 0.0) > 0.0:
+                    dino_invocations += 1
         return E2EInference(
             image_id,
             tuple(sorted(final, key=lambda row: (row.box.y, row.box.x, row.box.height, row.box.width, row.sku_id or 0))),
             convnext_invocations=0,
             dino_invocations=dino_invocations,
+            stage_timings_ms={
+                "detector": detector_ms,
+                "mobile_assurance": mobile_ms,
+                "resolver": resolver_ms,
+                "repvit": repvit_ms,
+                "dinov3": dinov3_ms,
+                "total": _milliseconds(total_started, time.perf_counter()),
+            },
         )
 
 
@@ -185,6 +210,10 @@ def _unknown_recheck_prediction(prediction: BoxAssurancePrediction) -> BoxAssura
         prediction.quality,
         prediction.box_delta,
     )
+
+
+def _milliseconds(started: float, finished: float) -> float:
+    return (finished - started) * 1000.0
 
 
 def _final_from_classifier(decision: object) -> FinalObject:
