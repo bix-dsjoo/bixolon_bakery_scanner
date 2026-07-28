@@ -17,6 +17,16 @@ def test_classifier_config_resolves_paths_and_pins_artifacts():
     assert preprocess_sha256(config.preprocess) == "69857c8c27bfc654207969c372f114569a8ce81f1040b27f47ec2613287ae73b"
 
 
+def test_classifier_config_allows_explicit_cpu_smoke_runtime(tmp_path):
+    source = Path("configs/classifier_policy.yaml").read_text(encoding="utf-8")
+    path = tmp_path / "classifier_policy.yaml"
+    path.write_text(source.replace("device: CUDA:0", "device: CPU"), encoding="utf-8")
+
+    config = ClassifierConfig.load(path)
+
+    assert config.runtime.device == "CPU"
+
+
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [

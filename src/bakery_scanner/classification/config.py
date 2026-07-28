@@ -109,7 +109,7 @@ def preprocess_sha256(config: PreprocessConfig) -> str:
 
 
 class ClassifierRuntimeConfig(_StrictModel):
-    device: Literal["CUDA:0"]
+    device: Literal["CPU", "CUDA:0"]
     precision: Literal["FP32"]
 
 

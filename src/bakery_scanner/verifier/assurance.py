@@ -208,11 +208,33 @@ def run_assurance_cascade(
     minimum_state_margin: float = 0.15,
 ) -> AssuranceCascadeResult:
     """Run ConvNeXt once only for ambiguous or graph-conflicting candidates."""
-    if not math.isfinite(minimum_state_margin) or not 0.0 <= minimum_state_margin <= 1.0:
-        raise ValueError("minimum_state_margin must be finite in [0, 1]")
     chosen_policy = policy or AssurancePolicy()
     first = tuple(mobile.predict(candidates, image))
-    _require_prediction_coverage(candidates, first)
+    recheck = select_convnext_rechecks(
+        candidates,
+        first,
+        policy=chosen_policy,
+        minimum_state_margin=minimum_state_margin,
+    )
+    if not recheck:
+        return AssuranceCascadeResult(first, 0)
+    second = tuple(convnext.predict(recheck, image))
+    _require_prediction_coverage(recheck, second)
+    replacements = {prediction.proposal: prediction for prediction in second}
+    return AssuranceCascadeResult(tuple(replacements.get(prediction.proposal, prediction) for prediction in first), 1)
+
+
+def select_convnext_rechecks(
+    candidates: tuple[BreadProposal, ...],
+    predictions: tuple[BoxAssurancePrediction, ...],
+    *,
+    policy: AssurancePolicy,
+    minimum_state_margin: float = 0.15,
+) -> tuple[BreadProposal, ...]:
+    """Return candidates requiring conditional ConvNeXt-Tiny assurance."""
+    if not math.isfinite(minimum_state_margin) or not 0.0 <= minimum_state_margin <= 1.0:
+        raise ValueError("minimum_state_margin must be finite in [0, 1]")
+    _require_prediction_coverage(candidates, predictions)
     from bakery_scanner.detectors.proposal_graph import build_proposal_components
 
     conflicts = {
@@ -221,20 +243,14 @@ def run_assurance_cascade(
         if len(component.members) > 1
         for proposal in component.members
     }
-    recheck = tuple(
+    return tuple(
         prediction.proposal
-        for prediction in first
+        for prediction in predictions
         if prediction.proposal in conflicts
         or prediction.predicted_state in (VerifierState.PARTIAL, VerifierState.MULTIPLE)
-        or prediction.quality < chosen_policy.minimum_exact_quality
+        or prediction.quality < policy.minimum_exact_quality
         or prediction.state_margin < minimum_state_margin
     )
-    if not recheck:
-        return AssuranceCascadeResult(first, 0)
-    second = tuple(convnext.predict(recheck, image))
-    _require_prediction_coverage(recheck, second)
-    replacements = {prediction.proposal: prediction for prediction in second}
-    return AssuranceCascadeResult(tuple(replacements.get(prediction.proposal, prediction) for prediction in first), 1)
 
 
 @dataclass(frozen=True, slots=True)
