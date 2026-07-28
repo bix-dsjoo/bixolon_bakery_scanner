@@ -20,7 +20,7 @@ if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) {
 
 $manifestPath = Join-Path $repoRoot 'portable_cpu_smoke\manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$staging = Join-Path $outputParent ('.cpu-smoke-staging-' + [guid]::NewGuid().ToString('N'))
+$staging = Join-Path $outputParent ('.p-' + [guid]::NewGuid().ToString('N'))
 
 function Copy-PackagePath([string]$relativePath) {
     if ([IO.Path]::IsPathRooted($relativePath) -or $relativePath.Contains('..')) {
@@ -37,7 +37,7 @@ function Copy-PackagePath([string]$relativePath) {
     $destination = Join-Path $staging $relativePath
     if ((Get-Item -LiteralPath $source) -is [IO.DirectoryInfo]) {
         Get-ChildItem -LiteralPath $source -File -Recurse | Where-Object {
-            $_.FullName -notmatch '[\\/]__pycache__[\\/]'
+            $_.FullName -notmatch '[\\/](__pycache__|\.git)[\\/]'
         } | ForEach-Object {
             $childRelative = $_.FullName.Substring($source.Length).TrimStart('\', '/')
             $childDestination = Join-Path $destination $childRelative

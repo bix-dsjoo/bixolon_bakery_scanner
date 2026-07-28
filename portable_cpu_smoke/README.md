@@ -4,6 +4,10 @@ This package runs a fixed, functional CPU smoke check on Windows 10 or 11. It
 requires a network connection during installation and Python 3.11 available as
 `py -3.11`. It does not support CUDA.
 
+The DINOv3 source is bundled at `dino` and pinned by `dino/COMMIT.txt` to commit
+`6876159a11b4df116f30f667f8c9888617df0751`. Installation does not require
+Git or a DINOv3 network download.
+
 From the extracted package root, run:
 
 ```powershell

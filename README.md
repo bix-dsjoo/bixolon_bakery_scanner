@@ -17,6 +17,10 @@ shows only E/M/H means, while `inference.json` retains audit fields and
 policy and a legacy-four-state zero-delta assurance adapter; it is neither a
 release gate nor an accuracy certification.
 
+The package includes DINOv3 source at the audited commit recorded in
+`dino/COMMIT.txt`; installers do not require Git or download
+DINOv3 source/model weights.
+
 스캔 이미지 한 장에서 빵의 **품목, 수량, 위치**를 빠르고 정확하게
 추론하는 GPU 기반 비전 파이프라인입니다.
 

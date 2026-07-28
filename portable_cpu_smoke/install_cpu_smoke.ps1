@@ -50,6 +50,11 @@ $otherRequirements = Get-Content -LiteralPath $requirements | Where-Object {
     $_ -and -not $_.StartsWith('torch==') -and -not $_.StartsWith('torchvision==')
 }
 Invoke-Checked 'remaining CPU dependency installation' (@('-m', 'pip', 'install', '--no-cache-dir') + $otherRequirements)
+$dinoSource = Join-Path $root 'dino'
+if (-not (Test-Path -LiteralPath $dinoSource -PathType Container)) {
+    throw "bundled DINOv3 source is missing: $dinoSource"
+}
+Invoke-Checked 'local DINOv3 installation' @('-m', 'pip', 'install', '--no-cache-dir', '--no-deps', '--no-build-isolation', $dinoSource)
 Invoke-Checked 'local project installation' @('-m', 'pip', 'install', '--no-cache-dir', '--no-deps', $root)
 
 Write-Host "CPU smoke runtime installed under $root"

@@ -31,6 +31,10 @@ def test_manifest_scopes_real_cpu_runtime_and_exactly_nine_samples() -> None:
     assert "scripts/run_e2e_smoke.py" in manifest["required_paths"]
     assert "src/bakery_scanner" in manifest["required_paths"]
     assert "third_party/D-FINE/src" in manifest["required_paths"]
+    assert "dino" in manifest["required_paths"]
+    assert (ROOT / "dino" / "COMMIT.txt").read_text(encoding="utf-8").strip() == (
+        "6876159a11b4df116f30f667f8c9888617df0751"
+    )
     assert "third_party/D-FINE/configs/dfine/dfine_hgnetv2_n_coco.yml" in manifest["required_paths"]
     assert "datasets" not in manifest["required_paths"]
     assert len(manifest["sample_paths"]) == 9
@@ -73,7 +77,29 @@ def test_requirements_pin_cpu_runtime_and_dfine_import_dependencies() -> None:
         "scipy==1.17.1",
         "scikit-learn==1.9.0",
         "faster-coco-eval==1.7.0",
-        "dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6876159a11b4df116f30f667f8c9888617df0751",
+        "ftfy==6.3.1",
+        "omegaconf==2.3.1",
+        "antlr4-python3-runtime==4.9.3",
+        "regex==2026.7.19",
+        "submitit==1.5.4",
+        "termcolor==3.3.0",
+        "torchmetrics==1.9.0",
+        "cloudpickle==3.1.2",
+        "filelock==3.32.0",
+        "fsspec==2026.7.0",
+        "joblib==1.5.3",
+        "lightning-utilities==0.15.3",
+        "narwhals==2.24.0",
+        "networkx==3.6.1",
+        "packaging==26.2",
+        "setuptools==83.0.0",
+        "sympy==1.14.0",
+        "threadpoolctl==3.6.0",
+        "typing_extensions==4.16.0",
+        "wcwidth==0.8.2",
+        "Jinja2==3.1.6",
+        "MarkupSafe==3.0.3",
+        "mpmath==1.3.0",
     ]
     installer = (PORTABLE / "install_cpu_smoke.ps1").read_text(encoding="utf-8")
     assert "function Invoke-Checked" in installer
@@ -81,6 +107,11 @@ def test_requirements_pin_cpu_runtime_and_dfine_import_dependencies() -> None:
     assert "$env:PIP_CACHE_DIR" in installer
     assert "$env:TEMP" in installer
     assert "$env:TMP" in installer
+    assert "local DINOv3 installation" in installer
+    assert "Join-Path $root 'dino'" in installer
+    assert "git.exe" not in installer
+    assert "git+https://" not in installer
+    assert "github.com/facebookresearch/dinov3" not in installer
 
 
 @pytest.mark.skipif(
@@ -92,6 +123,7 @@ def test_clean_installed_runtime_imports_cpu_factory_and_classifier_pipeline() -
     with tempfile.TemporaryDirectory(prefix="bcs-", dir=Path(tempfile.gettempdir()).anchor) as directory:
         root = Path(directory) / "package-root"
         shutil.copytree(ROOT / "src", root / "src")
+        shutil.copytree(ROOT / "dino", root / "dino")
         shutil.copy2(ROOT / "pyproject.toml", root / "pyproject.toml")
         venv = Path(directory) / "venv"
         local_temp = Path(directory) / "local-pip-temp"
@@ -104,6 +136,8 @@ def test_clean_installed_runtime_imports_cpu_factory_and_classifier_pipeline() -
         }
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, env=environment)
         python = venv / "Scripts" / "python.exe"
+        environment["PATH"] = str(python.parent) + ";" + str(Path(os.environ["SystemRoot"]) / "System32")
+        assert shutil.which("git", path=environment["PATH"]) is None
         requirements = (PORTABLE / "requirements-cpu.txt").read_text(encoding="utf-8").splitlines()
         torch_requirements = requirements[:2]
         other_requirements = requirements[2:]
@@ -114,6 +148,11 @@ def test_clean_installed_runtime_imports_cpu_factory_and_classifier_pipeline() -
         )
         subprocess.run(
             [str(python), "-m", "pip", "install", "--no-cache-dir", *other_requirements],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--no-cache-dir", "--no-deps", str(root / "dino")],
             check=True,
             env=environment,
         )
