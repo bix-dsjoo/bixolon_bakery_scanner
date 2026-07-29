@@ -86,6 +86,7 @@ The worker returns one response with the same request ID:
   "device": "cuda:0",
   "objects": [
     {
+      "object_id": "object-1",
       "sku_id": 10,
       "sku_name": "Sugar Donut",
       "bbox_xyxy": [100.0, 120.0, 500.0, 620.0],
@@ -111,6 +112,9 @@ Unknown objects use `sku_id: null`, `sku_name: "Unknown"`, preserve exactly
 three ranked registered-product candidates, and are not included in
 registered-SKU counts. Each candidate has `rank`, `sku_id`, `sku_name`, and
 `score`; confirmed objects use an empty `top3` array.
+`object_id` is unique within one result and deterministically follows the
+top-to-bottom, left-to-right sorted object order so the result rail can highlight
+the corresponding overlay without using floating-point coordinates as identity.
 Every response preserves bounding boxes in the captured image's
 EXIF-transposed visual coordinate frame.
 
@@ -282,6 +286,7 @@ Automated tests cover:
 - overlay coordinate mapping with letterboxing and window resize;
 - registered SKU aggregation and separate Unknown counts;
 - exactly three ranked candidates for every Unknown;
+- uniqueness and deterministic ordering of result `object_id` values;
 - separation of startup/warm-up, worker inference, capture, and
   press-to-rendered-result timing;
 - keyboard focus, semantic action labels, minimum target size, and `1024x720`
