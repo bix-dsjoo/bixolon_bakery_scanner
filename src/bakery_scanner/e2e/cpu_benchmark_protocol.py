@@ -230,7 +230,7 @@ class WarmupEvidence:
     images: tuple[WarmupImageEvidence, ...]
 
     def __post_init__(self) -> None:
-        if self.repetitions != 2:
+        if type(self.repetitions) is not int or self.repetitions != 2:
             raise ValueError("repetitions must be exactly 2")
         images = tuple(self.images)
         if any(not isinstance(image, WarmupImageEvidence) for image in images):

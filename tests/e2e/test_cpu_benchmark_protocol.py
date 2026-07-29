@@ -197,6 +197,10 @@ def test_metadata_pairs_reject_duplicate_keys(factory, changes):
 def test_warmup_evidence_requires_exactly_two_repetitions():
     with pytest.raises(ValueError, match="exactly 2"):
         WarmupEvidence(repetitions=1, images=(_warmup_image(),))
+    with pytest.raises(ValueError, match="exactly 2"):
+        WarmupEvidence(repetitions=2.0, images=(_warmup_image(),))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="exactly 2"):
+        WarmupEvidence(repetitions=True, images=(_warmup_image(),))  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="1 and 2"):
         _warmup_image(repetition=3)
 
