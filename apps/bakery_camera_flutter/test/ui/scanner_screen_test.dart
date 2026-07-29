@@ -75,6 +75,28 @@ void main() {
 
       await tester.tap(find.text('분석하기'));
       await tester.pump();
+
+      final inFlightRecapture = tester.widget<OutlinedButton>(
+        find.byKey(const Key('primary-action')),
+      );
+      expect(inFlightRecapture.onPressed, isNull);
+      expect(
+        inFlightRecapture.style!.foregroundColor!.resolve({
+          WidgetState.disabled,
+        }),
+        bixolonMutedInk,
+      );
+      expect(
+        inFlightRecapture.style!.backgroundColor!.resolve({
+          WidgetState.disabled,
+        }),
+        bixolonCanvas,
+      );
+      expect(
+        inFlightRecapture.style!.side!.resolve({WidgetState.disabled})!.color,
+        bixolonDivider,
+      );
+
       fixture.worker.complete(_result());
       await tester.pumpAndSettle();
 
@@ -132,6 +154,18 @@ void main() {
       find.byKey(const Key('primary-action')),
     );
     expect(action.onPressed, isNull);
+    expect(
+      action.style!.backgroundColor!.resolve({WidgetState.disabled}),
+      bixolonDivider,
+    );
+    expect(
+      action.style!.foregroundColor!.resolve({WidgetState.disabled}),
+      bixolonMutedInk,
+    );
+    expect(
+      action.style!.side!.resolve({WidgetState.disabled})!.color,
+      bixolonDivider,
+    );
     expect(find.text('분석하기'), findsOneWidget);
     expect(find.text('카메라를 찾지 못했습니다'), findsOneWidget);
     expect(find.text('카메라 다시 연결'), findsOneWidget);

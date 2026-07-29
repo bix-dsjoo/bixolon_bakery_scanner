@@ -320,8 +320,16 @@ final class _PrimaryAction extends StatelessWidget {
               key: const Key('primary-action'),
               style: ButtonStyle(
                 minimumSize: const WidgetStatePropertyAll(Size(44, 52)),
-                foregroundColor: const WidgetStatePropertyAll(cameraInk),
-                backgroundColor: const WidgetStatePropertyAll(Colors.white),
+                foregroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.disabled)
+                      ? bixolonMutedInk
+                      : cameraInk,
+                ),
+                backgroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.disabled)
+                      ? bixolonCanvas
+                      : Colors.white,
+                ),
                 shape: WidgetStatePropertyAll(
                   RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -329,10 +337,16 @@ final class _PrimaryAction extends StatelessWidget {
                 ),
                 side: WidgetStateProperty.resolveWith(
                   (states) => BorderSide(
-                    color: states.contains(WidgetState.focused)
+                    color: states.contains(WidgetState.disabled)
+                        ? bixolonDivider
+                        : states.contains(WidgetState.focused)
                         ? actionBlue
                         : cameraInk,
-                    width: states.contains(WidgetState.focused) ? 3 : 1.5,
+                    width:
+                        !states.contains(WidgetState.disabled) &&
+                            states.contains(WidgetState.focused)
+                        ? 3
+                        : 1.5,
                   ),
                 ),
               ),
@@ -342,7 +356,30 @@ final class _PrimaryAction extends StatelessWidget {
           : FilledButton(
               key: const Key('primary-action'),
               style: Theme.of(context).filledButtonTheme.style?.copyWith(
-                backgroundColor: const WidgetStatePropertyAll(bixolonOrange),
+                backgroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.disabled)
+                      ? bixolonDivider
+                      : bixolonOrange,
+                ),
+                foregroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.disabled)
+                      ? bixolonMutedInk
+                      : Colors.white,
+                ),
+                side: WidgetStateProperty.resolveWith(
+                  (states) => BorderSide(
+                    color: states.contains(WidgetState.disabled)
+                        ? bixolonDivider
+                        : states.contains(WidgetState.focused)
+                        ? actionBlue
+                        : Colors.transparent,
+                    width:
+                        !states.contains(WidgetState.disabled) &&
+                            states.contains(WidgetState.focused)
+                        ? 3
+                        : 0,
+                  ),
+                ),
               ),
               onPressed: onPressed,
               child: Text(label),
