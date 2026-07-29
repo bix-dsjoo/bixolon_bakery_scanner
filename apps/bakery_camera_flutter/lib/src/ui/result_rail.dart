@@ -70,7 +70,7 @@ final class _Headline extends StatelessWidget {
   Widget build(BuildContext context) {
     final result = state.result;
     if (result != null) {
-      final displayMs = state.pressToRenderedResultMs ?? elapsedMs;
+      final displayMs = state.pressToRenderedResultMs ?? result.timings.totalMs;
       return Text(
         '총 ${result.objects.length}개 · ${displayMs.round()} ms · '
         '${_deviceLabel(result.device)}',
@@ -92,6 +92,19 @@ final class _Headline extends StatelessWidget {
       return _FailureHeadline(
         title: '카메라를 찾지 못했습니다',
         detail: state.cameraError,
+      );
+    }
+    if (!state.cameraReady) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '카메라를 연결하고 있습니다',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 6),
+          _Elapsed(value: elapsedMs),
+        ],
       );
     }
     if (state.isAnalyzing) {
@@ -216,7 +229,7 @@ final class _Counts extends StatelessWidget {
   }
 }
 
-final class _ObjectRow extends StatelessWidget {
+final class _ObjectRow extends StatefulWidget {
   const _ObjectRow({
     required this.object,
     required this.selected,
@@ -228,80 +241,104 @@ final class _ObjectRow extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_ObjectRow> createState() => _ObjectRowState();
+}
+
+final class _ObjectRowState extends State<_ObjectRow> {
+  bool _focused = false;
+
+  @override
   Widget build(BuildContext context) {
+    final object = widget.object;
     final color = object.isUnknown ? unknownAmber : confirmedTeal;
     return Semantics(
-      selected: selected,
+      selected: widget.selected,
       button: true,
       label: '${object.skuName} 결과 보기',
-      child: InkWell(
-        key: Key('object-row-${object.objectId}'),
-        onTap: onTap,
-        focusColor: actionBlue.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-          margin: const EdgeInsets.only(bottom: 4),
-          decoration: BoxDecoration(
-            color: selected ? color.withValues(alpha: 0.08) : null,
-            border: Border(
-              left: BorderSide(color: color, width: selected ? 4 : 2),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      object.skuName,
-                      style: Theme.of(
-                        context,
-                      ).textTheme.titleMedium?.copyWith(color: color),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: Key('object-row-${object.objectId}'),
+          onTap: widget.onTap,
+          onFocusChange: (focused) => setState(() => _focused = focused),
+          focusColor: Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            key: Key('object-row-surface-${object.objectId}'),
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+            margin: const EdgeInsets.only(bottom: 4),
+            decoration: BoxDecoration(
+              color: _focused
+                  ? actionBlue.withValues(alpha: 0.08)
+                  : widget.selected
+                  ? color.withValues(alpha: 0.08)
+                  : null,
+              border: _focused
+                  ? Border.all(color: actionBlue, width: 2)
+                  : Border(
+                      left: BorderSide(
+                        color: color,
+                        width: widget.selected ? 4 : 2,
+                      ),
                     ),
-                  ),
-                  Text(
-                    _percentage(object.confidence),
-                    style: const TextStyle(fontFeatures: tabularFigures),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 3),
-              Text(
-                _decisionPath(object.decisionPath),
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF67717C),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        object.skuName,
+                        style: Theme.of(
+                          context,
+                        ).textTheme.titleMedium?.copyWith(color: color),
+                      ),
+                    ),
+                    Text(
+                      _percentage(object.confidence),
+                      style: const TextStyle(fontFeatures: tabularFigures),
+                    ),
+                  ],
                 ),
-              ),
-              if (object.isUnknown) ...[
-                const SizedBox(height: 10),
-                for (final candidate in object.candidates)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 5),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 22,
-                          child: Text(
-                            '${candidate.rank}',
+                const SizedBox(height: 3),
+                Text(
+                  _decisionPath(object.decisionPath),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: const Color(0xFF67717C),
+                  ),
+                ),
+                if (object.isUnknown) ...[
+                  const SizedBox(height: 10),
+                  for (final candidate in object.candidates)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 5),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 22,
+                            child: Text(
+                              '${candidate.rank}',
+                              style: const TextStyle(
+                                color: unknownAmber,
+                                fontWeight: FontWeight.w800,
+                                fontFeatures: tabularFigures,
+                              ),
+                            ),
+                          ),
+                          Expanded(child: Text(candidate.skuName)),
+                          Text(
+                            _percentage(candidate.score),
                             style: const TextStyle(
-                              color: unknownAmber,
-                              fontWeight: FontWeight.w800,
                               fontFeatures: tabularFigures,
                             ),
                           ),
-                        ),
-                        Expanded(child: Text(candidate.skuName)),
-                        Text(
-                          _percentage(candidate.score),
-                          style: const TextStyle(fontFeatures: tabularFigures),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

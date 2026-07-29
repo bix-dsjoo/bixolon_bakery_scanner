@@ -20,6 +20,7 @@ final class StatusStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final workerReady = state.workerStatus == WorkerStatus.ready;
     final workerFatal = state.workerStatus == WorkerStatus.fatal;
+    final cameraFailure = !state.cameraReady && state.cameraError != null;
     return Semantics(
       container: true,
       label: '카메라와 모델 상태',
@@ -39,8 +40,16 @@ final class StatusStrip extends StatelessWidget {
               ),
               const SizedBox(width: 24),
               _StatusDot(
-                label: state.cameraReady ? '카메라 연결됨' : '카메라 연결 안 됨',
-                color: state.cameraReady ? confirmedTeal : failureRed,
+                label: state.cameraReady
+                    ? '카메라 연결됨'
+                    : cameraFailure
+                    ? '카메라 연결 안 됨'
+                    : '카메라 연결 중',
+                color: state.cameraReady
+                    ? confirmedTeal
+                    : cameraFailure
+                    ? failureRed
+                    : const Color(0xFF7A8490),
               ),
               const SizedBox(width: 18),
               _StatusDot(
@@ -66,7 +75,7 @@ final class StatusStrip extends StatelessWidget {
                 ),
               ],
               const Spacer(),
-              if (!state.cameraReady)
+              if (cameraFailure)
                 TextButton(
                   onPressed: onReconnectCamera,
                   child: const Text('카메라 다시 연결'),

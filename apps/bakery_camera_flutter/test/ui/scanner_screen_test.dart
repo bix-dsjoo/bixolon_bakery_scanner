@@ -8,6 +8,7 @@ import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:bakery_camera_prototype/src/ui/scanner_screen.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -27,6 +28,37 @@ void main() {
     expect(find.text('카메라를 찾지 못했습니다'), findsOneWidget);
     expect(find.text('카메라 다시 연결'), findsOneWidget);
   });
+
+  testWidgets(
+    'camera initialization and reconnect are distinct from camera failure',
+    (tester) async {
+      final fixture = ScannerFixture(cameraReady: false);
+      fixture.camera.initializeCompleter = Completer<bool>();
+      addTearDown(fixture.close);
+
+      await _mountScreen(tester, fixture.controller);
+      await tester.pump();
+
+      expect(find.text('카메라 연결 중'), findsOneWidget);
+      expect(find.text('카메라를 연결하고 있습니다'), findsOneWidget);
+      expect(find.text('카메라 다시 연결'), findsNothing);
+
+      fixture.camera.initializeCompleter!.complete(false);
+      await tester.pumpAndSettle();
+      expect(find.text('카메라를 찾지 못했습니다'), findsOneWidget);
+      expect(find.text('카메라 다시 연결'), findsOneWidget);
+
+      fixture.camera.reconnectCompleter = Completer<bool>();
+      await tester.tap(find.text('카메라 다시 연결'));
+      await tester.pump();
+      expect(find.text('카메라 연결 중'), findsOneWidget);
+      expect(find.text('카메라 다시 연결'), findsNothing);
+
+      fixture.camera.reconnectCompleter!.complete(true);
+      await tester.pumpAndSettle();
+      expect(find.text('카메라 연결됨'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'startup and analysis show factual Korean phase and elapsed time',
@@ -88,11 +120,11 @@ void main() {
       );
       expect(find.text('Sugar Donut'), findsOneWidget);
       expect(find.text('88.0%'), findsOneWidget);
-    expect(find.text('정확도'), findsNothing);
+      expect(find.text('정확도'), findsNothing);
 
-    expect(find.text('120 ms'), findsNothing);
-    await tester.ensureVisible(find.text('모델 정보'));
-    await tester.tap(find.text('모델 정보'));
+      expect(find.text('120 ms'), findsNothing);
+      await tester.ensureVisible(find.text('모델 정보'));
+      await tester.tap(find.text('모델 정보'));
       await tester.pumpAndSettle();
       expect(find.text('120 ms'), findsOneWidget);
       expect(find.text('30 ms'), findsOneWidget);
@@ -109,6 +141,27 @@ void main() {
       );
       expect(find.text('다시 촬영'), findsOneWidget);
       expect(find.byKey(const Key('primary-action')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'first result frame uses worker total until press-to-render is acknowledged',
+    (tester) async {
+      final fixture = ScannerFixture();
+      addTearDown(fixture.close);
+      await _pumpScreen(tester, fixture.controller);
+
+      await tester.tap(find.text('분석하기'));
+      await tester.pump();
+      fixture.nowMs = 412;
+      fixture.worker.complete(_result());
+      await tester.pump();
+
+      expect(find.text('총 2개 · 290 ms · GPU'), findsOneWidget);
+      expect(find.textContaining('총 2개 · 0 ms'), findsNothing);
+
+      await tester.pump();
+      expect(find.text('총 2개 · 412 ms · GPU'), findsOneWidget);
     },
   );
 
@@ -157,6 +210,28 @@ void main() {
     );
     expect(button.style!.minimumSize!.resolve({})!.height, 52);
   });
+
+  testWidgets('object row paints a visible local keyboard focus treatment', (
+    tester,
+  ) async {
+    final fixture = ScannerFixture();
+    addTearDown(fixture.close);
+    await _pumpScreen(tester, fixture.controller);
+    await tester.tap(find.text('분석하기'));
+    await tester.pump();
+    fixture.worker.complete(_result());
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+
+    final surface = tester.widget<Container>(
+      find.byKey(const Key('object-row-surface-object-1')),
+    );
+    final decoration = surface.decoration! as BoxDecoration;
+    expect(decoration.border!.top.color, actionBlue);
+    expect(decoration.border!.top.width, 2);
+  });
 }
 
 Future<void> _pumpScreen(
@@ -171,6 +246,14 @@ Future<void> _pumpScreen(
   );
   await tester.pumpAndSettle();
 }
+
+Future<void> _mountScreen(WidgetTester tester, ScannerController controller) =>
+    tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: ScannerScreen(controller: controller),
+      ),
+    );
 
 final class ScannerFixture {
   ScannerFixture({bool cameraReady = true})
@@ -198,6 +281,8 @@ final class FakeCamera implements CameraSession {
 
   final errorsController = StreamController<String>.broadcast(sync: true);
   bool ready;
+  Completer<bool>? initializeCompleter;
+  Completer<bool>? reconnectCompleter;
 
   @override
   Stream<String> get errors => errorsController.stream;
@@ -208,14 +293,26 @@ final class FakeCamera implements CameraSession {
   @override
   CameraController? get previewController => null;
   @override
-  Future<bool> initialize() async => ready;
+  Future<bool> initialize() async {
+    final pending = initializeCompleter;
+    if (pending != null) {
+      ready = await pending.future;
+    }
+    return ready;
+  }
+
   @override
   Future<CapturedFrame> captureStill() async =>
       const CapturedFrame(r'C:\capture.jpg');
   @override
   Future<void> releaseCapture(String absolutePath) async {}
   @override
-  Future<bool> reconnect() async => ready = true;
+  Future<bool> reconnect() async {
+    final pending = reconnectCompleter;
+    ready = pending == null ? true : await pending.future;
+    return ready;
+  }
+
   @override
   Future<void> close() => errorsController.close();
 }
