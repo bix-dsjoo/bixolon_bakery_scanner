@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:bakery_camera_prototype/src/camera/camera_service.dart';
 import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
-import 'package:bakery_camera_prototype/src/scanner/result_overlay.dart';
+import 'package:bakery_camera_prototype/src/scanner/result_overlay.dart'
+    hide confirmedTeal, unknownAmber;
 import 'package:bakery_camera_prototype/src/scanner/scanner_controller.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
+import 'package:bakery_camera_prototype/src/ui/bixolon_brand.dart';
 import 'package:bakery_camera_prototype/src/ui/scanner_screen.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +14,112 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'Bixolon header and 70/30 workspace identify the industrial scan console',
+    (tester) async {
+      final fixture = ScannerFixture();
+      addTearDown(fixture.close);
+      tester.view.physicalSize = const Size(1280, 820);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await _pumpScreen(tester, fixture.controller);
+
+      final header = tester.widget<ColoredBox>(
+        find.byKey(const Key('bixolon-header')),
+      );
+      expect(header.color, Colors.white);
+      expect(find.byType(BixolonWordmark), findsOneWidget);
+      expect(find.text('Bakery AI Scanner'), findsOneWidget);
+
+      final cameraPane = find.byKey(const Key('camera-pane'));
+      final resultPane = find.byKey(const Key('result-pane'));
+      final paneRatio =
+          tester.getSize(cameraPane).width / tester.getSize(resultPane).width;
+      expect(paneRatio, closeTo(7 / 3, 0.15));
+
+      expect(
+        find.descendant(
+          of: cameraPane,
+          matching: find.byType(BixolonBrandDecoration),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('camera-viewport')),
+          matching: find.byType(BixolonBrandDecoration),
+        ),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'analysis is Orange while recapture is the sole black outlined action',
+    (tester) async {
+      final fixture = ScannerFixture();
+      addTearDown(fixture.close);
+      await _pumpScreen(tester, fixture.controller);
+
+      final analyze = tester.widget<FilledButton>(
+        find.byKey(const Key('primary-action')),
+      );
+      expect(
+        analyze.style!.backgroundColor!.resolve(<WidgetState>{}),
+        bixolonOrange,
+      );
+      expect(find.byType(FilledButton), findsOneWidget);
+      expect(find.byType(OutlinedButton), findsNothing);
+
+      await tester.tap(find.text('분석하기'));
+      await tester.pump();
+      fixture.worker.complete(_result());
+      await tester.pumpAndSettle();
+
+      final recapture = tester.widget<OutlinedButton>(
+        find.byKey(const Key('primary-action')),
+      );
+      expect(
+        recapture.style!.foregroundColor!.resolve(<WidgetState>{}),
+        cameraInk,
+      );
+      expect(recapture.style!.side!.resolve(<WidgetState>{})!.color, cameraInk);
+      expect(find.byType(FilledButton), findsNothing);
+      expect(find.byType(OutlinedButton), findsOneWidget);
+    },
+  );
+
+  testWidgets('confirmed and Unknown rows retain teal and amber semantics', (
+    tester,
+  ) async {
+    final fixture = ScannerFixture();
+    addTearDown(fixture.close);
+    await _pumpScreen(tester, fixture.controller);
+
+    await tester.tap(find.text('분석하기'));
+    await tester.pump();
+    fixture.worker.complete(_result());
+    await tester.pumpAndSettle();
+
+    final confirmedSurface = tester.widget<Container>(
+      find.byKey(const Key('object-row-surface-object-1')),
+    );
+    final unknownSurface = tester.widget<Container>(
+      find.byKey(const Key('object-row-surface-object-2')),
+    );
+    final confirmedDecoration = confirmedSurface.decoration! as BoxDecoration;
+    final unknownDecoration = unknownSurface.decoration! as BoxDecoration;
+    final confirmedBorder = confirmedDecoration.border! as Border;
+    final unknownBorder = unknownDecoration.border! as Border;
+
+    expect(confirmedBorder.left.color, confirmedTeal);
+    expect(unknownBorder.left.color, unknownAmber);
+    expect(confirmedBorder.left.color, isNot(bixolonOrange));
+    expect(unknownBorder.left.color, isNot(bixolonOrange));
+  });
+
   testWidgets('analysis stays disabled until camera and model are ready', (
     tester,
   ) async {

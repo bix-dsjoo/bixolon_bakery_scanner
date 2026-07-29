@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../scanner/result_overlay.dart' hide confirmedTeal, unknownAmber;
 import '../scanner/scanner_controller.dart';
 import 'app_theme.dart';
+import 'bixolon_brand.dart';
 import 'result_rail.dart';
 import 'status_strip.dart';
 
@@ -92,11 +93,12 @@ final class _ScannerScreenState extends State<ScannerScreen> {
             ),
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Expanded(
+                      key: const Key('camera-pane'),
                       flex: 7,
                       child: _CameraStage(
                         controller: widget.controller,
@@ -105,6 +107,7 @@ final class _ScannerScreenState extends State<ScannerScreen> {
                     ),
                     const SizedBox(width: 12),
                     Expanded(
+                      key: const Key('result-pane'),
                       flex: 3,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -152,63 +155,124 @@ final class _CameraStage extends StatelessWidget {
   final ScannerState state;
 
   @override
-  Widget build(BuildContext context) => ColoredBox(
-    color: cameraInk,
-    child: LayoutBuilder(
-      builder: (context, constraints) {
-        final result = state.result;
-        final capturedPath = state.capturedImagePath;
-        if (capturedPath != null) {
-          return Stack(
-            fit: StackFit.expand,
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: cameraInk,
+      border: Border.all(color: const Color(0xFF2D2D2D)),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          width: 4,
+          color: state.cameraReady ? bixolonOrange : const Color(0xFF555555),
+        ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Image.file(
-                File(capturedPath),
-                fit: BoxFit.contain,
-                errorBuilder: (_, _, _) => const _CapturedPlaceholder(),
-              ),
-              if (result != null)
-                CustomPaint(
-                  painter: ResultOverlayPainter(
-                    transform: ContainedImageTransform(
-                      imageSize: Size(result.imageWidth, result.imageHeight),
-                      viewportSize: Size(
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      ),
-                    ),
-                    items: [
-                      for (final object in result.objects)
-                        ResultOverlayItem(
-                          objectId: object.objectId,
-                          imageBox: Rect.fromLTRB(
-                            object.bboxXyxy[0],
-                            object.bboxXyxy[1],
-                            object.bboxXyxy[2],
-                            object.bboxXyxy[3],
-                          ),
-                          skuName: object.skuName,
-                          isUnknown: object.isUnknown,
+              SizedBox(
+                height: 38,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 14),
+                  child: Row(
+                    children: [
+                      Text(
+                        state.cameraReady ? 'LIVE INPUT' : 'CAMERA STANDBY',
+                        style: const TextStyle(
+                          color: Color(0xFFB9B9B9),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.15,
                         ),
+                      ),
+                      const Spacer(),
+                      const BixolonBrandDecoration(size: 30),
+                      const SizedBox(width: 8),
                     ],
-                    selectedObjectId: state.selectedObjectId,
                   ),
                 ),
+              ),
+              Expanded(
+                child: DecoratedBox(
+                  key: const Key('camera-viewport'),
+                  decoration: const BoxDecoration(
+                    color: Colors.black,
+                    border: Border(top: BorderSide(color: Color(0xFF2D2D2D))),
+                  ),
+                  child: _CameraViewport(controller: controller, state: state),
+                ),
+              ),
             ],
-          );
-        }
-        final preview = controller.previewController;
-        if (state.cameraReady && preview != null) {
-          return CameraPreview(preview);
-        }
-        return Center(
-          child: Text(
-            state.cameraReady ? '카메라 준비됨' : '카메라 화면을 기다리고 있습니다',
-            style: const TextStyle(color: Color(0xFFB9C0C8)),
           ),
-        );
-      },
+        ),
+      ],
     ),
+  );
+}
+
+final class _CameraViewport extends StatelessWidget {
+  const _CameraViewport({required this.controller, required this.state});
+
+  final ScannerController controller;
+  final ScannerState state;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final result = state.result;
+      final capturedPath = state.capturedImagePath;
+      if (capturedPath != null) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.file(
+              File(capturedPath),
+              fit: BoxFit.contain,
+              errorBuilder: (_, _, _) => const _CapturedPlaceholder(),
+            ),
+            if (result != null)
+              CustomPaint(
+                painter: ResultOverlayPainter(
+                  transform: ContainedImageTransform(
+                    imageSize: Size(result.imageWidth, result.imageHeight),
+                    viewportSize: Size(
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                    ),
+                  ),
+                  items: [
+                    for (final object in result.objects)
+                      ResultOverlayItem(
+                        objectId: object.objectId,
+                        imageBox: Rect.fromLTRB(
+                          object.bboxXyxy[0],
+                          object.bboxXyxy[1],
+                          object.bboxXyxy[2],
+                          object.bboxXyxy[3],
+                        ),
+                        skuName: object.skuName,
+                        isUnknown: object.isUnknown,
+                      ),
+                  ],
+                  selectedObjectId: state.selectedObjectId,
+                ),
+              ),
+          ],
+        );
+      }
+      final preview = controller.previewController;
+      if (state.cameraReady && preview != null) {
+        return CameraPreview(preview);
+      }
+      return Center(
+        child: Text(
+          state.cameraReady ? '카메라 준비됨' : '카메라 화면을 기다리고 있습니다',
+          style: const TextStyle(color: Color(0xFFB9C0C8)),
+        ),
+      );
+    },
   );
 }
 
@@ -235,27 +299,54 @@ final class _PrimaryAction extends StatelessWidget {
         state.analysisError != null;
     final label = isRetake ? '다시 촬영' : '분석하기';
     final enabled = isRetake ? !state.isAnalyzing : state.canAnalyze;
+    final onPressed = enabled
+        ? () {
+            if (isRetake) {
+              unawaited(controller.resetCapture());
+            } else {
+              unawaited(
+                controller.analyze().catchError((Object _) {
+                  // The controller exposes the actionable failure state.
+                }),
+              );
+            }
+          }
+        : null;
     return Semantics(
       button: true,
       label: label,
-      child: FilledButton(
-        key: const Key('primary-action'),
-        style: Theme.of(context).filledButtonTheme.style,
-        onPressed: enabled
-            ? () {
-                if (isRetake) {
-                  unawaited(controller.resetCapture());
-                } else {
-                  unawaited(
-                    controller.analyze().catchError((Object _) {
-                      // The controller exposes the actionable failure state.
-                    }),
-                  );
-                }
-              }
-            : null,
-        child: Text(label),
-      ),
+      child: isRetake
+          ? OutlinedButton(
+              key: const Key('primary-action'),
+              style: ButtonStyle(
+                minimumSize: const WidgetStatePropertyAll(Size(44, 52)),
+                foregroundColor: const WidgetStatePropertyAll(cameraInk),
+                backgroundColor: const WidgetStatePropertyAll(Colors.white),
+                shape: WidgetStatePropertyAll(
+                  RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                side: WidgetStateProperty.resolveWith(
+                  (states) => BorderSide(
+                    color: states.contains(WidgetState.focused)
+                        ? actionBlue
+                        : cameraInk,
+                    width: states.contains(WidgetState.focused) ? 3 : 1.5,
+                  ),
+                ),
+              ),
+              onPressed: onPressed,
+              child: Text(label),
+            )
+          : FilledButton(
+              key: const Key('primary-action'),
+              style: Theme.of(context).filledButtonTheme.style?.copyWith(
+                backgroundColor: const WidgetStatePropertyAll(bixolonOrange),
+              ),
+              onPressed: onPressed,
+              child: Text(label),
+            ),
     );
   }
 }

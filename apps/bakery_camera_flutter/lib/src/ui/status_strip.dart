@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../inference/inference_models.dart';
 import '../scanner/scanner_controller.dart';
 import 'app_theme.dart';
+import 'bixolon_brand.dart';
 
 final class StatusStrip extends StatelessWidget {
   const StatusStrip({
@@ -21,66 +22,96 @@ final class StatusStrip extends StatelessWidget {
     final workerReady = state.workerStatus == WorkerStatus.ready;
     final workerFatal = state.workerStatus == WorkerStatus.fatal;
     final cameraFailure = !state.cameraReady && state.cameraError != null;
-    return Semantics(
-      container: true,
-      label: '카메라와 모델 상태',
-      child: SizedBox(
-        height: 56,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Row(
-            children: [
-              const Text(
-                'BAKERY SCAN',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.5,
+    return ColoredBox(
+      key: const Key('bixolon-header'),
+      color: Colors.white,
+      child: Semantics(
+        container: true,
+        label: 'Bakery AI Scanner · 카메라와 모델 상태',
+        child: SizedBox(
+          height: 72,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showProductTitle = constraints.maxWidth >= 980;
+              final horizontalPadding = showProductTitle ? 24.0 : 16.0;
+              final statusGap = showProductTitle ? 18.0 : 12.0;
+              return Padding(
+                padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
+                child: Row(
+                  children: [
+                    const BixolonWordmark(),
+                    if (showProductTitle) ...[
+                      const SizedBox(width: 18),
+                      Container(width: 1, height: 24, color: bixolonDivider),
+                      const SizedBox(width: 18),
+                      Text(
+                        'Bakery AI Scanner',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: bixolonInk,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ],
+                    const Spacer(),
+                    _StatusDot(
+                      label: state.cameraReady
+                          ? '카메라 연결됨'
+                          : cameraFailure
+                          ? '카메라 연결 안 됨'
+                          : '카메라 연결 중',
+                      color: state.cameraReady
+                          ? bixolonOrange
+                          : cameraFailure
+                          ? failureRed
+                          : bixolonMutedInk,
+                    ),
+                    SizedBox(width: statusGap),
+                    _StatusDot(
+                      label: workerReady
+                          ? '모델 준비됨'
+                          : workerFatal
+                          ? '모델 준비 실패'
+                          : '모델 준비 중 · ${startupElapsedMs.round()} ms',
+                      color: workerReady
+                          ? bixolonOrange
+                          : workerFatal
+                          ? failureRed
+                          : bixolonMutedInk,
+                    ),
+                    if (state.device != null) ...[
+                      SizedBox(width: statusGap),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: bixolonCanvas,
+                          border: Border.all(color: bixolonDivider),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          _deviceLabel(state.device!),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontFeatures: tabularFigures,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (cameraFailure) ...[
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: onReconnectCamera,
+                        child: const Text('카메라 다시 연결'),
+                      ),
+                    ],
+                  ],
                 ),
-              ),
-              const SizedBox(width: 24),
-              _StatusDot(
-                label: state.cameraReady
-                    ? '카메라 연결됨'
-                    : cameraFailure
-                    ? '카메라 연결 안 됨'
-                    : '카메라 연결 중',
-                color: state.cameraReady
-                    ? confirmedTeal
-                    : cameraFailure
-                    ? failureRed
-                    : const Color(0xFF7A8490),
-              ),
-              const SizedBox(width: 18),
-              _StatusDot(
-                label: workerReady
-                    ? '모델 준비됨'
-                    : workerFatal
-                    ? '모델 준비 실패'
-                    : '모델 준비 중 · ${startupElapsedMs.round()} ms',
-                color: workerReady
-                    ? confirmedTeal
-                    : workerFatal
-                    ? failureRed
-                    : const Color(0xFF7A8490),
-              ),
-              if (state.device != null) ...[
-                const SizedBox(width: 18),
-                Text(
-                  _deviceLabel(state.device!),
-                  style: const TextStyle(
-                    fontFeatures: tabularFigures,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-              const Spacer(),
-              if (cameraFailure)
-                TextButton(
-                  onPressed: onReconnectCamera,
-                  child: const Text('카메라 다시 연결'),
-                ),
-            ],
+              );
+            },
           ),
         ),
       ),

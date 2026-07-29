@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../inference/inference_models.dart';
 import '../scanner/scanner_controller.dart';
 import 'app_theme.dart';
+import 'bixolon_brand.dart';
 
 final class ResultRail extends StatelessWidget {
   const ResultRail({
@@ -17,44 +18,67 @@ final class ResultRail extends StatelessWidget {
   final ValueChanged<String?> onSelectObject;
 
   @override
-  Widget build(BuildContext context) => ColoredBox(
-    color: resultPaper,
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: const BoxDecoration(
+      color: resultPaper,
+      border: Border(top: BorderSide(color: bixolonOrange, width: 3)),
+    ),
     child: Padding(
-      padding: const EdgeInsets.fromLTRB(22, 20, 22, 0),
-      child: SingleChildScrollView(
-        key: const Key('result-scroll'),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _Headline(state: state, elapsedMs: elapsedMs),
-            if (state.result case final result?) ...[
-              const SizedBox(height: 22),
-              _Counts(result: result),
-              const SizedBox(height: 22),
-              Text('대상별 결과', style: Theme.of(context).textTheme.labelMedium),
-              const SizedBox(height: 6),
-              if (result.objects.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  child: Text('감지된 빵이 없습니다'),
-                )
-              else
-                for (final object in result.objects)
-                  _ObjectRow(
-                    object: object,
-                    selected: object.objectId == state.selectedObjectId,
-                    onTap: () => onSelectObject(object.objectId),
-                  ),
-              const Divider(height: 32),
-              _TimingDisclosure(state: state),
-            ],
-            if (state.startupMetrics != null) ...[
-              if (state.result == null) const Divider(height: 32),
-              _ModelDisclosure(metrics: state.startupMetrics!),
-            ],
-            const SizedBox(height: 18),
-          ],
-        ),
+      padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'SCAN RESULT',
+            style: TextStyle(
+              color: bixolonMutedInk,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: SingleChildScrollView(
+              key: const Key('result-scroll'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _Headline(state: state, elapsedMs: elapsedMs),
+                  if (state.result case final result?) ...[
+                    const SizedBox(height: 22),
+                    _Counts(result: result),
+                    const SizedBox(height: 22),
+                    Text(
+                      '대상별 결과',
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                    const SizedBox(height: 6),
+                    if (result.objects.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Text('감지된 빵이 없습니다'),
+                      )
+                    else
+                      for (final object in result.objects)
+                        _ObjectRow(
+                          object: object,
+                          selected: object.objectId == state.selectedObjectId,
+                          onTap: () => onSelectObject(object.objectId),
+                        ),
+                    const Divider(height: 32),
+                    _TimingDisclosure(state: state),
+                  ],
+                  if (state.startupMetrics != null) ...[
+                    if (state.result == null) const Divider(height: 32),
+                    _ModelDisclosure(metrics: state.startupMetrics!),
+                  ],
+                  const SizedBox(height: 18),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     ),
   );
@@ -271,7 +295,7 @@ final class _ObjectRowState extends State<_ObjectRow> {
               color: _focused
                   ? actionBlue.withValues(alpha: 0.08)
                   : widget.selected
-                  ? color.withValues(alpha: 0.08)
+                  ? bixolonOrange.withValues(alpha: 0.08)
                   : null,
               border: _focused
                   ? Border.all(color: actionBlue, width: 2)
