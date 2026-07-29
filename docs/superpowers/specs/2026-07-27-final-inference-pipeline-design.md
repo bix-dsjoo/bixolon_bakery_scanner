@@ -1,5 +1,7 @@
 # Final Inference Pipeline Design
 
+> **Historical/superseded notice.** The canonical final CPU path is documented in the [CPU RF-DETR final documentation design](2026-07-29-cpu-rfdetr-final-documentation-design.md). The D-FINE design below is preserved for history and is not deleted.
+
 - Date: 2026-07-27
 - Status: approved architecture
 

@@ -1,5 +1,7 @@
 # Offline CPU RF-DETR Fusion Deployment Design
 
+> **Canonical-final CPU notice.** This is a current RF-DETR CPU design alongside the [fusion-consensus design](2026-07-29-rfdetr-fusion-consensus-design.md), [nine-image evaluation design](2026-07-29-rfdetr-desktop-nine-image-evaluation-design.md), and [final CPU documentation design](2026-07-29-cpu-rfdetr-final-documentation-design.md). The canonical final runtime is EXIF-transposed RGB -> CPU/FP32 RF-DETR-L -> RepViT direct gate -> conditional DINOv3 global/local fusion -> SKU or `Unknown`; it replaces the former D-FINE path as the final runtime without deleting that legacy path.
+
 **Goal:** Deliver a Windows ZIP that runs the RF-DETR-L plus fusion classifier on CPU without an existing Python installation or network access, and produces a verified nine-image report.
 
 ## Chosen Approach

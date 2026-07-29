@@ -1,5 +1,7 @@
 # RF-DETR-L desktop pipeline: nine-image evaluation design
 
+> **Canonical-final CPU notice.** This is a current RF-DETR CPU design alongside the [fusion-consensus design](2026-07-29-rfdetr-fusion-consensus-design.md), [offline deployment design](2026-07-29-offline-cpu-rfdetr-fusion-deployment-design.md), and [final CPU documentation design](2026-07-29-cpu-rfdetr-final-documentation-design.md). The canonical final runtime is EXIF-transposed RGB -> CPU/FP32 RF-DETR-L -> RepViT direct gate -> conditional DINOv3 global/local fusion -> SKU or `Unknown`; it replaces the former D-FINE path as the final runtime without deleting that legacy path.
+
 ## Goal
 
 Evaluate the nine fixed Batch2 images with the already frozen RF-DETR-L,
