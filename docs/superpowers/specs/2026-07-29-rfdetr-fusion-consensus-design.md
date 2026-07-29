@@ -49,8 +49,9 @@ deliberately scoped to the global-consensus route.
   `consensus_margin_floor: 0.85`.
 - Bind the artifact's exact model/preprocess hashes to the configured RepViT,
   DINOv3 weights, DINO support, DINO local-bank, and prototype artifacts.
-- Add its relative path and SHA-256 to `configs/classifier_policy.yaml`; loading
-  must fail on any hash or provenance mismatch.
+- Add its relative path and SHA-256 to `configs/cpu_rfdetr_classifier_policy.yaml`,
+  which `scripts/run_cpu_rfdetr_fusion.py` loads for the final CPU runtime;
+  loading must fail on any hash or provenance mismatch.
 - Preserve rollback deserialization for schemas 1 and 2 while strictly
   deserializing schema 3's exact field set.
 

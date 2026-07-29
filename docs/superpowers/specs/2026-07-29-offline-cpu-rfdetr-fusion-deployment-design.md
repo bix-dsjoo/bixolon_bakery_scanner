@@ -22,7 +22,7 @@ The package uses the same direct RF-DETR-L to classifier path as the GPU nine-im
 
 ## CPU Runtime Contract
 
-The runner forces `device=CPU` and FP32. It loads RF-DETR-L using its packaged calibration threshold, produces canonical visual-coordinate proposal boxes, then evaluates each box using RepViT and DINOv3 local/global evidence. It applies only:
+The runner forces `device=CPU` and FP32. It loads RF-DETR-L using its packaged calibration threshold and produces canonical visual-coordinate proposal boxes. It evaluates RepViT-M1 first; an immutable direct-decision gate acceptance returns immediately. Only a direct-gate rejection runs DINOv3 global and local evidence plus immutable fusion. That conditional fusion accepts only:
 
 1. Fusion Top-1 equals DINOv3 local Top-1; or
 2. Fusion Top-1 equals RepViT Top-1 equals DINOv3 global Top-1 and Fusion Top-1/Top-2 margin is at least 0.85.
