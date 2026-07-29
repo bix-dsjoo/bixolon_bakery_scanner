@@ -283,6 +283,7 @@ class CameraInferenceRuntime:
         decode_finished = _timestamp(self._clock, self.device)
 
         _emit_progress(on_progress, WorkerPhase.DETECTING, emitted)
+        detector_started = _timestamp(self._clock, self.device)
         proposals = backend.detector.predict(1, frame.image)
         detector_finished = _timestamp(self._clock, self.device)
         ordered = tuple(
@@ -321,9 +322,9 @@ class CameraInferenceRuntime:
             decisions.append((proposal, decision))
             repvit_ms += decision.timings.repvit_ms
             dinov3_ms += decision.timings.dinov3_ms
-        classification_finished = _timestamp(self._clock, self.device)
 
         _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
+        postprocess_started = _timestamp(self._clock, self.device)
         objects, counts, unknown_count = _aggregate_objects(
             decisions,
             _load_sku_names(self._root),
@@ -331,12 +332,10 @@ class CameraInferenceRuntime:
         postprocess_finished = _timestamp(self._clock, self.device)
         timings = {
             "decode_preprocess": _milliseconds(total_started, decode_finished),
-            "detector": _milliseconds(decode_finished, detector_finished),
+            "detector": _milliseconds(detector_started, detector_finished),
             "repvit": repvit_ms,
             "dinov3": dinov3_ms,
-            "postprocess": _milliseconds(
-                classification_finished, postprocess_finished
-            ),
+            "postprocess": _milliseconds(postprocess_started, postprocess_finished),
             "total": _milliseconds(total_started, postprocess_finished),
         }
         return {
@@ -463,6 +462,13 @@ def _validate_classifier_artifacts(root: Path, device: str) -> ClassifierConfig:
     expected_runtime = "CUDA:0" if device == "cuda:0" else "CPU"
     if config.runtime.device != expected_runtime or config.runtime.precision != "FP32":
         raise ValueError("classifier runtime must match selected device in FP32")
+    if config.calibration.artifact_sha256 is None:
+        raise ValueError("classifier calibration artifact SHA-256 is required")
+    _require_file_hash(
+        config.calibration.artifact,
+        config.calibration.artifact_sha256,
+        "classifier calibration artifact",
+    )
     declared = (
         (config.repvit.checkpoint, config.repvit.checkpoint_sha256, "RepViT checkpoint"),
         (config.repvit.manifest, config.repvit.manifest_sha256, "RepViT manifest"),
@@ -734,8 +740,17 @@ def _emit_progress(
 
 
 def _release_device_cache(device: str) -> None:
-    if device == "cuda:0" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if device != "cuda:0":
+        return
+    try:
+        available = torch.cuda.is_available()
+    except Exception:
+        return
+    if available:
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def _timestamp(clock: Callable[[], float], device: str) -> float:

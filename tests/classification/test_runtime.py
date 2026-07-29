@@ -133,6 +133,38 @@ class StepClock:
         return next(self._values)
 
 
+class ManualStageClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+        self.sync_count = 0
+
+    def synchronize(self) -> None:
+        self.sync_count += 1
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class TimedRunner(RecordingRunner):
+    def __init__(
+        self,
+        scores: ModelScoreVector,
+        *,
+        clock: ManualStageClock,
+        duration: float,
+    ) -> None:
+        super().__init__(scores)
+        self.clock = clock
+        self.duration = duration
+
+    def score(self, crops: tuple[Image.Image, ...]) -> ModelScoreVector:
+        self.clock.advance(self.duration)
+        return super().score(crops)
+
+
 def test_direct_repvit_confirmation_never_loads_or_calls_dino():
     dino_loads = 0
 
@@ -453,6 +485,35 @@ def test_runtime_records_provenance_stage_timings_and_synchronizes():
     assert result.timings.dinov3_ms == pytest.approx(6.0)
     assert result.timings.total_ms == pytest.approx(12.0)
     assert clock.sync_count == 6
+
+
+def test_stage_observer_time_is_excluded_from_repvit_and_dinov3_timings():
+    clock = ManualStageClock()
+    repvit = TimedRunner(
+        _repvit_scores({6: 0.50, 5: 0.30, 19: 0.10}),
+        clock=clock,
+        duration=0.004,
+    )
+    dino = TimedRunner(
+        _dino_scores({5: 0.50, 6: 0.30, 19: 0.10}),
+        clock=clock,
+        duration=0.006,
+    )
+    pipeline = _pipeline(
+        repvit=repvit,
+        dino_loader=lambda: dino,
+        clock=clock,
+    )
+
+    result = pipeline.infer(
+        _image(),
+        _box(),
+        on_stage=lambda stage: clock.advance(1.0),
+    )
+
+    assert result.timings.repvit_ms == pytest.approx(4.0)
+    assert result.timings.dinov3_ms == pytest.approx(6.0)
+    assert result.timings.total_ms == pytest.approx(2010.0)
 
 
 def test_dino_failure_returns_unknown_repvit_top3_and_safe_failure_code():

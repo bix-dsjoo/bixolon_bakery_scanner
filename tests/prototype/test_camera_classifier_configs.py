@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,19 @@ def test_gpu_and_cpu_rfdetr_configs_differ_only_by_device(repo_root: Path):
     assert cpu == gpu
     assert gpu["calibration"]["fusion_policy"].endswith(
         "fusion_local_or_global_consensus_margin_v1_reference_rebound.json"
+    )
+    calibration_path = (
+        repo_root
+        / "artifacts"
+        / "e2e_current_source"
+        / "classification"
+        / "policy_fail_closed.json"
+    )
+    assert cpu["calibration"]["artifact_sha256"] == (
+        hashlib.sha256(calibration_path.read_bytes()).hexdigest()
+    )
+    assert gpu["calibration"]["artifact_sha256"] == (
+        hashlib.sha256(calibration_path.read_bytes()).hexdigest()
     )
     ClassifierConfig.load(
         repo_root / "configs/gpu_rfdetr_classifier_policy.yaml"

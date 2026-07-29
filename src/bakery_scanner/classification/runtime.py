@@ -177,9 +177,9 @@ class ClassifierPipeline:
             self.config.preprocess.paddings,
         )
 
-        repvit_started = self._timestamp()
         if on_stage is not None:
             on_stage("repvit")
+        repvit_started = self._timestamp()
         repvit_evidence = self.repvit.score_with_evidence(crops)
         repvit_scores = repvit_evidence.scores
         repvit_finished = self._timestamp()
@@ -202,9 +202,9 @@ class ClassifierPipeline:
                 total_ms=_milliseconds(total_started, total_finished),
             )
 
-        dinov3_started = self._timestamp()
         if on_stage is not None:
             on_stage("dinov3")
+        dinov3_started = self._timestamp()
         dino = self._get_dino()
         try:
             local_bank = self._get_local_bank()

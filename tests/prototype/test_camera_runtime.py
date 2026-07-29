@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from PIL import Image
 
 from bakery_scanner.classification.contracts import (
@@ -166,6 +167,17 @@ class TickClock:
         return self.value
 
 
+@dataclass
+class ManualClock:
+    value: float = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
 @pytest.fixture(autouse=True)
 def class_map(tmp_path: Path) -> None:
     names = (
@@ -285,6 +297,60 @@ def test_initialize_retries_cleanly_on_cpu_after_cuda_warmup_failure(tmp_path: P
     assert runtime.startup_metrics.fallback_reason == "cuda_warmup_failed"
     assert runtime.startup_metrics.load_ms >= 0.0
     assert runtime.startup_metrics.warmup_ms >= 0.0
+
+
+@pytest.mark.parametrize("cleanup_failure", ["availability", "empty_cache"])
+def test_cuda_cleanup_failure_does_not_suppress_cpu_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_failure: str,
+):
+    from bakery_scanner.prototype import camera_runtime
+
+    attempts: list[str] = []
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    monkeypatch.setattr(camera_runtime.torch.cuda, "synchronize", lambda *args: None)
+    if cleanup_failure == "availability":
+        availability_calls = 0
+
+        def fail_during_cleanup() -> bool:
+            nonlocal availability_calls
+            availability_calls += 1
+            if availability_calls == 4:
+                raise RuntimeError("CUDA availability cleanup failed")
+            return False
+
+        monkeypatch.setattr(
+            camera_runtime.torch.cuda,
+            "is_available",
+            fail_during_cleanup,
+        )
+    else:
+        monkeypatch.setattr(camera_runtime.torch.cuda, "is_available", lambda: True)
+
+        def fail_empty_cache() -> None:
+            raise RuntimeError("CUDA empty cache failed")
+
+        monkeypatch.setattr(
+            camera_runtime.torch.cuda,
+            "empty_cache",
+            fail_empty_cache,
+        )
+
+    def loader(device: str) -> FakeBackend:
+        attempts.append(device)
+        return FakeBackend(device, fail_warmup=device == "cuda:0")
+
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        cuda_probe=lambda: True,
+        backend_loader=loader,
+    )
+
+    assert attempts == ["cuda:0", "cpu"]
+    assert runtime.device == "cpu"
+    assert runtime.startup_metrics.fallback_reason == "cuda_warmup_failed"
 
 
 def test_initialize_retries_on_cpu_after_cuda_load_failure(tmp_path: Path):
@@ -435,6 +501,57 @@ def test_initialize_rejects_detector_calibration_hash_mismatch(detector_repo):
         )
 
 
+def test_initialize_rejects_threshold_only_direct_policy_mutation(detector_repo):
+    config_dir = detector_repo.root / "configs"
+    config_dir.mkdir()
+    policy_path = detector_repo.root / "policy.json"
+    original_policy = b'{"direct_threshold":0.9}'
+    policy_path.write_bytes(original_policy)
+    config = {
+        "schema_version": 1,
+        "repvit": {
+            "artifact_id": "repvit_m1_15plus5_v1",
+            "checkpoint": "../repvit.pt",
+            "checkpoint_sha256": "1" * 64,
+            "manifest": "../repvit.json",
+            "manifest_sha256": "2" * 64,
+            "prototype_bank": "../repvit-prototypes.pt",
+            "prototype_bank_sha256": "3" * 64,
+        },
+        "dinov3": {
+            "artifact_id": "dinov3_vits16_15plus5_v1",
+            "weights": "../dino.pth",
+            "weights_sha256": "4" * 64,
+            "support": "../dino-support.pt",
+            "support_sha256": "5" * 64,
+            "local_bank": "../dino-local.pt",
+            "local_bank_sha256": "6" * 64,
+        },
+        "preprocess": {"input_size": 224, "paddings": [0.05, 0.10, 0.15]},
+        "runtime": {"device": "CPU", "precision": "FP32"},
+        "calibration": {
+            "artifact": "../policy.json",
+            "artifact_sha256": hashlib.sha256(original_policy).hexdigest(),
+            "fusion_policy": "../fusion.json",
+            "fusion_policy_sha256": "7" * 64,
+        },
+    }
+    (config_dir / "cpu_rfdetr_classifier_policy.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding="utf-8",
+    )
+    policy_path.write_bytes(b'{"direct_threshold":0.8}')
+
+    with pytest.raises(
+        ValueError, match="classifier calibration artifact SHA-256 mismatch"
+    ):
+        CameraInferenceRuntime.initialize(
+            detector_repo.root,
+            detector_repo.warmup_image,
+            preference="cpu",
+        )
+
+
 def test_initialize_rejects_malformed_detector_manifest(detector_repo):
     (detector_repo.model_dir / "manifest.json").write_text("{", encoding="utf-8")
 
@@ -548,6 +665,42 @@ def test_analyze_returns_deterministic_fail_closed_result_contract(tmp_path: Pat
         WorkerPhase.RECHECKING,
         WorkerPhase.AGGREGATING,
     ]
+
+
+def test_progress_observer_time_is_excluded_from_detector_and_postprocess(
+    tmp_path: Path,
+):
+    clock = ManualClock()
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    image_path = _write_image(tmp_path / "capture.jpg")
+    box = Box(5, 5, 20, 20)
+
+    class TimedDetector(FakeDetector):
+        def predict(
+            self, image_id: int, image: Image.Image
+        ) -> tuple[BreadProposal, ...]:
+            clock.advance(0.010)
+            return super().predict(image_id, image)
+
+    backend = FakeBackend("cpu")
+    backend.detector = TimedDetector((_proposal(box),))
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="cpu",
+        backend_loader=lambda device: backend,
+        clock=clock,
+    )
+
+    result = runtime.analyze(
+        image_path,
+        "timed",
+        on_progress=lambda phase: clock.advance(1.0),
+    )
+
+    assert result["timings_ms"]["detector"] == pytest.approx(10.0)
+    assert result["timings_ms"]["postprocess"] == pytest.approx(0.0)
+    assert result["timings_ms"]["total"] == pytest.approx(3010.0)
 
 
 def test_analyze_emits_each_progress_phase_at_most_once(tmp_path: Path):

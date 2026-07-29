@@ -23,5 +23,6 @@ runtime:
   precision: FP32
 calibration:
   artifact: ../artifacts/e2e_current_source/classification/policy_fail_closed.json
+  artifact_sha256: 4d204846d019d048132b77ddd7c93458d74a489e27c9da86dc2d9c4d6a195308
   fusion_policy: ../artifacts/e2e_current_source/classification/fusion_local_or_global_consensus_margin_v1_reference_rebound.json
   fusion_policy_sha256: 06c692d5b35583bfd99498805da474b7e9dfa7c8c36eeed04307695f7e885dcc
