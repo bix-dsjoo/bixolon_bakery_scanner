@@ -139,6 +139,45 @@ void main() {
     );
   });
 
+  test('rejects registered object SKU IDs outside 1 through 20', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          objects: [_confirmedObject('object-1', skuId: 21)],
+          counts: {'21': 1},
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('rejects Unknown candidate SKU IDs outside 1 through 20', () {
+    final object = _unknownObject('object-1');
+    final candidates = object['top3'] as List<Object?>;
+    candidates[0] = {
+      'rank': 1,
+      'sku_id': 21,
+      'sku_name': 'Out of contract',
+      'score': 0.41,
+    };
+
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(objects: [object], counts: const {}, unknownCount: 1),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('rejects non-canonical count keys even when they parse in range', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(objects: [_confirmedObject('object-1')], counts: {'06': 1}),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test('strict event parser rejects unknown types and malformed fields', () {
     expect(
       () => WorkerEvent.fromJson(const {'type': 'surprise'}),
@@ -171,12 +210,7 @@ void main() {
     final ready = WorkerEvent.fromJson({
       'type': 'ready',
       'device': 'cpu',
-      'startup_metrics': {
-        'device': 'cpu',
-        'load_ms': 12.5,
-        'warmup_ms': 7.0,
-        'fallback_reason': null,
-      },
+      'startup_metrics': _startupMetricsJson(),
     });
     final progress = WorkerEvent.fromJson(const {
       'type': 'progress',
@@ -187,10 +221,43 @@ void main() {
 
     expect((loading as StartupWorkerEvent).status, WorkerStatus.loading);
     expect((warming as StartupWorkerEvent).device, 'cuda:0');
-    expect((ready as ReadyWorkerEvent).metrics?.loadMs, 12.5);
+    final metrics = (ready as ReadyWorkerEvent).metrics!;
+    expect(metrics.loadMs, 12.5);
+    expect(metrics.detectorId, 'rfdetr_large_bakery_v1');
+    expect(metrics.repvitId, 'repvit_m1_15plus5_v1');
+    expect(metrics.dinov3Id, 'dinov3_vits16_15plus5_v1');
+    expect(metrics.fusionPolicyId, 'fusion_local_or_global_v1');
+    expect(metrics.detectorThreshold, 0.42);
     expect((progress as ProgressWorkerEvent).phase, WorkerPhase.detecting);
     expect((result as ResultWorkerEvent).result.requestId, 'analysis-1');
   });
+
+  test('startup metrics reject malformed real-contract metadata', () {
+    for (final mutation in <void Function(Map<String, Object?>)>[
+      (metrics) => metrics.remove('detector_id'),
+      (metrics) => metrics['device'] = 'gpu',
+      (metrics) => metrics['repvit_id'] = '',
+      (metrics) => metrics['detector_threshold'] = 1.1,
+    ]) {
+      final metrics = _startupMetricsJson();
+      mutation(metrics);
+      expect(() => StartupMetrics.fromJson(metrics), throwsFormatException);
+    }
+  });
+}
+
+Map<String, Object?> _startupMetricsJson() {
+  return {
+    'device': 'cpu',
+    'load_ms': 12.5,
+    'warmup_ms': 7.0,
+    'fallback_reason': null,
+    'detector_id': 'rfdetr_large_bakery_v1',
+    'repvit_id': 'repvit_m1_15plus5_v1',
+    'dinov3_id': 'dinov3_vits16_15plus5_v1',
+    'fusion_policy_id': 'fusion_local_or_global_v1',
+    'detector_threshold': 0.42,
+  };
 }
 
 Map<String, Object?> _resultJson({

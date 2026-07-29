@@ -170,6 +170,41 @@ void main() {
     expect(jsonDecode(ownedProcess.sentLines.last)['type'], 'shutdown');
     expect(client.status, WorkerStatus.stopped);
   });
+
+  test(
+    'shutdown owns a child that finishes starting during shutdown',
+    () async {
+      final delayedStart = Completer<WorkerProcessAdapter>();
+      client = InferenceWorkerClient(
+        config: InferenceLaunchConfig.fromEnvironment(const {
+          'BAKERY_INFERENCE_PYTHON': r'C:\runtime\python.exe',
+          'BAKERY_REPO_ROOT': r'C:\repo',
+        }),
+        startProcess: (_) => delayedStart.future,
+        shutdownTimeout: const Duration(milliseconds: 20),
+      );
+
+      final start = client.start();
+      await _pump();
+      var shutdownCompleted = false;
+      final shutdown = client.shutdown().whenComplete(() {
+        shutdownCompleted = true;
+      });
+      await _pump();
+      final completedBeforeChildWasOwned = shutdownCompleted;
+      delayedStart.complete(ownedProcess);
+
+      await expectLater(
+        start.timeout(const Duration(milliseconds: 100)),
+        throwsStateError,
+      );
+      await shutdown.timeout(const Duration(milliseconds: 100));
+      expect(completedBeforeChildWasOwned, isFalse);
+      expect(ownedProcess.killCalls, 1);
+      expect(unrelatedProcess.killCalls, 0);
+      expect(client.status, WorkerStatus.stopped);
+    },
+  );
 }
 
 Future<void> _startReady(
@@ -203,6 +238,11 @@ Map<String, Object?> _readyJson() {
       'load_ms': 12.5,
       'warmup_ms': 7.0,
       'fallback_reason': null,
+      'detector_id': 'rfdetr_large_bakery_v1',
+      'repvit_id': 'repvit_m1_15plus5_v1',
+      'dinov3_id': 'dinov3_vits16_15plus5_v1',
+      'fusion_policy_id': 'fusion_local_or_global_v1',
+      'detector_threshold': 0.42,
     },
   };
 }

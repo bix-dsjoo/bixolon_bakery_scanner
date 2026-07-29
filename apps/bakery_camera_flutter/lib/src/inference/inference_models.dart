@@ -41,7 +41,7 @@ final class InferenceCandidate {
   factory InferenceCandidate.fromJson(Map<String, Object?> json) {
     _expectFields(json, const {'rank', 'sku_id', 'sku_name', 'score'});
     final rank = _positiveInt(json['rank'], 'candidate rank');
-    final skuId = _positiveInt(json['sku_id'], 'candidate sku_id');
+    final skuId = _skuId(json['sku_id'], 'candidate sku_id');
     final skuName = _requiredString(json['sku_name'], 'candidate sku_name');
     final score = _probability(json['score'], 'candidate score');
     return InferenceCandidate(
@@ -101,9 +101,7 @@ final class InferenceObject {
       );
     }
     final skuIdValue = json['sku_id'];
-    final skuId = skuIdValue == null
-        ? null
-        : _positiveInt(skuIdValue, 'sku_id');
+    final skuId = skuIdValue == null ? null : _skuId(skuIdValue, 'sku_id');
     final skuName = _requiredString(json['sku_name'], 'sku_name');
     final bbox = _box(
       json['bbox_xyxy'],
@@ -249,6 +247,11 @@ final class StartupMetrics {
     required this.loadMs,
     required this.warmupMs,
     required this.fallbackReason,
+    required this.detectorId,
+    required this.repvitId,
+    required this.dinov3Id,
+    required this.fusionPolicyId,
+    required this.detectorThreshold,
   });
 
   factory StartupMetrics.fromJson(Map<String, Object?> json) {
@@ -257,15 +260,35 @@ final class StartupMetrics {
       'load_ms',
       'warmup_ms',
       'fallback_reason',
+      'detector_id',
+      'repvit_id',
+      'dinov3_id',
+      'fusion_policy_id',
+      'detector_threshold',
     });
+    final device = _requiredString(json['device'], 'startup device');
+    if (device != 'cpu' && device != 'cuda:0') {
+      throw const FormatException('startup device must be cpu or cuda:0');
+    }
     final fallbackValue = json['fallback_reason'];
     return StartupMetrics(
-      device: _requiredString(json['device'], 'startup device'),
+      device: device,
       loadMs: _nonNegativeFinite(json['load_ms'], 'startup load_ms'),
       warmupMs: _nonNegativeFinite(json['warmup_ms'], 'startup warmup_ms'),
       fallbackReason: fallbackValue == null
           ? null
           : _requiredString(fallbackValue, 'startup fallback_reason'),
+      detectorId: _requiredString(json['detector_id'], 'startup detector_id'),
+      repvitId: _requiredString(json['repvit_id'], 'startup repvit_id'),
+      dinov3Id: _requiredString(json['dinov3_id'], 'startup dinov3_id'),
+      fusionPolicyId: _requiredString(
+        json['fusion_policy_id'],
+        'startup fusion_policy_id',
+      ),
+      detectorThreshold: _probability(
+        json['detector_threshold'],
+        'startup detector_threshold',
+      ),
     );
   }
 
@@ -273,6 +296,11 @@ final class StartupMetrics {
   final double loadMs;
   final double warmupMs;
   final String? fallbackReason;
+  final String detectorId;
+  final String repvitId;
+  final String dinov3Id;
+  final String fusionPolicyId;
+  final double detectorThreshold;
 }
 
 final class InferenceResult {
@@ -327,9 +355,12 @@ final class InferenceResult {
     final counts = <int, int>{};
     for (final entry in countsJson.entries) {
       final skuId = int.tryParse(entry.key);
-      if (skuId == null || skuId <= 0) {
-        throw const FormatException('count keys must be positive SKU IDs');
+      if (skuId == null || entry.key != '$skuId') {
+        throw const FormatException(
+          'count keys must be canonical integer SKU IDs',
+        );
       }
+      _skuId(skuId, 'count SKU ID');
       counts[skuId] = _positiveInt(entry.value, 'SKU count');
     }
     final unknownCount = _nonNegativeInt(
@@ -665,6 +696,13 @@ String _requiredString(Object? value, String name) {
 int _positiveInt(Object? value, String name) {
   if (value is! int || value <= 0) {
     throw FormatException('$name must be a positive integer');
+  }
+  return value;
+}
+
+int _skuId(Object? value, String name) {
+  if (value is! int || value < 1 || value > 20) {
+    throw FormatException('$name must be between 1 and 20');
   }
   return value;
 }

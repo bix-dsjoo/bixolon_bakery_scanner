@@ -44,6 +44,7 @@ final class InferenceWorkerClient {
   final Map<String, WorkerPhase?> _progress = {};
 
   WorkerProcessAdapter? _process;
+  Future<WorkerProcessAdapter>? _startingProcess;
   Completer<void>? _startCompleter;
   Completer<void>? _stoppedCompleter;
   WorkerStatus _status = WorkerStatus.notStarted;
@@ -64,45 +65,55 @@ final class InferenceWorkerClient {
     _startCompleter = ready;
 
     try {
-      final process = await _startProcess(config);
-      if (_status == WorkerStatus.fatal) {
-        process.kill();
-        return ready.future;
-      }
+      final startingProcess = _startProcess(config);
+      _startingProcess = startingProcess;
+      final process = await startingProcess;
+      _startingProcess = null;
       _process = process;
-      process.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(
-            _onStdoutLine,
+      if (_shuttingDown || _status == WorkerStatus.stopped) {
+        if (!ready.isCompleted) {
+          ready.completeError(
+            StateError('inference worker was shut down while starting'),
+          );
+        }
+      } else if (_status == WorkerStatus.fatal) {
+        process.kill();
+      } else {
+        process.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen(
+              _onStdoutLine,
+              onError: (Object error, StackTrace stackTrace) {
+                _markFatal(
+                  StateError('worker stdout is not valid UTF-8: $error'),
+                  stackTrace,
+                );
+              },
+            );
+        process.stderr
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen(
+              _appendDiagnostic,
+              onError: (Object error) {
+                _appendDiagnostic('stderr decode failed: $error');
+              },
+            );
+        unawaited(
+          process.exitCode.then(
+            _onProcessExit,
             onError: (Object error, StackTrace stackTrace) {
               _markFatal(
-                StateError('worker stdout is not valid UTF-8: $error'),
+                StateError('worker exit status failed: $error'),
                 stackTrace,
               );
             },
-          );
-      process.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(
-            _appendDiagnostic,
-            onError: (Object error) {
-              _appendDiagnostic('stderr decode failed: $error');
-            },
-          );
-      unawaited(
-        process.exitCode.then(
-          _onProcessExit,
-          onError: (Object error, StackTrace stackTrace) {
-            _markFatal(
-              StateError('worker exit status failed: $error'),
-              stackTrace,
-            );
-          },
-        ),
-      );
+          ),
+        );
+      }
     } catch (error, stackTrace) {
+      _startingProcess = null;
       _markFatal(
         StateError('inference worker failed to start: $error'),
         stackTrace,
@@ -134,11 +145,6 @@ final class InferenceWorkerClient {
     if (_status == WorkerStatus.stopped) {
       return;
     }
-    final process = _process;
-    if (process == null) {
-      _status = WorkerStatus.stopped;
-      return;
-    }
     if (_shuttingDown) {
       return _stoppedCompleter?.future ?? Future<void>.value();
     }
@@ -146,6 +152,46 @@ final class InferenceWorkerClient {
     _shuttingDown = true;
     final stopped = Completer<void>();
     _stoppedCompleter = stopped;
+    var process = _process;
+    final startingProcess = _startingProcess;
+    if (process == null && startingProcess != null) {
+      try {
+        process = await startingProcess;
+        _process ??= process;
+      } catch (error, stackTrace) {
+        final start = _startCompleter;
+        if (start != null && !start.isCompleted) {
+          start.completeError(
+            StateError('inference worker was shut down while starting'),
+            stackTrace,
+          );
+        }
+        _status = WorkerStatus.stopped;
+        stopped.complete();
+        return;
+      }
+      final start = _startCompleter;
+      if (start != null && !start.isCompleted) {
+        start.completeError(
+          StateError('inference worker was shut down while starting'),
+        );
+      }
+      if (!process.kill()) {
+        final error = StateError('owned inference worker could not be killed');
+        _markFatal(error);
+        throw error;
+      }
+      await process.exitCode.timeout(shutdownTimeout);
+      _status = WorkerStatus.stopped;
+      stopped.complete();
+      return;
+    }
+    if (process == null) {
+      _status = WorkerStatus.stopped;
+      stopped.complete();
+      return;
+    }
+
     final requestId = _nextRequestId('shutdown');
     _shutdownRequestId = requestId;
     if (_status != WorkerStatus.fatal) {
