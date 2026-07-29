@@ -248,6 +248,31 @@ final class _CameraViewport extends StatelessWidget {
       final result = state.result;
       final capturedPath = state.capturedImagePath;
       if (capturedPath != null) {
+        final transform = result == null
+            ? null
+            : ContainedImageTransform(
+                imageSize: Size(result.imageWidth, result.imageHeight),
+                viewportSize: Size(constraints.maxWidth, constraints.maxHeight),
+              );
+        final overlayItems = result == null
+            ? const <ResultOverlayItem>[]
+            : [
+                for (final entry in result.objects.asMap().entries)
+                  ResultOverlayItem(
+                    objectId: entry.value.objectId,
+                    displayNumber: entry.key + 1,
+                    imageBox: Rect.fromLTRB(
+                      entry.value.bboxXyxy[0],
+                      entry.value.bboxXyxy[1],
+                      entry.value.bboxXyxy[2],
+                      entry.value.bboxXyxy[3],
+                    ),
+                    displayName: entry.value.isUnknown
+                        ? '알 수 없음'
+                        : entry.value.skuName,
+                    isUnknown: entry.value.isUnknown,
+                  ),
+              ];
         return Stack(
           fit: StackFit.expand,
           children: [
@@ -256,31 +281,26 @@ final class _CameraViewport extends StatelessWidget {
               fit: BoxFit.contain,
               errorBuilder: (_, _, _) => const _CapturedPlaceholder(),
             ),
-            if (result != null)
-              CustomPaint(
-                painter: ResultOverlayPainter(
-                  transform: ContainedImageTransform(
-                    imageSize: Size(result.imageWidth, result.imageHeight),
-                    viewportSize: Size(
-                      constraints.maxWidth,
-                      constraints.maxHeight,
-                    ),
+            if (result != null && transform != null)
+              GestureDetector(
+                key: const Key('result-overlay-hit-region'),
+                behavior: HitTestBehavior.translucent,
+                onTapDown: (details) {
+                  final objectId = ResultOverlayHitTester(
+                    transform: transform,
+                    items: overlayItems,
+                    selectedObjectId: state.selectedObjectId,
+                  ).hitTest(details.localPosition);
+                  if (objectId != null) {
+                    controller.selectObject(objectId);
+                  }
+                },
+                child: CustomPaint(
+                  painter: ResultOverlayPainter(
+                    transform: transform,
+                    items: overlayItems,
+                    selectedObjectId: state.selectedObjectId,
                   ),
-                  items: [
-                    for (final object in result.objects)
-                      ResultOverlayItem(
-                        objectId: object.objectId,
-                        imageBox: Rect.fromLTRB(
-                          object.bboxXyxy[0],
-                          object.bboxXyxy[1],
-                          object.bboxXyxy[2],
-                          object.bboxXyxy[3],
-                        ),
-                        skuName: object.skuName,
-                        isUnknown: object.isUnknown,
-                      ),
-                  ],
-                  selectedObjectId: state.selectedObjectId,
                 ),
               ),
           ],

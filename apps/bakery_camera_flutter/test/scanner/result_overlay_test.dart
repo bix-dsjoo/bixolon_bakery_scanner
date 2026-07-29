@@ -44,14 +44,16 @@ void main() {
         items: const [
           ResultOverlayItem(
             objectId: 'object-1',
+            displayNumber: 1,
             imageBox: Rect.fromLTRB(20, 30, 50, 70),
-            skuName: 'Croissant',
+            displayName: 'Croissant',
             isUnknown: false,
           ),
           ResultOverlayItem(
             objectId: 'object-2',
+            displayNumber: 2,
             imageBox: Rect.fromLTRB(70, 30, 100, 70),
-            skuName: 'Unknown',
+            displayName: '알 수 없음',
             isUnknown: true,
           ),
         ],
@@ -87,7 +89,7 @@ void main() {
     },
   );
 
-  testWidgets('omits a label that cannot fit inside a shallow image', (
+  testWidgets('keeps the compact number visible inside a shallow image', (
     tester,
   ) async {
     const viewportSize = Size(120, 20);
@@ -99,8 +101,9 @@ void main() {
       items: const [
         ResultOverlayItem(
           objectId: 'object-1',
+          displayNumber: 1,
           imageBox: Rect.fromLTRB(20, 2, 80, 18),
-          skuName: 'Croissant',
+          displayName: 'Croissant',
           isUnknown: false,
         ),
       ],
@@ -121,7 +124,73 @@ void main() {
       ),
       greaterThan(0),
     );
-    expect(rgba.getUint8((10 * viewportSize.width.toInt() + 30) * 4 + 3), 0);
+    expect(
+      rgba.getUint8((10 * viewportSize.width.toInt() + 30) * 4 + 3),
+      greaterThan(0),
+    );
+  });
+
+  test('hit testing maps letterboxed viewport points to object identity', () {
+    final transform = ContainedImageTransform(
+      imageSize: const Size(400, 200),
+      viewportSize: const Size(300, 300),
+    );
+    final hitTester = ResultOverlayHitTester(
+      transform: transform,
+      items: const [
+        ResultOverlayItem(
+          objectId: 'object-1',
+          displayNumber: 1,
+          imageBox: Rect.fromLTRB(100, 50, 300, 150),
+          displayName: 'Croissant',
+          isUnknown: false,
+        ),
+      ],
+      selectedObjectId: null,
+    );
+
+    expect(hitTester.hitTest(const Offset(150, 150)), 'object-1');
+    expect(hitTester.hitTest(const Offset(150, 50)), isNull);
+  });
+
+  test('overlap hit testing prefers selected then smallest canonical box', () {
+    const items = [
+      ResultOverlayItem(
+        objectId: 'object-1',
+        displayNumber: 1,
+        imageBox: Rect.fromLTRB(10, 10, 90, 90),
+        displayName: 'Large',
+        isUnknown: false,
+      ),
+      ResultOverlayItem(
+        objectId: 'object-2',
+        displayNumber: 2,
+        imageBox: Rect.fromLTRB(30, 30, 70, 70),
+        displayName: 'Small',
+        isUnknown: true,
+      ),
+    ];
+    final transform = ContainedImageTransform(
+      imageSize: const Size(100, 100),
+      viewportSize: const Size(100, 100),
+    );
+
+    expect(
+      ResultOverlayHitTester(
+        transform: transform,
+        items: items,
+        selectedObjectId: null,
+      ).hitTest(const Offset(50, 50)),
+      'object-2',
+    );
+    expect(
+      ResultOverlayHitTester(
+        transform: transform,
+        items: items,
+        selectedObjectId: 'object-1',
+      ).hitTest(const Offset(50, 50)),
+      'object-1',
+    );
   });
 }
 

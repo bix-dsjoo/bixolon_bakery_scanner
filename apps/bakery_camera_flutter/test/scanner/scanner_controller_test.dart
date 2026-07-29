@@ -8,6 +8,8 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/inference_fixtures.dart';
+
 void main() {
   group('CameraService', () {
     late Directory testRoot;
@@ -303,6 +305,17 @@ void main() {
       expect(controller.state.analysisError, isNull);
       expect(controller.state.capturedImagePath, camera.capture.path);
       expect(camera.releasedPaths, isEmpty);
+    });
+
+    test('result selects the lowest-score unresolved object first', () async {
+      await controller.initialize();
+      final analysis = controller.analyze();
+      await worker.analysisStarted;
+      worker.completeAnalysis(buildOrderingInferenceResult());
+
+      await analysis;
+
+      expect(controller.state.selectedObjectId, 'object-3');
     });
 
     test(

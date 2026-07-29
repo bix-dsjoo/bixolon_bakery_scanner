@@ -100,6 +100,16 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
                         ),
                       ),
                     ),
+                    Container(
+                      key: Key('object-semantic-dot-${object.objectId}'),
+                      width: 6,
+                      height: 6,
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: BoxDecoration(
+                        color: semanticColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,

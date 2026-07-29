@@ -342,6 +342,7 @@ final class ScannerController extends ChangeNotifier {
           phase: ScannerPhase.result,
           result: result,
           awaitingRenderedResult: true,
+          selectedObjectId: _initialSelectedObjectId(result),
         ),
       );
     } catch (error, stackTrace) {
@@ -356,6 +357,23 @@ final class ScannerController extends ChangeNotifier {
       );
       Error.throwWithStackTrace(StateError('$message: $error'), stackTrace);
     }
+  }
+
+  static String? _initialSelectedObjectId(InferenceResult result) {
+    if (result.objects.isEmpty) {
+      return null;
+    }
+    final unresolved = result.objects
+        .where((object) => object.isUnknown)
+        .toList(growable: false);
+    if (unresolved.isEmpty) {
+      return result.objects.first.objectId;
+    }
+    return unresolved.reduce((best, next) {
+      final bestScore = best.candidates.first.score;
+      final nextScore = next.candidates.first.score;
+      return nextScore < bestScore ? next : best;
+    }).objectId;
   }
 
   void acknowledgeResultRendered() {

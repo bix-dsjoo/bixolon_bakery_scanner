@@ -80,26 +80,67 @@ final class ContainedImageTransform {
 final class ResultOverlayItem {
   const ResultOverlayItem({
     required this.objectId,
+    required this.displayNumber,
     required this.imageBox,
-    required this.skuName,
+    required this.displayName,
     required this.isUnknown,
   });
 
   final String objectId;
+  final int displayNumber;
   final Rect imageBox;
-  final String skuName;
+  final String displayName;
   final bool isUnknown;
 
   @override
   bool operator ==(Object other) =>
       other is ResultOverlayItem &&
       objectId == other.objectId &&
+      displayNumber == other.displayNumber &&
       imageBox == other.imageBox &&
-      skuName == other.skuName &&
+      displayName == other.displayName &&
       isUnknown == other.isUnknown;
 
   @override
-  int get hashCode => Object.hash(objectId, imageBox, skuName, isUnknown);
+  int get hashCode =>
+      Object.hash(objectId, displayNumber, imageBox, displayName, isUnknown);
+}
+
+final class ResultOverlayHitTester {
+  const ResultOverlayHitTester({
+    required this.transform,
+    required this.items,
+    required this.selectedObjectId,
+  });
+
+  final ContainedImageTransform transform;
+  final List<ResultOverlayItem> items;
+  final String? selectedObjectId;
+
+  String? hitTest(Offset viewportPoint) {
+    final matches = [
+      for (final item in items)
+        if (transform.mapBox(item.imageBox).contains(viewportPoint)) item,
+    ];
+    if (matches.isEmpty) {
+      return null;
+    }
+    matches.sort((a, b) {
+      final aSelected = a.objectId == selectedObjectId;
+      final bSelected = b.objectId == selectedObjectId;
+      if (aSelected != bSelected) {
+        return aSelected ? -1 : 1;
+      }
+      final aArea = a.imageBox.width * a.imageBox.height;
+      final bArea = b.imageBox.width * b.imageBox.height;
+      final areaOrder = aArea.compareTo(bArea);
+      if (areaOrder != 0) {
+        return areaOrder;
+      }
+      return a.displayNumber.compareTo(b.displayNumber);
+    });
+    return matches.first.objectId;
+  }
 }
 
 final class ResultOverlayPainter extends CustomPainter {
@@ -135,15 +176,27 @@ final class ResultOverlayPainter extends CustomPainter {
         Paint()
           ..color = color
           ..style = PaintingStyle.stroke
-          ..strokeWidth = selected ? 4 : 2,
+          ..isAntiAlias = false
+          ..strokeWidth = selected ? 3 : 1.5,
       );
-      _paintLabel(
+      _paintNumberChip(
         canvas,
         visibleImageBounds: visibleImageBounds,
         box: box,
-        label: item.skuName,
+        label: item.displayNumber.toString().padLeft(2, '0'),
         color: color,
       );
+      if (selected) {
+        _paintLabel(
+          canvas,
+          visibleImageBounds: visibleImageBounds,
+          box: box,
+          label:
+              '${item.displayNumber.toString().padLeft(2, '0')}  '
+              '${item.displayName}',
+          color: color,
+        );
+      }
     }
     canvas.restore();
   }
@@ -212,6 +265,46 @@ final class ResultOverlayPainter extends CustomPainter {
       canvas,
       labelRect.topLeft + const Offset(horizontalPadding, verticalPadding),
     );
+  }
+
+  static void _paintNumberChip(
+    Canvas canvas, {
+    required Rect visibleImageBounds,
+    required Rect box,
+    required String label,
+    required Color color,
+  }) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final chipSize = Size(textPainter.width + 8, textPainter.height + 4);
+    if (chipSize.width > visibleImageBounds.width ||
+        chipSize.height > visibleImageBounds.height) {
+      return;
+    }
+    final left = box.left
+        .clamp(
+          visibleImageBounds.left,
+          visibleImageBounds.right - chipSize.width,
+        )
+        .toDouble();
+    final top = box.top
+        .clamp(
+          visibleImageBounds.top,
+          visibleImageBounds.bottom - chipSize.height,
+        )
+        .toDouble();
+    final chip = Offset(left, top) & chipSize;
+    canvas.drawRect(chip, Paint()..color = color);
+    textPainter.paint(canvas, chip.topLeft + const Offset(4, 2));
   }
 
   @override

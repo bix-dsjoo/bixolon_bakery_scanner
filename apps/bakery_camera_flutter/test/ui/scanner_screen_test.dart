@@ -166,21 +166,19 @@ void main() {
     fixture.worker.complete(buildUiInferenceResult());
     await tester.pumpAndSettle();
 
-    final confirmedSurface = tester.widget<Container>(
-      find.byKey(const Key('object-row-surface-object-1')),
+    final confirmedDot = tester.widget<Container>(
+      find.byKey(const Key('object-semantic-dot-object-1')),
     );
-    final unknownSurface = tester.widget<Container>(
-      find.byKey(const Key('object-row-surface-object-2')),
+    final unknownDot = tester.widget<Container>(
+      find.byKey(const Key('object-semantic-dot-object-2')),
     );
-    final confirmedDecoration = confirmedSurface.decoration! as BoxDecoration;
-    final unknownDecoration = unknownSurface.decoration! as BoxDecoration;
-    final confirmedBorder = confirmedDecoration.border! as Border;
-    final unknownBorder = unknownDecoration.border! as Border;
+    final confirmedDecoration = confirmedDot.decoration! as BoxDecoration;
+    final unknownDecoration = unknownDot.decoration! as BoxDecoration;
 
-    expect(confirmedBorder.left.color, confirmedTeal);
-    expect(unknownBorder.left.color, unknownAmber);
-    expect(confirmedBorder.left.color, isNot(bixolonOrange));
-    expect(unknownBorder.left.color, isNot(bixolonOrange));
+    expect(confirmedDecoration.color, confirmedTeal);
+    expect(unknownDecoration.color, unknownAmber);
+    expect(confirmedDecoration.color, isNot(bixolonOrange));
+    expect(unknownDecoration.color, isNot(bixolonOrange));
   });
 
   testWidgets('analysis stays disabled until camera and model are ready', (
@@ -295,9 +293,7 @@ void main() {
       expect(find.text('92.0%'), findsOneWidget);
       expect(find.text('RepViT 직접 확정'), findsOneWidget);
       expect(find.text('알 수 없음'), findsWidgets);
-      await tester.tap(
-        find.byKey(const Key('evaluation-object-row-object-2')),
-      );
+      await tester.tap(find.byKey(const Key('evaluation-object-row-object-2')));
       await tester.pump();
       expect(find.byKey(const Key('candidate-row')), findsNWidgets(3));
       expect(find.text('1'), findsOneWidget);
@@ -348,6 +344,38 @@ void main() {
       expect(find.text('290 ms'), findsOneWidget);
     },
   );
+
+  testWidgets('tapping an overlay box selects the matching evaluation row', (
+    tester,
+  ) async {
+    final fixture = ScannerFixture();
+    addTearDown(fixture.close);
+    await _pumpScreen(tester, fixture.controller);
+    await tester.tap(find.text('분석하기'));
+    await tester.pump();
+    fixture.worker.complete(buildUiInferenceResult());
+    await tester.pumpAndSettle();
+
+    final overlay = tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .where((widget) => widget.painter is ResultOverlayPainter)
+        .single;
+    final painter = overlay.painter! as ResultOverlayPainter;
+    final overlayFinder = find.byWidget(overlay);
+    final target = painter.transform
+        .mapBox(
+          painter.items
+              .singleWhere((item) => item.objectId == 'object-1')
+              .imageBox,
+        )
+        .center;
+
+    await tester.tapAt(tester.getTopLeft(overlayFinder) + target);
+    await tester.pump();
+
+    expect(fixture.controller.state.selectedObjectId, 'object-1');
+    expect(find.byKey(const Key('candidate-row')), findsNothing);
+  });
 
   for (final size in const [Size(1280, 820), Size(1024, 720)]) {
     testWidgets('result composition has no overflow at ${size.width.toInt()}x'
