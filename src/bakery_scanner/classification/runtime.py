@@ -196,9 +196,12 @@ class ClassifierPipeline:
         config_path: Path,
         *,
         calibration_path: Path | None = None,
+        runtime_override: ClassifierRuntimeConfig | None = None,
     ) -> "ClassifierPipeline":
         """Load strict configuration, calibration, and the primary runner."""
         config = ClassifierConfig.load(config_path)
+        if runtime_override is not None:
+            config = config.model_copy(update={"runtime": runtime_override})
         configure_cpu_process(config.runtime)
         calibration_payload = (calibration_path or config.calibration.artifact).read_bytes()
         calibration = PolicyCalibration.from_json_bytes(calibration_payload)
