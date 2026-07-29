@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "scope": "offline_rfdetr_fusion_cpu_v1",
+  "required_paths": [
+    "runtime/python/python.exe",
+    "runtime/site-packages",
+    "src/bakery_scanner",
+    "scripts/run_cpu_rfdetr_fusion.py",
+    "models/rfdetr_large_bakery_v1",
+    "models/repvit_m1_15plus5_v1",
+    "models/dinov3_vits16_15plus5_v1",
+    "artifacts/e2e_current_source/classification",
+    "configs/cpu_rfdetr_classifier_policy.yaml",
+    "samples/batch2_e3_m3_h3",
+    "README.md",
+    "Run-CPU-Batch2.ps1",
+    "Verify-Package.ps1"
+  ]
+}
