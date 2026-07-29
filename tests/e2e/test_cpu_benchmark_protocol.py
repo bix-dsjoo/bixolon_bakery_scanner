@@ -8,6 +8,11 @@ from bakery_scanner.e2e.cpu_benchmark_protocol import (
     PrepareCommand,
     ResolvedRuntime,
     RunPassCommand,
+    WarmupEvidence,
+    WarmupImageEvidence,
+    WarmupStageCounts,
+    WorkerEnvironment,
+    WorkerMetadata,
     WorkerSpec,
 )
 from bakery_scanner.e2e.cpu_regression import ObjectOutcome, ObjectRecord
@@ -71,6 +76,47 @@ def _image_row() -> BenchmarkImageRow:
     )
 
 
+def _warmup_image(repetition: int = 1) -> WarmupImageEvidence:
+    return WarmupImageEvidence(
+        key="fixtures/e_0001.jpg",
+        profile="E",
+        repetition=repetition,
+        started_at_utc="2026-07-30T00:00:00Z",
+        completed_at_utc="2026-07-30T00:00:01Z",
+        stage_counts=WarmupStageCounts(1, 1, 1, 0, 1),
+    )
+
+
+def _worker_metadata() -> WorkerMetadata:
+    return WorkerMetadata(
+        role="reference",
+        pid=123,
+        resolved_runtime=_resolved_runtime(),
+        environment=WorkerEnvironment(
+            python_version="3.11",
+            pytorch_version="2.0",
+            torchvision_version="0.15",
+            numpy_version="1.0",
+            os_name="Windows",
+            os_version="11",
+            logical_cpu_count=8,
+            inherited_affinity=(0,),
+            filesystem_encoding="utf-8",
+            default_encoding="utf-8",
+            utf8_mode=1,
+            gc_enabled=True,
+        ),
+        detector_metadata=(("version", "v1"),),
+        artifact_hashes=(("detector", "a" * 64),),
+        warmup=WarmupEvidence(repetitions=2, images=(_warmup_image(),)),
+        stderr_path=Path("logs/worker.stderr"),
+    )
+
+
+class _PickleableModel:
+    pass
+
+
 def test_worker_spec_is_immutable_and_requires_fixed_warmup():
     spec = _worker_spec()
 
@@ -117,3 +163,45 @@ def test_prepare_command_preserves_a_spawn_safe_specification():
     command = PrepareCommand(spec=_worker_spec())
 
     assert command.spec.role == "reference"
+
+
+def test_metadata_values_are_deeply_frozen_and_reject_pickleable_models():
+    mutable_value = ["fixed"]
+    spec = replace(_worker_spec(), runtime_overrides=(("labels", mutable_value),))
+    metadata = replace(_worker_metadata(), detector_metadata=(("labels", mutable_value),))
+
+    mutable_value.append("mutated")
+
+    assert spec.runtime_overrides == (("labels", ("fixed",)),)
+    assert metadata.detector_metadata == (("labels", ("fixed",)),)
+    with pytest.raises(ValueError, match="protocol values"):
+        replace(spec, runtime_overrides=(("model", _PickleableModel()),))
+    with pytest.raises(ValueError, match="protocol values"):
+        replace(metadata, detector_metadata=(("model", _PickleableModel()),))
+
+
+@pytest.mark.parametrize(
+    "factory, changes",
+    [
+        (_worker_spec, {"runtime_overrides": (("threads", 1), ("threads", 2))}),
+        (_worker_spec, {"expected_artifact_hashes": (("policy", "a"), ("policy", "b"))}),
+        (_worker_metadata, {"detector_metadata": (("version", "a"), ("version", "b"))}),
+        (_worker_metadata, {"artifact_hashes": (("policy", "a"), ("policy", "b"))}),
+    ],
+)
+def test_metadata_pairs_reject_duplicate_keys(factory, changes):
+    with pytest.raises(ValueError, match="unique"):
+        replace(factory(), **changes)
+
+
+def test_warmup_evidence_requires_exactly_two_repetitions():
+    with pytest.raises(ValueError, match="exactly 2"):
+        WarmupEvidence(repetitions=1, images=(_warmup_image(),))
+    with pytest.raises(ValueError, match="1 and 2"):
+        _warmup_image(repetition=3)
+
+
+def test_compile_mode_keeps_empty_compile_models_compatible_with_runtime_config():
+    runtime = replace(_resolved_runtime(), mode="batch_pytorch_compile", compile_models=())
+
+    assert runtime.compile_models == ()

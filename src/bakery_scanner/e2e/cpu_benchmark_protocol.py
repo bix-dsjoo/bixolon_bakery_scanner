@@ -67,13 +67,31 @@ def _normalize_key(value: object, field: str = "key") -> str:
     return key
 
 
+def _freeze_protocol_value(value: object, field: str) -> object:
+    """Normalize the protocol's deliberately small immutable value vocabulary."""
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{field} protocol values must be finite")
+        return value
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_protocol_value(item, field) for item in value)
+    raise ValueError(
+        f"{field} protocol values must be None, bool, int, float, str, or nested tuples"
+    )
+
+
 def _normalize_pairs(value: Sequence[tuple[str, object]], field: str) -> tuple[tuple[str, object], ...]:
-    pairs = tuple(value)
-    for pair in pairs:
-        if not isinstance(pair, tuple) or len(pair) != 2:
+    pairs: list[tuple[str, object]] = []
+    for pair in value:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
             raise ValueError(f"{field} must contain key/value pairs")
-        _require_string(pair[0], field)
-    return pairs
+        key = _require_string(pair[0], field)
+        pairs.append((key, _freeze_protocol_value(pair[1], field)))
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ValueError(f"{field} keys must be unique")
+    return tuple(pairs)
 
 
 def _require_pickle_safe(value: object, field: str) -> None:
@@ -104,10 +122,10 @@ class WorkerSpec:
         if self.warmup_repetitions != 2:
             raise ValueError("warmup_repetitions must be exactly 2")
         object.__setattr__(self, "runtime_overrides", _normalize_pairs(self.runtime_overrides, "runtime_overrides"))
-        hashes = tuple(self.expected_artifact_hashes)
-        if any(not isinstance(pair, tuple) or len(pair) != 2 or not isinstance(pair[1], str) or not pair[1] for pair in hashes):
+        hashes = _normalize_pairs(self.expected_artifact_hashes, "expected_artifact_hashes")
+        if any(not isinstance(pair[1], str) or not pair[1] for pair in hashes):
             raise ValueError("expected_artifact_hashes must contain non-empty string hashes")
-        object.__setattr__(self, "expected_artifact_hashes", _normalize_pairs(hashes, "expected_artifact_hashes"))
+        object.__setattr__(self, "expected_artifact_hashes", hashes)
         _require_pickle_safe(self, "WorkerSpec")
 
 
@@ -198,6 +216,8 @@ class WarmupImageEvidence:
         if self.profile not in _PROFILES:
             raise ValueError("profile must be E, M, or H")
         _require_exact_int(self.repetition, "repetition", minimum=1)
+        if self.repetition > 2:
+            raise ValueError("repetition must be between 1 and 2")
         _require_string(self.started_at_utc, "started_at_utc")
         _require_string(self.completed_at_utc, "completed_at_utc")
         if not isinstance(self.stage_counts, WarmupStageCounts):
@@ -210,7 +230,8 @@ class WarmupEvidence:
     images: tuple[WarmupImageEvidence, ...]
 
     def __post_init__(self) -> None:
-        _require_exact_int(self.repetitions, "repetitions", minimum=1)
+        if self.repetitions != 2:
+            raise ValueError("repetitions must be exactly 2")
         images = tuple(self.images)
         if any(not isinstance(image, WarmupImageEvidence) for image in images):
             raise ValueError("images must contain WarmupImageEvidence")
@@ -235,10 +256,10 @@ class WorkerMetadata:
         if not isinstance(self.resolved_runtime, ResolvedRuntime) or not isinstance(self.environment, WorkerEnvironment) or not isinstance(self.warmup, WarmupEvidence) or not isinstance(self.stderr_path, Path):
             raise ValueError("worker metadata contains invalid values")
         object.__setattr__(self, "detector_metadata", _normalize_pairs(self.detector_metadata, "detector_metadata"))
-        hashes = tuple(self.artifact_hashes)
-        if any(not isinstance(pair, tuple) or len(pair) != 2 or not isinstance(pair[1], str) or not pair[1] for pair in hashes):
+        hashes = _normalize_pairs(self.artifact_hashes, "artifact_hashes")
+        if any(not isinstance(pair[1], str) or not pair[1] for pair in hashes):
             raise ValueError("artifact_hashes must contain non-empty string hashes")
-        object.__setattr__(self, "artifact_hashes", _normalize_pairs(hashes, "artifact_hashes"))
+        object.__setattr__(self, "artifact_hashes", hashes)
         _require_pickle_safe(self, "WorkerMetadata")
 
 
