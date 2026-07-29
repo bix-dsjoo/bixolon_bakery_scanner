@@ -94,74 +94,85 @@ final class _ScannerScreenState extends State<ScannerScreen> {
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(
-                      key: const Key('camera-pane'),
-                      flex: 7,
-                      child: _CameraStage(
-                        controller: widget.controller,
-                        state: state,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      key: const Key('result-pane'),
-                      flex: 3,
-                      child: DecoratedBox(
-                        key: const Key('result-surface'),
-                        decoration: BoxDecoration(
-                          color: resultPaper,
-                          border: Border.all(
-                            color: bixolonDivider,
-                            width: bixolonControlBorderWidth,
-                          ),
-                          borderRadius: BorderRadius.circular(
-                            bixolonControlRadius,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    const paneGap = 12.0;
+                    final availableWidth = constraints.maxWidth - paneGap;
+                    final resultWidth = availableWidth >= 720
+                        ? (availableWidth * 0.36).clamp(
+                            360.0,
+                            availableWidth * 0.5,
+                          )
+                        : availableWidth * 0.5;
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          key: const Key('camera-pane'),
+                          child: _CameraStage(
+                            controller: widget.controller,
+                            state: state,
                           ),
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(
-                            bixolonControlRadius,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Expanded(
-                                child: ResultRail(
-                                  state: state,
-                                  elapsedMs: activeElapsed,
-                                  onSelectObject:
-                                      widget.controller.selectObject,
-                                ),
+                        const SizedBox(width: paneGap),
+                        SizedBox(
+                          key: const Key('result-pane'),
+                          width: resultWidth,
+                          child: DecoratedBox(
+                            key: const Key('result-surface'),
+                            decoration: BoxDecoration(
+                              color: resultPaper,
+                              border: Border.all(
+                                color: bixolonDivider,
+                                width: bixolonControlBorderWidth,
                               ),
-                              DecoratedBox(
-                                decoration: const BoxDecoration(
-                                  color: resultPaper,
-                                  border: Border(
-                                    top: BorderSide(color: bixolonDivider),
-                                  ),
-                                ),
-                                child: Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    16,
-                                    12,
-                                    16,
-                                    16,
-                                  ),
-                                  child: _PrimaryAction(
-                                    state: state,
-                                    controller: widget.controller,
-                                  ),
-                                ),
+                              borderRadius: BorderRadius.circular(
+                                bixolonControlRadius,
                               ),
-                            ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(
+                                bixolonControlRadius,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Expanded(
+                                    child: ResultRail(
+                                      state: state,
+                                      elapsedMs: activeElapsed,
+                                      onSelectObject:
+                                          widget.controller.selectObject,
+                                    ),
+                                  ),
+                                  DecoratedBox(
+                                    decoration: const BoxDecoration(
+                                      color: resultPaper,
+                                      border: Border(
+                                        top: BorderSide(color: bixolonDivider),
+                                      ),
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        16,
+                                        12,
+                                        16,
+                                        16,
+                                      ),
+                                      child: _PrimaryAction(
+                                        state: state,
+                                        controller: widget.controller,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  ],
+                      ],
+                    );
+                  },
                 ),
               ),
             ),

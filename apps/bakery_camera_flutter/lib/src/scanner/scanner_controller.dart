@@ -137,11 +137,11 @@ final class ScannerState {
 
   String get phaseLabel => switch (phase) {
     ScannerPhase.idle => '촬영 준비',
-    ScannerPhase.capturing => '이미지 촬영 중',
-    ScannerPhase.detecting => '빵 위치 찾는 중',
-    ScannerPhase.classifying => '품목 확인 중',
-    ScannerPhase.rechecking => 'DINOv3 재확인 중',
-    ScannerPhase.aggregating => '결과 정리 중',
+    ScannerPhase.capturing => '이미지를 촬영하고 있어요.',
+    ScannerPhase.detecting => '빵을 찾고 있어요.',
+    ScannerPhase.classifying => '빵 종류를 확인하고 있어요.',
+    ScannerPhase.rechecking => '분류 결과를 다시 확인하고 있어요.',
+    ScannerPhase.aggregating => '결과를 정리하고 있어요.',
     ScannerPhase.result => '분석 결과',
     ScannerPhase.failure => '분석을 완료하지 못했습니다',
   };

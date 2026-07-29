@@ -353,7 +353,7 @@ void main() {
     test('worker progress maps to factual Korean phases', () async {
       await controller.initialize();
       final analysis = controller.analyze();
-      expect(controller.state.phaseLabel, '이미지 촬영 중');
+      expect(controller.state.phaseLabel, '이미지를 촬영하고 있어요.');
       await worker.analysisStarted;
 
       worker.emit(
@@ -362,28 +362,28 @@ void main() {
           phase: WorkerPhase.detecting,
         ),
       );
-      expect(controller.state.phaseLabel, '빵 위치 찾는 중');
+      expect(controller.state.phaseLabel, '빵을 찾고 있어요.');
       worker.emit(
         const ProgressWorkerEvent(
           requestId: 'analysis-1',
           phase: WorkerPhase.classifying,
         ),
       );
-      expect(controller.state.phaseLabel, '품목 확인 중');
+      expect(controller.state.phaseLabel, '빵 종류를 확인하고 있어요.');
       worker.emit(
         const ProgressWorkerEvent(
           requestId: 'analysis-1',
           phase: WorkerPhase.rechecking,
         ),
       );
-      expect(controller.state.phaseLabel, 'DINOv3 재확인 중');
+      expect(controller.state.phaseLabel, '분류 결과를 다시 확인하고 있어요.');
       worker.emit(
         const ProgressWorkerEvent(
           requestId: 'analysis-1',
           phase: WorkerPhase.aggregating,
         ),
       );
-      expect(controller.state.phaseLabel, '결과 정리 중');
+      expect(controller.state.phaseLabel, '결과를 정리하고 있어요.');
 
       worker.completeAnalysis(_emptyResult());
       await analysis;

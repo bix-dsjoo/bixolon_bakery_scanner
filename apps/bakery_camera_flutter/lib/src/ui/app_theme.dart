@@ -21,20 +21,24 @@ ThemeData buildBakeryTheme() {
       letterSpacing: -0.5,
     ),
     titleLarge: TextStyle(
-      fontSize: 19,
+      fontSize: 20,
       height: 1.3,
       fontWeight: FontWeight.w700,
       letterSpacing: -0.25,
     ),
     titleMedium: TextStyle(
-      fontSize: 16,
+      fontSize: 14,
       height: 1.4,
       fontWeight: FontWeight.w600,
     ),
     bodyLarge: TextStyle(fontSize: 15, height: 1.45),
-    bodyMedium: TextStyle(fontSize: 13, height: 1.45),
+    bodyMedium: TextStyle(
+      fontSize: 13,
+      height: 1.45,
+      fontWeight: FontWeight.w400,
+    ),
     labelLarge: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-    labelMedium: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+    labelMedium: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
   );
 
   return ThemeData(

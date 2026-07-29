@@ -17,7 +17,7 @@ import '../support/inference_fixtures.dart';
 
 void main() {
   testWidgets(
-    'compact divider header and flat 70/30 panes identify the scan console',
+    'compact divider header and flat 64/36 panes identify the scan console',
     (tester) async {
       final fixture = ScannerFixture();
       addTearDown(fixture.close);
@@ -53,7 +53,7 @@ void main() {
       final resultPane = find.byKey(const Key('result-pane'));
       final paneRatio =
           tester.getSize(cameraPane).width / tester.getSize(resultPane).width;
-      expect(paneRatio, closeTo(7 / 3, 0.15));
+      expect(paneRatio, closeTo(64 / 36, 0.15));
 
       expect(find.byType(BixolonBrandDecoration), findsNothing);
 
@@ -79,6 +79,24 @@ void main() {
       expect(resultDecoration.borderRadius, BorderRadius.circular(6));
     },
   );
+
+  testWidgets('result pane remains at least 360 pixels wide at 1024', (
+    tester,
+  ) async {
+    final fixture = ScannerFixture();
+    addTearDown(fixture.close);
+    tester.view.physicalSize = const Size(1024, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _pumpScreen(tester, fixture.controller);
+
+    expect(
+      tester.getSize(find.byKey(const Key('result-pane'))).width,
+      greaterThanOrEqualTo(360),
+    );
+  });
 
   testWidgets('camera and result panes contain no Orange bands or panels', (
     tester,
@@ -251,7 +269,7 @@ void main() {
       await tester.tap(find.text('분석하기'));
       await tester.pump();
 
-      expect(find.textContaining('이미지 촬영 중'), findsOneWidget);
+      expect(find.textContaining('이미지를 촬영하고 있어요.'), findsOneWidget);
       expect(find.textContaining('ms'), findsWidgets);
 
       fixture.worker.emit(
@@ -261,7 +279,7 @@ void main() {
         ),
       );
       await tester.pump();
-      expect(find.textContaining('빵 위치 찾는 중'), findsOneWidget);
+      expect(find.textContaining('빵을 찾고 있어요.'), findsOneWidget);
 
       fixture.worker.complete(buildUiInferenceResult());
       await tester.pumpAndSettle();
