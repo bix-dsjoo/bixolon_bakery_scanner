@@ -16,7 +16,7 @@ from bakery_scanner.classification.contracts import (
     ModelProvenance,
     ModelScoreVector,
 )
-from bakery_scanner.classification.dinov3 import DinoV3Rechecker
+from bakery_scanner.classification.dinov3 import DinoGlobalLocalEvidence, DinoV3Rechecker
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
 from bakery_scanner.classification.fusion_ranker import FusionRanker
 from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibration
@@ -99,6 +99,32 @@ class DisagreeingFullEvidenceDino(FullEvidenceDino):
         return scores, {6: 0.10, 5: 0.90, 4: 0.01}, patch_count, patch_ratio
 
 
+class ManyRecordingRunner(RecordingRunner):
+    def __init__(self, evidence: tuple[RepVitEvidence, ...]) -> None:
+        super().__init__(evidence[0].scores)
+        self.evidence = evidence
+        self.received_object_count = 0
+
+    def score_many_with_evidence(self, crop_groups, *, max_objects):
+        assert max_objects == 2
+        self.received_object_count = len(crop_groups)
+        return self.evidence
+
+
+class ManyFullEvidenceDino(FullEvidenceDino):
+    def __init__(self, evidence: tuple[DinoGlobalLocalEvidence, ...]) -> None:
+        super().__init__(evidence[0].global_scores)
+        self.evidence = evidence
+        self.received_object_count = 0
+
+    def score_many_global_and_local_evidence(
+        self, crop_groups, product_box_groups, local_bank, *, repvit_scores, max_objects
+    ):
+        assert max_objects == 2
+        self.received_object_count = len(crop_groups)
+        return self.evidence
+
+
 class StepClock:
     def __init__(self, values: tuple[float, ...]) -> None:
         self._values = iter(values)
@@ -130,6 +156,37 @@ def test_direct_repvit_confirmation_never_loads_or_calls_dino():
     assert result.confidence == pytest.approx(0.80)
     assert result.box is original_box
     assert dino_loads == 0
+
+
+def test_infer_many_batches_repvit_and_only_rechecks_direct_rejections():
+    repvit = ManyRecordingRunner(
+        (
+            RepVitEvidence(_repvit_scores({6: 0.80, 5: 0.20}), torch.ones(384), 0.01),
+            RepVitEvidence(_repvit_scores({5: 0.50, 6: 0.30}), torch.ones(384), 0.01),
+            RepVitEvidence(_repvit_scores({19: 0.50, 6: 0.30}), torch.ones(384), 0.01),
+        )
+    )
+    dino = ManyFullEvidenceDino(
+        (
+            DinoGlobalLocalEvidence(_dino_scores({5: 0.80}), {5: 0.90}, 32, 0.5),
+            DinoGlobalLocalEvidence(_dino_scores({19: 0.80}), {19: 0.90}, 32, 0.5),
+        )
+    )
+    pipeline = _pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=object())
+
+    result = pipeline.infer_many(
+        _image(),
+        (Box(1, 1, 20, 20), Box(22, 1, 20, 20), Box(43, 1, 16, 20)),
+        repvit_max_objects=2,
+        dino_max_objects=2,
+    )
+
+    assert len(result.decisions) == 3
+    assert result.decisions[0].decision_path is DecisionPath.REPVIT_DIRECT
+    assert repvit.received_object_count == 3
+    assert dino.received_object_count == 2
+    assert result.dino_object_count == 2
+    assert result.timings.total_ms >= result.timings.crop_ms + result.timings.repvit_ms
 
 
 def test_runtime_interprets_exif_oriented_input_in_visual_coordinates():

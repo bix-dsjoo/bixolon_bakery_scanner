@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
 import torch
 from PIL import Image
@@ -60,6 +61,40 @@ class _CudaClock:
 
     def __call__(self) -> float:
         return time.perf_counter()
+
+
+@dataclass(frozen=True, slots=True)
+class BatchStageTimings:
+    crop_ms: float
+    repvit_ms: float
+    dinov3_ms: float
+    fusion_ms: float
+    total_ms: float
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.crop_ms,
+            self.repvit_ms,
+            self.dinov3_ms,
+            self.fusion_ms,
+            self.total_ms,
+        ):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError("batch stage timings must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class BatchInferenceResult:
+    decisions: tuple[ClassificationDecision, ...]
+    timings: BatchStageTimings
+    dino_object_count: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "decisions", tuple(self.decisions))
+        if any(not isinstance(decision, ClassificationDecision) for decision in self.decisions):
+            raise ValueError("batch decisions must contain ClassificationDecision values")
+        if type(self.dino_object_count) is not int or not 0 <= self.dino_object_count <= len(self.decisions):
+            raise ValueError("dino_object_count must be within the decision count")
 
 
 class ClassifierPipeline:
@@ -261,6 +296,156 @@ class ClassifierPipeline:
             repvit_ms=_milliseconds(repvit_started, repvit_finished),
             dinov3_ms=_milliseconds(dinov3_started, dinov3_finished),
             total_ms=_milliseconds(total_started, total_finished),
+        )
+
+    def infer_many(
+        self,
+        image: Image.Image | CanonicalImage,
+        boxes: Sequence[Box],
+        *,
+        repvit_max_objects: int,
+        dino_max_objects: int,
+    ) -> BatchInferenceResult:
+        """Classify ordered detector boxes with shared batch evidence extraction."""
+        total_started = self._timestamp()
+        frame = _canonical_frame(image)
+        ordered_boxes = tuple(boxes)
+        for box in ordered_boxes:
+            _validate_visual_box(frame, box)
+        if type(repvit_max_objects) is not int or repvit_max_objects <= 0:
+            raise ValueError("repvit_max_objects must be a positive integer")
+        if type(dino_max_objects) is not int or dino_max_objects <= 0:
+            raise ValueError("dino_max_objects must be a positive integer")
+        if not ordered_boxes:
+            total_finished = self._timestamp()
+            return BatchInferenceResult(
+                (),
+                BatchStageTimings(0.0, 0.0, 0.0, 0.0, _milliseconds(total_started, total_finished)),
+                0,
+            )
+
+        crop_started = self._timestamp()
+        crop_groups: list[tuple[Image.Image, ...]] = []
+        product_box_groups: list[tuple[Box, ...]] = []
+        for box in ordered_boxes:
+            crops, product_boxes = make_padded_crops_with_product_boxes(
+                frame.image, box, self.config.preprocess.paddings
+            )
+            crop_groups.append(crops)
+            product_box_groups.append(product_boxes)
+        crop_finished = self._timestamp()
+
+        if not callable(getattr(self.repvit, "score_many_with_evidence", None)):
+            raise ValueError("RepViT runner does not expose batch evidence scoring")
+        repvit_started = self._timestamp()
+        repvit_evidence = self.repvit.score_many_with_evidence(
+            tuple(crop_groups), max_objects=repvit_max_objects
+        )
+        repvit_finished = self._timestamp()
+        if len(repvit_evidence) != len(ordered_boxes):
+            raise ValueError("RepViT batch evidence must align with input boxes")
+
+        decisions: list[ClassificationDecision | None] = [None] * len(ordered_boxes)
+        recheck_indexes: list[int] = []
+        nearest_distances: list[float] = []
+        for index, (box, evidence) in enumerate(zip(ordered_boxes, repvit_evidence, strict=True)):
+            nearest_distance = min(self.prototype_bank.distances(evidence.feature))
+            nearest_distances.append(nearest_distance)
+            direct = self.policy.direct(
+                evidence.scores,
+                evidence=DirectEvidence(
+                    crop_disagreement=evidence.crop_disagreement,
+                    nearest_prototype_distance=nearest_distance,
+                ),
+                box=box,
+            )
+            if direct is None:
+                recheck_indexes.append(index)
+            else:
+                decisions[index] = direct
+
+        dino_started = self._timestamp()
+        fusion_ms = 0.0
+        if recheck_indexes:
+            dino = self._get_dino()
+            local_bank = self._get_local_bank()
+            if local_bank is None or not callable(getattr(dino, "score_many_global_and_local_evidence", None)):
+                raise ValueError("batch inference requires DINO local evidence scoring")
+            for start in range(0, len(recheck_indexes), dino_max_objects):
+                batch_indexes = recheck_indexes[start : start + dino_max_objects]
+                try:
+                    dino_evidence = dino.score_many_global_and_local_evidence(
+                        tuple(crop_groups[index] for index in batch_indexes),
+                        tuple(product_box_groups[index] for index in batch_indexes),
+                        local_bank,
+                        repvit_scores=tuple(repvit_evidence[index].scores for index in batch_indexes),
+                        max_objects=dino_max_objects,
+                    )
+                    if len(dino_evidence) != len(batch_indexes):
+                        raise ValueError("DINO batch evidence must align with rejected objects")
+                except DinoInferenceError as exc:
+                    for index in batch_indexes:
+                        decisions[index] = self.policy.dino_failure(
+                            repvit_evidence[index].scores, box=ordered_boxes[index]
+                        )
+                    for index in batch_indexes:
+                        decisions[index] = replace(
+                            decisions[index],
+                            provenance=replace(decisions[index].provenance, failure_code=exc.code),
+                        )
+                    continue
+
+                fusion_started = self._timestamp()
+                for index, evidence in zip(batch_indexes, dino_evidence, strict=True):
+                    if self.fusion_policy is not None:
+                        decisions[index] = self._fusion_decision(
+                            repvit_scores=repvit_evidence[index].scores,
+                            dino_scores=evidence.global_scores,
+                            local_scores=evidence.local_scores,
+                            crop_disagreement=repvit_evidence[index].crop_disagreement,
+                            nearest_prototype_distance=nearest_distances[index],
+                            patch_count=evidence.product_patch_count,
+                            patch_ratio=evidence.product_patch_ratio,
+                            box=ordered_boxes[index],
+                        )
+                    else:
+                        decisions[index] = self.policy.after_local_recheck(
+                            repvit_evidence[index].scores,
+                            evidence.global_scores,
+                            evidence.local_scores,
+                            box=ordered_boxes[index],
+                        )
+                fusion_finished = self._timestamp()
+                fusion_ms += _milliseconds(fusion_started, fusion_finished)
+        dino_finished = self._timestamp()
+        total_finished = self._timestamp()
+        if any(decision is None for decision in decisions):
+            raise RuntimeError("batch inference did not produce every decision")
+        repvit_ms = _milliseconds(repvit_started, repvit_finished)
+        dino_ms = _milliseconds(dino_started, dino_finished)
+        total_ms = _milliseconds(total_started, total_finished)
+        completed = tuple(
+            self._with_metadata(
+                decision,
+                frame=frame,
+                repvit_ms=repvit_ms,
+                dinov3_ms=0.0 if index not in recheck_indexes else dino_ms,
+                total_ms=total_ms,
+                failure_code=decision.provenance.failure_code,
+            )
+            for index, decision in enumerate(decisions)
+            if decision is not None
+        )
+        return BatchInferenceResult(
+            completed,
+            BatchStageTimings(
+                crop_ms=_milliseconds(crop_started, crop_finished),
+                repvit_ms=repvit_ms,
+                dinov3_ms=dino_ms,
+                fusion_ms=fusion_ms,
+                total_ms=total_ms,
+            ),
+            len(recheck_indexes),
         )
 
     def preflight_models(self, image: Image.Image | CanonicalImage, box: Box) -> None:
