@@ -175,7 +175,7 @@ final class InferenceWorkerClient {
       }
       _status = WorkerStatus.stopped;
     } catch (error, stackTrace) {
-      _markFatal(error, stackTrace);
+      _markFatal(error, stackTrace, null, true);
       rethrow;
     } finally {
       _completePending(

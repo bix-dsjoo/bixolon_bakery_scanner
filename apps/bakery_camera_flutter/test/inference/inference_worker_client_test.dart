@@ -205,6 +205,38 @@ void main() {
   });
 
   test(
+    'stopped acknowledgement followed by exit failure remains observable',
+    () async {
+      ownedProcess.completeExitOnKill = false;
+      ownedProcess.killResult = false;
+      final fatalEvents = <FatalWorkerEvent>[];
+      client.events
+          .where((event) => event is FatalWorkerEvent)
+          .cast<FatalWorkerEvent>()
+          .listen(fatalEvents.add);
+      await _startReady(client, ownedProcess);
+
+      final shutdown = client.shutdown();
+      final shutdownRequest =
+          jsonDecode(ownedProcess.sentLines.last) as Map<String, Object?>;
+      ownedProcess.emitJson({
+        'type': 'stopped',
+        'request_id': shutdownRequest['request_id'],
+      });
+
+      await expectLater(shutdown, throwsStateError);
+      expect(ownedProcess.killCalls, 1);
+      expect(client.status, WorkerStatus.fatal);
+      expect(fatalEvents, hasLength(1));
+      expect(fatalEvents.single.code, 'client_fatal');
+      expect(
+        fatalEvents.single.message,
+        contains('owned inference worker could not be killed'),
+      );
+    },
+  );
+
+  test(
     'shutdown owns a child that finishes starting during shutdown',
     () async {
       final delayedStart = Completer<WorkerProcessAdapter>();
