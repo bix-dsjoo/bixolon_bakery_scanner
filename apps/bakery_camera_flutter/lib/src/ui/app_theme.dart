@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
-const counterCanvas = Color(0xFFEEF1F4);
-const cameraInk = Color(0xFF111417);
+import 'bixolon_brand.dart';
+
+const counterCanvas = bixolonCanvas;
+const cameraInk = bixolonInk;
 const resultPaper = Color(0xFFFFFFFF);
 const actionBlue = Color(0xFF176BFF);
 const confirmedTeal = Color(0xFF0E8A72);
@@ -37,11 +39,11 @@ ThemeData buildBakeryTheme() {
 
   return ThemeData(
     useMaterial3: true,
-    fontFamily: 'Segoe UI Variable',
-    fontFamilyFallback: const ['Malgun Gothic', 'Segoe UI', 'sans-serif'],
+    fontFamily: 'Pretendard',
+    fontFamilyFallback: const ['Pretendard', 'Malgun Gothic', 'Segoe UI'],
     scaffoldBackgroundColor: counterCanvas,
     colorScheme: const ColorScheme.light(
-      primary: actionBlue,
+      primary: bixolonOrange,
       onPrimary: Colors.white,
       surface: resultPaper,
       onSurface: cameraInk,
@@ -49,7 +51,7 @@ ThemeData buildBakeryTheme() {
       onError: Colors.white,
     ),
     textTheme: textTheme,
-    dividerColor: const Color(0xFFDCE1E6),
+    dividerColor: bixolonDivider,
     focusColor: actionBlue.withValues(alpha: 0.14),
     filledButtonTheme: FilledButtonThemeData(
       style: ButtonStyle(
