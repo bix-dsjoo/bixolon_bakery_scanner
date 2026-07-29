@@ -174,8 +174,8 @@ final class InferenceWorkerClient {
         await _awaitExitAfterKill(process);
       }
       _status = WorkerStatus.stopped;
-    } catch (error) {
-      _status = WorkerStatus.fatal;
+    } catch (error, stackTrace) {
+      _markFatal(error, stackTrace);
       rethrow;
     } finally {
       _completePending(
@@ -263,7 +263,7 @@ final class InferenceWorkerClient {
       final error = StateError('owned inference worker could not be killed');
       _cancelledStartTerminationError = error;
       _appendDiagnostic(error.toString());
-      _status = WorkerStatus.fatal;
+      _markFatal(error, null, null, true);
       return;
     }
     await _awaitExitAfterKill(process);
@@ -426,8 +426,10 @@ final class InferenceWorkerClient {
     Object error, [
     StackTrace? stackTrace,
     FatalWorkerEvent? observableEvent,
+    bool transitionFromStopped = false,
   ]) {
-    if (_status == WorkerStatus.fatal || _status == WorkerStatus.stopped) {
+    if (_status == WorkerStatus.fatal ||
+        (_status == WorkerStatus.stopped && !transitionFromStopped)) {
       return;
     }
     _status = WorkerStatus.fatal;
