@@ -34,6 +34,7 @@ class FakeRuntime:
         self.device = device
         self.startup_metrics = startup_metrics
         self.closed = False
+        self.close_calls = 0
 
     def analyze(self, image_path: Path, request_id: str, on_progress):
         assert image_path.is_file()
@@ -44,6 +45,7 @@ class FakeRuntime:
         return {"type": "result", "request_id": request_id, "objects": []}
 
     def close(self) -> None:
+        self.close_calls += 1
         self.closed = True
 
 
@@ -228,6 +230,26 @@ def test_worker_emits_exactly_one_fatal_when_initialization_fails():
     events = _events(stdout)
     assert [row["type"] for row in events].count("fatal") == 1
     assert all(row["type"] != "ready" for row in events)
+
+
+def test_worker_closes_initialized_runtime_when_ready_event_cannot_encode():
+    stdout = io.StringIO()
+    runtime = FakeRuntime(startup_metrics={"unencodable": object()})
+
+    status = serve(
+        io.StringIO(),
+        stdout,
+        runtime_factory=lambda emit: runtime,
+        stderr=io.StringIO(),
+    )
+
+    assert status == 1
+    assert runtime.close_calls == 1
+    assert [row["type"] for row in _events(stdout)] == [
+        "loading",
+        "warming",
+        "fatal",
+    ]
 
 
 def test_cli_rejects_warmup_image_outside_repository_root(tmp_path: Path):

@@ -81,6 +81,8 @@ def serve(
         emit_startup("warming")
         emit(_ready_event(runtime))
     except Exception as exc:
+        if runtime is not None:
+            _close_runtime(runtime, diagnostics)
         _write_diagnostic(diagnostics, "runtime initialization failed", exc)
         emit({"type": "fatal", "code": "initialization_failed", "message": str(exc)})
         return 1
@@ -118,11 +120,7 @@ def serve(
             assert isinstance(request, AnalyzeRequest)
             _serve_analysis(runtime, request, emit, diagnostics)
     finally:
-        try:
-            with contextlib.redirect_stdout(diagnostics):
-                runtime.close()
-        except Exception as exc:
-            _write_diagnostic(diagnostics, "runtime shutdown failed", exc)
+        _close_runtime(runtime, diagnostics)
         stopped: dict[str, object] = {"type": "stopped"}
         if stopped_request_id is not None:
             stopped["request_id"] = stopped_request_id
@@ -186,6 +184,14 @@ def _ready_event(runtime: CameraRuntime) -> dict[str, object]:
         raise ValueError("runtime startup_metrics must be a mapping or dataclass")
     event["startup_metrics"] = dict(startup_metrics)
     return event
+
+
+def _close_runtime(runtime: CameraRuntime, diagnostics: TextIO) -> None:
+    try:
+        with contextlib.redirect_stdout(diagnostics):
+            runtime.close()
+    except Exception as exc:
+        _write_diagnostic(diagnostics, "runtime shutdown failed", exc)
 
 
 def _write_diagnostic(stderr: TextIO, context: str, exc: Exception) -> None:
