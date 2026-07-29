@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,13 @@ def test_gpu_and_cpu_rfdetr_configs_differ_only_by_device(repo_root: Path):
         / "artifacts"
         / "e2e_current_source"
         / "classification"
-        / "policy_fail_closed.json"
+        / "policy_v2_manifest_rebound_cpu_smoke.json"
     )
+    calibration = json.loads(calibration_path.read_text("utf-8"))
+    assert cpu["calibration"]["artifact"].endswith(calibration_path.name)
+    assert calibration["repvit_manifest_sha256"] == cpu["repvit"][
+        "manifest_sha256"
+    ]
     assert cpu["calibration"]["artifact_sha256"] == (
         hashlib.sha256(calibration_path.read_bytes()).hexdigest()
     )

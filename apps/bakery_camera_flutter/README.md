@@ -1,17 +1,68 @@
-# bakery_camera_prototype
+# Bixolon bakery camera evaluator (Windows)
 
-A new Flutter project.
+카메라 정지 영상을 현재 RF-DETR-L + RepViT-M1 + 조건부 DINOv3 파이프라인으로
+분석하는 Windows 전용 평가 프로토타입이다. 카메라가 준비되고 Python 추론
+워커가 모델 로드와 1회 워밍업을 끝낸 뒤에만 `분석하기` 버튼이 활성화된다.
 
-## Getting Started
+## 실행
 
-This project is a starting point for a Flutter application.
+저장소와 모델 아티팩트를 그대로 유지한 상태에서 PowerShell을 열고 이 폴더로
+이동한다. 현재 PC의 CUDA 지원 Python 환경을 자동 선택 모드로 실행하는 예:
 
-A few resources to get you started if this is your first Flutter project:
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Run-Camera-Prototype.ps1 `
+  -Python C:\workspace\bixolon_bakery_scanner\.venv\Scripts\python.exe
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+포터블 폴더에 CPU 의존성이 설치된 Python을 함께 둔 경우의 예:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Run-Camera-Prototype.ps1 `
+  -Python .\runtime\python\python.exe
+```
+
+실행 스크립트는 자신의 위치에서 저장소 루트와 Release EXE를 계산하므로 저장소
+폴더 전체를 다른 드라이브로 옮겨도 절대 경로를 수정할 필요가 없다. 단, 전달한
+Python에는 이 저장소의 추론 의존성이 설치되어 있어야 하고 모델·정책 파일은
+설정에 선언된 SHA-256과 일치해야 한다.
+
+## 시간과 결과 해석
+
+첫 실행의 `load_ms`와 `warmup_ms`는 모델을 한 번 올리고 워밍업하는 시작 비용이다.
+화면에서 캡처할 때마다 표시되는 worker total과 단계별 시간에는 이 시작 비용이
+포함되지 않는다. `버튼 누름 → 결과 표시` 시간은 캡처·IPC·화면 갱신까지 포함하므로
+worker total보다 크다.
+
+화면의 confidence와 Unknown Top-3는 한 입력에 대한 모델 관찰값이다. 정답 라벨과
+비교한 정확도가 아니며, 라이브 카메라 화면만으로 정확도나 POS 출하 적합성을
+판정해서는 안 된다. Unknown은 등록 SKU로 임의 집계하지 않는다.
+
+## Release 빌드
+
+```powershell
+$env:Path = 'C:\workspace\tools\flutter-3.44.7\bin;' + $env:Path
+flutter pub get
+flutter test
+flutter analyze
+flutter build windows --release
+```
+
+생성 파일은 `build\windows\x64\runner\Release` 아래에 있다. EXE만 단독 복사하지
+말고 Release 폴더의 DLL과 `data` 폴더를 함께 보관해야 한다.
+
+## 고정 이미지 warm benchmark
+
+저장소 루트에서 한 워커를 시작해 한 번만 로드·워밍업한 뒤 같은 이미지를 20회
+측정한다.
+
+```powershell
+$env:PYTHONPATH='src'
+python scripts\benchmark_camera_worker.py `
+  --repo-root . `
+  --device auto `
+  --image samples\batch2_e3_m3_h3\g20_b02_e_0301.jpg `
+  --runs 20 `
+  --output artifacts\evaluations\flutter_camera_prototype_20260729\warm_benchmark.json
+```
+
+보고서의 p50/p95는 worker total과 각 단계에 대해 nearest-rank 방식으로 계산된다.
