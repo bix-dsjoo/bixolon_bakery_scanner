@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import RLock
 from typing import Callable, Protocol, Sequence
 
 import torch
@@ -31,6 +33,10 @@ from .local_bank import LocalPatchBank
 from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
 from .preprocess import make_padded_crops, make_padded_crops_with_product_boxes
 from .repvit import RepVitM1Runner, RepVitPrototypeBank
+
+
+_CPU_PROCESS_CONFIGURATION: tuple[int | None, int, str | tuple[int, ...]] | None = None
+_CPU_PROCESS_CONFIGURATION_LOCK = RLock()
 
 
 class _ScoreRunner(Protocol):
@@ -97,6 +103,61 @@ class BatchInferenceResult:
             raise ValueError("dino_object_count must be within the decision count")
 
 
+def configure_cpu_process(runtime: ClassifierRuntimeConfig) -> None:
+    """Apply CPU-global runtime settings once in a dedicated worker process."""
+    if runtime.device != "CPU":
+        return
+    requested = (
+        runtime.intra_op_threads,
+        runtime.inter_op_threads,
+        runtime.cpu_affinity,
+    )
+    global _CPU_PROCESS_CONFIGURATION
+    with _CPU_PROCESS_CONFIGURATION_LOCK:
+        if _CPU_PROCESS_CONFIGURATION is not None:
+            if _CPU_PROCESS_CONFIGURATION != requested:
+                raise RuntimeError(
+                    "CPU process settings are already configured; use a fresh worker process"
+                )
+            return
+        if runtime.intra_op_threads is not None:
+            torch.set_num_threads(runtime.intra_op_threads)
+        torch.set_num_interop_threads(runtime.inter_op_threads)
+        if runtime.cpu_affinity != "all":
+            allowed_mask = _get_process_affinity_mask()
+            requested_mask = sum(1 << cpu_id for cpu_id in runtime.cpu_affinity)
+            if requested_mask & ~allowed_mask:
+                raise ValueError("cpu_affinity includes logical CPUs outside the inherited process mask")
+            _set_process_affinity_mask(requested_mask)
+        _CPU_PROCESS_CONFIGURATION = requested
+
+
+def _get_process_affinity_mask() -> int:
+    if os.name != "nt":
+        logical_cpus = os.cpu_count() or 1
+        return (1 << logical_cpus) - 1
+    import ctypes
+
+    process_mask = ctypes.c_size_t()
+    system_mask = ctypes.c_size_t()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.GetProcessAffinityMask(
+        kernel32.GetCurrentProcess(), ctypes.byref(process_mask), ctypes.byref(system_mask)
+    ):
+        raise OSError(ctypes.get_last_error(), "GetProcessAffinityMask failed")
+    return int(process_mask.value)
+
+
+def _set_process_affinity_mask(mask: int) -> None:
+    if os.name != "nt":
+        raise RuntimeError("process affinity subsets are supported only on Windows")
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.c_size_t(mask)):
+        raise OSError(ctypes.get_last_error(), "SetProcessAffinityMask failed")
+
+
 class ClassifierPipeline:
     """Run RepViT first and construct DINOv3 only when recheck is needed."""
 
@@ -138,6 +199,7 @@ class ClassifierPipeline:
     ) -> "ClassifierPipeline":
         """Load strict configuration, calibration, and the primary runner."""
         config = ClassifierConfig.load(config_path)
+        configure_cpu_process(config.runtime)
         calibration_payload = (calibration_path or config.calibration.artifact).read_bytes()
         calibration = PolicyCalibration.from_json_bytes(calibration_payload)
         provenance = ModelProvenance(
@@ -177,6 +239,8 @@ class ClassifierPipeline:
                 calibration_sha256=hashlib.sha256(fusion_payload).hexdigest(),
             )
         repvit = RepVitM1Runner.load(config)
+        if "repvit" in config.runtime.compile_models:
+            repvit.model = torch.compile(repvit.model)
         if config.repvit.prototype_bank is None or config.repvit.prototype_bank_sha256 is None:
             raise ValueError("RepViT prototype bank is required for safe direct decisions")
         prototype_bank = RepVitPrototypeBank.load(
@@ -466,6 +530,10 @@ class ClassifierPipeline:
             loaded = self._dino_loader()
             if loaded is None or not callable(getattr(loaded, "score", None)):
                 raise TypeError("DINO loader must return a score runner")
+            if "dinov3" in self.config.runtime.compile_models:
+                if not isinstance(loaded, DinoV3Rechecker):
+                    raise TypeError("DINO compile selection requires a DINOv3 rechecker")
+                loaded.encoder = torch.compile(loaded.encoder)
             self._dino = loaded
         return self._dino
 

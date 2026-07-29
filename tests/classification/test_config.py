@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from bakery_scanner.classification.config import ClassifierConfig, preprocess_sha256
+from bakery_scanner.classification.config import (
+    ClassifierConfig,
+    ClassifierRuntimeConfig,
+    preprocess_sha256,
+)
+from bakery_scanner.classification.runtime import configure_cpu_process
 
 
 def test_classifier_config_resolves_paths_and_pins_artifacts():
@@ -25,6 +30,84 @@ def test_classifier_config_allows_explicit_cpu_smoke_runtime(tmp_path):
     config = ClassifierConfig.load(path)
 
     assert config.runtime.device == "CPU"
+
+
+def test_cpu_runtime_accepts_batch_compile_options():
+    runtime = ClassifierRuntimeConfig(
+        device="CPU",
+        precision="FP32",
+        mode="batch_pytorch_compile",
+        repvit_microbatch_objects=4,
+        dinov3_microbatch_objects="all",
+        intra_op_threads=8,
+        inter_op_threads=1,
+        cpu_affinity=[0, 1, 2, 3],
+        compile_models=["repvit", "dinov3"],
+    )
+
+    assert runtime.repvit_microbatch_objects == 4
+    assert runtime.compile_models == ("repvit", "dinov3")
+
+
+@pytest.mark.parametrize("value", [0, -1, 3, 16])
+def test_runtime_rejects_unsupported_microbatch_sizes(value):
+    with pytest.raises(ValueError, match="microbatch"):
+        ClassifierRuntimeConfig(
+            device="CPU",
+            precision="FP32",
+            mode="batch_pytorch",
+            repvit_microbatch_objects=value,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"compile_models": ["repvit"]},
+        {"mode": "batch_pytorch_compile", "device": "CUDA:0", "compile_models": ["repvit"]},
+        {"mode": "batch_pytorch", "inter_op_threads": 2},
+        {"mode": "batch_pytorch", "cpu_affinity": []},
+        {"mode": "batch_pytorch", "cpu_affinity": [-1]},
+        {"mode": "batch_pytorch", "cpu_affinity": [1, 1]},
+        {"mode": "batch_pytorch", "compile_models": ["repvit", "repvit"]},
+    ],
+)
+def test_runtime_rejects_incompatible_cpu_options(overrides):
+    with pytest.raises(ValueError):
+        values = {"device": "CPU", "precision": "FP32"}
+        values.update(overrides)
+        ClassifierRuntimeConfig(**values)
+
+
+def test_cpu_process_configuration_is_idempotent_and_rejects_conflicts(monkeypatch):
+    import bakery_scanner.classification.runtime as runtime_module
+
+    calls: list[object] = []
+    monkeypatch.setattr(runtime_module, "_CPU_PROCESS_CONFIGURATION", None)
+    monkeypatch.setattr(runtime_module, "_get_process_affinity_mask", lambda: 0b1111)
+    monkeypatch.setattr(
+        runtime_module, "_set_process_affinity_mask", lambda mask: calls.append(("affinity", mask))
+    )
+    monkeypatch.setattr(
+        runtime_module.torch, "set_num_threads", lambda count: calls.append(("intra", count))
+    )
+    monkeypatch.setattr(
+        runtime_module.torch, "set_num_interop_threads", lambda count: calls.append(("inter", count))
+    )
+    configured = ClassifierRuntimeConfig(
+        device="CPU",
+        precision="FP32",
+        mode="batch_pytorch",
+        intra_op_threads=2,
+        cpu_affinity=[0, 2],
+    )
+
+    configure_cpu_process(configured)
+    configure_cpu_process(configured)
+
+    assert calls == [("intra", 2), ("inter", 1), ("affinity", 0b0101)]
+    with pytest.raises(RuntimeError, match="fresh worker"):
+        configure_cpu_process(configured.model_copy(update={"intra_op_threads": 4}))
 
 
 @pytest.mark.parametrize(

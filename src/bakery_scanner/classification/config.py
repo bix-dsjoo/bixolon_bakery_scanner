@@ -111,6 +111,36 @@ def preprocess_sha256(config: PreprocessConfig) -> str:
 class ClassifierRuntimeConfig(_StrictModel):
     device: Literal["CPU", "CUDA:0"]
     precision: Literal["FP32"]
+    mode: Literal[
+        "serial_reference",
+        "batch_pytorch",
+        "batch_pytorch_compile",
+    ] = "serial_reference"
+    repvit_microbatch_objects: Literal[1, 2, 4, 8, "all"] = 1
+    dinov3_microbatch_objects: Literal[1, 2, 4, 8, "all"] = 1
+    intra_op_threads: int | None = None
+    inter_op_threads: Literal[1] = 1
+    cpu_affinity: Literal["all"] | tuple[int, ...] = "all"
+    compile_models: tuple[Literal["repvit", "dinov3"], ...] = ()
+
+    @model_validator(mode="after")
+    def _runtime_options_are_compatible(self) -> "ClassifierRuntimeConfig":
+        if self.intra_op_threads is not None and self.intra_op_threads <= 0:
+            raise ValueError("intra_op_threads must be positive")
+        if self.cpu_affinity != "all":
+            if not self.cpu_affinity or any(cpu_id < 0 for cpu_id in self.cpu_affinity):
+                raise ValueError("cpu_affinity must contain non-negative logical CPU IDs")
+            if len(set(self.cpu_affinity)) != len(self.cpu_affinity):
+                raise ValueError("cpu_affinity logical CPU IDs must be unique")
+        if len(set(self.compile_models)) != len(self.compile_models):
+            raise ValueError("compile_models must be unique")
+        if self.mode == "serial_reference" and self.compile_models:
+            raise ValueError("compile_models are not allowed in serial_reference mode")
+        if self.mode != "batch_pytorch_compile" and self.compile_models:
+            raise ValueError("compile_models require batch_pytorch_compile mode")
+        if self.mode == "batch_pytorch_compile" and self.device != "CPU":
+            raise ValueError("batch_pytorch_compile requires CPU device")
+        return self
 
 
 class CalibrationConfig(_StrictModel):
