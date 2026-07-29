@@ -29,7 +29,7 @@ class BenchmarkOptions:
     intra_op_threads: int | None
     repvit_microbatch: int | str
     dino_microbatch: int | str
-    cpu_affinity: str
+    cpu_affinity: str | tuple[int, ...] | None
     compile_models: tuple[str, ...]
     passes: int
     first_order: Literal["AB", "BA"]
@@ -191,14 +191,16 @@ def _live_run_mode(mode: str, samples: tuple[CpuEvaluationSample, ...], options:
     from bakery_scanner.detectors.rfdetr import RFDetrRunner
     from bakery_scanner.e2e.cpu_regression import build_image_regression_record
 
-    runtime = ClassifierConfig.load(options.classifier_config).runtime.model_copy(update={
-        "mode": mode,
-        "intra_op_threads": options.intra_op_threads,
-        "repvit_microbatch_objects": options.repvit_microbatch,
-        "dinov3_microbatch_objects": options.dino_microbatch,
-        "cpu_affinity": options.cpu_affinity,
-        "compile_models": options.compile_models,
-    })
+    runtime_updates: dict[str, object] = {"mode": mode, "compile_models": options.compile_models}
+    if options.intra_op_threads is not None:
+        runtime_updates["intra_op_threads"] = options.intra_op_threads
+    if options.repvit_microbatch is not None:
+        runtime_updates["repvit_microbatch_objects"] = options.repvit_microbatch
+    if options.dino_microbatch is not None:
+        runtime_updates["dinov3_microbatch_objects"] = options.dino_microbatch
+    if options.cpu_affinity is not None:
+        runtime_updates["cpu_affinity"] = options.cpu_affinity
+    runtime = ClassifierConfig.load(options.classifier_config).runtime.model_copy(update=runtime_updates)
     classifier = ClassifierPipeline.load(options.classifier_config, runtime_override=runtime)
     metadata = _live_detector_metadata(options.package_root)
     checkpoint = options.package_root / "models" / "rfdetr_large_bakery_v1" / "checkpoint.pth"
@@ -217,7 +219,7 @@ def _live_run_mode(mode: str, samples: tuple[CpuEvaluationSample, ...], options:
             total_ms = canonical_ms + detector_ms + (time.perf_counter() - started) * 1000.0
             crop_ms = repvit_ms = dinov3_ms = fusion_ms = 0.0
         else:
-            batch = classifier.infer_many(frame, tuple(proposal.box for proposal in proposals), repvit_max_objects=options.repvit_microbatch if isinstance(options.repvit_microbatch, int) else len(proposals), dino_max_objects=options.dino_microbatch if isinstance(options.dino_microbatch, int) else max(1, len(proposals)))
+            batch = classifier.infer_many(frame, tuple(proposal.box for proposal in proposals), repvit_max_objects=runtime.repvit_microbatch_objects if isinstance(runtime.repvit_microbatch_objects, int) else len(proposals), dino_max_objects=runtime.dinov3_microbatch_objects if isinstance(runtime.dinov3_microbatch_objects, int) else max(1, len(proposals)))
             decisions = batch.decisions
             total_ms = canonical_ms + detector_ms + batch.timings.total_ms
             crop_ms, repvit_ms, dinov3_ms, fusion_ms = batch.timings.crop_ms, batch.timings.repvit_ms, batch.timings.dinov3_ms, batch.timings.fusion_ms
@@ -254,18 +256,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--candidate-mode", choices=("serial_reference", "batch_pytorch", "batch_pytorch_compile"), required=True)
     parser.add_argument("--sample-profile", choices=("all299", "batch2_e3_m3_h3"), default="all299")
     parser.add_argument("--intra-op-threads", type=int)
-    parser.add_argument("--cpu-affinity", default="all")
-    parser.add_argument("--repvit-microbatch", choices=("1", "2", "4", "8", "all"), default="1")
-    parser.add_argument("--dino-microbatch", choices=("1", "2", "4", "8", "all"), default="1")
+    parser.add_argument("--cpu-affinity")
+    parser.add_argument("--repvit-microbatch", choices=("1", "2", "4", "8", "all"))
+    parser.add_argument("--dino-microbatch", choices=("1", "2", "4", "8", "all"))
     parser.add_argument("--compile-model", choices=("repvit", "dinov3"), action="append", default=[])
     parser.add_argument("--passes", type=int, default=3)
     parser.add_argument("--first-order", choices=("AB", "BA"), default="AB")
     parser.add_argument("--bootstrap-seed", type=int, default=20260729)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    def microbatch(value: str) -> int | str:
+    def microbatch(value: str | None) -> int | str | None:
+        if value is None:
+            return None
         return "all" if value == "all" else int(value)
-    affinity = args.cpu_affinity if args.cpu_affinity == "all" else tuple(int(value) for value in args.cpu_affinity.split(","))
+    affinity = None if args.cpu_affinity is None else (args.cpu_affinity if args.cpu_affinity == "all" else tuple(int(value) for value in args.cpu_affinity.split(",")))
     run_benchmark(BenchmarkOptions(args.package_root, args.classifier_config, args.reference_mode, args.candidate_mode, args.sample_profile, args.intra_op_threads, microbatch(args.repvit_microbatch), microbatch(args.dino_microbatch), affinity, tuple(args.compile_model), args.passes, args.first_order, args.bootstrap_seed, args.output))
     return 0
 

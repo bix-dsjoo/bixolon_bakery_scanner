@@ -66,6 +66,26 @@ def test_benchmark_refuses_to_overwrite_existing_output(tmp_path):
         run_benchmark(_options(tmp_path, output), dependencies=_dependencies())
 
 
+def test_cli_omits_runtime_overrides_when_not_explicitly_requested(monkeypatch, tmp_path):
+    from scripts.benchmark_cpu_rfdetr_299 import main
+
+    received = []
+    monkeypatch.setattr("scripts.benchmark_cpu_rfdetr_299.run_benchmark", received.append)
+
+    assert main([
+        "--package-root", str(tmp_path),
+        "--classifier-config", str(tmp_path / "policy.yaml"),
+        "--candidate-mode", "batch_pytorch",
+        "--output", str(tmp_path / "result"),
+    ]) == 0
+
+    options = received[0]
+    assert options.intra_op_threads is None
+    assert options.cpu_affinity is None
+    assert options.repvit_microbatch is None
+    assert options.dino_microbatch is None
+
+
 def test_batch2_screen_selects_the_prescribed_three_images_per_profile(tmp_path):
     from dataclasses import replace
 
