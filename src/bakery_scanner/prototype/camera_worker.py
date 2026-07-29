@@ -6,6 +6,7 @@ import contextlib
 import sys
 import traceback
 from collections.abc import Callable, Mapping
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Protocol, TextIO
 
@@ -34,7 +35,7 @@ class CameraRuntime(Protocol):
 
 
 RuntimeFactory = Callable[[Callable[[str, str | None], None]], CameraRuntime]
-_STARTUP_EVENTS = frozenset({"loading", "warming", "ready"})
+_STARTUP_EVENTS = frozenset({"loading", "warming"})
 _LEGAL_NEXT_PHASES = {
     None: frozenset({WorkerPhase.DETECTING}),
     WorkerPhase.DETECTING: frozenset({WorkerPhase.CLASSIFYING}),
@@ -78,7 +79,7 @@ def serve(
         with contextlib.redirect_stdout(diagnostics):
             runtime = runtime_factory(emit_startup)
         emit_startup("warming")
-        emit_startup("ready")
+        emit(_ready_event(runtime))
     except Exception as exc:
         _write_diagnostic(diagnostics, "runtime initialization failed", exc)
         emit({"type": "fatal", "code": "initialization_failed", "message": str(exc)})
@@ -150,6 +151,8 @@ def _serve_analysis(
     try:
         with contextlib.redirect_stdout(diagnostics):
             result = runtime.analyze(request.image_path, request.request_id, on_progress)
+        if previous_phase is not WorkerPhase.AGGREGATING:
+            raise ValueError("runtime result requires terminal aggregating progress")
         if not isinstance(result, Mapping):
             raise ValueError("runtime result must be a mapping")
         if result.get("type") != "result":
@@ -167,6 +170,22 @@ def _serve_analysis(
                 "message": str(exc),
             }
         )
+
+
+def _ready_event(runtime: CameraRuntime) -> dict[str, object]:
+    device = getattr(runtime, "device", None)
+    if not isinstance(device, str) or not device:
+        raise ValueError("runtime device must be a non-empty string")
+    event: dict[str, object] = {"type": "ready", "device": device}
+    startup_metrics = getattr(runtime, "startup_metrics", None)
+    if startup_metrics is None:
+        return event
+    if is_dataclass(startup_metrics):
+        startup_metrics = asdict(startup_metrics)
+    if not isinstance(startup_metrics, Mapping):
+        raise ValueError("runtime startup_metrics must be a mapping or dataclass")
+    event["startup_metrics"] = dict(startup_metrics)
+    return event
 
 
 def _write_diagnostic(stderr: TextIO, context: str, exc: Exception) -> None:
