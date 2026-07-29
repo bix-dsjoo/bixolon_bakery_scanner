@@ -86,6 +86,43 @@ void main() {
       expect(selectedTealWidth, greaterThan(unknownAmberWidth));
     },
   );
+
+  testWidgets('omits a label that cannot fit inside a shallow image', (
+    tester,
+  ) async {
+    const viewportSize = Size(120, 20);
+    final painter = ResultOverlayPainter(
+      transform: ContainedImageTransform(
+        imageSize: viewportSize,
+        viewportSize: viewportSize,
+      ),
+      items: const [
+        ResultOverlayItem(
+          objectId: 'object-1',
+          imageBox: Rect.fromLTRB(20, 2, 80, 18),
+          skuName: 'Croissant',
+          isUnknown: false,
+        ),
+      ],
+      selectedObjectId: null,
+    );
+
+    final rgba = (await tester.runAsync(
+      () => _paintRgba(painter, viewportSize),
+    ))!;
+    expect(
+      _coloredRunWidth(
+        rgba,
+        imageWidth: viewportSize.width.toInt(),
+        y: 10,
+        xStart: 15,
+        xEnd: 25,
+        color: const Color(0xFF0E8A72),
+      ),
+      greaterThan(0),
+    );
+    expect(rgba.getUint8((10 * viewportSize.width.toInt() + 30) * 4 + 3), 0);
+  });
 }
 
 Future<ByteData> _paintRgba(CustomPainter painter, Size size) async {

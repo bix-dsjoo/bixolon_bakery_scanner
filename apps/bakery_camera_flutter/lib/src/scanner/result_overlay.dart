@@ -184,6 +184,9 @@ final class ResultOverlayPainter extends CustomPainter {
       textPainter.width + horizontalPadding * 2,
       textPainter.height + verticalPadding * 2,
     );
+    if (labelSize.height + edgeGap * 2 > visibleImageBounds.height) {
+      return;
+    }
     final minX = visibleImageBounds.left + edgeGap;
     final maxX = math.max(
       minX,
