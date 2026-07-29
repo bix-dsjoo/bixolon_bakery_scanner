@@ -208,7 +208,7 @@ void main() {
       bixolonDivider,
     );
     expect(find.text('분석하기'), findsOneWidget);
-    expect(find.text('카메라를 찾지 못했습니다'), findsOneWidget);
+    expect(find.text('카메라를 찾지 못했어요.'), findsOneWidget);
     expect(find.text('카메라 다시 연결'), findsOneWidget);
   });
 
@@ -223,12 +223,12 @@ void main() {
       await tester.pump();
 
       expect(find.text('카메라 연결 중'), findsOneWidget);
-      expect(find.text('카메라를 연결하고 있습니다'), findsOneWidget);
+      expect(find.text('카메라를 연결하고 있어요.'), findsOneWidget);
       expect(find.text('카메라 다시 연결'), findsNothing);
 
       fixture.camera.initializeCompleter!.complete(false);
       await tester.pumpAndSettle();
-      expect(find.text('카메라를 찾지 못했습니다'), findsOneWidget);
+      expect(find.text('카메라를 찾지 못했어요.'), findsOneWidget);
       expect(find.text('카메라 다시 연결'), findsOneWidget);
 
       fixture.camera.reconnectCompleter = Completer<bool>();
@@ -283,26 +283,28 @@ void main() {
       fixture.worker.complete(buildUiInferenceResult());
       await tester.pumpAndSettle();
 
-      expect(find.text('총 2개 · 412 ms · GPU'), findsOneWidget);
+      expect(find.text('대상 2'), findsOneWidget);
+      expect(find.text('확정 1'), findsOneWidget);
+      expect(find.text('알 수 없음 1'), findsOneWidget);
+      expect(find.text('화면 표시까지'), findsOneWidget);
+      expect(find.text('412 ms'), findsOneWidget);
+      expect(find.text('모델 추론'), findsOneWidget);
+      expect(find.text('290 ms'), findsOneWidget);
+      expect(find.text('GPU'), findsWidgets);
       expect(find.text('Croissant'), findsWidgets);
       expect(find.text('92.0%'), findsOneWidget);
       expect(find.text('RepViT 직접 확정'), findsOneWidget);
-      expect(find.text('Unknown'), findsWidgets);
-      final unknownRow = find.byKey(const Key('object-row-object-2'));
-      expect(
-        find.descendant(of: unknownRow, matching: find.text('1')),
-        findsOneWidget,
+      expect(find.text('알 수 없음'), findsWidgets);
+      await tester.tap(
+        find.byKey(const Key('evaluation-object-row-object-2')),
       );
-      expect(
-        find.descendant(of: unknownRow, matching: find.text('2')),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(of: unknownRow, matching: find.text('3')),
-        findsOneWidget,
-      );
+      await tester.pump();
+      expect(find.byKey(const Key('candidate-row')), findsNWidgets(3));
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+      expect(find.text('3'), findsOneWidget);
       expect(find.text('Sugar Donut'), findsOneWidget);
-      expect(find.text('88.0%'), findsOneWidget);
+      expect(find.text('88.0%'), findsNWidgets(2));
       expect(find.text('정확도'), findsNothing);
 
       expect(find.text('120 ms'), findsNothing);
@@ -312,8 +314,6 @@ void main() {
       expect(find.text('120 ms'), findsOneWidget);
       expect(find.text('30 ms'), findsOneWidget);
 
-      await tester.tap(find.byKey(const Key('object-row-object-2')));
-      await tester.pump();
       final paint = tester
           .widgetList<CustomPaint>(find.byType(CustomPaint))
           .where((widget) => widget.painter is ResultOverlayPainter)
@@ -340,11 +340,12 @@ void main() {
       fixture.worker.complete(buildUiInferenceResult());
       await tester.pump();
 
-      expect(find.text('총 2개 · 290 ms · GPU'), findsOneWidget);
-      expect(find.textContaining('총 2개 · 0 ms'), findsNothing);
+      expect(find.text('대상 2'), findsOneWidget);
+      expect(find.text('290 ms'), findsNWidgets(2));
 
       await tester.pump();
-      expect(find.text('총 2개 · 412 ms · GPU'), findsOneWidget);
+      expect(find.text('412 ms'), findsOneWidget);
+      expect(find.text('290 ms'), findsOneWidget);
     },
   );
 
@@ -409,7 +410,7 @@ void main() {
     await tester.pump();
 
     final surface = tester.widget<Container>(
-      find.byKey(const Key('object-row-surface-object-1')),
+      find.byKey(const Key('object-row-surface-object-2')),
     );
     final decoration = surface.decoration! as BoxDecoration;
     expect(decoration.border!.top.color, actionBlue);

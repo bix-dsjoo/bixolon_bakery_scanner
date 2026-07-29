@@ -1,0 +1,144 @@
+import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
+import 'package:bakery_camera_prototype/src/scanner/scanner_controller.dart';
+import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
+import 'package:bakery_camera_prototype/src/ui/result_rail.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../support/inference_fixtures.dart';
+
+void main() {
+  testWidgets('result summary separates counts, latencies, and compute device', (
+    tester,
+  ) async {
+    await _pumpRail(tester, selectedObjectId: 'object-3');
+
+    expect(find.text('대상 3'), findsOneWidget);
+    expect(find.text('확정 1'), findsOneWidget);
+    expect(find.text('알 수 없음 2'), findsOneWidget);
+    expect(find.text('화면 표시까지'), findsOneWidget);
+    expect(find.text('420 ms'), findsOneWidget);
+    expect(find.text('모델 추론'), findsOneWidget);
+    expect(find.text('352 ms'), findsOneWidget);
+    expect(find.text('CPU'), findsOneWidget);
+    expect(find.text('SCAN RESULT'), findsNothing);
+  });
+
+  testWidgets('each object appears once and only selected unresolved shows top3', (
+    tester,
+  ) async {
+    await _pumpRail(tester, selectedObjectId: 'object-3');
+
+    expect(find.byKey(const Key('evaluation-object-row')), findsNWidgets(3));
+    expect(find.byKey(const Key('candidate-row')), findsNWidgets(3));
+    expect(
+      find.text(
+        'AI가 이 빵의 품목을 알 수 없다고 판단했어요. '
+        '가능성이 높은 품목 3개를 참고용으로 보여드려요.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('순위'), findsOneWidget);
+    expect(find.text('예상 품목'), findsOneWidget);
+    expect(find.text('판정 점수'), findsOneWidget);
+    expect(find.byType(Checkbox), findsNothing);
+    expect(find.byType(Radio<int>), findsNothing);
+    expect(find.text('품목별 수량'), findsOneWidget);
+  });
+
+  testWidgets('object row selection emits canonical object identity', (
+    tester,
+  ) async {
+    String? selected;
+    await _pumpRail(
+      tester,
+      selectedObjectId: 'object-3',
+      onSelectObject: (value) => selected = value,
+    );
+
+    await tester.tap(find.byKey(const Key('evaluation-object-row-object-2')));
+    await tester.pump();
+
+    expect(selected, 'object-2');
+  });
+
+  testWidgets('empty result directs the evaluator without fake object rows', (
+    tester,
+  ) async {
+    final result = InferenceResult.fromJson({
+      'type': 'result',
+      'request_id': 'empty',
+      'image': {'width': 1280, 'height': 720},
+      'device': 'cpu',
+      'objects': <Object?>[],
+      'counts': <String, Object?>{},
+      'unknown_count': 0,
+      'timings_ms': {
+        'decode_preprocess': 1.0,
+        'detector': 2.0,
+        'repvit': 0.0,
+        'dinov3': 0.0,
+        'postprocess': 1.0,
+        'total': 4.0,
+      },
+    });
+    await _pumpRail(tester, result: result);
+
+    expect(find.text('빵을 찾지 못했어요.'), findsOneWidget);
+    expect(
+      find.text('트레이 위치를 확인하고 다시 촬영해 주세요.'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('evaluation-object-row')), findsNothing);
+  });
+}
+
+Future<void> _pumpRail(
+  WidgetTester tester, {
+  String? selectedObjectId,
+  InferenceResult? result,
+  ValueChanged<String?>? onSelectObject,
+}) async {
+  final inferenceResult = result ?? buildOrderingInferenceResult();
+  final state = ScannerState.initial().copyWith(
+    cameraReady: true,
+    workerStatus: WorkerStatus.ready,
+    startupMetrics: const StartupMetrics(
+      device: 'cpu',
+      loadMs: 1500,
+      warmupMs: 320,
+      fallbackReason: 'cuda_unavailable',
+      detectorId: 'rfdetr_large_bakery_v1',
+      repvitId: 'repvit_m1_15plus5_v1',
+      dinov3Id: 'dinov3_vits16_15plus5_v1',
+      fusionPolicyId: 'fusion_local_or_global_consensus_margin_v1',
+      detectorThreshold: 0.5691395401954651,
+    ),
+    device: inferenceResult.device,
+    result: inferenceResult,
+    captureMs: 18.0,
+    pressToRenderedResultMs: 420.0,
+    selectedObjectId: selectedObjectId,
+    phase: ScannerPhase.result,
+  );
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: buildBakeryTheme(),
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 360,
+            height: 720,
+            child: ResultRail(
+              state: state,
+              elapsedMs: 420,
+              onSelectObject: onSelectObject ?? (_) {},
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+}

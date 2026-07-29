@@ -4,6 +4,9 @@ import '../inference/inference_models.dart';
 import '../scanner/scanner_controller.dart';
 import 'app_theme.dart';
 import 'bixolon_brand.dart';
+import 'evaluation_object_list.dart';
+import 'evaluation_summary.dart';
+import 'evaluation_view_data.dart';
 
 final class ResultRail extends StatelessWidget {
   const ResultRail({
@@ -21,170 +24,142 @@ final class ResultRail extends StatelessWidget {
   Widget build(BuildContext context) => DecoratedBox(
     key: const Key('result-rail-surface'),
     decoration: const BoxDecoration(color: resultPaper),
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              const Text(
-                'SCAN RESULT',
-                style: TextStyle(
-                  color: bixolonMutedInk,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.2,
-                ),
-              ),
-              const SizedBox(width: 10),
-              const Expanded(child: Divider(height: 1)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Expanded(
-            child: SingleChildScrollView(
-              key: const Key('result-scroll'),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _Headline(state: state, elapsedMs: elapsedMs),
-                  if (state.result case final result?) ...[
-                    const SizedBox(height: 16),
-                    _Counts(result: result),
-                    const SizedBox(height: 18),
-                    Text(
-                      '대상별 결과',
-                      style: Theme.of(context).textTheme.labelMedium,
-                    ),
-                    const SizedBox(height: 6),
-                    if (result.objects.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 20),
-                        child: Text('감지된 빵이 없습니다'),
-                      )
-                    else
-                      for (final object in result.objects)
-                        _ObjectRow(
-                          object: object,
-                          selected: object.objectId == state.selectedObjectId,
-                          onTap: () => onSelectObject(object.objectId),
-                        ),
-                    const Divider(height: 24),
-                    _TimingDisclosure(state: state),
-                  ],
-                  if (state.startupMetrics != null) ...[
-                    if (state.result == null) const Divider(height: 24),
-                    _ModelDisclosure(metrics: state.startupMetrics!),
-                  ],
-                  const SizedBox(height: 14),
-                ],
-              ),
-            ),
-          ),
-        ],
+    child: SingleChildScrollView(
+      key: const Key('result-scroll'),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+      child: _ResultContent(
+        state: state,
+        elapsedMs: elapsedMs,
+        onSelectObject: onSelectObject,
       ),
     ),
   );
 }
 
-final class _Headline extends StatelessWidget {
-  const _Headline({required this.state, required this.elapsedMs});
+final class _ResultContent extends StatelessWidget {
+  const _ResultContent({
+    required this.state,
+    required this.elapsedMs,
+    required this.onSelectObject,
+  });
+
+  final ScannerState state;
+  final double elapsedMs;
+  final ValueChanged<String?> onSelectObject;
+
+  @override
+  Widget build(BuildContext context) {
+    final result = state.result;
+    if (result == null) {
+      return _NonResultState(state: state, elapsedMs: elapsedMs);
+    }
+
+    final data = EvaluationPanelData.fromState(state);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        EvaluationSummary(data: data),
+        const SizedBox(height: 18),
+        if (data.rows.isEmpty)
+          const _EmptyDetection()
+        else ...[
+          Text('대상별 결과', style: Theme.of(context).textTheme.labelMedium),
+          const SizedBox(height: 6),
+          EvaluationObjectList(
+            rows: data.rows,
+            selectedObjectId: state.selectedObjectId,
+            onSelectObject: onSelectObject,
+          ),
+        ],
+        const SizedBox(height: 10),
+        _QuantityDisclosure(data: data),
+        _TimingDisclosure(data: data),
+        if (data.startupMetrics case final metrics?)
+          _ModelDisclosure(metrics: metrics),
+      ],
+    );
+  }
+}
+
+final class _NonResultState extends StatelessWidget {
+  const _NonResultState({required this.state, required this.elapsedMs});
 
   final ScannerState state;
   final double elapsedMs;
 
   @override
   Widget build(BuildContext context) {
-    final result = state.result;
-    if (result != null) {
-      final displayMs = state.pressToRenderedResultMs ?? result.timings.totalMs;
-      return Text(
-        '총 ${result.objects.length}개 · ${displayMs.round()} ms · '
-        '${_deviceLabel(result.device)}',
-        style: Theme.of(
-          context,
-        ).textTheme.headlineSmall?.copyWith(fontFeatures: tabularFigures),
-      );
-    }
     if (state.workerStatus == WorkerStatus.fatal) {
-      return _FailureHeadline(
-        title: '모델을 준비하지 못했습니다',
-        detail: state.workerError,
+      return _FailureState(
+        title: '모델을 준비하지 못했어요.',
+        action: '앱을 다시 시작해 주세요.',
       );
     }
     if (state.analysisError != null) {
-      return _FailureHeadline(title: state.analysisError!, detail: null);
-    }
-    if (!state.cameraReady && state.cameraError != null) {
-      return _FailureHeadline(
-        title: '카메라를 찾지 못했습니다',
-        detail: state.cameraError,
+      return _FailureState(
+        title: state.analysisError!,
+        action: '트레이 위치를 확인하고 다시 촬영해 주세요.',
       );
     }
-    if (!state.cameraReady) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '카메라를 연결하고 있습니다',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 6),
-          _Elapsed(value: elapsedMs),
-        ],
+    if (!state.cameraReady && state.cameraError != null) {
+      return const _FailureState(
+        title: '카메라를 찾지 못했어요.',
+        action: '연결을 확인한 뒤 다시 연결해 주세요.',
       );
     }
     if (state.isAnalyzing) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            state.phaseLabel,
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 6),
-          _Elapsed(value: elapsedMs),
-        ],
-      );
+      return _ProgressState(label: state.phaseLabel, elapsedMs: elapsedMs);
+    }
+    if (!state.cameraReady) {
+      return _ProgressState(label: '카메라를 연결하고 있어요.', elapsedMs: elapsedMs);
     }
     if (state.workerStatus != WorkerStatus.ready) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '모델을 준비하고 있습니다',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 6),
-          _Elapsed(value: elapsedMs),
-        ],
-      );
+      return _ProgressState(label: '모델을 준비하고 있어요.', elapsedMs: elapsedMs);
     }
-    return Text('분석 준비', style: Theme.of(context).textTheme.headlineSmall);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('분석 준비', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        Text(
+          '트레이를 카메라 아래에 놓고 분석하기를 눌러주세요.',
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: bixolonMutedInk),
+        ),
+      ],
+    );
   }
 }
 
-final class _Elapsed extends StatelessWidget {
-  const _Elapsed({required this.value});
+final class _ProgressState extends StatelessWidget {
+  const _ProgressState({required this.label, required this.elapsedMs});
 
-  final double value;
+  final String label;
+  final double elapsedMs;
 
   @override
-  Widget build(BuildContext context) => Text(
-    '${value.round()} ms',
-    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-      color: const Color(0xFF67717C),
-      fontFeatures: tabularFigures,
-    ),
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 8),
+      Text(
+        '${elapsedMs.round()} ms',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: bixolonMutedInk,
+          fontFeatures: tabularFigures,
+        ),
+      ),
+    ],
   );
 }
 
-final class _FailureHeadline extends StatelessWidget {
-  const _FailureHeadline({required this.title, required this.detail});
+final class _FailureState extends StatelessWidget {
+  const _FailureState({required this.title, required this.action});
 
   final String title;
-  final String? detail;
+  final String action;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -194,237 +169,68 @@ final class _FailureHeadline extends StatelessWidget {
         title,
         style: Theme.of(
           context,
-        ).textTheme.headlineSmall?.copyWith(color: failureRed),
+        ).textTheme.titleLarge?.copyWith(color: failureRed),
       ),
-      if (detail != null && detail != title) ...[
-        const SizedBox(height: 8),
-        Text(detail!, style: Theme.of(context).textTheme.bodyMedium),
-      ],
+      const SizedBox(height: 8),
+      Text(action),
     ],
   );
 }
 
-final class _Counts extends StatelessWidget {
-  const _Counts({required this.result});
-
-  final InferenceResult result;
+final class _EmptyDetection extends StatelessWidget {
+  const _EmptyDetection();
 
   @override
-  Widget build(BuildContext context) {
-    final names = <int, String>{
-      for (final object in result.objects)
-        if (object.skuId != null) object.skuId!: object.skuName,
-    };
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('품목별 수량', style: Theme.of(context).textTheme.labelMedium),
-        const SizedBox(height: 6),
-        for (final entry in result.counts.entries)
-          DecoratedBox(
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: bixolonDivider)),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 7),
-              child: Row(
-                children: [
-                  Expanded(child: Text(names[entry.key] ?? 'SKU ${entry.key}')),
-                  Text(
-                    '${entry.value}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: tabularFigures,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        if (result.unknownCount > 0)
-          Padding(
-            padding: const EdgeInsets.only(top: 7),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text('Unknown', style: TextStyle(color: unknownAmber)),
-                ),
-                Text(
-                  '${result.unknownCount}',
-                  style: const TextStyle(
-                    color: unknownAmber,
-                    fontWeight: FontWeight.w700,
-                    fontFeatures: tabularFigures,
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-final class _ObjectRow extends StatefulWidget {
-  const _ObjectRow({
-    required this.object,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final InferenceObject object;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  State<_ObjectRow> createState() => _ObjectRowState();
-}
-
-final class _ObjectRowState extends State<_ObjectRow> {
-  bool _focused = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final object = widget.object;
-    final color = object.isUnknown ? unknownAmber : confirmedTeal;
-    return Semantics(
-      selected: widget.selected,
-      button: true,
-      label: '${object.skuName} 결과 보기',
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          key: Key('object-row-${object.objectId}'),
-          onTap: widget.onTap,
-          onFocusChange: (focused) => setState(() => _focused = focused),
-          focusColor: Colors.transparent,
-          borderRadius: BorderRadius.circular(bixolonControlRadius),
-          child: Container(
-            key: Key('object-row-surface-${object.objectId}'),
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-            decoration: BoxDecoration(
-              border: _focused
-                  ? Border.all(color: actionBlue, width: 2)
-                  : Border(
-                      left: BorderSide(
-                        color: widget.selected ? bixolonOrange : color,
-                        width: widget.selected ? 3 : 2,
-                      ),
-                      bottom: const BorderSide(color: bixolonDivider),
-                    ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        object.skuName,
-                        style: Theme.of(
-                          context,
-                        ).textTheme.titleMedium?.copyWith(color: bixolonInk),
-                      ),
-                    ),
-                    _ResultBadge(
-                      key: Key('object-status-badge-${object.objectId}'),
-                      label: object.isUnknown ? 'Unknown' : '확정',
-                      color: color,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _percentage(object.confidence),
-                      style: const TextStyle(fontFeatures: tabularFigures),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _decisionPath(object.decisionPath),
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFF67717C),
-                  ),
-                ),
-                if (object.isUnknown) ...[
-                  const SizedBox(height: 8),
-                  for (final candidate in object.candidates)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 22,
-                            child: Text(
-                              '${candidate.rank}',
-                              style: const TextStyle(
-                                color: unknownAmber,
-                                fontWeight: FontWeight.w800,
-                                fontFeatures: tabularFigures,
-                              ),
-                            ),
-                          ),
-                          Expanded(child: Text(candidate.skuName)),
-                          Text(
-                            _percentage(candidate.score),
-                            style: const TextStyle(
-                              fontFeatures: tabularFigures,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ],
-            ),
-          ),
+        Text(
+          '빵을 찾지 못했어요.',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
         ),
-      ),
-    );
-  }
-}
-
-final class _ResultBadge extends StatelessWidget {
-  const _ResultBadge({super.key, required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      border: Border.all(color: color, width: bixolonControlBorderWidth),
-      borderRadius: BorderRadius.circular(4),
-    ),
-    child: Text(
-      label,
-      style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700),
+        const SizedBox(height: 5),
+        const Text('트레이 위치를 확인하고 다시 촬영해 주세요.'),
+      ],
     ),
   );
 }
 
-final class _TimingDisclosure extends StatelessWidget {
-  const _TimingDisclosure({required this.state});
+final class _QuantityDisclosure extends StatelessWidget {
+  const _QuantityDisclosure({required this.data});
 
-  final ScannerState state;
+  final EvaluationPanelData data;
 
   @override
-  Widget build(BuildContext context) {
-    final timings = state.result!.timings;
-    return ExpansionTile(
-      title: const Text('소요 시간'),
-      children: [
-        _Metric('버튼→화면 표시', state.pressToRenderedResultMs),
-        _Metric('촬영', state.captureMs),
-        _Metric('전체 추론', timings.totalMs),
-        _Metric('전처리', timings.decodePreprocessMs),
-        _Metric('Detector', timings.detectorMs),
-        _Metric('RepViT', timings.repvitMs),
-        _Metric('DINOv3', timings.dinov3Ms),
-        _Metric('후처리', timings.postprocessMs),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => ExpansionTile(
+    tilePadding: EdgeInsets.zero,
+    childrenPadding: const EdgeInsets.only(bottom: 8),
+    title: const Text('품목별 수량'),
+    children: [
+      for (final row in data.quantityRows)
+        _MetricRow(label: row.name, value: '${row.count}'),
+    ],
+  );
+}
+
+final class _TimingDisclosure extends StatelessWidget {
+  const _TimingDisclosure({required this.data});
+
+  final EvaluationPanelData data;
+
+  @override
+  Widget build(BuildContext context) => ExpansionTile(
+    tilePadding: EdgeInsets.zero,
+    childrenPadding: const EdgeInsets.only(bottom: 8),
+    title: const Text('단계별 시간'),
+    children: [
+      for (final timing in data.stageTimings)
+        _MetricRow(label: timing.label, value: timing.displayValue),
+    ],
+  );
 }
 
 final class _ModelDisclosure extends StatelessWidget {
@@ -434,38 +240,29 @@ final class _ModelDisclosure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ExpansionTile(
+    tilePadding: EdgeInsets.zero,
+    childrenPadding: const EdgeInsets.only(bottom: 8),
     title: const Text('모델 정보'),
     children: [
-      _Metric('모델 로드', metrics.loadMs),
-      _Metric('워밍업', metrics.warmupMs),
-      _TextMetric('Detector', metrics.detectorId),
-      _TextMetric('Classifier', metrics.repvitId),
-      _TextMetric('재확인', metrics.dinov3Id),
-      _TextMetric('정책', metrics.fusionPolicyId),
+      _MetricRow(label: '모델 로드', value: '${metrics.loadMs.round()} ms'),
+      _MetricRow(label: '워밍업', value: '${metrics.warmupMs.round()} ms'),
+      _MetricRow(label: 'Detector', value: metrics.detectorId),
+      _MetricRow(label: 'Classifier', value: metrics.repvitId),
+      _MetricRow(label: '재확인', value: metrics.dinov3Id),
+      _MetricRow(label: '정책', value: metrics.fusionPolicyId),
     ],
   );
 }
 
-final class _Metric extends StatelessWidget {
-  const _Metric(this.label, this.value);
-
-  final String label;
-  final double? value;
-
-  @override
-  Widget build(BuildContext context) =>
-      _TextMetric(label, value == null ? '—' : '${value!.round()} ms');
-}
-
-final class _TextMetric extends StatelessWidget {
-  const _TextMetric(this.label, this.value);
+final class _MetricRow extends StatelessWidget {
+  const _MetricRow({required this.label, required this.value});
 
   final String label;
   final String value;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 3),
+    padding: const EdgeInsets.symmetric(vertical: 4),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -482,16 +279,3 @@ final class _TextMetric extends StatelessWidget {
     ),
   );
 }
-
-String _percentage(double value) => '${(value * 100).toStringAsFixed(1)}%';
-
-String _decisionPath(String path) => switch (path) {
-  'repvit_direct' => 'RepViT 직접 확정',
-  'dinov3_confirmed' => 'DINOv3 재확인 확정',
-  'fusion_ranked' => 'Fusion 확정',
-  'unknown_top3' => 'Unknown · Top-3 후보',
-  _ => path,
-};
-
-String _deviceLabel(String device) =>
-    device.toLowerCase().startsWith('cuda') ? 'GPU' : 'CPU';
