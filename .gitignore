@@ -5,6 +5,7 @@ artifacts/
 acceptance_data/
 __pycache__/
 .pytest_cache/
+build/
 .worktrees/
 *.pt
 *.pth
