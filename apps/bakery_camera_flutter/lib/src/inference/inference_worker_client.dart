@@ -45,8 +45,11 @@ final class InferenceWorkerClient {
 
   WorkerProcessAdapter? _process;
   Future<WorkerProcessAdapter>? _startingProcess;
+  Completer<void>? _startOwnershipCompleter;
   Completer<void>? _startCompleter;
   Completer<void>? _stoppedCompleter;
+  Future<void>? _shutdownFuture;
+  Object? _cancelledStartTerminationError;
   WorkerStatus _status = WorkerStatus.notStarted;
   int _requestSequence = 0;
   String? _shutdownRequestId;
@@ -56,7 +59,7 @@ final class InferenceWorkerClient {
   Stream<WorkerEvent> get events => _events.stream;
   List<String> get diagnostics => List.unmodifiable(_diagnostics);
 
-  Future<void> start() async {
+  Future<void> start() {
     if (_status != WorkerStatus.notStarted) {
       throw StateError('inference worker can only be started once');
     }
@@ -66,54 +69,11 @@ final class InferenceWorkerClient {
 
     try {
       final startingProcess = _startProcess(config);
+      final ownership = Completer<void>();
       _startingProcess = startingProcess;
-      final process = await startingProcess;
-      _startingProcess = null;
-      _process = process;
-      if (_shuttingDown || _status == WorkerStatus.stopped) {
-        if (!ready.isCompleted) {
-          ready.completeError(
-            StateError('inference worker was shut down while starting'),
-          );
-        }
-      } else if (_status == WorkerStatus.fatal) {
-        process.kill();
-      } else {
-        process.stdout
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .listen(
-              _onStdoutLine,
-              onError: (Object error, StackTrace stackTrace) {
-                _markFatal(
-                  StateError('worker stdout is not valid UTF-8: $error'),
-                  stackTrace,
-                );
-              },
-            );
-        process.stderr
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .listen(
-              _appendDiagnostic,
-              onError: (Object error) {
-                _appendDiagnostic('stderr decode failed: $error');
-              },
-            );
-        unawaited(
-          process.exitCode.then(
-            _onProcessExit,
-            onError: (Object error, StackTrace stackTrace) {
-              _markFatal(
-                StateError('worker exit status failed: $error'),
-                stackTrace,
-              );
-            },
-          ),
-        );
-      }
+      _startOwnershipCompleter = ownership;
+      unawaited(_finishStartingProcess(startingProcess, ownership));
     } catch (error, stackTrace) {
-      _startingProcess = null;
       _markFatal(
         StateError('inference worker failed to start: $error'),
         stackTrace,
@@ -141,89 +101,181 @@ final class InferenceWorkerClient {
     return completer.future;
   }
 
-  Future<void> shutdown() async {
+  Future<void> shutdown() {
+    final existing = _shutdownFuture;
+    if (existing != null) {
+      return existing;
+    }
     if (_status == WorkerStatus.stopped) {
-      return;
+      return Future<void>.value();
     }
-    if (_shuttingDown) {
-      return _stoppedCompleter?.future ?? Future<void>.value();
-    }
+    final shutdown = _performShutdown();
+    _shutdownFuture = shutdown;
+    return shutdown;
+  }
 
+  Future<void> _performShutdown() async {
     _shuttingDown = true;
     final stopped = Completer<void>();
     _stoppedCompleter = stopped;
-    var process = _process;
-    final startingProcess = _startingProcess;
-    if (process == null && startingProcess != null) {
-      try {
-        process = await startingProcess;
-        _process ??= process;
-      } catch (error, stackTrace) {
-        final start = _startCompleter;
-        if (start != null && !start.isCompleted) {
-          start.completeError(
-            StateError('inference worker was shut down while starting'),
-            stackTrace,
+    final start = _startCompleter;
+    if (start != null && !start.isCompleted) {
+      start.completeError(
+        StateError('inference worker was shut down while starting'),
+      );
+    }
+
+    try {
+      var process = _process;
+      final ownership = _startOwnershipCompleter;
+      if (process == null && ownership != null && !ownership.isCompleted) {
+        try {
+          await ownership.future.timeout(shutdownTimeout);
+        } on TimeoutException {
+          _appendDiagnostic(
+            'worker start did not finish before shutdown timeout',
           );
         }
+        final terminationError = _cancelledStartTerminationError;
+        if (terminationError != null) {
+          throw terminationError;
+        }
         _status = WorkerStatus.stopped;
-        stopped.complete();
         return;
       }
-      final start = _startCompleter;
-      if (start != null && !start.isCompleted) {
-        start.completeError(
-          StateError('inference worker was shut down while starting'),
-        );
-      }
-      if (!process.kill()) {
-        final error = StateError('owned inference worker could not be killed');
-        _markFatal(error);
-        throw error;
-      }
-      await process.exitCode.timeout(shutdownTimeout);
-      _status = WorkerStatus.stopped;
-      stopped.complete();
-      return;
-    }
-    if (process == null) {
-      _status = WorkerStatus.stopped;
-      stopped.complete();
-      return;
-    }
 
-    final requestId = _nextRequestId('shutdown');
-    _shutdownRequestId = requestId;
-    if (_status != WorkerStatus.fatal) {
-      _writeRequest({'type': 'shutdown', 'request_id': requestId});
-    }
+      process = _process;
+      if (process == null) {
+        _status = WorkerStatus.stopped;
+        return;
+      }
 
-    var exited = false;
-    try {
-      await Future.any<void>([
-        stopped.future,
-        process.exitCode.then((_) {
-          exited = true;
-        }),
-      ]).timeout(shutdownTimeout);
-      if (!exited) {
-        await process.exitCode.timeout(shutdownTimeout);
+      final requestId = _nextRequestId('shutdown');
+      _shutdownRequestId = requestId;
+      if (_status != WorkerStatus.fatal) {
+        _writeRequest({'type': 'shutdown', 'request_id': requestId});
       }
-    } on TimeoutException {
-      if (!process.kill()) {
-        final error = StateError('owned inference worker could not be killed');
-        _markFatal(error);
-        throw error;
+
+      var exited = false;
+      try {
+        await Future.any<void>([
+          stopped.future,
+          process.exitCode.then((_) {
+            exited = true;
+          }),
+        ]).timeout(shutdownTimeout);
+        if (!exited) {
+          await process.exitCode.timeout(shutdownTimeout);
+        }
+      } on TimeoutException {
+        if (!process.kill()) {
+          throw StateError('owned inference worker could not be killed');
+        }
+        await _awaitExitAfterKill(process);
       }
-      await process.exitCode.timeout(shutdownTimeout);
+      _status = WorkerStatus.stopped;
+    } catch (error) {
+      _status = WorkerStatus.fatal;
+      rethrow;
     } finally {
       _completePending(
         StateError('inference worker shut down before returning a result'),
       );
+      if (!stopped.isCompleted) {
+        stopped.complete();
+      }
     }
-    _status = WorkerStatus.stopped;
-    if (!stopped.isCompleted) {
-      stopped.complete();
+  }
+
+  Future<void> _finishStartingProcess(
+    Future<WorkerProcessAdapter> startingProcess,
+    Completer<void> ownership,
+  ) async {
+    try {
+      final process = await startingProcess;
+      if (identical(_startingProcess, startingProcess)) {
+        _startingProcess = null;
+      }
+      _process = process;
+      if (_shuttingDown || _status == WorkerStatus.stopped) {
+        await _terminateCancelledStart(process);
+        return;
+      }
+      if (_status == WorkerStatus.fatal) {
+        await _terminateCancelledStart(process);
+        return;
+      }
+      _listenToProcess(process);
+    } catch (error, stackTrace) {
+      if (!_shuttingDown && _status != WorkerStatus.stopped) {
+        _markFatal(
+          StateError('inference worker failed to start: $error'),
+          stackTrace,
+        );
+      }
+    } finally {
+      if (identical(_startingProcess, startingProcess)) {
+        _startingProcess = null;
+      }
+      if (!ownership.isCompleted) {
+        ownership.complete();
+      }
+    }
+  }
+
+  void _listenToProcess(WorkerProcessAdapter process) {
+    process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          _onStdoutLine,
+          onError: (Object error, StackTrace stackTrace) {
+            _markFatal(
+              StateError('worker stdout is not valid UTF-8: $error'),
+              stackTrace,
+            );
+          },
+        );
+    process.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          _appendDiagnostic,
+          onError: (Object error) {
+            _appendDiagnostic('stderr decode failed: $error');
+          },
+        );
+    unawaited(
+      process.exitCode.then(
+        _onProcessExit,
+        onError: (Object error, StackTrace stackTrace) {
+          _markFatal(
+            StateError('worker exit status failed: $error'),
+            stackTrace,
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _terminateCancelledStart(WorkerProcessAdapter process) async {
+    if (!process.kill()) {
+      final error = StateError('owned inference worker could not be killed');
+      _cancelledStartTerminationError = error;
+      _appendDiagnostic(error.toString());
+      _status = WorkerStatus.fatal;
+      return;
+    }
+    await _awaitExitAfterKill(process);
+  }
+
+  Future<void> _awaitExitAfterKill(WorkerProcessAdapter process) async {
+    try {
+      await process.exitCode.timeout(shutdownTimeout);
+    } on TimeoutException {
+      _appendDiagnostic('killed worker did not report exit before timeout');
+    } catch (error) {
+      _appendDiagnostic('killed worker exit status failed: $error');
     }
   }
 

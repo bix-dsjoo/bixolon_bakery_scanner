@@ -185,6 +185,7 @@ void main() {
       );
 
       final start = client.start();
+      final startExpectation = expectLater(start, throwsStateError);
       await _pump();
       var shutdownCompleted = false;
       final shutdown = client.shutdown().whenComplete(() {
@@ -194,10 +195,7 @@ void main() {
       final completedBeforeChildWasOwned = shutdownCompleted;
       delayedStart.complete(ownedProcess);
 
-      await expectLater(
-        start.timeout(const Duration(milliseconds: 100)),
-        throwsStateError,
-      );
+      await startExpectation.timeout(const Duration(milliseconds: 100));
       await shutdown.timeout(const Duration(milliseconds: 100));
       expect(completedBeforeChildWasOwned, isFalse);
       expect(ownedProcess.killCalls, 1);
@@ -205,6 +203,83 @@ void main() {
       expect(client.status, WorkerStatus.stopped);
     },
   );
+
+  test('shutdown and start settle when the starter never resolves', () async {
+    final delayedStart = Completer<WorkerProcessAdapter>();
+    client = InferenceWorkerClient(
+      config: InferenceLaunchConfig.fromEnvironment(const {
+        'BAKERY_INFERENCE_PYTHON': r'C:\runtime\python.exe',
+        'BAKERY_REPO_ROOT': r'C:\repo',
+      }),
+      startProcess: (_) => delayedStart.future,
+      shutdownTimeout: const Duration(milliseconds: 5),
+    );
+
+    final start = client.start();
+    final startExpectation = expectLater(start, throwsStateError);
+    await _pump();
+    final firstShutdown = client.shutdown();
+    final concurrentShutdown = client.shutdown();
+
+    await Future.wait([
+      firstShutdown,
+      concurrentShutdown,
+    ]).timeout(const Duration(milliseconds: 100));
+    await startExpectation.timeout(const Duration(milliseconds: 100));
+    expect(client.status, WorkerStatus.stopped);
+    expect(ownedProcess.killCalls, 0);
+    expect(unrelatedProcess.killCalls, 0);
+  });
+
+  test(
+    'a child returned after bounded shutdown is still killed once',
+    () async {
+      final delayedStart = Completer<WorkerProcessAdapter>();
+      client = InferenceWorkerClient(
+        config: InferenceLaunchConfig.fromEnvironment(const {
+          'BAKERY_INFERENCE_PYTHON': r'C:\runtime\python.exe',
+          'BAKERY_REPO_ROOT': r'C:\repo',
+        }),
+        startProcess: (_) => delayedStart.future,
+        shutdownTimeout: const Duration(milliseconds: 5),
+      );
+
+      final start = client.start();
+      final startErrorFuture = start.then<Object?>(
+        (_) => null,
+        onError: (Object error) => error,
+      );
+      await _pump();
+      await client.shutdown().timeout(const Duration(milliseconds: 100));
+      final startError = await startErrorFuture.timeout(
+        const Duration(milliseconds: 20),
+      );
+      delayedStart.complete(ownedProcess);
+      await _pump();
+      await _pump();
+
+      expect(startError, isA<StateError>());
+      expect(ownedProcess.killCalls, 1);
+      expect(unrelatedProcess.killCalls, 0);
+      expect(client.status, WorkerStatus.stopped);
+    },
+  );
+
+  test('shutdown settles when killed child never reports exit', () async {
+    ownedProcess.completeExitOnKill = false;
+    await _startReady(client, ownedProcess);
+
+    final firstShutdown = client.shutdown();
+    final concurrentShutdown = client.shutdown();
+
+    await Future.wait([
+      firstShutdown,
+      concurrentShutdown,
+    ]).timeout(const Duration(milliseconds: 100));
+    expect(ownedProcess.killCalls, 1);
+    expect(unrelatedProcess.killCalls, 0);
+    expect(client.status, WorkerStatus.stopped);
+  });
 }
 
 Future<void> _startReady(
@@ -303,6 +378,7 @@ final class FakeWorkerProcess implements WorkerProcessAdapter {
   final _exitCode = Completer<int>();
   final sentLines = <String>[];
   int killCalls = 0;
+  bool completeExitOnKill = true;
 
   @override
   Stream<List<int>> get stdout => _stdout.stream;
@@ -321,7 +397,7 @@ final class FakeWorkerProcess implements WorkerProcessAdapter {
   @override
   bool kill() {
     killCalls += 1;
-    if (!_exitCode.isCompleted) {
+    if (completeExitOnKill && !_exitCode.isCompleted) {
       _exitCode.complete(137);
     }
     return true;
