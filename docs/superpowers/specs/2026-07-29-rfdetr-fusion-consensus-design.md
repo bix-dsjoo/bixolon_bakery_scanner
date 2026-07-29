@@ -19,24 +19,28 @@ accepted product predictions to this repository's existing `BreadProposal`
 contract.  No classifier threshold or geometry heuristic is added at this
 boundary.
 
-The detector change is isolated to the detector adapter/factory.  Downstream
-Box Assurance and the component resolver continue to consume the unchanged
-`BreadProposal` contract.
+The detector adapter/factory passes accepted `BreadProposal` regions directly
+to the RepViT-M1 direct-decision gate. The canonical CPU path has no Box
+Assurance or component-resolver intermediate; those legacy components remain
+preserved outside this final runtime.
 
 ## Classifier decision contract
 
-For every detector region that reaches classification, run RepViT, DINOv3
-global evidence, DINOv3 local evidence, and the immutable fusion ranker.
-Let `F` be the fusion-ranked top SKU, `L` DINOv3-local top SKU, `R` RepViT top
-SKU, and `G` DINOv3-global top SKU.
+For every detector region that reaches classification, run RepViT-M1 first.
+A RepViT result accepted by its immutable direct-decision gate is final. Only
+a direct-gate rejection runs DINOv3 global evidence, DINOv3 local evidence,
+and the immutable fusion ranker. For that conditional recheck path, let `F`
+be the fusion-ranked top SKU, `L` DINOv3-local top SKU, `R` RepViT top SKU,
+and `G` DINOv3-global top SKU.
 
 The policy returns a SKU only when either condition is true:
 
 1. `F == L`; or
 2. `F == R == G` and `fusion_top1_score - fusion_top2_score >= 0.85`.
 
-Every other case returns `Unknown`; no fallback model may promote it to a SKU.
-The second condition is deliberately scoped to the global-consensus route.
+Every result that fails its applicable direct or fusion acceptance rule returns
+`Unknown`; no fallback model may promote it to a SKU. The second condition is
+deliberately scoped to the global-consensus route.
 
 ## Artifact and schema requirements
 
@@ -56,5 +60,5 @@ Tests must prove both acceptance routes, rejection for low global-consensus
 margin, rejection when the top IDs disagree, schema-v3 canonical round-trip and
 invalid-schema rejection, config SHA validation, and `Unknown` reasons.  The
 detector adapter must prove source-postprocessing output remains bounded and
-maps deterministically to `BreadProposal`.  Box Assurance and resolver tests
-must remain unchanged and pass.
+maps deterministically to `BreadProposal`. Legacy Box Assurance and resolver
+tests must remain unchanged and pass as preservation checks.
