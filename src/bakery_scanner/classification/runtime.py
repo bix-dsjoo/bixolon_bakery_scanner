@@ -102,6 +102,17 @@ class SerialStageTimings:
     total_ms: float
     dino_executed: bool
 
+    def __post_init__(self) -> None:
+        for value in (
+            self.crop_ms,
+            self.repvit_ms,
+            self.dinov3_ms,
+            self.fusion_ms,
+            self.total_ms,
+        ):
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0.0:
+                raise ValueError("serial stage timings must be finite and non-negative")
+
 
 @dataclass(frozen=True, slots=True)
 class BatchInferenceResult:
@@ -400,7 +411,10 @@ class ClassifierPipeline:
                 serial_fusion_finished = time.perf_counter() if serial_started is not None else None
         except DinoInferenceError as exc:
             dinov3_finished = self._timestamp()
+            serial_dinov3_finished = time.perf_counter() if serial_started is not None else None
+            serial_fusion_started = time.perf_counter() if serial_started is not None else None
             decision = self.policy.dino_failure(repvit_scores, box=box)
+            serial_fusion_finished = time.perf_counter() if serial_started is not None else None
             total_finished = self._timestamp()
             if self._stage_timing_sink is not None:
                 self._observe_serial_timing(
@@ -409,6 +423,9 @@ class ClassifierPipeline:
                     repvit_started=serial_repvit_started,
                     repvit_finished=serial_repvit_finished,
                     dino_started=serial_dinov3_started,
+                    dino_finished=serial_dinov3_finished,
+                    fusion_started=serial_fusion_started,
+                    fusion_finished=serial_fusion_finished,
                     dino_executed=True,
                 )
             return self._with_metadata(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 import json
+import math
 from pathlib import Path
 from dataclasses import replace
 
@@ -202,9 +203,27 @@ def test_serial_timing_sink_marks_direct_decision_without_dino():
     result = pipeline.infer(_image(), _box())
 
     assert result.decision_path is DecisionPath.REPVIT_DIRECT
+    assert len(observed) == 1
     assert observed[0].dino_executed is False
     assert observed[0].dinov3_ms == 0.0
     assert observed[0].fusion_ms == 0.0
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    (-1.0, math.nan, math.inf, True),
+    ids=("negative", "nan", "infinity", "bool"),
+)
+def test_serial_stage_timings_reject_non_finite_negative_or_non_numeric_values(invalid_value):
+    with pytest.raises(ValueError, match="serial stage timings must be finite and non-negative"):
+        SerialStageTimings(
+            crop_ms=invalid_value,
+            repvit_ms=0.0,
+            dinov3_ms=0.0,
+            fusion_ms=0.0,
+            total_ms=0.0,
+            dino_executed=False,
+        )
 
 
 def test_infer_many_batches_repvit_and_only_rechecks_direct_rejections():
@@ -512,6 +531,43 @@ def test_dino_failure_returns_unknown_repvit_top3_and_safe_failure_code():
     assert result.provenance.failure_code == "dino_out_of_memory"
     assert b"sensitive backend detail" not in result.to_json_bytes()
     assert result.box == _box()
+
+
+def test_serial_timing_sink_records_dino_failure_policy_evaluation(monkeypatch):
+    def failing_dino() -> DinoV3Rechecker:
+        return DinoV3Rechecker(
+            OutOfMemoryEncoder(),
+            torch.eye(384, dtype=torch.float32)[:20],
+            SKU_IDS,
+            build_transform(224),
+            "dinov3_vits16_15plus5_v1",
+            torch.device("cpu"),
+        )
+
+    repvit_scores = _repvit_scores({19: 0.40, 6: 0.30, 5: 0.20})
+    expected = _pipeline(
+        repvit=RecordingRunner(repvit_scores),
+        dino_loader=failing_dino,
+        clock=StepClock((10.000, 10.001, 10.004, 10.005, 10.011, 10.012)),
+    ).infer(_image(), _box())
+    observed = []
+    perf_counter_values = iter((0.000, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008))
+    monkeypatch.setattr(
+        "bakery_scanner.classification.runtime.time.perf_counter",
+        lambda: next(perf_counter_values),
+    )
+
+    actual = _pipeline(
+        repvit=RecordingRunner(repvit_scores),
+        dino_loader=failing_dino,
+        clock=StepClock((10.000, 10.001, 10.004, 10.005, 10.011, 10.012)),
+        stage_timing_sink=observed.append,
+    ).infer(_image(), _box())
+
+    assert actual == expected
+    assert len(observed) == 1
+    assert observed[0].dino_executed is True
+    assert observed[0].fusion_ms == pytest.approx(1.0)
 
 
 def test_dino_programming_error_is_not_converted_to_unknown():
