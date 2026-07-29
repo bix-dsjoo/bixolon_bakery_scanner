@@ -22,19 +22,27 @@ final class StatusStrip extends StatelessWidget {
     final workerReady = state.workerStatus == WorkerStatus.ready;
     final workerFatal = state.workerStatus == WorkerStatus.fatal;
     final cameraFailure = !state.cameraReady && state.cameraError != null;
-    return ColoredBox(
+    return DecoratedBox(
       key: const Key('bixolon-header'),
-      color: Colors.white,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          bottom: BorderSide(
+            color: bixolonDivider,
+            width: bixolonControlBorderWidth,
+          ),
+        ),
+      ),
       child: Semantics(
         container: true,
         label: 'Bakery AI Scanner · 카메라와 모델 상태',
         child: SizedBox(
-          height: 72,
+          height: 60,
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final showProductTitle = constraints.maxWidth >= 980;
+              final showProductTitle = constraints.maxWidth >= 1180;
               final horizontalPadding = showProductTitle ? 24.0 : 16.0;
-              final statusGap = showProductTitle ? 18.0 : 12.0;
+              final statusGap = showProductTitle ? 16.0 : 12.0;
               return Padding(
                 padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
                 child: Row(
@@ -83,13 +91,14 @@ final class StatusStrip extends StatelessWidget {
                       SizedBox(width: statusGap),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
+                          horizontal: 8,
+                          vertical: 4,
                         ),
                         decoration: BoxDecoration(
-                          color: bixolonCanvas,
                           border: Border.all(color: bixolonDivider),
-                          borderRadius: BorderRadius.circular(4),
+                          borderRadius: BorderRadius.circular(
+                            bixolonControlRadius,
+                          ),
                         ),
                         child: Text(
                           _deviceLabel(state.device!),
@@ -129,11 +138,7 @@ final class _StatusDot extends StatelessWidget {
   Widget build(BuildContext context) => Row(
     mainAxisSize: MainAxisSize.min,
     children: [
-      Container(
-        width: 7,
-        height: 7,
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-      ),
+      BixolonStatusDot(label: label, color: color),
       const SizedBox(width: 7),
       Text(label, style: Theme.of(context).textTheme.bodyMedium),
     ],

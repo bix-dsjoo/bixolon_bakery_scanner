@@ -109,32 +109,56 @@ final class _ScannerScreenState extends State<ScannerScreen> {
                     Expanded(
                       key: const Key('result-pane'),
                       flex: 3,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(
-                            child: ResultRail(
-                              state: state,
-                              elapsedMs: activeElapsed,
-                              onSelectObject: widget.controller.selectObject,
-                            ),
+                      child: DecoratedBox(
+                        key: const Key('result-surface'),
+                        decoration: BoxDecoration(
+                          color: resultPaper,
+                          border: Border.all(
+                            color: bixolonDivider,
+                            width: bixolonControlBorderWidth,
                           ),
-                          ColoredBox(
-                            color: resultPaper,
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                22,
-                                10,
-                                22,
-                                20,
-                              ),
-                              child: _PrimaryAction(
-                                state: state,
-                                controller: widget.controller,
-                              ),
-                            ),
+                          borderRadius: BorderRadius.circular(
+                            bixolonControlRadius,
                           ),
-                        ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(
+                            bixolonControlRadius,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                child: ResultRail(
+                                  state: state,
+                                  elapsedMs: activeElapsed,
+                                  onSelectObject:
+                                      widget.controller.selectObject,
+                                ),
+                              ),
+                              DecoratedBox(
+                                decoration: const BoxDecoration(
+                                  color: resultPaper,
+                                  border: Border(
+                                    top: BorderSide(color: bixolonDivider),
+                                  ),
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    12,
+                                    16,
+                                    16,
+                                  ),
+                                  child: _PrimaryAction(
+                                    state: state,
+                                    controller: widget.controller,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -156,58 +180,58 @@ final class _CameraStage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
+    key: const Key('camera-surface'),
     decoration: BoxDecoration(
       color: cameraInk,
-      border: Border.all(color: const Color(0xFF2D2D2D)),
+      border: Border.all(
+        color: bixolonDivider,
+        width: bixolonControlBorderWidth,
+      ),
+      borderRadius: BorderRadius.circular(bixolonControlRadius),
     ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          width: 4,
-          color: state.cameraReady ? bixolonOrange : const Color(0xFF555555),
-        ),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SizedBox(
-                height: 38,
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 14),
-                  child: Row(
-                    children: [
-                      Text(
-                        state.cameraReady ? 'LIVE INPUT' : 'CAMERA STANDBY',
-                        style: const TextStyle(
-                          color: Color(0xFFB9B9B9),
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 1.15,
-                        ),
-                      ),
-                      const Spacer(),
-                      const BixolonBrandDecoration(size: 30),
-                      const SizedBox(width: 8),
-                    ],
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(bixolonControlRadius),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 38,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  BixolonStatusDot(
+                    label: state.cameraReady ? 'Live input' : 'Camera standby',
+                    color: state.cameraReady
+                        ? bixolonOrange
+                        : const Color(0xFF777777),
                   ),
-                ),
-              ),
-              Expanded(
-                child: DecoratedBox(
-                  key: const Key('camera-viewport'),
-                  decoration: const BoxDecoration(
-                    color: Colors.black,
-                    border: Border(top: BorderSide(color: Color(0xFF2D2D2D))),
+                  const SizedBox(width: 8),
+                  Text(
+                    state.cameraReady ? 'LIVE INPUT' : 'CAMERA STANDBY',
+                    style: const TextStyle(
+                      color: Color(0xFFB9B9B9),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.15,
+                    ),
                   ),
-                  child: _CameraViewport(controller: controller, state: state),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      ],
+          Expanded(
+            child: DecoratedBox(
+              key: const Key('camera-viewport'),
+              decoration: const BoxDecoration(
+                color: Colors.black,
+                border: Border(top: BorderSide(color: Color(0xFF2D2D2D))),
+              ),
+              child: _CameraViewport(controller: controller, state: state),
+            ),
+          ),
+        ],
+      ),
     ),
   );
 }
@@ -332,7 +356,7 @@ final class _PrimaryAction extends StatelessWidget {
                 ),
                 shape: WidgetStatePropertyAll(
                   RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(bixolonControlRadius),
                   ),
                 ),
                 side: WidgetStateProperty.resolveWith(
@@ -346,7 +370,7 @@ final class _PrimaryAction extends StatelessWidget {
                         !states.contains(WidgetState.disabled) &&
                             states.contains(WidgetState.focused)
                         ? 3
-                        : 1.5,
+                        : bixolonControlBorderWidth,
                   ),
                 ),
               ),

@@ -15,7 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'Bixolon header and 70/30 workspace identify the industrial scan console',
+    'compact divider header and flat 70/30 panes identify the scan console',
     (tester) async {
       final fixture = ScannerFixture();
       addTearDown(fixture.close);
@@ -26,10 +26,24 @@ void main() {
 
       await _pumpScreen(tester, fixture.controller);
 
-      final header = tester.widget<ColoredBox>(
+      final header = tester.widget<DecoratedBox>(
         find.byKey(const Key('bixolon-header')),
       );
-      expect(header.color, Colors.white);
+      final headerDecoration = header.decoration as BoxDecoration;
+      expect(headerDecoration.color, Colors.white);
+      expect(
+        headerDecoration.border,
+        const Border(
+          bottom: BorderSide(
+            color: bixolonDivider,
+            width: bixolonControlBorderWidth,
+          ),
+        ),
+      );
+      expect(
+        tester.getSize(find.byKey(const Key('bixolon-header'))).height,
+        60,
+      );
       expect(find.byType(BixolonWordmark), findsOneWidget);
       expect(find.text('Bakery AI Scanner'), findsOneWidget);
 
@@ -39,22 +53,47 @@ void main() {
           tester.getSize(cameraPane).width / tester.getSize(resultPane).width;
       expect(paneRatio, closeTo(7 / 3, 0.15));
 
-      expect(
-        find.descendant(
-          of: cameraPane,
-          matching: find.byType(BixolonBrandDecoration),
-        ),
-        findsOneWidget,
+      expect(find.byType(BixolonBrandDecoration), findsNothing);
+
+      final cameraSurface = tester.widget<DecoratedBox>(
+        find.byKey(const Key('camera-surface')),
       );
+      final cameraDecoration = cameraSurface.decoration as BoxDecoration;
       expect(
-        find.descendant(
-          of: find.byKey(const Key('camera-viewport')),
-          matching: find.byType(BixolonBrandDecoration),
-        ),
-        findsNothing,
+        cameraDecoration.border,
+        Border.all(color: bixolonDivider, width: bixolonControlBorderWidth),
       );
+      expect(cameraDecoration.borderRadius, BorderRadius.circular(6));
+
+      final resultSurface = tester.widget<DecoratedBox>(
+        find.byKey(const Key('result-surface')),
+      );
+      final resultDecoration = resultSurface.decoration as BoxDecoration;
+      expect(resultDecoration.color, Colors.white);
+      expect(
+        resultDecoration.border,
+        Border.all(color: bixolonDivider, width: bixolonControlBorderWidth),
+      );
+      expect(resultDecoration.borderRadius, BorderRadius.circular(6));
     },
   );
+
+  testWidgets('camera and result panes contain no Orange bands or panels', (
+    tester,
+  ) async {
+    final fixture = ScannerFixture();
+    addTearDown(fixture.close);
+    await _pumpScreen(tester, fixture.controller);
+
+    expect(find.byKey(const Key('camera-readiness-band')), findsNothing);
+
+    final rail = tester.widget<DecoratedBox>(
+      find.byKey(const Key('result-rail-surface')),
+    );
+    final railDecoration = rail.decoration as BoxDecoration;
+    expect(railDecoration.color, Colors.white);
+    expect(railDecoration.border, isNull);
+  });
 
   testWidgets(
     'analysis is Orange while recapture is the sole black outlined action',

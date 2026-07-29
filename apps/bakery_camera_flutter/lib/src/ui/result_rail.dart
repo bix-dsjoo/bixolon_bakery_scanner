@@ -19,25 +19,29 @@ final class ResultRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
-    decoration: const BoxDecoration(
-      color: resultPaper,
-      border: Border(top: BorderSide(color: bixolonOrange, width: 3)),
-    ),
+    key: const Key('result-rail-surface'),
+    decoration: const BoxDecoration(color: resultPaper),
     child: Padding(
-      padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            'SCAN RESULT',
-            style: TextStyle(
-              color: bixolonMutedInk,
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.2,
-            ),
+          Row(
+            children: [
+              const Text(
+                'SCAN RESULT',
+                style: TextStyle(
+                  color: bixolonMutedInk,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(child: Divider(height: 1)),
+            ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Expanded(
             child: SingleChildScrollView(
               key: const Key('result-scroll'),
@@ -46,9 +50,9 @@ final class ResultRail extends StatelessWidget {
                 children: [
                   _Headline(state: state, elapsedMs: elapsedMs),
                   if (state.result case final result?) ...[
-                    const SizedBox(height: 22),
+                    const SizedBox(height: 16),
                     _Counts(result: result),
-                    const SizedBox(height: 22),
+                    const SizedBox(height: 18),
                     Text(
                       '대상별 결과',
                       style: Theme.of(context).textTheme.labelMedium,
@@ -56,7 +60,7 @@ final class ResultRail extends StatelessWidget {
                     const SizedBox(height: 6),
                     if (result.objects.isEmpty)
                       const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 24),
+                        padding: EdgeInsets.symmetric(vertical: 20),
                         child: Text('감지된 빵이 없습니다'),
                       )
                     else
@@ -66,14 +70,14 @@ final class ResultRail extends StatelessWidget {
                           selected: object.objectId == state.selectedObjectId,
                           onTap: () => onSelectObject(object.objectId),
                         ),
-                    const Divider(height: 32),
+                    const Divider(height: 24),
                     _TimingDisclosure(state: state),
                   ],
                   if (state.startupMetrics != null) ...[
-                    if (state.result == null) const Divider(height: 32),
+                    if (state.result == null) const Divider(height: 24),
                     _ModelDisclosure(metrics: state.startupMetrics!),
                   ],
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 14),
                 ],
               ),
             ),
@@ -215,38 +219,46 @@ final class _Counts extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text('품목별 수량', style: Theme.of(context).textTheme.labelMedium),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         for (final entry in result.counts.entries)
+          DecoratedBox(
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: bixolonDivider)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              child: Row(
+                children: [
+                  Expanded(child: Text(names[entry.key] ?? 'SKU ${entry.key}')),
+                  Text(
+                    '${entry.value}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: tabularFigures,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (result.unknownCount > 0)
           Padding(
-            padding: const EdgeInsets.only(bottom: 5),
+            padding: const EdgeInsets.only(top: 7),
             child: Row(
               children: [
-                Expanded(child: Text(names[entry.key] ?? 'SKU ${entry.key}')),
+                const Expanded(
+                  child: Text('Unknown', style: TextStyle(color: unknownAmber)),
+                ),
                 Text(
-                  '${entry.value}',
+                  '${result.unknownCount}',
                   style: const TextStyle(
+                    color: unknownAmber,
                     fontWeight: FontWeight.w700,
                     fontFeatures: tabularFigures,
                   ),
                 ),
               ],
             ),
-          ),
-        if (result.unknownCount > 0)
-          Row(
-            children: [
-              const Expanded(
-                child: Text('Unknown', style: TextStyle(color: unknownAmber)),
-              ),
-              Text(
-                '${result.unknownCount}',
-                style: const TextStyle(
-                  color: unknownAmber,
-                  fontWeight: FontWeight.w700,
-                  fontFeatures: tabularFigures,
-                ),
-              ),
-            ],
           ),
       ],
     );
@@ -286,24 +298,19 @@ final class _ObjectRowState extends State<_ObjectRow> {
           onTap: widget.onTap,
           onFocusChange: (focused) => setState(() => _focused = focused),
           focusColor: Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(bixolonControlRadius),
           child: Container(
             key: Key('object-row-surface-${object.objectId}'),
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-            margin: const EdgeInsets.only(bottom: 4),
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
             decoration: BoxDecoration(
-              color: _focused
-                  ? actionBlue.withValues(alpha: 0.08)
-                  : widget.selected
-                  ? bixolonOrange.withValues(alpha: 0.08)
-                  : null,
               border: _focused
                   ? Border.all(color: actionBlue, width: 2)
                   : Border(
                       left: BorderSide(
-                        color: color,
-                        width: widget.selected ? 4 : 2,
+                        color: widget.selected ? bixolonOrange : color,
+                        width: widget.selected ? 3 : 2,
                       ),
+                      bottom: const BorderSide(color: bixolonDivider),
                     ),
             ),
             child: Column(
@@ -316,16 +323,22 @@ final class _ObjectRowState extends State<_ObjectRow> {
                         object.skuName,
                         style: Theme.of(
                           context,
-                        ).textTheme.titleMedium?.copyWith(color: color),
+                        ).textTheme.titleMedium?.copyWith(color: bixolonInk),
                       ),
                     ),
+                    _ResultBadge(
+                      key: Key('object-status-badge-${object.objectId}'),
+                      label: object.isUnknown ? 'Unknown' : '확정',
+                      color: color,
+                    ),
+                    const SizedBox(width: 8),
                     Text(
                       _percentage(object.confidence),
                       style: const TextStyle(fontFeatures: tabularFigures),
                     ),
                   ],
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 2),
                 Text(
                   _decisionPath(object.decisionPath),
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -333,10 +346,10 @@ final class _ObjectRowState extends State<_ObjectRow> {
                   ),
                 ),
                 if (object.isUnknown) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   for (final candidate in object.candidates)
                     Padding(
-                      padding: const EdgeInsets.only(top: 5),
+                      padding: const EdgeInsets.only(top: 4),
                       child: Row(
                         children: [
                           SizedBox(
@@ -368,6 +381,26 @@ final class _ObjectRowState extends State<_ObjectRow> {
       ),
     );
   }
+}
+
+final class _ResultBadge extends StatelessWidget {
+  const _ResultBadge({super.key, required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      border: Border.all(color: color, width: bixolonControlBorderWidth),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700),
+    ),
+  );
 }
 
 final class _TimingDisclosure extends StatelessWidget {
