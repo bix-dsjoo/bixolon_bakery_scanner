@@ -51,6 +51,23 @@ class RecordingRunner:
         )
 
 
+class StageCheckingRunner(RecordingRunner):
+    def __init__(
+        self,
+        scores: ModelScoreVector,
+        *,
+        stages: list[str],
+        expected_stages: tuple[str, ...],
+    ) -> None:
+        super().__init__(scores)
+        self.stages = stages
+        self.expected_stages = expected_stages
+
+    def score_with_evidence(self, crops: tuple[Image.Image, ...]) -> RepVitEvidence:
+        assert tuple(self.stages) == self.expected_stages
+        return super().score_with_evidence(crops)
+
+
 class FixedPrototypeBank:
     def __init__(self, distance: float = 0.02) -> None:
         self.distance = distance
@@ -86,7 +103,12 @@ class LocalRecordingDino(RecordingRunner):
 
 
 class FullEvidenceDino(LocalRecordingDino):
+    def __init__(self, scores: ModelScoreVector) -> None:
+        super().__init__(scores)
+        self.full_evidence_call_count = 0
+
     def score_global_and_local_evidence(self, crops, product_boxes, local_bank, *, repvit_scores):
+        self.full_evidence_call_count += 1
         scores, local = self.score_global_and_local(crops, product_boxes, local_bank, repvit_scores=repvit_scores)
         return scores, local, 32, 0.5
 
@@ -132,6 +154,45 @@ def test_direct_repvit_confirmation_never_loads_or_calls_dino():
     assert dino_loads == 0
 
 
+def test_direct_decision_observes_only_repvit_stage():
+    stages: list[str] = []
+    repvit = StageCheckingRunner(
+        _repvit_scores({6: 0.80, 5: 0.20}),
+        stages=stages,
+        expected_stages=("repvit",),
+    )
+
+    result = _pipeline(
+        repvit=repvit,
+        dino_loader=lambda: pytest.fail("DINO must stay lazy"),
+    ).infer(_image(), _box(), on_stage=stages.append)
+
+    assert result.decision_path is DecisionPath.REPVIT_DIRECT
+    assert stages == ["repvit"]
+
+
+def test_conditional_recheck_observes_repvit_then_dinov3_stages():
+    stages: list[str] = []
+    repvit = StageCheckingRunner(
+        _repvit_scores({6: 0.50, 5: 0.30, 19: 0.10}),
+        stages=stages,
+        expected_stages=("repvit",),
+    )
+    dino = RecordingRunner(_dino_scores({5: 0.50, 6: 0.30, 19: 0.10}))
+
+    def load_dino() -> RecordingRunner:
+        assert tuple(stages) == ("repvit", "dinov3")
+        return dino
+
+    result = _pipeline(
+        repvit=repvit,
+        dino_loader=load_dino,
+    ).infer(_image(), _box(), on_stage=stages.append)
+
+    assert result.decision_path is DecisionPath.UNKNOWN_TOP3
+    assert tuple(stages) == ("repvit", "dinov3")
+
+
 def test_runtime_interprets_exif_oriented_input_in_visual_coordinates():
     encoded = BytesIO()
     exif = Image.Exif()
@@ -156,23 +217,37 @@ def test_runtime_interprets_exif_oriented_input_in_visual_coordinates():
 
 def test_preflight_models_loads_and_scores_dino_before_all_direct_inference():
     repvit = RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20}))
-    dino = RecordingRunner(_dino_scores({6: 0.70, 5: 0.20}))
+    dino = FullEvidenceDino(_dino_scores({6: 0.70, 5: 0.20}))
+    local_bank = object()
     dino_loads = 0
+    local_bank_loads = 0
 
-    def load_dino() -> RecordingRunner:
+    def load_dino() -> FullEvidenceDino:
         nonlocal dino_loads
         dino_loads += 1
         return dino
 
-    pipeline = _pipeline(repvit=repvit, dino_loader=load_dino)
+    def load_local_bank() -> object:
+        nonlocal local_bank_loads
+        local_bank_loads += 1
+        return local_bank
+
+    pipeline = _pipeline(
+        repvit=repvit,
+        dino_loader=load_dino,
+        local_bank_loader=load_local_bank,
+    )
 
     pipeline.preflight_models(_image(), _box())
     result = pipeline.infer(_image(), _box())
 
     assert result.decision_path is DecisionPath.REPVIT_DIRECT
     assert dino_loads == 1
+    assert local_bank_loads == 1
     assert repvit.call_count == 2
     assert dino.call_count == 1
+    assert dino.full_evidence_call_count == 1
+    assert dino.local_bank is local_bank
     assert repvit.received_crops is not dino.received_crops
     assert tuple(crop.size for crop in dino.received_crops) == (
         (42, 22),
@@ -537,6 +612,7 @@ def _pipeline(
     clock=None,
     prototype_bank: FixedPrototypeBank | None = None,
     local_bank: object | None = None,
+    local_bank_loader=None,
 ) -> ClassifierPipeline:
     selected = calibration or _calibration()
     provenance = ModelProvenance(
@@ -557,6 +633,7 @@ def _pipeline(
         clock=clock,
         prototype_bank=prototype_bank or FixedPrototypeBank(),
         local_bank=local_bank,
+        local_bank_loader=local_bank_loader,
     )
 
 
