@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 from PIL import Image
+from torchvision import transforms
 
 from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.preprocess import build_transform
@@ -66,6 +67,61 @@ def test_score_rejects_non_finite_logits():
     runner = RepVitM1Runner(FixedLogitModel(logits), tuple(range(1, 21)), build_transform(224), "repvit_m1_15plus5_v1", torch.device("cpu"))
     with pytest.raises(ValueError, match="finite"):
         runner.score(tuple(Image.new("RGB", (32, 32)) for _ in range(3)))
+
+
+class RecordingEvidenceModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_sizes: list[int] = []
+
+    def forward_features(self, batch: torch.Tensor) -> torch.Tensor:
+        self.batch_sizes.append(batch.shape[0])
+        return batch.mean(dim=1, keepdim=True).repeat(1, 384, 1, 1)
+
+    def forward_head(self, features: torch.Tensor, *, pre_logits: bool) -> torch.Tensor:
+        return features.mean(dim=(2, 3))[:, :20]
+
+
+def _evidence_crops(color: str) -> tuple[Image.Image, Image.Image, Image.Image]:
+    return tuple(Image.new("RGB", (8, 8), color) for _ in range(3))
+
+
+def _recording_evidence_runner() -> RepVitM1Runner:
+    return RepVitM1Runner(
+        model=RecordingEvidenceModel(),
+        sku_ids=tuple(range(1, 21)),
+        transform=transforms.ToTensor(),
+        model_id="repvit_m1_15plus5_v1",
+        device=torch.device("cpu"),
+    )
+
+
+def test_score_many_matches_serial_evidence_and_preserves_object_order():
+    runner = _recording_evidence_runner()
+    groups = (_evidence_crops("red"), _evidence_crops("green"), _evidence_crops("blue"))
+
+    expected = tuple(runner.score_with_evidence(group) for group in groups)
+    actual = runner.score_many_with_evidence(groups, max_objects=2)
+
+    assert len(actual) == 3
+    for left, right in zip(actual, expected, strict=True):
+        assert left.scores.values == pytest.approx(right.scores.values, abs=1e-7)
+        assert torch.allclose(left.feature, right.feature, atol=1e-7, rtol=0)
+        assert left.crop_disagreement == pytest.approx(right.crop_disagreement, abs=1e-7)
+    assert runner.model.batch_sizes[-2:] == [6, 3]
+
+
+@pytest.mark.parametrize(
+    ("crop_groups", "max_objects", "message"),
+    [
+        ((), 1, "must not be empty"),
+        ((_evidence_crops("red")[:2],), 1, "exactly three"),
+        ((_evidence_crops("red"),), 0, "positive"),
+    ],
+)
+def test_score_many_rejects_invalid_group_contract(crop_groups, max_objects, message):
+    with pytest.raises(ValueError, match=message):
+        _recording_evidence_runner().score_many_with_evidence(crop_groups, max_objects=max_objects)
 
 
 def test_load_rejects_hash_mismatch_before_model_construction(monkeypatch):

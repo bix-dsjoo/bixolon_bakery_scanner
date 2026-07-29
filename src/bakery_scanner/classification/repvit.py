@@ -101,29 +101,75 @@ class RepVitM1Runner:
         return ModelScoreVector(self.model_id, self.sku_ids, tuple(float(value) for value in probabilities.detach().cpu().tolist()), "probability")
 
     def score_with_evidence(self, crops: Sequence[Image.Image]) -> RepVitEvidence:
-        if len(crops) != 3:
-            raise ValueError("RepViT requires exactly three crops")
+        return self.score_many_with_evidence((tuple(crops),), max_objects=1)[0]
+
+    def score_many_with_evidence(
+        self,
+        crop_groups: Sequence[Sequence[Image.Image]],
+        *,
+        max_objects: int,
+    ) -> tuple[RepVitEvidence, ...]:
+        groups = _validated_crop_groups(crop_groups)
+        if type(max_objects) is not int or max_objects <= 0:
+            raise ValueError("max_objects must be a positive integer")
+        results: list[RepVitEvidence] = []
+        for start in range(0, len(groups), max_objects):
+            crops = tuple(crop for group in groups[start : start + max_objects] for crop in group)
+            results.extend(self._score_evidence_batch(crops))
+        return tuple(results)
+
+    def _score_evidence_batch(self, crops: Sequence[Image.Image]) -> tuple[RepVitEvidence, ...]:
+        if not crops or len(crops) % 3:
+            raise ValueError("RepViT evidence batches must contain exactly three crops per object")
+        object_count = len(crops) // 3
         batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in crops))
         with torch.inference_mode():
             model_input = batch.to(self.device)
             features = self.model.forward_features(model_input)
-            if features.ndim != 4 or features.shape[:2] != (3, 384):
-                raise ValueError("RepViT features must have shape (3, 384, H, W)")
+            if features.ndim != 4 or features.shape[:2] != (3 * object_count, 384):
+                raise ValueError("RepViT features must have shape (3 * objects, 384, H, W)")
+            if not torch.isfinite(features).all().item():
+                raise ValueError("RepViT features must be finite")
             pooled = torch.nn.functional.normalize(features.mean(dim=(2, 3)), dim=1)
             logits = self.model.forward_head(features, pre_logits=False)
-            if logits.shape != (3, 20):
-                raise ValueError("RepViT logits must have shape (3, 20)")
+            if logits.shape != (3 * object_count, 20):
+                raise ValueError("RepViT logits must have shape (3 * objects, 20)")
             if not torch.isfinite(logits).all().item():
                 raise ValueError("RepViT logits must be finite")
-            probabilities = logits.softmax(dim=1).mean(dim=0)
+            crop_probabilities = logits.softmax(dim=1).reshape(object_count, 3, 20)
+            probabilities = crop_probabilities.mean(dim=1)
             if not torch.isfinite(probabilities).all().item():
                 raise ValueError("RepViT probabilities must be finite")
-        values = tuple(float(value) for value in probabilities.detach().cpu().tolist())
-        return RepVitEvidence(
-            ModelScoreVector(self.model_id, self.sku_ids, values, "probability"),
-            pooled.mean(dim=0).detach().cpu(),
-            float((probabilities - logits.softmax(dim=1)).abs().mean().detach().cpu()),
+        object_features = pooled.reshape(object_count, 3, 384).mean(dim=1)
+        disagreements = (probabilities[:, None, :] - crop_probabilities).abs().mean(dim=(1, 2))
+        return tuple(
+            RepVitEvidence(
+                ModelScoreVector(
+                    self.model_id,
+                    self.sku_ids,
+                    tuple(float(value) for value in score_values.tolist()),
+                    "probability",
+                ),
+                feature.detach().cpu(),
+                float(disagreement.detach().cpu()),
+            )
+            for score_values, feature, disagreement in zip(
+                probabilities.detach().cpu(), object_features, disagreements, strict=True
+            )
         )
+
+
+def _validated_crop_groups(
+    crop_groups: Sequence[Sequence[Image.Image]],
+) -> tuple[tuple[Image.Image, Image.Image, Image.Image], ...]:
+    groups = tuple(tuple(group) for group in crop_groups)
+    if not groups:
+        raise ValueError("RepViT crop groups must not be empty")
+    if any(len(group) != 3 for group in groups):
+        raise ValueError("RepViT requires exactly three crops per object")
+    if any(not isinstance(crop, Image.Image) for group in groups for crop in group):
+        raise ValueError("RepViT crops must be PIL images")
+    return tuple((group[0], group[1], group[2]) for group in groups)
 
 
 def _verify_sha256(path: Path, expected: str, label: str) -> None:
