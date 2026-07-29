@@ -71,7 +71,10 @@
 
 집계 지표가 우연히 같더라도 현재 정답 객체가 다른 실패로 바뀌면 회귀다.
 따라서 최적화 결과는 canonical-frame IoU `0.50` 일대일 매칭 후 객체별로
-비교한다.
+비교한다. 매칭 후보는 IoU 내림차순, GT image/category/annotation ID,
+detector score 내림차순, canonical box 좌표, proposal index 순으로
+정렬한다. 동률이나 중복 후보가 있어도 같은 입력은 항상 같은 객체에
+매칭되어야 한다.
 
 | 현재 객체 상태 | 허용되는 새 상태 |
 |---|---|
@@ -100,7 +103,8 @@
 ## 권장 실행 구조
 
 1차 최적화에서는 가중치, 전처리 규칙, detector threshold, direct gate,
-fusion 정책을 변경하지 않는다. 이미지 단위 batch-first 실행만 도입한다.
+fusion 정책을 변경하지 않는다. 이미지 단위 batch-first 실행과 의미를
+보존하는 CPU graph/runtime 최적화만 도입한다.
 
 ```text
 canonical RGB 이미지
@@ -118,10 +122,10 @@ canonical RGB 이미지
 
 - `CropBatchBuilder`: 객체별 세 padding crop, product box와 원본 객체
   인덱스를 생성한다.
-- `RepViTBatchScorer`: 전체 crop batch를 추론하고 결과를 객체별
-  evidence로 복원한다.
-- `DinoBatchRechecker`: direct gate 미통과 객체만 모아 global 및 local
-  evidence를 생성한다.
+- `RepViTBatchScorer`: 설정된 microbatch 크기로 crop을 추론하고 결과를
+  객체별 evidence로 복원한다.
+- `DinoBatchRechecker`: direct gate 미통과 객체만 모아 설정된
+  microbatch 크기로 global 및 local evidence를 생성한다.
 - `DecisionAssembler`: 현재 direct/fusion 정책을 객체별로 그대로
   적용한다.
 - `BaselineComparator`: 기준 객체와 새 객체를 일대일 매칭하고 허용 상태
@@ -146,15 +150,29 @@ timing, 모델·정책·데이터 SHA-256을 새 경로에 기록한다. 기존 
 변경을 한 책임씩 나눠 다음 순서로 검증한다.
 
 1. 모델을 프로세스 시작 시 한 번만 로드하고 워밍업한다.
-2. inference 전용 실행 모드와 CPU thread 설정을 고정한다.
+2. inference 전용 실행 모드와 CPU thread/affinity 설정을 탐색하고
+   고정한다.
 3. crop 생성을 일괄화하고 불필요한 이미지 변환을 제거한다.
-4. RepViT를 이미지 내 객체 batch로 실행한다.
-5. direct gate 미통과 객체만 DINOv3 batch로 실행한다.
-6. 객체별 기존 fusion 결과를 원래 순서로 복원한다.
+4. RepViT를 이미지 내 객체 microbatch로 실행한다.
+5. direct gate 미통과 객체만 DINOv3 microbatch로 실행한다.
+6. RepViT와 DINOv3에 `torch.compile` CPU FP32를 각각 적용해 eager와
+   비교한다.
+7. 객체별 기존 fusion 결과를 원래 순서로 복원한다.
 
 현재 측정에서는 DINO 실행률이 100%였으므로, direct gate의 동작을
 임의로 완화하지 않는다. 실제 batch runner에서 실행률을 다시 기록하고,
 DINO 대상 객체를 일괄 처리해 순차 호출 비용을 줄인다.
+
+CPU batch는 클수록 빠르다고 가정하지 않는다. RepViT와 DINOv3에 대해
+microbatch `1`, `2`, `4`, `8`, 이미지 내 전체 객체를 각각 측정한다.
+초기 승격 후보는 한 번에 한 이미지만 처리하고 이미지 간 병렬 실행은
+금지한다. 각 모델은 자신의 평균뿐 아니라 전체 이미지 p95가 가장 낮은
+microbatch를 독립적으로 선택한다.
+
+`torch.compile`은 eager reference와 별도 runtime mode로 측정한다. compile
+및 첫 실행 비용은 warm-up에 포함하고 steady-state 측정에서는 제외한다.
+compile 실패, graph break, 수치 회귀 또는 p95 악화가 있으면 해당 모델은
+eager 실행을 유지한다.
 
 ### 2단계: 동일 모델 FP32 백엔드
 
@@ -162,13 +180,31 @@ PyTorch batch 경로가 통과한 뒤 RepViT, DINOv3, RF-DETR 순서로
 OpenVINO FP32와 ONNX Runtime FP32를 비교한다. 한 번에 하나의 모델만
 변환해 속도와 수치 차이의 원인을 분리한다.
 
-각 backend는 기존 PyTorch의 score vector, 순위, margin, 최종 결정을
-객체별로 비교한다. 수치 차이가 acceptance 경계에 영향을 주는 객체는
-PyTorch reference로 fallback한다. backend artifact와 변환 옵션은 별도
-manifest와 SHA-256으로 고정한다.
+OpenVINO는 CPU `ACCURACY` execution mode, FP32 inference precision,
+`LATENCY` performance hint, 단일 inference stream을 기본 후보로 한다.
+자동 저정밀 변환과 dynamic quantization은 비활성화한다. ONNX Runtime은
+sequential graph execution과 전체 graph optimization부터 측정한다.
+XNNPACK을 사용할 때는 ORT intra-op thread를 1로 두고 XNNPACK 자체
+threadpool만 물리 core 후보군으로 조정해 두 threadpool의 경합을 막는다.
+
+각 backend는 validation shadow mode에서 기존 PyTorch의 score vector,
+순위, margin, 최종 결정을 객체별로 비교한다. 운영 경로가 항상 두
+backend를 실행하지 않도록 개발·calibration 데이터에서 policy 경계별
+fallback safety band를 정한다. fast backend 출력이 band 안에 있거나
+지원되지 않는 연산으로 graph가 분할되면 해당 객체만 PyTorch reference로
+보낸다. band 밖에서는 fast backend만 실행한다.
+
+safety band는 SKU acceptance 규칙을 바꾸는 threshold가 아니라 reference
+실행 여부만 결정한다. band와 근거 데이터, policy 경계, backend 및
+artifact hash를 versioned artifact로 저장한다. locked 데이터에서는 band를
+조정하지 않고 검증만 한다. 기존 정답 객체의 backend 불일치가 band
+밖에서 발생하면 band를 사후 확장하지 않고 해당 backend 후보를
+탈락시킨다.
+
+backend artifact와 변환 옵션은 별도 manifest와 SHA-256으로 고정한다.
 
 RF-DETR 변환은 마지막에 수행한다. 현재 FP 0과 FN 5를 모두 보존하고
-현재 정답 객체를 잃지 못하면 채택하지 않는다.
+현재 정답 객체를 하나라도 잃으면 채택하지 않는다.
 
 ### 3단계: 선택적 소형 cascade
 
@@ -180,6 +216,12 @@ cascade를 검토한다. 소형 모델은 안전한 조기 확정 후보를 생�
 모델, threshold 또는 fusion 정책을 변경하는 단계는 calibration에 사용된
 현재 299장만으로 채택하지 않는다. 새 locked 데이터에서도 동일한
 비회귀 조건을 통과해야 한다.
+
+multiple-exit, dynamic token pruning, INT8/BF16, knowledge distillation은
+이 단계의 연구 후보로만 둔다. DINOv3 local evidence가 patch 특징을
+사용하므로 token pruning은 local candidate recall을 별도로 검증한다.
+집계 accuracy drop만 제한하는 최적화는 객체별 신규 회귀 0을 보장하지
+못하므로 승격 조건으로 충분하지 않다.
 
 ### 4단계: detector 변경
 
@@ -197,13 +239,17 @@ RF-DETR-L 교체는 마지막 선택지다. 새 detector는 candidate 경로로
 - 전처리, RF-DETR, crop, RepViT, DINO, fusion 시간을 분리한다.
 - E/M/H별 평균, p50, p95와 전체 평균 및 p95를 기록한다.
 - DINO 실행률, 이미지당 객체 수, PyTorch/backend 버전, CPU thread 수,
-  artifact SHA-256을 기록한다.
-- 기준선과 최적화안을 동일 이미지 순서로 실행해 이미지별 paired 차이를
-  계산한다.
+  CPU affinity, 전원 설정, artifact SHA-256을 기록한다.
+- 같은 pass에서 기준선과 후보를 `AB/BA` 순서로 교차 실행한다.
+- 각 pass는 고정 seed로 같은 이미지 순서를 사용하되 다음 pass에서는
+  순서를 바꿔 cache, 발열 및 시간 경과 편향을 상쇄한다.
+- 이미지별 paired 차이의 평균과 p95를 bootstrap으로 재표집해 one-sided
+  95% 신뢰구간을 계산한다.
 
 정확도 게이트를 먼저 통과한 후보 중 전체 평균과 p95가 모두 기준선보다
-낮은 후보만 속도 개선으로 인정한다. 평균만 낮거나 p95만 낮은 후보는
-기본 경로로 승격하지 않는다.
+낮고 두 paired 개선량의 one-sided 95% 신뢰구간 상한이 모두 0보다 작은
+후보만 속도 개선으로 인정한다. 평균만 낮거나 p95만 낮은 후보, 또는
+측정 잡음과 구분되지 않는 후보는 기본 경로로 승격하지 않는다.
 
 ## 검증
 
@@ -223,15 +269,17 @@ run identifier 및 artifact hash를 공유해야 한다.
 
 ## Rollback과 승격
 
-runtime mode는 다음 세 경로를 유지한다.
+runtime mode는 다음 경로를 유지한다.
 
 ```text
-runtime_mode: serial_reference | batch_pytorch | batch_openvino
+runtime_mode: serial_reference | batch_pytorch | batch_pytorch_compile | batch_openvino | batch_onnx
 ```
 
 - `serial_reference`: 현재 기준 경로
 - `batch_pytorch`: 1차 권장 경로
+- `batch_pytorch_compile`: 정확도와 p95 검증을 통과한 compile 경로
 - `batch_openvino`: 추가 검증을 통과한 경우에만 사용하는 경로
+- `batch_onnx`: 추가 검증을 통과한 경우에만 사용하는 경로
 
 새 경로는 검증 전까지 opt-in이다. 정확도, 결정성, 무결성 또는 latency
 게이트 중 하나라도 실패하면 해당 mode를 비활성화하고 직전 통과 경로를
@@ -249,3 +297,36 @@ runtime_mode: serial_reference | batch_pytorch | batch_openvino
 - 결과가 artifact hash와 runtime mode로 재현된다.
 - 실패 시 `serial_reference`로 즉시 돌아갈 수 있다.
 - 문서, 설정, 테스트와 실제 runtime behavior가 일치한다.
+
+## 연구 및 공식 개발 문서 근거
+
+이 설계는 다음 자료의 원리를 참고하되, 각 자료의 평균 정확도 또는 다른
+하드웨어 성능 수치를 이 프로젝트의 성능 주장으로 사용하지 않는다.
+
+- [RF-DETR: Neural Architecture Search for Real-Time Detection Transformers](https://arxiv.org/abs/2511.09554)
+  - detector 변경 시 같은 RF-DETR 계열의 accuracy-latency Pareto 후보를
+    우선 검토하는 근거다.
+- [CF-DETR: Coarse-to-Fine Transformer for Real-Time Object Detection](https://arxiv.org/abs/2505.23317)
+  - selective fine inference와 multi-level batch inference 원리를
+    batch-first 조건부 재확인 구조에 적용한다.
+- [DINOv3](https://arxiv.org/abs/2508.10104)
+  - dense feature 품질이 중요한 local evidence 경로를 임의로 pruning하지
+    않는 근거다.
+- [RepViT: Revisiting Mobile CNN From ViT Perspective](https://arxiv.org/abs/2307.09283)
+  - RepViT는 유지하고 실행 graph와 batching을 먼저 최적화하는 근거다.
+- [Multiple-Exit Tuning](https://arxiv.org/abs/2409.13999) 및
+  [Dynamic Token Pruning](https://arxiv.org/abs/2308.01045)
+  - early exit와 token pruning은 가능성이 있지만 별도 학습과 객체별
+    회귀 검증이 필요한 연구 단계임을 뒷받침한다.
+- [PyTorch CPU Inductor](https://pytorch.org/blog/accelerated-cpu-inference/) 및
+  [PyTorch 2.5 release](https://pytorch.org/blog/pytorch2-5/)
+  - OpenVINO 변환 전에 `torch.compile` CPU FP32를 독립 후보로 측정하는
+    근거다.
+- [OpenVINO latency optimization](https://docs.openvino.ai/2026/openvino-workflow/running-inference/optimize-inference/optimizing-latency.html),
+  [precision control](https://docs.openvino.ai/2026/openvino-workflow/running-inference/optimize-inference/precision-control.html),
+  [post-training quantization](https://docs.openvino.ai/2026/openvino-workflow/model-optimization-guide/quantizing-models-post-training.html)
+  - latency mode, FP32 accuracy mode와 quantization의 별도 locked 검증
+    원칙을 정하는 근거다.
+- [ONNX Runtime threading](https://onnxruntime.ai/docs/performance/tune-performance/threading.html) 및
+  [XNNPACK execution provider](https://onnxruntime.ai/docs/execution-providers/Xnnpack-ExecutionProvider.html)
+  - graph execution과 threadpool 경합을 모델별로 측정하는 근거다.
