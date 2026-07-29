@@ -62,6 +62,43 @@ void main() {
     expect(selected, 'object-2');
   });
 
+  testWidgets('secondary disclosures separate quantities timing and evidence', (
+    tester,
+  ) async {
+    await _pumpRail(tester, selectedObjectId: 'object-3');
+
+    await tester.ensureVisible(find.text('품목별 수량'));
+    await tester.tap(find.text('품목별 수량'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pastry Bread'), findsWidgets);
+    expect(find.text('Unknown'), findsNothing);
+
+    await tester.ensureVisible(find.text('단계별 시간'));
+    await tester.tap(find.text('단계별 시간'));
+    await tester.pumpAndSettle();
+    expect(find.text('빵 위치 찾기 · Detector'), findsOneWidget);
+    expect(find.text('1차 품목 분류 · RepViT'), findsOneWidget);
+    expect(find.text('재확인 · DINOv3'), findsOneWidget);
+    expect(find.text('실행 안 함'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('모델 정보'));
+    await tester.tap(find.text('모델 정보'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('fusion_local_or_global_consensus_margin_v1'),
+      findsOneWidget,
+    );
+    expect(find.text('CPU로 전환'), findsOneWidget);
+    expect(find.text('consensus_failed'), findsOneWidget);
+    expect(
+      find.text(
+        '판정 점수는 모델이 품목을 선택한 상대 점수이며 '
+        '실제 정확도를 의미하지 않습니다.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('empty result directs the evaluator without fake object rows', (
     tester,
   ) async {

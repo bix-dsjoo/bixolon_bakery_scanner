@@ -7,6 +7,7 @@ import 'bixolon_brand.dart';
 import 'evaluation_object_list.dart';
 import 'evaluation_summary.dart';
 import 'evaluation_view_data.dart';
+import 'result_disclosures.dart';
 
 final class ResultRail extends StatelessWidget {
   const ResultRail({
@@ -72,10 +73,16 @@ final class _ResultContent extends StatelessWidget {
           ),
         ],
         const SizedBox(height: 10),
-        _QuantityDisclosure(data: data),
-        _TimingDisclosure(data: data),
+        QuantityDisclosure(data: data),
+        StageTimingDisclosure(data: data),
         if (data.startupMetrics case final metrics?)
-          _ModelDisclosure(metrics: metrics),
+          ModelInfoDisclosure(
+            metrics: metrics,
+            selectedObject: data.rows
+                .where((row) => row.object.objectId == state.selectedObjectId)
+                .map((row) => row.object)
+                .firstOrNull,
+          ),
       ],
     );
   }
@@ -194,87 +201,6 @@ final class _EmptyDetection extends StatelessWidget {
         ),
         const SizedBox(height: 5),
         const Text('트레이 위치를 확인하고 다시 촬영해 주세요.'),
-      ],
-    ),
-  );
-}
-
-final class _QuantityDisclosure extends StatelessWidget {
-  const _QuantityDisclosure({required this.data});
-
-  final EvaluationPanelData data;
-
-  @override
-  Widget build(BuildContext context) => ExpansionTile(
-    tilePadding: EdgeInsets.zero,
-    childrenPadding: const EdgeInsets.only(bottom: 8),
-    title: const Text('품목별 수량'),
-    children: [
-      for (final row in data.quantityRows)
-        _MetricRow(label: row.name, value: '${row.count}'),
-    ],
-  );
-}
-
-final class _TimingDisclosure extends StatelessWidget {
-  const _TimingDisclosure({required this.data});
-
-  final EvaluationPanelData data;
-
-  @override
-  Widget build(BuildContext context) => ExpansionTile(
-    tilePadding: EdgeInsets.zero,
-    childrenPadding: const EdgeInsets.only(bottom: 8),
-    title: const Text('단계별 시간'),
-    children: [
-      for (final timing in data.stageTimings)
-        _MetricRow(label: timing.label, value: timing.displayValue),
-    ],
-  );
-}
-
-final class _ModelDisclosure extends StatelessWidget {
-  const _ModelDisclosure({required this.metrics});
-
-  final StartupMetrics metrics;
-
-  @override
-  Widget build(BuildContext context) => ExpansionTile(
-    tilePadding: EdgeInsets.zero,
-    childrenPadding: const EdgeInsets.only(bottom: 8),
-    title: const Text('모델 정보'),
-    children: [
-      _MetricRow(label: '모델 로드', value: '${metrics.loadMs.round()} ms'),
-      _MetricRow(label: '워밍업', value: '${metrics.warmupMs.round()} ms'),
-      _MetricRow(label: 'Detector', value: metrics.detectorId),
-      _MetricRow(label: 'Classifier', value: metrics.repvitId),
-      _MetricRow(label: '재확인', value: metrics.dinov3Id),
-      _MetricRow(label: '정책', value: metrics.fusionPolicyId),
-    ],
-  );
-}
-
-final class _MetricRow extends StatelessWidget {
-  const _MetricRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 4),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(child: Text(label)),
-        const SizedBox(width: 12),
-        Flexible(
-          child: Text(
-            value,
-            textAlign: TextAlign.right,
-            style: const TextStyle(fontFeatures: tabularFigures),
-          ),
-        ),
       ],
     ),
   );
