@@ -19,6 +19,12 @@ void main() {
   ) async {
     await tester.pumpWidget(const MaterialApp(home: BixolonBrandDecoration()));
 
-    expect(find.byType(ExcludeSemantics), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BixolonBrandDecoration),
+        matching: find.byType(ExcludeSemantics),
+      ),
+      findsOneWidget,
+    );
   });
 }
