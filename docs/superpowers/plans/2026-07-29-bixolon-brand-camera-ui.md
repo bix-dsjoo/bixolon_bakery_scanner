@@ -11,24 +11,26 @@
 ## Global Constraints
 
 - Primary action uses BIXOLON Orange `#EE7203`; the wordmark is never tinted.
+- Do not use Orange bands, panel fills, or the X motif; use flat panes,
+  hairline borders, small radii, and compact inline status components.
 - Pretendard precedes Korean-capable system fallback.
 - Confirmed teal, Unknown amber, and error red retain their current meaning.
 - Preserve one primary action, 44px targets, keyboard focus, and Korean factual copy.
 - Do not alter models, worker, camera, timing, or result contracts.
 
-### Task 1: Define BIXOLON tokens and decorative primitives
+### Task 1: Define restrained BIXOLON component tokens
 
 **Files:**
 - Modify: `apps/bakery_camera_flutter/lib/src/ui/app_theme.dart`
 - Create: `apps/bakery_camera_flutter/lib/src/ui/bixolon_brand.dart`
 - Test: `apps/bakery_camera_flutter/test/ui/bixolon_brand_test.dart`
 
-- [ ] Write failing tests asserting `bixolonOrange == Color(0xFFEE7203)`, result semantic colors differ from Orange, and brand decoration is excluded from semantics.
+- [ ] Write failing tests asserting `bixolonOrange == Color(0xFFEE7203)`, result semantic colors differ from Orange, and shared controls expose 1px border/6px radius tokens.
 - [ ] Run `flutter test test/ui/bixolon_brand_test.dart` and confirm RED.
-- [ ] Implement approved orange/neutral tokens, Pretendard-first text theme, unmodified Orange text wordmark, and low-contrast semantic-excluded X motif.
+- [ ] Implement approved orange/neutral tokens, Pretendard-first text theme, unmodified Orange text wordmark, compact status dot, 1px border, and 6px radius tokens. Remove the X motif.
 - [ ] Run focused test and `flutter analyze`; commit `feat: add Bixolon UI tokens`.
 
-### Task 2: Recompose the scan console
+### Task 2: Recompose each scan-console component
 
 **Files:**
 - Modify: `apps/bakery_camera_flutter/lib/src/ui/scanner_screen.dart`
@@ -36,9 +38,9 @@
 - Modify: `apps/bakery_camera_flutter/lib/src/ui/result_rail.dart`
 - Test: `apps/bakery_camera_flutter/test/ui/scanner_screen_test.dart`
 
-- [ ] Write failing widget tests for a BIXOLON header, Orange primary action, preserved teal/amber result semantics, and no 1280x820 or 1024x720 overflow.
+- [ ] Write failing widget tests for a compact divider-only header, Orange primary action, flat bordered camera/result panes, preserved teal/amber result semantics, disabled styles, and no 1280x820 or 1024x720 overflow.
 - [ ] Run `flutter test test/ui/scanner_screen_test.dart` and confirm RED.
-- [ ] Add white header with wordmark/title/status, 70/30 black camera/white result composition, restrained X motif outside image content, Orange analysis button, and black outlined recapture button.
+- [ ] Add white header with wordmark/title/inline status, 70/30 flat black camera/white result panes, Orange analysis button, neutral outlined recapture button, compact status badges, and dense row/list components. Remove all Orange bands and X artwork.
 - [ ] Verify focus, scrolling, one-primary-action state rules, and existing camera/worker status tests; run analyzer; commit `feat: apply Bixolon scan console UI`.
 
 ### Task 3: Verify release output and document it

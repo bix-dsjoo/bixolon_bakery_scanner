@@ -17,19 +17,23 @@ console without changing capture, inference, result, or timing behavior.
 
 ## Screen composition
 
-- Header: white, BIXOLON Orange wordmark at left, `Bakery AI Scanner` product
-  title beside it, quiet camera/device status at right.
-- Camera stage: black surface occupying about 70 percent of the screen.
-  A narrow Orange readiness accent and a subtle X motif appear only outside
-  live image content.
-- Result rail: white, receipt-like column. It retains the existing hierarchy:
-  headline, counts, objects, timing/model disclosures.
-- Primary action: `분석하기` uses BIXOLON Orange. `다시 촬영` is a black outlined
-  secondary action. There is only one primary action in every state.
+- Header: a compact white product bar with an unmodified BIXOLON Orange
+  wordmark, product name, and quiet inline status. It has only a one-pixel
+  bottom divider: no colour band and no decorative motif.
+- Camera stage: a black, square-cornered work surface occupying about 70
+  percent of the screen. It has a single hairline border and no background
+  artwork over or beside the live image.
+- Result rail: a flat white pane separated by one vertical divider, not a
+  receipt card. It retains the existing hierarchy: headline, counts, object
+  rows, and collapsed timing/model details.
+- Primary action: `분석하기` uses BIXOLON Orange with a compact 6px radius.
+  `다시 촬영` is a neutral outlined secondary action. There is only one
+  primary action in every state.
 
 ## Semantic colors
 
-- Brand Orange controls only action, readiness, selection, and non-semantic
+- Brand Orange controls only the primary action, a compact readiness dot, and
+  a selected-row keyline. It is not used as a band, a panel background, or
   decoration.
 - Confirmed detection remains teal; Unknown remains amber; error remains red.
   This preserves established visual meaning in boxes and rows.
@@ -38,8 +42,9 @@ console without changing capture, inference, result, or timing behavior.
 
 - Existing 44px action targets, focus visibility, single-flight analysis,
   Korean status copy, and right-rail-only scrolling remain unchanged.
-- The header and visual motif are decorative and do not enter the semantic
-  navigation order.
+- Controls use small, consistent radii, one-pixel neutral borders, visible
+  focus rings, and state-resolved disabled styling. Decorative motifs are
+  removed.
 
 ## Scope and verification
 
