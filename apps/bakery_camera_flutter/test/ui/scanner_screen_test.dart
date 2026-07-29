@@ -13,6 +13,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/inference_fixtures.dart';
+
 void main() {
   testWidgets(
     'compact divider header and flat 70/30 panes identify the scan console',
@@ -136,7 +138,7 @@ void main() {
         bixolonDivider,
       );
 
-      fixture.worker.complete(_result());
+      fixture.worker.complete(buildUiInferenceResult());
       await tester.pumpAndSettle();
 
       final recapture = tester.widget<OutlinedButton>(
@@ -161,7 +163,7 @@ void main() {
 
     await tester.tap(find.text('분석하기'));
     await tester.pump();
-    fixture.worker.complete(_result());
+    fixture.worker.complete(buildUiInferenceResult());
     await tester.pumpAndSettle();
 
     final confirmedSurface = tester.widget<Container>(
@@ -263,7 +265,7 @@ void main() {
       await tester.pump();
       expect(find.textContaining('빵 위치 찾는 중'), findsOneWidget);
 
-      fixture.worker.complete(_result());
+      fixture.worker.complete(buildUiInferenceResult());
       await tester.pumpAndSettle();
     },
   );
@@ -278,7 +280,7 @@ void main() {
       await tester.tap(find.text('분석하기'));
       await tester.pump();
       fixture.nowMs = 412;
-      fixture.worker.complete(_result());
+      fixture.worker.complete(buildUiInferenceResult());
       await tester.pumpAndSettle();
 
       expect(find.text('총 2개 · 412 ms · GPU'), findsOneWidget);
@@ -335,7 +337,7 @@ void main() {
       await tester.tap(find.text('분석하기'));
       await tester.pump();
       fixture.nowMs = 412;
-      fixture.worker.complete(_result());
+      fixture.worker.complete(buildUiInferenceResult());
       await tester.pump();
 
       expect(find.text('총 2개 · 290 ms · GPU'), findsOneWidget);
@@ -359,7 +361,7 @@ void main() {
 
       await tester.tap(find.text('분석하기'));
       await tester.pump();
-      fixture.worker.complete(_result());
+      fixture.worker.complete(buildUiInferenceResult());
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
@@ -400,7 +402,7 @@ void main() {
     await _pumpScreen(tester, fixture.controller);
     await tester.tap(find.text('분석하기'));
     await tester.pump();
-    fixture.worker.complete(_result());
+    fixture.worker.complete(buildUiInferenceResult());
     await tester.pumpAndSettle();
 
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);
@@ -543,76 +545,3 @@ final class FakeWorker implements InferenceSession {
     await eventController.close();
   }
 }
-
-InferenceResult _result() => InferenceResult.fromJson({
-  'type': 'result',
-  'request_id': 'analysis-1',
-  'image': {'width': 1920, 'height': 1080},
-  'device': 'cuda:0',
-  'objects': [
-    _object(
-      id: 'object-1',
-      skuId: 6,
-      name: 'Croissant',
-      confidence: 0.92,
-      box: [10.0, 20.0, 500.0, 500.0],
-    ),
-    _object(
-      id: 'object-2',
-      skuId: null,
-      name: 'Unknown',
-      confidence: 0.4,
-      box: [600.0, 100.0, 1000.0, 600.0],
-      candidates: const [
-        {'rank': 1, 'sku_id': 10, 'sku_name': 'Sugar Donut', 'score': 0.88},
-        {'rank': 2, 'sku_id': 11, 'sku_name': 'Cream Donut', 'score': 0.76},
-        {'rank': 3, 'sku_id': 12, 'sku_name': 'Glazed Donut', 'score': 0.62},
-      ],
-    ),
-  ],
-  'counts': {'6': 1},
-  'unknown_count': 1,
-  'timings_ms': {
-    'decode_preprocess': 10.0,
-    'detector': 120.0,
-    'repvit': 50.0,
-    'dinov3': 90.0,
-    'postprocess': 20.0,
-    'total': 290.0,
-  },
-});
-
-Map<String, Object?> _object({
-  required String id,
-  required int? skuId,
-  required String name,
-  required double confidence,
-  required List<double> box,
-  List<Map<String, Object?>> candidates = const [],
-}) => {
-  'object_id': id,
-  'sku_id': skuId,
-  'sku_name': name,
-  'bbox_xyxy': box,
-  'confidence': confidence,
-  'decision_path': skuId == null ? 'unknown_top3' : 'repvit_direct',
-  'top3': candidates,
-  'unknown_reason': skuId == null ? 'consensus_failed' : null,
-  'detector': {'source': 'rfdetr', 'score': 0.95},
-  'provenance': {
-    'detector_id': 'rfdetr_large_bakery_v1',
-    'repvit_artifact_id': 'repvit_m1_15plus5_v1',
-    'repvit_sha256': 'a' * 64,
-    'repvit_manifest_sha256': 'b' * 64,
-    'repvit_prototype_sha256': 'c' * 64,
-    'dinov3_artifact_id': 'dinov3_vits16_15plus5_v1',
-    'dinov3_sha256': 'd' * 64,
-    'dinov3_support_sha256': 'e' * 64,
-    'calibration_id': 'policy-v1',
-    'calibration_sha256': 'f' * 64,
-    'preprocess_sha256': '0' * 64,
-    'canonical_frame_version': 'exif_visual_rgb_v1',
-    'exif_orientation': 1,
-    'failure_code': skuId == null ? 'consensus_failed' : null,
-  },
-};
