@@ -14,11 +14,39 @@ void main() {
     expect(failureRed, isNot(bixolonOrange));
   });
 
-  testWidgets('decorative X is excluded from accessibility semantics', (
-    tester,
-  ) async {
-    await tester.pumpWidget(const MaterialApp(home: BixolonBrandDecoration()));
+  test('shared controls use the compact border and corner tokens', () {
+    expect(bixolonControlBorderWidth, 1);
+    expect(bixolonControlRadius, 6);
+  });
 
+  testWidgets('status dot is compact and carries its status label', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: BixolonStatusDot(label: 'Camera connected'),
+        ),
+      ),
+    );
+
+    expect(find.bySemanticsLabel('Camera connected'), findsOneWidget);
+    expect(
+      tester.getSize(find.byType(BixolonStatusDot)),
+      const Size.square(bixolonStatusDotSize),
+    );
+  });
+
+  testWidgets('legacy decoration renders no X motif', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: BixolonBrandDecoration(size: 64)),
+    );
+
+    expect(
+      find.descendant(
+        of: find.byType(BixolonBrandDecoration),
+        matching: find.byType(CustomPaint),
+      ),
+      findsNothing,
+    );
     expect(
       find.descendant(
         of: find.byType(BixolonBrandDecoration),

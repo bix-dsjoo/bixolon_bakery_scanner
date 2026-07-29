@@ -57,14 +57,18 @@ ThemeData buildBakeryTheme() {
       style: ButtonStyle(
         minimumSize: const WidgetStatePropertyAll(Size(44, 52)),
         shape: WidgetStatePropertyAll(
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(bixolonControlRadius),
+          ),
         ),
         side: WidgetStateProperty.resolveWith(
           (states) => BorderSide(
             color: states.contains(WidgetState.focused)
                 ? actionBlue
                 : Colors.transparent,
-            width: states.contains(WidgetState.focused) ? 3 : 0,
+            width: states.contains(WidgetState.focused)
+                ? bixolonControlBorderWidth
+                : 0,
           ),
         ),
       ),
@@ -73,7 +77,22 @@ ThemeData buildBakeryTheme() {
       style: ButtonStyle(
         minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
         shape: WidgetStatePropertyAll(
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(bixolonControlRadius),
+          ),
+        ),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: ButtonStyle(
+        minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(bixolonControlRadius),
+          ),
+        ),
+        side: const WidgetStatePropertyAll(
+          BorderSide(color: bixolonDivider, width: bixolonControlBorderWidth),
         ),
       ),
     ),
