@@ -1,10 +1,13 @@
 {
   "schema_version": 1,
   "pipeline_directories": [
-    "src/bakery_scanner"
+    "src/bakery_scanner",
+    "dino/dinov3"
   ],
   "pipeline_files": [
     "scripts/run_camera_inference_worker.py",
+    "dino/LICENSE.md",
+    "datasets/classes.json",
     "configs/gpu_rfdetr_classifier_policy.yaml",
     "configs/cpu_rfdetr_classifier_policy.yaml",
     "models/rfdetr_large_bakery_v1/checkpoint.pth",

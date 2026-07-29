@@ -128,6 +128,21 @@ void main() {
     );
     expect(find.byKey(const Key('evaluation-object-row')), findsNothing);
   });
+
+  testWidgets('result rail visual regression at the minimum supported width', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await _pumpRail(tester, selectedObjectId: 'object-3');
+
+    await expectLater(
+      find.byType(Scaffold),
+      matchesGoldenFile('goldens/result_rail_360x720.png'),
+    );
+  });
 }
 
 Future<void> _pumpRail(

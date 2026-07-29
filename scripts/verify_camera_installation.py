@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -16,6 +18,8 @@ import yaml
 
 from scripts.build_camera_installer_payload import _extended, _iter_files
 from scripts.camera_runtime_validation import validate_runtime_tree
+
+INSTALLER_METADATA_PATTERNS = ("unins???.exe", "unins???.dat", "unins???.msg")
 
 
 def _sha256(path: Path) -> str:
@@ -47,7 +51,14 @@ def verify_package_manifest(root: Path) -> dict:
     }
     expected = set(declared)
     missing = expected - actual
-    extra = actual - expected
+    extra = {
+        relative
+        for relative in actual - expected
+        if not any(
+            fnmatch.fnmatch(relative.lower(), pattern)
+            for pattern in INSTALLER_METADATA_PATTERNS
+        )
+    }
     if missing:
         raise ValueError("package files missing: " + ", ".join(sorted(missing)))
     if extra:
@@ -112,7 +123,13 @@ def verify_internal_artifact_hashes(root: Path) -> None:
         )
 
 
-def launch_worker_smoke(root: Path, timeout_seconds: float = 900) -> dict:
+def launch_worker_smoke(
+    root: Path,
+    timeout_seconds: float = 900,
+    *,
+    device: str = "auto",
+    analysis_count: int = 0,
+) -> dict:
     root = root.resolve()
     pipeline = root / "pipeline"
     process = subprocess.Popen(
@@ -122,7 +139,7 @@ def launch_worker_smoke(root: Path, timeout_seconds: float = 900) -> dict:
             "--repo-root",
             str(pipeline),
             "--device",
-            "auto",
+            device,
             "--warmup-image",
             str(
                 pipeline
@@ -136,6 +153,7 @@ def launch_worker_smoke(root: Path, timeout_seconds: float = 900) -> dict:
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     assert process.stdout is not None
     assert process.stdin is not None
@@ -165,18 +183,63 @@ def launch_worker_smoke(root: Path, timeout_seconds: float = 900) -> dict:
         stderr = process.communicate(timeout=30)[1]
         raise ValueError(f"worker did not reach ready: {stderr[-4000:]}")
 
+    analyses = []
+    warmup_image = (
+        pipeline / "samples" / "batch2_e3_m3_h3" / "g20_b02_e_0301.jpg"
+    )
+    for index in range(analysis_count):
+        request_id = f"installer-analysis-{index + 1}"
+        process.stdin.write(
+            json.dumps(
+                {
+                    "type": "analyze",
+                    "request_id": request_id,
+                    "image_path": str(warmup_image),
+                }
+            )
+            + "\n"
+        )
+        process.stdin.flush()
+        result = None
+        while time.monotonic() < deadline:
+            try:
+                line = events.get(timeout=min(1.0, deadline - time.monotonic()))
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            event = json.loads(line)
+            if event.get("type") in {"fatal", "error"}:
+                raise ValueError(f"worker analysis failed: {event}")
+            if (
+                event.get("type") == "result"
+                and event.get("request_id") == request_id
+            ):
+                result = event
+                break
+        if result is None:
+            process.kill()
+            raise ValueError(f"worker analysis timed out: {request_id}")
+        analyses.append(result)
+
     process.stdin.write('{"type":"shutdown","request_id":"installer-smoke"}\n')
     process.stdin.flush()
     process.wait(timeout=120)
     if process.returncode != 0:
         raise ValueError(f"worker shutdown returned {process.returncode}")
-    return ready
+    return {"ready": ready, "analyses": analyses}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--launch-worker-smoke", action="store_true")
+    parser.add_argument(
+        "--worker-device",
+        choices=("auto", "cuda", "cpu"),
+        default="auto",
+    )
+    parser.add_argument("--analysis-count", type=int, default=0)
     args = parser.parse_args()
 
     manifest = verify_package_manifest(args.root)
@@ -188,7 +251,13 @@ def main() -> int:
     )
     result = {"manifest_files": len(manifest["files"]), "runtime": runtime}
     if args.launch_worker_smoke:
-        result["worker_ready"] = launch_worker_smoke(args.root)
+        if args.analysis_count < 0:
+            raise ValueError("analysis-count must be non-negative")
+        result["worker_smoke"] = launch_worker_smoke(
+            args.root,
+            device=args.worker_device,
+            analysis_count=args.analysis_count,
+        )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 

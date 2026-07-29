@@ -485,7 +485,7 @@ final class InferenceWorkerClient {
       'auto',
       '--warmup-image',
       config.warmupImage,
-    ], runInShell: false);
+    ], runInShell: false, environment: const {'PYTHONDONTWRITEBYTECODE': '1'});
     return _IoWorkerProcessAdapter(process);
   }
 }

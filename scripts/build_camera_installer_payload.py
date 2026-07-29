@@ -186,7 +186,16 @@ def _iter_files(root: Path) -> Iterable[Path]:
 def _copy_tree(source: Path, destination: Path) -> None:
     if destination.exists():
         raise ValueError(f"copy destination already exists: {destination}")
-    shutil.copytree(_extended(source), _extended(destination), symlinks=False)
+    shutil.copytree(
+        _extended(source),
+        _extended(destination),
+        symlinks=False,
+        ignore=lambda _directory, names: {
+            name
+            for name in names
+            if name == "__pycache__" or name.casefold().endswith((".pyc", ".pyo"))
+        },
+    )
 
 
 def _copy_file(source: Path, destination: Path) -> None:

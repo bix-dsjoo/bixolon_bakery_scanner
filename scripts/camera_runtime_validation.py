@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import os
 import subprocess
 from pathlib import Path, PureWindowsPath
 
@@ -103,6 +104,7 @@ def validate_runtime_tree(
             capture_output=True,
             text=True,
             timeout=120,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
         if completed.returncode != 0:
             raise ValueError(

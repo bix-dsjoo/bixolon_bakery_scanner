@@ -269,3 +269,25 @@ def test_cli_rejects_warmup_image_outside_repository_root(tmp_path: Path):
         assert "under the repository root" in str(exc)
     else:
         raise AssertionError("outside warm-up image must be rejected")
+
+
+def test_cli_resolves_bundled_application_and_dinov3_import_roots(
+    tmp_path: Path,
+):
+    root = tmp_path / "pipeline"
+    (root / "src").mkdir(parents=True)
+    (root / "dino" / "dinov3").mkdir(parents=True)
+    (root / "dino" / "dinov3" / "__init__.py").write_text(
+        "",
+        encoding="utf-8",
+    )
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.resolve_import_roots(root) == (
+        root.resolve() / "src",
+        root.resolve() / "dino",
+    )

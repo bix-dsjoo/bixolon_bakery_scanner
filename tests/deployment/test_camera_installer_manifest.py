@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.build_camera_installer_payload import (
+    _copy_tree,
     build_package_manifest,
     load_pipeline_allowlist,
 )
@@ -48,6 +49,63 @@ def test_manifest_verifier_rejects_hash_mismatch_and_extra_file(
     (payload / "undeclared.txt").write_text("extra", encoding="utf-8")
     with pytest.raises(ValueError, match="extra"):
         verify_package_manifest(payload)
+
+
+def test_manifest_verifier_allows_inno_uninstaller_metadata(
+    tmp_path: Path,
+) -> None:
+    payload = tmp_path / "installed"
+    payload.mkdir()
+    (payload / "app.exe").write_bytes(b"app")
+    manifest = build_package_manifest(payload, app_version="1.0.0")
+    (payload / "package-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    (payload / "unins000.exe").write_bytes(b"uninstaller")
+    (payload / "unins000.dat").write_bytes(b"metadata")
+
+    verify_package_manifest(payload)
+
+
+def test_payload_tree_copy_excludes_generated_python_bytecode(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    package = source / "demo"
+    cache = package / "__pycache__"
+    cache.mkdir(parents=True)
+    (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (cache / "module.cpython-311.pyc").write_bytes(b"generated")
+
+    destination = tmp_path / "destination"
+    _copy_tree(source, destination)
+
+    assert (destination / "demo" / "module.py").is_file()
+    assert not (destination / "demo" / "__pycache__").exists()
+
+
+def test_installer_allowlist_bundles_dinov3_source_and_license() -> None:
+    repo_root = Path(__file__).parents[2]
+    payload = json.loads(
+        (
+            repo_root / "deployment" / "camera_installer" / "payload-paths.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "dino/dinov3" in payload["pipeline_directories"]
+    assert "dino/LICENSE.md" in payload["pipeline_files"]
+
+
+def test_installer_allowlist_bundles_sku_class_map() -> None:
+    repo_root = Path(__file__).parents[2]
+    payload = json.loads(
+        (
+            repo_root / "deployment" / "camera_installer" / "payload-paths.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "datasets/classes.json" in payload["pipeline_files"]
 
 
 def test_allowlist_rejects_missing_file_absolute_path_and_symlink(

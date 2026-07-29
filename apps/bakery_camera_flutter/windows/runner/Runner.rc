@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.bixolon" "\0"
-            VALUE "FileDescription", "bakery_camera_prototype" "\0"
+            VALUE "CompanyName", "BIXOLON" "\0"
+            VALUE "FileDescription", "BIXOLON Bakery AI Evaluator" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "bakery_camera_prototype" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.bixolon. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 BIXOLON. All rights reserved." "\0"
             VALUE "OriginalFilename", "bakery_camera_prototype.exe" "\0"
-            VALUE "ProductName", "bakery_camera_prototype" "\0"
+            VALUE "ProductName", "BIXOLON Bakery AI Evaluator" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

@@ -16,6 +16,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $runtimeLock = Join-Path $repoRoot 'deployment\camera_installer\runtime-lock.json'
 $requirementsLock = Join-Path $repoRoot 'deployment\camera_installer\runtime-requirements-cu130.lock.txt'
 $validator = Join-Path $repoRoot 'scripts\camera_runtime_validation.py'
+$pruner = Join-Path $repoRoot 'scripts\prune_camera_installer_runtime.py'
 $resolvedOutput = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputRoot))
 $resolvedCache = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $WheelCache))
 $stagingRoot = "$resolvedOutput.staging-$PID"
@@ -113,10 +114,20 @@ try {
     & $HostPython $validator `
         --runtime-root $stagingRoot `
         --runtime-lock $runtimeLock `
-        --execute-cpu-check `
-        --write-manifest
+        --execute-cpu-check
     if ($LASTEXITCODE -ne 0) {
         throw "Runtime verification failed with exit code $LASTEXITCODE"
+    }
+    & $HostPython $pruner --runtime-root $stagingRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Runtime bytecode pruning failed with exit code $LASTEXITCODE"
+    }
+    & $HostPython $validator `
+        --runtime-root $stagingRoot `
+        --runtime-lock $runtimeLock `
+        --write-manifest
+    if ($LASTEXITCODE -ne 0) {
+        throw "Runtime manifest generation failed with exit code $LASTEXITCODE"
     }
 
     Move-Item -LiteralPath $stagingRoot -Destination $resolvedOutput

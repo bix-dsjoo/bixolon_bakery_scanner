@@ -23,6 +23,17 @@ def resolve_paths(repo_root: Path, warmup_image: Path) -> tuple[Path, Path]:
     return root, image
 
 
+def resolve_import_roots(repo_root: Path) -> tuple[Path, Path]:
+    root = Path(repo_root).resolve()
+    source_root = root / "src"
+    dino_root = root / "dino"
+    if not source_root.is_dir():
+        raise ValueError(f"repository source directory is missing: {source_root}")
+    if not (dino_root / "dinov3" / "__init__.py").is_file():
+        raise ValueError(f"bundled DINOv3 package is missing: {dino_root}")
+    return source_root, dino_root
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True, type=Path)
@@ -34,9 +45,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    source_root = root / "src"
-    if not source_root.is_dir():
-        parser.error(f"repository source directory is missing: {source_root}")
+    try:
+        source_root, dino_root = resolve_import_roots(root)
+    except ValueError as exc:
+        parser.error(str(exc))
+    sys.path.insert(0, str(dino_root))
     sys.path.insert(0, str(source_root))
     from bakery_scanner.prototype.camera_runtime import CameraInferenceRuntime
     from bakery_scanner.prototype.camera_worker import serve
