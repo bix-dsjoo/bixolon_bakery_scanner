@@ -241,6 +241,7 @@ final class ScannerController extends ChangeNotifier {
   StreamSubscription<WorkerEvent>? _workerEvents;
   double? _pressStartedAtMs;
   bool _initialized = false;
+  bool _isReconnecting = false;
   bool _closed = false;
 
   ScannerState get state => _state;
@@ -403,13 +404,29 @@ final class ScannerController extends ChangeNotifier {
     if (_state.isAnalyzing) {
       throw StateError('cannot reconnect the camera during analysis');
     }
-    final ready = await _camera.reconnect();
-    _replaceState(
-      _state.copyWith(
-        cameraReady: ready,
-        cameraError: ready ? null : _camera.lastError,
-      ),
-    );
+    if (_isReconnecting) {
+      throw StateError('camera reconnect is already in progress');
+    }
+    _isReconnecting = true;
+    _replaceState(_state.copyWith(cameraReady: false, cameraError: null));
+    try {
+      final ready = await _camera.reconnect();
+      _replaceState(
+        _state.copyWith(
+          cameraReady: ready,
+          cameraError: ready ? null : _camera.lastError,
+        ),
+      );
+    } catch (error) {
+      _replaceState(
+        _state.copyWith(
+          cameraReady: false,
+          cameraError: '카메라를 다시 연결하지 못했습니다: $error',
+        ),
+      );
+    } finally {
+      _isReconnecting = false;
+    }
   }
 
   void selectObject(String? objectId) {

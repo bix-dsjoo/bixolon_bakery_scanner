@@ -134,13 +134,31 @@ void main() {
         );
         expect(File(capture.path).existsSync(), isTrue);
         expect(directoryCreates, 1);
-        expect(pluginCapture.existsSync(), isTrue);
+        expect(pluginCapture.existsSync(), isFalse);
 
         await service.releaseCapture(capture.path);
 
         expect(File(capture.path).existsSync(), isFalse);
-        expect(pluginCapture.existsSync(), isTrue);
         await service.close();
+      },
+    );
+
+    test(
+      'close removes session files and closes errors when controller disposal '
+      'fails',
+      () async {
+        final service = createService();
+        await service.initialize();
+        final capture = await service.captureStill();
+        handles.single.disposeError = StateError('dispose failed');
+        final errorsDone = service.errors.drain<void>();
+
+        await expectLater(service.close(), throwsStateError);
+
+        expect(handles.single.disposeCalls, 1);
+        expect(File(capture.path).existsSync(), isFalse);
+        expect(sessionDirectory.existsSync(), isFalse);
+        await errorsDone;
       },
     );
   });
@@ -211,6 +229,37 @@ void main() {
         expect(controller.state.canAnalyze, isTrue);
       },
     );
+
+    test(
+      'camera reconnect disables analysis immediately and is single-flight',
+      () async {
+        await controller.initialize();
+        camera.reconnectCompleter = Completer<bool>();
+
+        final reconnect = controller.reconnectCamera();
+
+        expect(controller.state.cameraReady, isFalse);
+        expect(controller.state.canAnalyze, isFalse);
+        await expectLater(controller.analyze(), throwsStateError);
+        await expectLater(controller.reconnectCamera(), throwsStateError);
+
+        camera.reconnectCompleter!.complete(true);
+        await reconnect;
+        expect(controller.state.cameraReady, isTrue);
+        expect(controller.state.canAnalyze, isTrue);
+      },
+    );
+
+    test('camera reconnect failure remains fail-closed in state', () async {
+      await controller.initialize();
+      camera.reconnectError = StateError('dispose failed');
+
+      await controller.reconnectCamera();
+
+      expect(controller.state.cameraReady, isFalse);
+      expect(controller.state.canAnalyze, isFalse);
+      expect(controller.state.cameraError, contains('dispose failed'));
+    });
 
     test('worker fatal disables analysis with an actionable state', () async {
       await controller.initialize();
@@ -374,6 +423,7 @@ final class FakeCameraHandle implements CameraControllerHandle {
   bool _initialized = false;
   String? _error;
   int disposeCalls = 0;
+  Object? disposeError;
 
   @override
   CameraController? get previewController => null;
@@ -396,6 +446,10 @@ final class FakeCameraHandle implements CameraControllerHandle {
   Future<void> dispose() async {
     disposeCalls += 1;
     _initialized = false;
+    final error = disposeError;
+    if (error != null) {
+      throw error;
+    }
   }
 
   @override
@@ -425,6 +479,8 @@ final class FakeCameraSession implements CameraSession {
   bool initializeResult = true;
   bool reconnectResult = true;
   Object? captureError;
+  Object? reconnectError;
+  Completer<bool>? reconnectCompleter;
   VoidCallback? onCapture;
   int reconnectCalls = 0;
   int closeCalls = 0;
@@ -462,6 +518,14 @@ final class FakeCameraSession implements CameraSession {
   @override
   Future<bool> reconnect() async {
     reconnectCalls += 1;
+    final error = reconnectError;
+    if (error != null) {
+      throw error;
+    }
+    final pending = reconnectCompleter;
+    if (pending != null) {
+      reconnectResult = await pending.future;
+    }
     _ready = reconnectResult;
     return _ready;
   }

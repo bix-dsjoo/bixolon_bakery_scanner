@@ -316,8 +316,11 @@ final class InferenceWorkerClient {
       case WorkerErrorEvent():
         _handleWorkerError(event);
       case FatalWorkerEvent():
-        _events.add(event);
-        _markFatal(StateError('worker fatal ${event.code}: ${event.message}'));
+        _markFatal(
+          StateError('worker fatal ${event.code}: ${event.message}'),
+          null,
+          event,
+        );
         return;
       case StoppedWorkerEvent():
         _handleStopped(event);
@@ -419,11 +422,19 @@ final class InferenceWorkerClient {
     }
   }
 
-  void _markFatal(Object error, [StackTrace? stackTrace]) {
+  void _markFatal(
+    Object error, [
+    StackTrace? stackTrace,
+    FatalWorkerEvent? observableEvent,
+  ]) {
     if (_status == WorkerStatus.fatal || _status == WorkerStatus.stopped) {
       return;
     }
     _status = WorkerStatus.fatal;
+    _events.add(
+      observableEvent ??
+          FatalWorkerEvent(code: 'client_fatal', message: error.toString()),
+    );
     final start = _startCompleter;
     if (start != null && !start.isCompleted) {
       start.completeError(error, stackTrace);

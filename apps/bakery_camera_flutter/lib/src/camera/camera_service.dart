@@ -168,6 +168,14 @@ final class CameraService implements CameraSession {
       'capture-$_captureSequence.jpg',
     );
     await source.copy(destination.path);
+    try {
+      await source.delete();
+    } catch (error, stackTrace) {
+      if (await destination.exists()) {
+        await destination.delete();
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
     return CapturedFrame(destination.absolute.path);
   }
 
@@ -218,13 +226,33 @@ final class CameraService implements CameraSession {
       return;
     }
     _closed = true;
-    await _disposeCurrentController();
+    Object? firstError;
+    StackTrace? firstStackTrace;
+    try {
+      await _disposeCurrentController();
+    } catch (error, stackTrace) {
+      firstError = error;
+      firstStackTrace = stackTrace;
+    }
     final directory = _sessionDirectory;
     _sessionDirectory = null;
-    if (directory != null && await directory.exists()) {
-      await directory.delete(recursive: true);
+    try {
+      if (directory != null && await directory.exists()) {
+        await directory.delete(recursive: true);
+      }
+    } catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
     }
-    await _errors.close();
+    try {
+      await _errors.close();
+    } catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError, firstStackTrace!);
+    }
   }
 
   void _ensureOpen() {

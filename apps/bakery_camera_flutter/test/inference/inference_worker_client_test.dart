@@ -132,6 +132,15 @@ void main() {
   });
 
   test('malformed stdout makes the client fatal', () async {
+    final fatalEvents = <FatalWorkerEvent>[];
+    final observedStatuses = <WorkerStatus>[];
+    client.events
+        .where((event) => event is FatalWorkerEvent)
+        .cast<FatalWorkerEvent>()
+        .listen((event) {
+          fatalEvents.add(event);
+          observedStatuses.add(client.status);
+        });
     final start = client.start();
     await _pump();
 
@@ -139,6 +148,10 @@ void main() {
 
     await expectLater(start, throwsStateError);
     expect(client.status, WorkerStatus.fatal);
+    expect(fatalEvents, hasLength(1));
+    expect(fatalEvents.single.code, 'client_fatal');
+    expect(fatalEvents.single.message, contains('invalid worker stdout event'));
+    expect(observedStatuses, [WorkerStatus.fatal]);
   });
 
   test('stderr retains only the newest 200 diagnostic lines', () async {
