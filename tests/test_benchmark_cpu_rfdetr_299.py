@@ -6,6 +6,7 @@ from scripts.benchmark_cpu_rfdetr_299 import (
     BenchmarkDependencies,
     BenchmarkImageRow,
     BenchmarkOptions,
+    select_benchmark_samples,
     run_benchmark,
 )
 
@@ -63,6 +64,35 @@ def test_benchmark_refuses_to_overwrite_existing_output(tmp_path):
     output.mkdir()
     with pytest.raises(FileExistsError, match="overwrite"):
         run_benchmark(_options(tmp_path, output), dependencies=_dependencies())
+
+
+def test_batch2_screen_selects_the_prescribed_three_images_per_profile(tmp_path):
+    from dataclasses import replace
+
+    from bakery_scanner.e2e.cpu_profile import BATCH2_E3_M3_H3_NAMES
+
+    samples = tuple(_sample(index) for index in range(299))
+    selected_names = BATCH2_E3_M3_H3_NAMES
+    selected_paths = tuple(tmp_path / name for name in selected_names)
+    samples_by_name = {
+        path.name: replace(sample, image_path=path, profile=profile)
+        for path, sample, profile in zip(
+            selected_paths,
+            samples[-9:],
+            ("E", "E", "E", "M", "M", "M", "H", "H", "H"),
+            strict=True,
+        )
+    }
+    selected = select_benchmark_samples(
+        samples,
+        sample_profile="batch2_e3_m3_h3",
+        resolve_profile=lambda _: selected_paths,
+        sample_for_path=lambda path: samples_by_name[path.name],
+        package_root=tmp_path,
+    )
+
+    assert tuple(sample.image_path.name for sample in selected) == selected_names
+    assert tuple(sample.profile for sample in selected) == ("E", "E", "E", "M", "M", "M", "H", "H", "H")
 
 
 def _options(root: Path, output: Path) -> BenchmarkOptions:

@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import pytest
 
@@ -108,6 +109,13 @@ def test_cpu_process_configuration_is_idempotent_and_rejects_conflicts(monkeypat
     assert calls == [("intra", 2), ("inter", 1), ("affinity", 0b0101)]
     with pytest.raises(RuntimeError, match="fresh worker"):
         configure_cpu_process(configured.model_copy(update={"intra_op_threads": 4}))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="uses the Windows process-affinity API")
+def test_windows_process_affinity_mask_uses_a_valid_current_process_handle():
+    from bakery_scanner.classification.runtime import _get_process_affinity_mask
+
+    assert _get_process_affinity_mask() > 0
 
 
 @pytest.mark.parametrize(

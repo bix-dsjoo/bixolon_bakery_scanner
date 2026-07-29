@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from bakery_scanner.e2e.cpu_dataset import CpuEvaluationSample
 from bakery_scanner.e2e.cpu_latency import ImageLatency, PairedPass, compare_paired_latency
+from bakery_scanner.e2e.cpu_profile import resolve_batch2_e3_m3_h3
 from bakery_scanner.e2e.cpu_regression import ObjectRecord, compare_run
 from bakery_scanner.e2e.rfdetr_cpu import summarize_profile_stages
 
@@ -63,8 +64,13 @@ def run_benchmark(options: BenchmarkOptions, dependencies: BenchmarkDependencies
         raise FileExistsError(f"refusing to overwrite output: {options.output}")
     if dependencies is None:
         dependencies = _live_dependencies()
-    samples = dependencies.load_samples(options.package_root)
-    _validate_samples(samples)
+    all_samples = dependencies.load_samples(options.package_root)
+    _validate_full_dataset(all_samples)
+    samples = select_benchmark_samples(
+        all_samples,
+        sample_profile=options.sample_profile,
+        package_root=options.package_root,
+    )
     metadata = dependencies.detector_metadata(options.package_root)
     staging = options.output.parent / f".{options.output.name}.staging-{uuid4().hex}"
     staging.mkdir(parents=True)
@@ -99,7 +105,7 @@ def run_benchmark(options: BenchmarkOptions, dependencies: BenchmarkDependencies
             "artifacts": _artifact_hashes(options.package_root, options.classifier_config, samples),
             "runtime": {"reference_mode": options.reference_mode, "candidate_mode": options.candidate_mode, "intra_op_threads": options.intra_op_threads, "inter_op_threads": 1, "cpu_affinity": options.cpu_affinity, "repvit_microbatch": options.repvit_microbatch, "dinov3_microbatch": options.dino_microbatch, "compile_models": list(options.compile_models)},
             "profiles": summarize_profile_stages(tuple(_summary_row(row) for row in profile_rows)),
-            "quality_gate": {"reference": quality.reference.__dict__ if hasattr(quality.reference, "__dict__") else {"top1": quality.reference.top1, "top3": quality.reference.top3, "fp": quality.reference.false_positives, "fn": quality.reference.false_negatives, "unknown": quality.reference.unknown, "misclassified": quality.reference.misclassified}, "candidate": {"top1": quality.candidate.top1, "top3": quality.candidate.top3, "fp": quality.candidate.false_positives, "fn": quality.candidate.false_negatives, "unknown": quality.candidate.unknown, "misclassified": quality.candidate.misclassified}, "passed": quality.passed},
+            "quality_gate": {"scope": options.sample_profile, "reference": quality.reference.__dict__ if hasattr(quality.reference, "__dict__") else {"top1": quality.reference.top1, "top3": quality.reference.top3, "fp": quality.reference.false_positives, "fn": quality.reference.false_negatives, "unknown": quality.reference.unknown, "misclassified": quality.reference.misclassified}, "candidate": {"top1": quality.candidate.top1, "top3": quality.candidate.top3, "fp": quality.candidate.false_positives, "fn": quality.candidate.false_negatives, "unknown": quality.candidate.unknown, "misclassified": quality.candidate.misclassified}, "passed": quality.passed if options.sample_profile == "all299" else not quality.regressions},
             "latency_gate": {"bootstrap_seed": options.bootstrap_seed, "mean_delta_ms": latency.mean_delta_ms, "p95_delta_ms": latency.p95_delta_ms, "mean_ci_upper_ms": latency.mean_ci_upper_ms, "p95_ci_upper_ms": latency.p95_ci_upper_ms, "passed": latency.passed},
             "passes": [{"pass_index": item.pass_index, "order": item.order, "reference": [{"key": row.image_key, "total_ms": row.total_ms} for row in item.reference], "candidate": [{"key": row.image_key, "total_ms": row.total_ms} for row in item.candidate]} for item in passes],
         }
@@ -112,9 +118,36 @@ def run_benchmark(options: BenchmarkOptions, dependencies: BenchmarkDependencies
         raise
 
 
-def _validate_samples(samples: tuple[CpuEvaluationSample, ...]) -> None:
+def _validate_full_dataset(samples: tuple[CpuEvaluationSample, ...]) -> None:
     if len(samples) != 299 or sum(len(sample.targets) for sample in samples) != 1406:
         raise ValueError("benchmark requires the fixed 299-image, 1,406-object dataset")
+
+
+def select_benchmark_samples(
+    samples: tuple[CpuEvaluationSample, ...],
+    *,
+    sample_profile: Literal["all299", "batch2_e3_m3_h3"],
+    package_root: Path,
+    resolve_profile: Callable[[Path], tuple[Path, ...]] = resolve_batch2_e3_m3_h3,
+    sample_for_path: Callable[[Path], CpuEvaluationSample] | None = None,
+) -> tuple[CpuEvaluationSample, ...]:
+    """Select either the fixed acceptance corpus or the prescribed 3/3/3 screen."""
+    if sample_profile == "all299":
+        return samples
+    if sample_for_path is None:
+        by_path = {sample.image_path.resolve(): sample for sample in samples}
+
+        def sample_for_path(path: Path) -> CpuEvaluationSample:
+            try:
+                return by_path[path.resolve()]
+            except KeyError as exc:
+                raise ValueError(f"screen image is not in the fixed CPU dataset: {path}") from exc
+
+    source = package_root / "datasets" / "detection" / "group_20class_batch02" / "images"
+    selected = tuple(sample_for_path(path) for path in resolve_profile(source))
+    if len(selected) != 9 or tuple(sample.profile for sample in selected) != ("E", "E", "E", "M", "M", "M", "H", "H", "H"):
+        raise ValueError("batch2_e3_m3_h3 must contain three ordered E, M, and H images")
+    return selected
 
 
 def _validate_rows(rows: tuple[BenchmarkImageRow, ...], samples: tuple[CpuEvaluationSample, ...]) -> None:
@@ -218,7 +251,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--package-root", type=Path, required=True)
     parser.add_argument("--classifier-config", type=Path, required=True)
     parser.add_argument("--reference-mode", choices=("serial_reference",), default="serial_reference")
-    parser.add_argument("--candidate-mode", choices=("batch_pytorch", "batch_pytorch_compile"), required=True)
+    parser.add_argument("--candidate-mode", choices=("serial_reference", "batch_pytorch", "batch_pytorch_compile"), required=True)
     parser.add_argument("--sample-profile", choices=("all299", "batch2_e3_m3_h3"), default="all299")
     parser.add_argument("--intra-op-threads", type=int)
     parser.add_argument("--cpu-affinity", default="all")

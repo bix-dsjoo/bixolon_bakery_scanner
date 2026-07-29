@@ -140,7 +140,7 @@ def _get_process_affinity_mask() -> int:
 
     process_mask = ctypes.c_size_t()
     system_mask = ctypes.c_size_t()
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _windows_kernel32(ctypes)
     if not kernel32.GetProcessAffinityMask(
         kernel32.GetCurrentProcess(), ctypes.byref(process_mask), ctypes.byref(system_mask)
     ):
@@ -153,9 +153,25 @@ def _set_process_affinity_mask(mask: int) -> None:
         raise RuntimeError("process affinity subsets are supported only on Windows")
     import ctypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _windows_kernel32(ctypes)
     if not kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.c_size_t(mask)):
         raise OSError(ctypes.get_last_error(), "SetProcessAffinityMask failed")
+
+
+def _windows_kernel32(ctypes: object):
+    """Return kernel32 with pointer-sized affinity signatures on Windows."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.GetProcessAffinityMask.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_size_t),
+    )
+    kernel32.GetProcessAffinityMask.restype = ctypes.c_int
+    kernel32.SetProcessAffinityMask.argtypes = (ctypes.c_void_p, ctypes.c_size_t)
+    kernel32.SetProcessAffinityMask.restype = ctypes.c_int
+    return kernel32
 
 
 class ClassifierPipeline:
