@@ -23,7 +23,7 @@ from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibrati
 from bakery_scanner.classification.preprocess import build_transform
 from bakery_scanner.classification.repvit import RepVitEvidence
 from bakery_scanner.classification.risk_calibrator import RiskCalibrator
-from bakery_scanner.classification.runtime import ClassifierPipeline
+from bakery_scanner.classification.runtime import ClassifierPipeline, SerialStageTimings
 from bakery_scanner.contracts import Box
 
 
@@ -156,6 +156,55 @@ def test_direct_repvit_confirmation_never_loads_or_calls_dino():
     assert result.confidence == pytest.approx(0.80)
     assert result.box is original_box
     assert dino_loads == 0
+
+
+def test_serial_timing_sink_records_stages_without_changing_decision():
+    observed = []
+    plain = _pipeline(
+        repvit=RecordingRunner(_repvit_scores({6: 0.50, 5: 0.30, 19: 0.10})),
+        dino_loader=lambda: RecordingRunner(_dino_scores({5: 0.50, 6: 0.30, 19: 0.10})),
+    )
+    instrumented = _pipeline(
+        repvit=RecordingRunner(_repvit_scores({6: 0.50, 5: 0.30, 19: 0.10})),
+        dino_loader=lambda: RecordingRunner(_dino_scores({5: 0.50, 6: 0.30, 19: 0.10})),
+        stage_timing_sink=observed.append,
+    )
+
+    expected = plain.infer(_image(), _box())
+    actual = instrumented.infer(_image(), _box())
+
+    assert replace(actual, timings=expected.timings) == expected
+    assert len(observed) == 1
+    timing = observed[0]
+    assert isinstance(timing, SerialStageTimings)
+    assert timing.dino_executed is True
+    assert timing.total_ms >= timing.crop_ms + timing.repvit_ms
+    assert all(
+        value >= 0.0
+        for value in (
+            timing.crop_ms,
+            timing.repvit_ms,
+            timing.dinov3_ms,
+            timing.fusion_ms,
+            timing.total_ms,
+        )
+    )
+
+
+def test_serial_timing_sink_marks_direct_decision_without_dino():
+    observed = []
+    pipeline = _pipeline(
+        repvit=RecordingRunner(_repvit_scores({6: 0.80, 5: 0.20})),
+        dino_loader=lambda: pytest.fail("DINO must stay lazy"),
+        stage_timing_sink=observed.append,
+    )
+
+    result = pipeline.infer(_image(), _box())
+
+    assert result.decision_path is DecisionPath.REPVIT_DIRECT
+    assert observed[0].dino_executed is False
+    assert observed[0].dinov3_ms == 0.0
+    assert observed[0].fusion_ms == 0.0
 
 
 def test_infer_many_batches_repvit_and_only_rechecks_direct_rejections():
@@ -594,6 +643,7 @@ def _pipeline(
     clock=None,
     prototype_bank: FixedPrototypeBank | None = None,
     local_bank: object | None = None,
+    stage_timing_sink=None,
 ) -> ClassifierPipeline:
     selected = calibration or _calibration()
     provenance = ModelProvenance(
@@ -614,6 +664,7 @@ def _pipeline(
         clock=clock,
         prototype_bank=prototype_bank or FixedPrototypeBank(),
         local_bank=local_bank,
+        stage_timing_sink=stage_timing_sink,
     )
 
 

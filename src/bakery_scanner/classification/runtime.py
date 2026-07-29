@@ -57,6 +57,10 @@ class _Clock(Protocol):
     def synchronize(self) -> None: ...
 
 
+class _StageTimingSink(Protocol):
+    def __call__(self, timings: SerialStageTimings) -> None: ...
+
+
 class _CudaClock:
     def __init__(self, device: torch.device) -> None:
         self.device = device
@@ -87,6 +91,16 @@ class BatchStageTimings:
         ):
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError("batch stage timings must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class SerialStageTimings:
+    crop_ms: float
+    repvit_ms: float
+    dinov3_ms: float
+    fusion_ms: float
+    total_ms: float
+    dino_executed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +204,7 @@ class ClassifierPipeline:
         local_bank: object | None = None,
         local_bank_loader: Callable[[], object] | None = None,
         clock: _Clock | None = None,
+        stage_timing_sink: _StageTimingSink | None = None,
     ) -> None:
         self.config = config
         self.repvit = repvit
@@ -205,6 +220,7 @@ class ClassifierPipeline:
         self._dino: _ScoreRunner | None = None
         device = torch.device(config.runtime.device.lower())
         self.clock = clock or _CudaClock(device)
+        self._stage_timing_sink = stage_timing_sink
 
     @classmethod
     def load(
@@ -213,6 +229,7 @@ class ClassifierPipeline:
         *,
         calibration_path: Path | None = None,
         runtime_override: ClassifierRuntimeConfig | None = None,
+        stage_timing_sink: _StageTimingSink | None = None,
     ) -> "ClassifierPipeline":
         """Load strict configuration, calibration, and the primary runner."""
         config = ClassifierConfig.load(config_path)
@@ -277,6 +294,7 @@ class ClassifierPipeline:
             fusion_policy=fusion_policy,
             fusion_provenance=fusion_provenance,
             local_bank_loader=lambda: _load_local_bank(config),
+            stage_timing_sink=stage_timing_sink,
         )
 
     def infer(
@@ -287,15 +305,19 @@ class ClassifierPipeline:
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         total_started = self._timestamp()
+        serial_started = time.perf_counter() if self._stage_timing_sink is not None else None
         crops, product_boxes = make_padded_crops_with_product_boxes(
             frame.image,
             box,
             self.config.preprocess.paddings,
         )
+        crop_finished = time.perf_counter() if serial_started is not None else None
 
         repvit_started = self._timestamp()
+        serial_repvit_started = time.perf_counter() if serial_started is not None else None
         repvit_evidence = self.repvit.score_with_evidence(crops)
         repvit_scores = repvit_evidence.scores
+        serial_repvit_finished = time.perf_counter() if serial_started is not None else None
         repvit_finished = self._timestamp()
         nearest_prototype_distance = min(self.prototype_bank.distances(repvit_evidence.feature))
         direct = self.policy.direct(
@@ -308,6 +330,14 @@ class ClassifierPipeline:
         )
         if direct is not None:
             total_finished = self._timestamp()
+            if self._stage_timing_sink is not None:
+                self._observe_serial_timing(
+                    total_started=serial_started,
+                    crop_finished=crop_finished,
+                    repvit_started=serial_repvit_started,
+                    repvit_finished=serial_repvit_finished,
+                    dino_executed=False,
+                )
             return self._with_metadata(
                 direct,
                 frame=frame,
@@ -318,6 +348,10 @@ class ClassifierPipeline:
 
         dinov3_started = self._timestamp()
         dino = self._get_dino()
+        serial_dinov3_started = time.perf_counter() if serial_started is not None else None
+        serial_dinov3_finished = None
+        serial_fusion_started = None
+        serial_fusion_finished = None
         try:
             local_bank = self._get_local_bank()
             if self.fusion_policy is not None:
@@ -329,6 +363,8 @@ class ClassifierPipeline:
                     local_bank,
                     repvit_scores=repvit_scores,
                 )
+                serial_dinov3_finished = time.perf_counter() if serial_started is not None else None
+                serial_fusion_started = time.perf_counter() if serial_started is not None else None
                 decision = self._fusion_decision(
                     repvit_scores=repvit_scores,
                     dino_scores=dino_scores,
@@ -339,6 +375,7 @@ class ClassifierPipeline:
                     patch_ratio=patch_ratio,
                     box=box,
                 )
+                serial_fusion_finished = time.perf_counter() if serial_started is not None else None
             elif local_bank is not None and callable(getattr(dino, "score_global_and_local", None)):
                 dino_scores, local_scores = dino.score_global_and_local(
                     crops,
@@ -346,19 +383,34 @@ class ClassifierPipeline:
                     local_bank,
                     repvit_scores=repvit_scores,
                 )
+                serial_dinov3_finished = time.perf_counter() if serial_started is not None else None
+                serial_fusion_started = time.perf_counter() if serial_started is not None else None
                 decision = self.policy.after_local_recheck(
                     repvit_scores,
                     dino_scores,
                     local_scores,
                     box=box,
                 )
+                serial_fusion_finished = time.perf_counter() if serial_started is not None else None
             else:
                 dino_scores = dino.score(crops)
+                serial_dinov3_finished = time.perf_counter() if serial_started is not None else None
+                serial_fusion_started = time.perf_counter() if serial_started is not None else None
                 decision = self.policy.after_recheck(repvit_scores, dino_scores, box=box)
+                serial_fusion_finished = time.perf_counter() if serial_started is not None else None
         except DinoInferenceError as exc:
             dinov3_finished = self._timestamp()
             decision = self.policy.dino_failure(repvit_scores, box=box)
             total_finished = self._timestamp()
+            if self._stage_timing_sink is not None:
+                self._observe_serial_timing(
+                    total_started=serial_started,
+                    crop_finished=crop_finished,
+                    repvit_started=serial_repvit_started,
+                    repvit_finished=serial_repvit_finished,
+                    dino_started=serial_dinov3_started,
+                    dino_executed=True,
+                )
             return self._with_metadata(
                 decision,
                 frame=frame,
@@ -373,6 +425,18 @@ class ClassifierPipeline:
 
         dinov3_finished = self._timestamp()
         total_finished = self._timestamp()
+        if self._stage_timing_sink is not None:
+            self._observe_serial_timing(
+                total_started=serial_started,
+                crop_finished=crop_finished,
+                repvit_started=serial_repvit_started,
+                repvit_finished=serial_repvit_finished,
+                dino_started=serial_dinov3_started,
+                dino_finished=serial_dinov3_finished,
+                fusion_started=serial_fusion_started,
+                fusion_finished=serial_fusion_finished,
+                dino_executed=True,
+            )
         return self._with_metadata(
             decision,
             frame=frame,
@@ -564,6 +628,52 @@ class ClassifierPipeline:
     def _timestamp(self) -> float:
         self.clock.synchronize()
         return self.clock()
+
+    def _observe_serial_timing(
+        self,
+        *,
+        total_started: float | None,
+        crop_finished: float | None,
+        repvit_started: float | None,
+        repvit_finished: float | None,
+        dino_executed: bool,
+        dino_started: float | None = None,
+        dino_finished: float | None = None,
+        fusion_started: float | None = None,
+        fusion_finished: float | None = None,
+    ) -> None:
+        sink = self._stage_timing_sink
+        if sink is None:
+            return
+        if (
+            total_started is None
+            or crop_finished is None
+            or repvit_started is None
+            or repvit_finished is None
+        ):
+            raise RuntimeError("serial timing observation boundaries are incomplete")
+        total_finished = time.perf_counter()
+        if dino_executed:
+            if dino_started is None:
+                raise RuntimeError("DINO timing observation boundary is missing")
+            dino_finished = dino_finished or total_finished
+            dinov3_ms = _milliseconds(dino_started, dino_finished)
+        else:
+            dinov3_ms = 0.0
+        if fusion_started is not None and fusion_finished is not None:
+            fusion_ms = _milliseconds(fusion_started, fusion_finished)
+        else:
+            fusion_ms = 0.0
+        sink(
+            SerialStageTimings(
+                crop_ms=_milliseconds(total_started, crop_finished),
+                repvit_ms=_milliseconds(repvit_started, repvit_finished),
+                dinov3_ms=dinov3_ms,
+                fusion_ms=fusion_ms,
+                total_ms=_milliseconds(total_started, total_finished),
+                dino_executed=dino_executed,
+            )
+        )
 
     def _fusion_decision(
         self,
