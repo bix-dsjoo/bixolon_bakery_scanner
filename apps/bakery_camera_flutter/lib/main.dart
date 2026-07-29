@@ -15,7 +15,10 @@ void main() {
 }
 
 ScannerController _createController() {
-  final config = InferenceLaunchConfig.fromEnvironment(Platform.environment);
+  final config = InferenceLaunchConfig.resolve(
+    environment: Platform.environment,
+    executablePath: Platform.resolvedExecutable,
+  );
   final worker = InferenceWorkerClient(config: config);
   return ScannerController(
     camera: CameraService(),

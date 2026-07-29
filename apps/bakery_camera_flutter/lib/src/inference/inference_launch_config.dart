@@ -1,3 +1,7 @@
+import 'package:path/path.dart' as path;
+
+final _windowsPath = path.Context(style: path.Style.windows);
+
 final class InferenceLaunchConfig {
   InferenceLaunchConfig._({
     required this.pythonExecutable,
@@ -13,15 +17,36 @@ final class InferenceLaunchConfig {
 
   factory InferenceLaunchConfig.fromEnvironment(
     Map<String, String> environment,
-  ) {
-    final pythonExecutable = _requiredEnvironmentValue(
-      environment,
-      'BAKERY_INFERENCE_PYTHON',
-    );
-    final repoRoot = _requiredEnvironmentValue(environment, 'BAKERY_REPO_ROOT');
+  ) => InferenceLaunchConfig.resolve(
+    environment: environment,
+    executablePath: r'C:\bakery_camera_prototype.exe',
+  );
+
+  factory InferenceLaunchConfig.resolve({
+    required Map<String, String> environment,
+    required String executablePath,
+  }) {
+    final python = environment['BAKERY_INFERENCE_PYTHON']?.trim();
+    final root = environment['BAKERY_REPO_ROOT']?.trim();
+    final hasPython = python != null && python.isNotEmpty;
+    final hasRoot = root != null && root.isNotEmpty;
+
+    if (hasPython != hasRoot) {
+      throw StateError('개발 실행 경로 두 개를 모두 설정한 뒤 앱을 다시 시작하세요.');
+    }
+    if (hasPython) {
+      return InferenceLaunchConfig._(pythonExecutable: python, repoRoot: root!);
+    }
+
+    final appRoot = _windowsPath.dirname(executablePath);
     return InferenceLaunchConfig._(
-      pythonExecutable: pythonExecutable,
-      repoRoot: repoRoot,
+      pythonExecutable: _windowsPath.join(
+        appRoot,
+        'runtime',
+        'python',
+        'python.exe',
+      ),
+      repoRoot: _windowsPath.join(appRoot, 'pipeline'),
     );
   }
 
@@ -39,17 +64,6 @@ final class InferenceLaunchConfig {
     '--warmup-image',
     warmupImage,
   ]);
-
-  static String _requiredEnvironmentValue(
-    Map<String, String> environment,
-    String name,
-  ) {
-    final value = environment[name];
-    if (value == null || value.trim().isEmpty) {
-      throw StateError('$name 환경 변수를 설정한 뒤 앱을 다시 시작하세요.');
-    }
-    return value;
-  }
 
   static String _join(String root, String child) {
     final normalizedRoot = root.endsWith(r'\')

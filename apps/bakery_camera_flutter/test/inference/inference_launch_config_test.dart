@@ -2,11 +2,31 @@ import 'package:bakery_camera_prototype/src/inference/inference_launch_config.da
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('launch config resolves only explicit environment values', () {
-    final config = InferenceLaunchConfig.fromEnvironment({
-      'BAKERY_INFERENCE_PYTHON': r'C:\runtime\python.exe',
-      'BAKERY_REPO_ROOT': r'C:\workspace\bixolon_bakery_scanner',
-    });
+  test('uses installed package layout when overrides are absent', () {
+    final config = InferenceLaunchConfig.resolve(
+      environment: const {},
+      executablePath: r'C:\Program Files\App\bakery_camera_prototype.exe',
+    );
+
+    expect(
+      config.pythonExecutable,
+      r'C:\Program Files\App\runtime\python\python.exe',
+    );
+    expect(config.repoRoot, r'C:\Program Files\App\pipeline');
+    expect(
+      config.workerScript,
+      r'C:\Program Files\App\pipeline\scripts\run_camera_inference_worker.py',
+    );
+  });
+
+  test('both development overrides preserve repository launching', () {
+    final config = InferenceLaunchConfig.resolve(
+      environment: const {
+        'BAKERY_INFERENCE_PYTHON': r'C:\runtime\python.exe',
+        'BAKERY_REPO_ROOT': r'C:\workspace\bixolon_bakery_scanner',
+      },
+      executablePath: r'C:\installed\bakery_camera_prototype.exe',
+    );
 
     expect(config.pythonExecutable, r'C:\runtime\python.exe');
     expect(config.repoRoot, r'C:\workspace\bixolon_bakery_scanner');
@@ -21,36 +41,18 @@ void main() {
   });
 
   test(
-    'missing launch environment fails closed with actionable Korean copy',
+    'partial development override fails closed with actionable Korean copy',
     () {
       expect(
-        () => InferenceLaunchConfig.fromEnvironment(const {}),
-        throwsA(
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            allOf(
-              contains('BAKERY_INFERENCE_PYTHON'),
-              contains('환경 변수'),
-              contains('설정'),
-            ),
-          ),
+        () => InferenceLaunchConfig.resolve(
+          environment: const {'BAKERY_REPO_ROOT': r'C:\repo'},
+          executablePath: r'C:\App\app.exe',
         ),
-      );
-
-      expect(
-        () => InferenceLaunchConfig.fromEnvironment(const {
-          'BAKERY_INFERENCE_PYTHON': r'C:\runtime\python.exe',
-        }),
         throwsA(
           isA<StateError>().having(
             (error) => error.message,
             'message',
-            allOf(
-              contains('BAKERY_REPO_ROOT'),
-              contains('환경 변수'),
-              contains('설정'),
-            ),
+            allOf(contains('개발 실행 경로'), contains('두 개'), contains('모두 설정')),
           ),
         ),
       );
@@ -58,10 +60,13 @@ void main() {
   );
 
   test('launch values preserve shell metacharacters as literal arguments', () {
-    final config = InferenceLaunchConfig.fromEnvironment({
-      'BAKERY_INFERENCE_PYTHON': r'C:\runtime & tools\python.exe',
-      'BAKERY_REPO_ROOT': r'C:\bakery & echo unsafe',
-    });
+    final config = InferenceLaunchConfig.resolve(
+      environment: const {
+        'BAKERY_INFERENCE_PYTHON': r'C:\runtime & tools\python.exe',
+        'BAKERY_REPO_ROOT': r'C:\bakery & echo unsafe',
+      },
+      executablePath: r'C:\installed\bakery_camera_prototype.exe',
+    );
 
     expect(config.pythonExecutable, r'C:\runtime & tools\python.exe');
     expect(config.repoRoot, r'C:\bakery & echo unsafe');
