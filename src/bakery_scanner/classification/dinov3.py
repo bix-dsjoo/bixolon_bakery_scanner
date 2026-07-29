@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -27,6 +28,14 @@ _PROTOTYPE_SHAPE = (20, _EMBEDDING_DIMENSION)
 _SUPPORT_ARTIFACT_TYPE = "dinov3_vits16_15plus5_global_support"
 _ARCHITECTURE = "vit_small_patch16_dinov3_storage4"
 _STORAGE_TOKEN_SHAPE = [1, 4, _EMBEDDING_DIMENSION]
+
+
+@dataclass(frozen=True, slots=True)
+class DinoGlobalLocalEvidence:
+    global_scores: ModelScoreVector
+    local_scores: dict[int, float]
+    product_patch_count: int
+    product_patch_ratio: float
 
 
 def candidate_union(
@@ -187,41 +196,116 @@ class DinoV3Rechecker:
         *,
         repvit_scores: ModelScoreVector | None = None,
     ) -> tuple[ModelScoreVector, dict[int, float], int, float]:
-        """Return local scores plus the exact product-token evidence volume."""
-        """Retrieve global Top-5, then score only their product-mask patches."""
-        if len(crops) != 3 or len(product_boxes_in_crops) != 3:
+        evidence = self.score_many_global_and_local_evidence(
+            (tuple(crops),),
+            (tuple(product_boxes_in_crops),),
+            local_bank,
+            repvit_scores=(repvit_scores,) if repvit_scores is not None else None,
+            max_objects=1,
+        )[0]
+        return (
+            evidence.global_scores,
+            evidence.local_scores,
+            evidence.product_patch_count,
+            evidence.product_patch_ratio,
+        )
+
+    def score_many_global_and_local_evidence(
+        self,
+        crop_groups: Sequence[Sequence[Image.Image]],
+        product_box_groups: Sequence[Sequence[Box]],
+        local_bank: LocalPatchBank,
+        *,
+        repvit_scores: Sequence[ModelScoreVector] | None,
+        max_objects: int,
+    ) -> tuple[DinoGlobalLocalEvidence, ...]:
+        groups = tuple(tuple(group) for group in crop_groups)
+        boxes = tuple(tuple(group) for group in product_box_groups)
+        if not groups or len(groups) != len(boxes):
+            raise ValueError("DINOv3 crop and product-box groups must be non-empty and aligned")
+        if any(len(group) != 3 for group in groups) or any(len(group) != 3 for group in boxes):
             raise ValueError("DINOv3 local scoring requires three crops and three product boxes")
+        if any(not isinstance(crop, Image.Image) for group in groups for crop in group):
+            raise ValueError("DINOv3 crops must be PIL images")
+        if any(not isinstance(box, Box) for group in boxes for box in group):
+            raise ValueError("DINOv3 product boxes must be Box values")
+        if type(max_objects) is not int or max_objects <= 0:
+            raise ValueError("max_objects must be a positive integer")
+        if not callable(getattr(self.encoder, "forward_features", None)):
+            raise ValueError("DINOv3 encoder does not expose forward_features")
+        if repvit_scores is None:
+            aligned_repvit: tuple[ModelScoreVector | None, ...] = (None,) * len(groups)
+        else:
+            aligned_repvit = tuple(repvit_scores)
+            if len(aligned_repvit) != len(groups):
+                raise ValueError("RepViT scores must align with DINOv3 crop groups")
+
+        results: list[DinoGlobalLocalEvidence] = []
         if not callable(getattr(self.encoder, "forward_features", None)):
             raise ValueError("DINOv3 encoder does not expose forward_features")
         try:
-            batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in crops))
-            with torch.inference_mode():
-                features = self.encoder.forward_features(batch.to(self.device))
-                if not isinstance(features, Mapping):
-                    raise ValueError("DINOv3 forward_features must return a mapping")
-                cls_tokens = features.get("x_norm_clstoken")
-                patch_tokens = features.get("x_norm_patchtokens")
-                if not isinstance(cls_tokens, torch.Tensor) or tuple(cls_tokens.shape) != (3, _EMBEDDING_DIMENSION):
-                    raise ValueError("DINOv3 class tokens must have shape (3, 384)")
-                if not isinstance(patch_tokens, torch.Tensor) or patch_tokens.ndim != 3 or tuple(patch_tokens.shape[:1]) != (3,) or patch_tokens.shape[2] != _EMBEDDING_DIMENSION:
-                    raise ValueError("DINOv3 patch tokens must have shape (3, N, 384)")
-                cls_tokens = functional.normalize(cls_tokens, dim=1)
-                mean_embedding = functional.normalize(cls_tokens.mean(dim=0), dim=0)
-                similarities = self.prototypes @ mean_embedding
-                global_scores = ModelScoreVector(self.model_id, self.sku_ids, tuple(float(value) for value in similarities.cpu().tolist()), "similarity")
-                if repvit_scores is None:
-                    candidate_indices = sorted(range(20), key=lambda index: (-global_scores.values[index], self.sku_ids[index]))[:5]
-                    candidate_ids = tuple(self.sku_ids[index] for index in candidate_indices)
-                else:
-                    candidate_ids = candidate_union(global_scores, repvit_scores)
-                masks = tuple(_product_patch_mask(box, crop.size, patch_tokens.shape[1], patch_tokens.device) for crop, box in zip(crops, product_boxes_in_crops, strict=True))
-                product_mask = torch.cat(masks)
-                local_scores = local_bank.score(candidate_ids, patch_tokens.reshape(-1, _EMBEDDING_DIMENSION), product_mask)
+            for start in range(0, len(groups), max_objects):
+                group_slice = groups[start : start + max_objects]
+                box_slice = boxes[start : start + max_objects]
+                score_slice = aligned_repvit[start : start + max_objects]
+                flattened = tuple(crop for group in group_slice for crop in group)
+                batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in flattened))
+                with torch.inference_mode():
+                    features = self.encoder.forward_features(batch.to(self.device))
+                    if not isinstance(features, Mapping):
+                        raise ValueError("DINOv3 forward_features must return a mapping")
+                    cls_tokens = features.get("x_norm_clstoken")
+                    patch_tokens = features.get("x_norm_patchtokens")
+                    count = len(group_slice)
+                    if not isinstance(cls_tokens, torch.Tensor) or tuple(cls_tokens.shape) != (3 * count, _EMBEDDING_DIMENSION):
+                        raise ValueError("DINOv3 class tokens must have shape (3 * objects, 384)")
+                    if not isinstance(patch_tokens, torch.Tensor) or patch_tokens.ndim != 3 or patch_tokens.shape[:1] != (3 * count,) or patch_tokens.shape[2] != _EMBEDDING_DIMENSION:
+                        raise ValueError("DINOv3 patch tokens must have shape (3 * objects, N, 384)")
+                    if not torch.isfinite(cls_tokens).all().item() or not torch.isfinite(patch_tokens).all().item():
+                        raise ValueError("DINOv3 feature tokens must be finite")
+                    grouped_cls = cls_tokens.reshape(count, 3, _EMBEDDING_DIMENSION)
+                    grouped_patches = patch_tokens.reshape(count, 3, patch_tokens.shape[1], _EMBEDDING_DIMENSION)
+                    for crops, product_boxes, scores, object_cls, object_patches in zip(
+                        group_slice, box_slice, score_slice, grouped_cls, grouped_patches, strict=True
+                    ):
+                        normalized_cls = functional.normalize(object_cls, dim=1)
+                        mean_embedding = functional.normalize(normalized_cls.mean(dim=0), dim=0)
+                        similarities = self.prototypes @ mean_embedding
+                        global_scores = ModelScoreVector(
+                            self.model_id,
+                            self.sku_ids,
+                            tuple(float(value) for value in similarities.detach().cpu().tolist()),
+                            "similarity",
+                        )
+                        if scores is None:
+                            candidate_indices = sorted(
+                                range(20), key=lambda index: (-global_scores.values[index], self.sku_ids[index])
+                            )[:5]
+                            candidate_ids = tuple(self.sku_ids[index] for index in candidate_indices)
+                        else:
+                            candidate_ids = candidate_union(global_scores, scores)
+                        masks = tuple(
+                            _product_patch_mask(box, crop.size, object_patches.shape[1], object_patches.device)
+                            for crop, box in zip(crops, product_boxes, strict=True)
+                        )
+                        product_mask = torch.cat(masks)
+                        local_scores = local_bank.score(
+                            candidate_ids,
+                            object_patches.reshape(-1, _EMBEDDING_DIMENSION),
+                            product_mask,
+                        )
+                        product_patch_count = int(product_mask.sum().item())
+                        results.append(
+                            DinoGlobalLocalEvidence(
+                                global_scores,
+                                local_scores,
+                                product_patch_count,
+                                product_patch_count / product_mask.numel(),
+                            )
+                        )
         except torch.OutOfMemoryError as exc:
             raise DinoInferenceError("dino_out_of_memory", "DINOv3 inference exhausted device memory") from exc
-        product_patch_count = int(product_mask.sum().item())
-        product_patch_ratio = product_patch_count / product_mask.numel()
-        return global_scores, local_scores, product_patch_count, product_patch_ratio
+        return tuple(results)
 
 
 def _verify_sha256(path: Path, expected: str, label: str) -> None:

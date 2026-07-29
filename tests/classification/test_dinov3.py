@@ -14,7 +14,12 @@ from bakery_scanner.contracts import Box
 from bakery_scanner.classification import DinoInferenceError
 from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.contracts import ModelScoreVector
-from bakery_scanner.classification.dinov3 import DinoV3Rechecker, _product_patch_mask, candidate_union
+from bakery_scanner.classification.dinov3 import (
+    DinoGlobalLocalEvidence,
+    DinoV3Rechecker,
+    _product_patch_mask,
+    candidate_union,
+)
 from bakery_scanner.classification.local_bank import LocalPatchBank
 from bakery_scanner.classification.preprocess import build_transform
 
@@ -68,6 +73,23 @@ class FeatureEncoder(torch.nn.Module):
         cls = torch.nn.functional.normalize(torch.ones((3, 384)), dim=1)
         patches = torch.nn.functional.normalize(torch.ones((3, 196, 384)), dim=2)
         return {"x_norm_clstoken": cls, "x_norm_patchtokens": patches}
+
+
+class BatchFeatureEncoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_sizes: list[int] = []
+
+    def forward_features(self, batch: torch.Tensor):
+        self.batch_sizes.append(batch.shape[0])
+        return {
+            "x_norm_clstoken": torch.nn.functional.normalize(
+                torch.ones((batch.shape[0], 384)), dim=1
+            ),
+            "x_norm_patchtokens": torch.nn.functional.normalize(
+                torch.ones((batch.shape[0], 196, 384)), dim=2
+            ),
+        }
 
 
 def test_candidate_union_keeps_dino_top_five_then_appends_missing_repvit_top_two():
@@ -184,6 +206,101 @@ def test_dinov3_local_scores_the_union_of_global_and_repvit_candidates(tmp_path)
     )
 
     assert tuple(local_scores) == (1, 2, 3, 4, 5, 6, 8)
+
+
+def test_many_local_evidence_matches_serial_and_batches_encoder_calls(tmp_path):
+    bank = _local_bank(tmp_path)
+    encoder = BatchFeatureEncoder()
+    runner = _runner_with_encoder(encoder)
+    crop_groups = tuple(_dino_crops(color) for color in ("red", "green", "blue"))
+    boxes = ((_full_box(),) * 3,) * 3
+    repvit = (_repvit_scores(1), _repvit_scores(2), _repvit_scores(3))
+
+    expected = tuple(
+        DinoGlobalLocalEvidence(
+            *runner.score_global_and_local_evidence(
+                crops, product_boxes, bank, repvit_scores=scores
+            )
+        )
+        for crops, product_boxes, scores in zip(crop_groups, boxes, repvit, strict=True)
+    )
+    actual = runner.score_many_global_and_local_evidence(
+        crop_groups, boxes, bank, repvit_scores=repvit, max_objects=2
+    )
+
+    assert _evidence_payload(actual) == pytest.approx(_evidence_payload(expected))
+    assert encoder.batch_sizes[-2:] == [6, 3]
+
+
+def test_many_local_evidence_preserves_per_object_candidate_unions_and_alignment(tmp_path):
+    bank = _local_bank(tmp_path)
+    runner = _runner_with_encoder(BatchFeatureEncoder())
+    groups = (_dino_crops("red"), _dino_crops("blue"))
+    boxes = ((_full_box(),) * 3,) * 2
+
+    evidence = runner.score_many_global_and_local_evidence(
+        groups,
+        boxes,
+        bank,
+        repvit_scores=(_repvit_scores(6), _repvit_scores(7)),
+        max_objects=2,
+    )
+
+    assert 6 in evidence[0].local_scores and 7 not in evidence[0].local_scores
+    assert 7 in evidence[1].local_scores and 6 not in evidence[1].local_scores
+    with pytest.raises(ValueError, match="align"):
+        runner.score_many_global_and_local_evidence(
+            groups, boxes, bank, repvit_scores=(_repvit_scores(6),), max_objects=2
+        )
+
+
+def _dino_crops(color: str) -> tuple[Image.Image, Image.Image, Image.Image]:
+    return tuple(Image.new("RGB", (224, 224), color) for _ in range(3))
+
+
+def _full_box() -> Box:
+    return Box(0, 0, 224, 224)
+
+
+def _repvit_scores(top_sku: int) -> ModelScoreVector:
+    values = [0.0] * 20
+    values[top_sku - 1] = 1.0
+    return ModelScoreVector("repvit_m1_15plus5_v1", _SKU_IDS, tuple(values), "probability")
+
+
+def _evidence_payload(rows) -> tuple[float, ...]:
+    return tuple(
+        value
+        for row in rows
+        for value in (
+            *row.global_scores.values,
+            *(row.local_scores.get(sku_id, -1.0) for sku_id in _SKU_IDS),
+            float(row.product_patch_count),
+            row.product_patch_ratio,
+        )
+    )
+
+
+def _local_bank(tmp_path: Path) -> LocalPatchBank:
+    patches = {
+        sku_id: torch.nn.functional.normalize(torch.ones((1, 384)) * sku_id, dim=1)
+        for sku_id in _SKU_IDS
+    }
+    path = tmp_path / "batched-local.pt"
+    torch.save(
+        {
+            "artifact_type": "dinov3_vits16_15plus5_local_patch_bank",
+            "schema_version": 1,
+            "dino_weights_sha256": "a" * 64,
+            "preprocess_sha256": "b" * 64,
+            "canonical_frame_version": "exif_visual_rgb_v1",
+            "patches": patches,
+        },
+        path,
+    )
+    return LocalPatchBank.load(
+        path, dino_weights_sha256="a" * 64, preprocess_sha256="b" * 64
+    )
 
 
 @pytest.mark.parametrize("shape", [(19, 384), (20, 383)])
