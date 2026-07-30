@@ -35,7 +35,12 @@ final class VerifiedAuditFileReference {
 }
 
 abstract interface class AuditReferenceVerifier {
-  Future<VerifiedAuditFileReference> capturedImage(CapturedAuditFile image);
+  Future<VerifiedAuditFileReference> capturedImage({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required CapturedAuditFile image,
+  });
   Future<VerifiedAuditFileReference> inferenceReceipt({
     required String sessionId,
     required int attemptNumber,
@@ -55,6 +60,21 @@ abstract interface class AuditRecoveryMarkerWriter {
   });
 }
 
+/// Both failures matter: the database transaction rolled back and retained
+/// evidence could not be marked for recovery.
+final class AuditRecoveryMarkerFailure extends StateError {
+  AuditRecoveryMarkerFailure({
+    required this.databaseError,
+    required this.markerError,
+  }) : super(
+         'database write failed and recovery marker persistence also failed: '
+         '$databaseError; $markerError',
+       );
+
+  final Object databaseError;
+  final Object markerError;
+}
+
 /// Concrete bridge from the storage-neutral database port to audit files.
 final class AuditFileStoreReferenceVerifier
     implements AuditReferenceVerifier, AuditRecoveryMarkerWriter {
@@ -63,11 +83,29 @@ final class AuditFileStoreReferenceVerifier
   final AuditFileStore _files;
 
   @override
-  Future<VerifiedAuditFileReference> capturedImage(
-    CapturedAuditFile image,
-  ) async => _reference(
-    await _files.verifyExisting(relativePath: image.path, sha256: image.sha256),
-  );
+  Future<VerifiedAuditFileReference> capturedImage({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required CapturedAuditFile image,
+  }) async {
+    final expectedPath = AuditFileStore.captureRelativePath(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+      capturedAtUtc: capturedAtUtc,
+    );
+    if (image.path != expectedPath) {
+      throw StateError(
+        'captured image path is not bound to its staged attempt',
+      );
+    }
+    return _reference(
+      await _files.verifyExisting(
+        relativePath: expectedPath,
+        sha256: image.sha256,
+      ),
+    );
+  }
 
   @override
   Future<VerifiedAuditFileReference> inferenceReceipt({
@@ -420,12 +458,27 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
       );
     }
     _requireSha256(image.sha256, 'image.sha256');
-    final reference = await _references.capturedImage(image);
-    if (reference.relativePath != image.path ||
+    final capturedAt = _now().toUtc();
+    final expectedImagePath = AuditFileStore.captureRelativePath(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+      capturedAtUtc: capturedAt,
+    );
+    if (image.path != expectedImagePath) {
+      throw StateError(
+        'captured image path is not bound to its staged attempt',
+      );
+    }
+    final reference = await _references.capturedImage(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+      capturedAtUtc: capturedAt,
+      image: image,
+    );
+    if (reference.relativePath != expectedImagePath ||
         reference.sha256 != image.sha256) {
       throw StateError('captured image reference does not match staged image');
     }
-    final capturedAt = _now().toUtc();
     return _withRecoveryMarker(
       operation: 'stage_attempt',
       file: reference,
@@ -1244,8 +1297,11 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
           file: file,
           error: error,
         );
-      } catch (_) {
-        // A failed marker must not hide the original database failure.
+      } catch (markerError) {
+        throw AuditRecoveryMarkerFailure(
+          databaseError: error,
+          markerError: markerError,
+        );
       }
     }
   }

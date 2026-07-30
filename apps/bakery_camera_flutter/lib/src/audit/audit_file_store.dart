@@ -54,6 +54,30 @@ final class AuditFileStore {
     return _retainFromFile(source: source, relativePath: relativePath);
   }
 
+  static String captureRelativePath({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+  }) {
+    if (attemptNumber <= 0) {
+      throw ArgumentError.value(
+        attemptNumber,
+        'attemptNumber',
+        'must be positive',
+      );
+    }
+    _requireSessionId(sessionId);
+    _requireUtc(capturedAtUtc, 'capturedAtUtc');
+    return path.posix.join(
+      'sessions',
+      capturedAtUtc.year.toString().padLeft(4, '0'),
+      capturedAtUtc.month.toString().padLeft(2, '0'),
+      capturedAtUtc.day.toString().padLeft(2, '0'),
+      sessionId,
+      'attempt-${attemptNumber.toString().padLeft(3, '0')}.jpg',
+    );
+  }
+
   Future<StoredAuditFile> retainInferenceReceipt({
     required String sessionId,
     required int attemptNumber,
@@ -319,6 +343,13 @@ final class AuditFileStore {
     required DateTime capturedAtUtc,
     required String extension,
   }) {
+    if (extension == 'jpg') {
+      return captureRelativePath(
+        sessionId: sessionId,
+        attemptNumber: attemptNumber,
+        capturedAtUtc: capturedAtUtc,
+      );
+    }
     if (attemptNumber <= 0) {
       throw ArgumentError.value(
         attemptNumber,

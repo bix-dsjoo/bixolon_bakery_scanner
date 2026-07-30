@@ -177,4 +177,68 @@ void main() {
       );
     },
   );
+
+  test('bridge accepts only the exact staged capture location', () async {
+    const sessionId = '00000000-0000-4000-8000-000000000001';
+    const otherSessionId = '00000000-0000-4000-8000-000000000002';
+    final capturedAt = DateTime.utc(2026, 7, 30);
+    final stored = await store.retainCapture(
+      sessionId: sessionId,
+      attemptNumber: 1,
+      capturedAtUtc: capturedAt,
+      sourcePath: source.path,
+    );
+    final bridge = AuditFileStoreReferenceVerifier(store);
+    final image = CapturedAuditFile(
+      fileId: 'capture-1',
+      path: stored.relativePath,
+      sha256: stored.sha256,
+    );
+
+    final verified = await bridge.capturedImage(
+      sessionId: sessionId,
+      attemptNumber: 1,
+      capturedAtUtc: capturedAt,
+      image: image,
+    );
+
+    expect(verified.relativePath, stored.relativePath);
+    await expectLater(
+      bridge.capturedImage(
+        sessionId: otherSessionId,
+        attemptNumber: 1,
+        capturedAtUtc: capturedAt,
+        image: image,
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test(
+    'persists a recovery marker without deleting retained evidence',
+    () async {
+      final stored = await store.retainCapture(
+        sessionId: '00000000-0000-4000-8000-000000000001',
+        attemptNumber: 1,
+        capturedAtUtc: DateTime.utc(2026, 7, 30),
+        sourcePath: source.path,
+      );
+
+      await store.recordDatabaseFailure(
+        operation: 'stage_attempt',
+        file: stored,
+        error: StateError('injected database failure'),
+      );
+
+      final marker = File(
+        '${auditRoot.path}${Platform.pathSeparator}recovery'
+        '${Platform.pathSeparator}markers.jsonl',
+      );
+      expect(
+        await marker.readAsString(),
+        contains('"operation":"stage_attempt"'),
+      );
+      expect(await File(store.resolve(stored.relativePath)).exists(), isTrue);
+    },
+  );
 }

@@ -43,7 +43,7 @@ void main() {
       database: db,
       runtimeSnapshot: _runtimeSnapshot(),
       references: references,
-      createId: (prefix) => '$prefix-${++nextId}',
+      createId: (_) => _uuidFor(++nextId),
       now: () => DateTime.utc(2026, 7, 30, 8),
     );
   });
@@ -123,7 +123,7 @@ void main() {
         attemptNumber: 1,
         image: CapturedAuditFile(
           fileId: 'image-1',
-          path: 'sessions/$sessionId/attempt-001.jpg',
+          path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
           sha256: _hash('4'),
         ),
       );
@@ -167,7 +167,7 @@ void main() {
       attemptNumber: 1,
       image: CapturedAuditFile(
         fileId: 'image-1',
-        path: 'sessions/$sessionId/attempt-001.jpg',
+        path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
         sha256: _hash('4'),
       ),
     );
@@ -196,7 +196,7 @@ void main() {
       final sessionId = await _beginSession(store, revision);
       final image = CapturedAuditFile(
         fileId: 'image-1',
-        path: 'sessions/$sessionId/attempt-001.jpg',
+        path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
         sha256: _hash('4'),
       );
       await store.stageAttempt(
@@ -219,6 +219,73 @@ void main() {
   );
 
   test(
+    'stage attempt rejects capture paths outside its exact audit location',
+    () async {
+      final sessionId = await _beginSession(store, revision);
+      final capturedAt = DateTime.utc(2026, 7, 30, 8);
+      final expected = _capturePath(sessionId, capturedAt, 1);
+      final wrongPaths = [
+        'recovery/markers.jsonl',
+        _capturePath(_uuidFor(999), capturedAt, 1),
+        _capturePath(sessionId, DateTime.utc(2026, 7, 31, 8), 1),
+        _capturePath(sessionId, capturedAt, 2),
+        'sessions/2026/07/30/not-a-uuid/attempt-001.jpg',
+      ];
+
+      for (final path in wrongPaths) {
+        await expectLater(
+          store.stageAttempt(
+            sessionId: sessionId,
+            attemptNumber: 1,
+            image: CapturedAuditFile(
+              fileId: 'image-1',
+              path: path,
+              sha256: _hash('4'),
+            ),
+          ),
+          throwsA(isA<StateError>()),
+          reason: 'expected $expected, got $path',
+        );
+      }
+    },
+  );
+
+  test(
+    'marker write failure surfaces both persistence and recovery failure',
+    () async {
+      final sessionId = await _beginSession(store, revision);
+      final image = CapturedAuditFile(
+        fileId: 'image-1',
+        path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
+        sha256: _hash('4'),
+      );
+      await store.stageAttempt(
+        sessionId: sessionId,
+        attemptNumber: 1,
+        image: image,
+      );
+      references.failMarkerWrite = true;
+
+      await expectLater(
+        store.stageAttempt(
+          sessionId: sessionId,
+          attemptNumber: 1,
+          image: image,
+        ),
+        throwsA(
+          isA<AuditRecoveryMarkerFailure>()
+              .having(
+                (error) => error.databaseError,
+                'database error',
+                isNotNull,
+              )
+              .having((error) => error.markerError, 'marker error', isNotNull),
+        ),
+      );
+    },
+  );
+
+  test(
     'complete attempt rejects model provenance outside session snapshot',
     () async {
       var mismatchId = 0;
@@ -227,7 +294,7 @@ void main() {
         database: db,
         runtimeSnapshot: mismatchRuntime,
         references: references,
-        createId: (prefix) => 'mismatch-$prefix-${++mismatchId}',
+        createId: (_) => _uuidFor(500 + ++mismatchId),
         now: () => DateTime.utc(2026, 7, 30, 8),
       );
       final sessionId = await _beginSession(mismatchStore, revision);
@@ -236,7 +303,7 @@ void main() {
         attemptNumber: 1,
         image: CapturedAuditFile(
           fileId: 'image-1',
-          path: 'sessions/$sessionId/attempt-001.jpg',
+          path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
           sha256: _hash('4'),
         ),
       );
@@ -786,7 +853,7 @@ Future<StagedAttempt> _completeAttempt(
     attemptNumber: 1,
     image: CapturedAuditFile(
       fileId: 'image-1',
-      path: 'sessions/$sessionId/attempt-001.jpg',
+      path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
       sha256: _hash('4'),
     ),
   );
@@ -911,14 +978,18 @@ Future<void> _seedProduct(
 final class _References
     implements AuditReferenceVerifier, AuditRecoveryMarkerWriter {
   bool failFinalOrder = false;
+  bool failMarkerWrite = false;
   final List<String> failedOperations = [];
 
   @override
-  Future<VerifiedAuditFileReference> capturedImage(
-    CapturedAuditFile image,
-  ) async {
+  Future<VerifiedAuditFileReference> capturedImage({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required CapturedAuditFile image,
+  }) async {
     return VerifiedAuditFileReference(
-      relativePath: image.path,
+      relativePath: _capturePath(sessionId, capturedAtUtc, attemptNumber),
       byteSize: 42,
       sha256: image.sha256,
     );
@@ -932,7 +1003,11 @@ final class _References
     required ImmutableJsonReceipt receipt,
   }) async {
     return VerifiedAuditFileReference(
-      relativePath: 'sessions/session-1/attempt-001.inference.json',
+      relativePath: _receiptPath(
+        sessionId,
+        capturedAtUtc,
+        'attempt-${attemptNumber.toString().padLeft(3, '0')}.inference.json',
+      ),
       byteSize: receipt.canonicalJson.length,
       sha256: receipt.sha256,
     );
@@ -946,7 +1021,11 @@ final class _References
       throw StateError('final order receipt hash verification failed');
     }
     return VerifiedAuditFileReference(
-      relativePath: 'sessions/${order.sessionId}/final-order.json',
+      relativePath: _receiptPath(
+        order.sessionId,
+        order.createdAt,
+        'final-order.json',
+      ),
       byteSize: 128,
       sha256: _hash('6'),
     );
@@ -958,9 +1037,34 @@ final class _References
     required VerifiedAuditFileReference file,
     required Object error,
   }) async {
+    if (failMarkerWrite) {
+      throw StateError('injected marker write failure');
+    }
     failedOperations.add(operation);
   }
 }
+
+String _capturePath(
+  String sessionId,
+  DateTime capturedAtUtc,
+  int attemptNumber,
+) => _receiptPath(
+  sessionId,
+  capturedAtUtc,
+  'attempt-${attemptNumber.toString().padLeft(3, '0')}.jpg',
+);
+
+String _receiptPath(
+  String sessionId,
+  DateTime occurredAtUtc,
+  String fileName,
+) =>
+    'sessions/${occurredAtUtc.year.toString().padLeft(4, '0')}/'
+    '${occurredAtUtc.month.toString().padLeft(2, '0')}/'
+    '${occurredAtUtc.day.toString().padLeft(2, '0')}/$sessionId/$fileName';
+
+String _uuidFor(int value) =>
+    '00000000-0000-4000-8000-${value.toString().padLeft(12, '0')}';
 
 String _hash(String character) => character * 64;
 
