@@ -31,7 +31,7 @@ from .full_evidence import FullEvidenceRow
 from .fusion_policy import FusionPolicyArtifact
 from .local_bank import LocalPatchBank
 from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
-from .preprocess import make_padded_crops, make_padded_crops_with_product_boxes
+from .preprocess import make_padded_crops_with_product_boxes
 from .repvit import RepVitM1Runner, RepVitPrototypeBank
 
 
@@ -319,6 +319,8 @@ class ClassifierPipeline:
         self,
         image: Image.Image | CanonicalImage,
         box: Box,
+        *,
+        on_stage: Callable[[str], None] | None = None,
     ) -> ClassificationDecision:
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
@@ -331,6 +333,8 @@ class ClassifierPipeline:
         )
         crop_finished = time.perf_counter() if serial_started is not None else None
 
+        if on_stage is not None:
+            on_stage("repvit")
         repvit_started = self._timestamp()
         serial_repvit_started = time.perf_counter() if serial_started is not None else None
         repvit_evidence = self.repvit.score_with_evidence(crops)
@@ -364,6 +368,8 @@ class ClassifierPipeline:
                 total_ms=_milliseconds(total_started, total_finished),
             )
 
+        if on_stage is not None:
+            on_stage("dinov3")
         dinov3_started = self._timestamp()
         dino = self._get_dino()
         serial_dinov3_started = time.perf_counter() if serial_started is not None else None
@@ -701,16 +707,35 @@ class ClassifierPipeline:
         )
 
     def preflight_models(self, image: Image.Image | CanonicalImage, box: Box) -> None:
-        """Load and execute both model stages before measured inference."""
+        """Load and execute all configured model evidence before measured inference."""
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
-        crops = make_padded_crops(
+        crops, product_boxes = make_padded_crops_with_product_boxes(
             frame.image,
             box,
             self.config.preprocess.paddings,
         )
-        self.repvit.score_with_evidence(crops)
-        self._get_dino().score(crops)
+        repvit_scores = self.repvit.score_with_evidence(crops).scores
+        dino = self._get_dino()
+        local_bank = self._get_local_bank()
+        if local_bank is None:
+            dino.score(crops)
+        elif callable(getattr(dino, "score_global_and_local_evidence", None)):
+            dino.score_global_and_local_evidence(
+                crops,
+                product_boxes,
+                local_bank,
+                repvit_scores=repvit_scores,
+            )
+        elif callable(getattr(dino, "score_global_and_local", None)):
+            dino.score_global_and_local(
+                crops,
+                product_boxes,
+                local_bank,
+                repvit_scores=repvit_scores,
+            )
+        else:
+            raise ValueError("DINO local bank preflight requires local evidence scoring")
         self.clock.synchronize()
 
     def _get_dino(self) -> _ScoreRunner:

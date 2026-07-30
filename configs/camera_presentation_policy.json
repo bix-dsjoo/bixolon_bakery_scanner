@@ -1,0 +1,7 @@
+{
+  "box_overlap_iou": 0.7,
+  "candidate_top12_min_margin": 0.05,
+  "candidate_top1_min_score": 0.3,
+  "policy_id": "camera_action_state_v1",
+  "schema_version": 1
+}

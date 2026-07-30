@@ -19,7 +19,7 @@ preprocess:
   input_size: 224
   paddings: [0.05, 0.10, 0.15]
 runtime:
-  device: CPU
+  device: CUDA:0
   precision: FP32
 calibration:
   artifact: ../artifacts/e2e_current_source/classification/policy_v2_manifest_rebound_cpu_smoke.json

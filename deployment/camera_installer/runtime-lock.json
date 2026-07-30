@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "python": {
+    "version": "3.11.9",
+    "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+    "sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
+  },
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "torchvision": "0.28.0+cu130",
+    "timm": "1.0.28",
+    "rfdetr": "1.8.3",
+    "numpy": "2.4.4",
+    "Pillow": "12.2.0",
+    "PyYAML": "6.0.3",
+    "pydantic": "2.13.4",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.0",
+    "opencv-python": "5.0.0.93",
+    "supervision": "0.29.1",
+    "pycocotools": "2.0.11"
+  },
+  "inno_setup": "6.4.3"
+}

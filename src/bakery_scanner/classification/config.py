@@ -145,8 +145,16 @@ class ClassifierRuntimeConfig(_StrictModel):
 
 class CalibrationConfig(_StrictModel):
     artifact: Path
+    artifact_sha256: str | None = None
     fusion_policy: Path | None = None
     fusion_policy_sha256: str | None = None
+
+    @field_validator("artifact_sha256")
+    @classmethod
+    def _artifact_sha256(cls, value: str | None) -> str | None:
+        if value is not None and not _SHA256.fullmatch(value):
+            raise ValueError("artifact_sha256 must be a lowercase SHA-256 hash")
+        return value
 
     @model_validator(mode="after")
     def _fusion_policy_pair(self) -> "CalibrationConfig":

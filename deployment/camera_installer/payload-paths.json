@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "pipeline_directories": [
+    "src/bakery_scanner",
+    "dino/dinov3"
+  ],
+  "pipeline_files": [
+    "scripts/run_camera_inference_worker.py",
+    "dino/LICENSE.md",
+    "datasets/classes.json",
+    "configs/camera_presentation_policy.json",
+    "configs/gpu_rfdetr_classifier_policy.yaml",
+    "configs/cpu_rfdetr_classifier_policy.yaml",
+    "models/rfdetr_large_bakery_v1/checkpoint.pth",
+    "models/rfdetr_large_bakery_v1/calibration_corrected_gt_299_fp0_20260729.json",
+    "models/rfdetr_large_bakery_v1/manifest.json",
+    "models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt",
+    "models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.manifest.json",
+    "models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
+    "models/dinov3_vits16_15plus5_v1/dinov3_vits16_15plus5_v1_support.pt",
+    "artifacts/e2e_current_source/classification/repvit_m1_15plus5_prototypes.pt",
+    "artifacts/e2e_current_source/classification/dinov3_vits16_support.pt",
+    "artifacts/e2e_current_source/classification/dinov3_vits16_local_patch_bank.pt",
+    "artifacts/e2e_current_source/classification/policy_v2_manifest_rebound_cpu_smoke.json",
+    "artifacts/e2e_current_source/classification/fusion_local_or_global_consensus_margin_v1_reference_rebound.json",
+    "samples/batch2_e3_m3_h3/g20_b02_e_0301.jpg"
+  ]
+}
