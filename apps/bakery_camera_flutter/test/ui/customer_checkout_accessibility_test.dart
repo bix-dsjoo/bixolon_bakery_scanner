@@ -3,10 +3,16 @@ import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_state.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen.dart';
+import 'package:bakery_camera_prototype/src/ui/customer/catalog_picker.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_review_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/order_review_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/ready_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/retake_required_view.dart';
+import 'package:bakery_camera_prototype/src/ui/components/checkout_scaffold.dart';
+import 'package:bakery_camera_prototype/src/persistence/app_database.dart';
+import 'package:bakery_camera_prototype/src/persistence/database_catalog_repository.dart';
+import 'package:bakery_camera_prototype/src/persistence/database_factory.dart';
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,6 +58,61 @@ void main() {
           }
         }
       }
+    },
+  );
+
+  testWidgets(
+    'seeded full catalog keeps Korean controls and touch targets accessible at kiosk sizes',
+    (tester) async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      await _seedFullCatalog(database);
+      final catalog = DatabaseCatalogRepository(database);
+      final semantics = tester.ensureSemantics();
+
+      for (final size in const [Size(1024, 720), Size(1280, 820)]) {
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1;
+        for (final scale in const [1.0, 2.0]) {
+          await tester.pumpWidget(
+            _app(
+              CheckoutScaffold(
+                title: '상품 찾기',
+                primaryAction: const SizedBox(height: 56),
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: CatalogPicker(
+                    key: UniqueKey(),
+                    catalog: catalog,
+                    onSelected: (_) {},
+                  ),
+                ),
+              ),
+              scale: scale,
+              highContrast: true,
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          expect(tester.takeException(), isNull, reason: '$size at $scale');
+          expect(find.text('전체 상품'), findsOneWidget);
+          expect(find.bySemanticsLabel('상품 이름 검색'), findsOneWidget);
+          _expectMinimumTouchTarget(tester, find.byType(ActionChip));
+          _expectMinimumTouchTarget(tester, find.byType(ChoiceChip));
+          _expectMinimumTouchTarget(tester, find.byType(ListTile));
+
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          await tester.pump();
+          final firstFocus = tester.binding.focusManager.primaryFocus;
+          expect(firstFocus, isNotNull);
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          await tester.pump();
+          expect(tester.binding.focusManager.primaryFocus, isNot(firstFocus));
+        }
+      }
+      semantics.dispose();
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
     },
   );
 
@@ -208,6 +269,68 @@ Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
 }
 
 void _noop() {}
+
+void _expectMinimumTouchTarget(WidgetTester tester, Finder finder) {
+  expect(finder, findsWidgets);
+  for (final element in finder.evaluate()) {
+    expect(
+      tester
+          .getSize(
+            find.byElementPredicate(
+              (candidate) => identical(candidate, element),
+            ),
+          )
+          .shortestSide,
+      greaterThanOrEqualTo(48),
+      reason: '${element.widget.runtimeType} must provide a 48px touch target',
+    );
+  }
+}
+
+Future<void> _seedFullCatalog(BakeryDatabase database) async {
+  const revisionId = 'accessibility-catalog-v1';
+  await database
+      .into(database.catalogRevisions)
+      .insert(
+        CatalogRevisionsCompanion.insert(
+          revisionId: revisionId,
+          sha256: 'c' * 64,
+          createdAtUs: DateTime.utc(2026, 7, 30).microsecondsSinceEpoch,
+          isActive: true,
+        ),
+      );
+  const names = [
+    '소금빵',
+    '크루아상',
+    '우유식빵',
+    '앙버터',
+    '단팥빵',
+    '치즈빵',
+    '슈크림빵',
+    '고구마빵',
+    '카스텔라',
+    '마늘바게트',
+    '모카번',
+    '피자빵',
+  ];
+  for (var index = 0; index < names.length; index += 1) {
+    await database
+        .into(database.products)
+        .insert(
+          ProductsCompanion.insert(
+            productRevisionId: '$revisionId/product-$index',
+            catalogRevisionId: revisionId,
+            productId: 'product-$index',
+            displayName: names[index],
+            unitPriceKrw: 1000 + index * 100,
+            recognitionSkuId: Value(index < 11 ? index + 1 : null),
+            categoryId: index.isEven ? '식사빵' : '간식빵',
+            active: true,
+            sortOrder: index,
+          ),
+        );
+  }
+}
 
 final _sugarDonut = Product(
   productId: 'sugar-donut',
