@@ -94,8 +94,8 @@ to legacy implementations.
 
 ## Artifact, LFS, and public repository rules
 
-- Git contains source, configs, manifests, policies, split identities, tiny
-  fixtures, and reviewed compact summaries.
+- Git contains source, configs, manifests, small immutable calibrations and
+  policies, split identities, tiny fixtures, and reviewed compact summaries.
 - External storage contains datasets, checkpoints, raw predictions, full
   runs, prototype/support banks, runtimes, wheels, and installers.
 - Git LFS is allowed only under `release-assets/models/` and

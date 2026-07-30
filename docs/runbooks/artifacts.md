@@ -5,8 +5,8 @@
 - External object storage: datasets, checkpoints, training runs, raw
   predictions, prototype/support banks, Python/CUDA runtimes, wheels, and
   installers.
-- Git: code, configs, manifests, immutable policies, small synthetic fixtures,
-  compact reviewed summaries.
+- Git: code, configs, manifests, small immutable calibrations and policies,
+  small synthetic fixtures, compact reviewed summaries.
 - Git LFS: only reviewed redistribution-cleared files under
   `release-assets/models/` or `release-assets/prototype-banks/`.
 - GitHub Releases: final distributable assets under 2 GiB when licensing and

@@ -17,8 +17,7 @@
       "local_path": "models/rfdetr_large_bakery_v1/calibration_corrected_gt_299_fp0_20260729.json",
       "sha256": "96eea207e916f51b55ec8170488e19f495e08f049de1a9304d14707d95e7d12d",
       "bytes": 551,
-      "storage": "external",
-      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+      "storage": "git"
     },
     {
       "id": "repvit_m1_15plus5_v1_checkpoint",

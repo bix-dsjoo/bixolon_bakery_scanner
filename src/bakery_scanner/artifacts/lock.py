@@ -11,7 +11,7 @@ from typing import Literal
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-Storage = Literal["external", "git-lfs", "github-release"]
+Storage = Literal["external", "git", "git-lfs", "github-release"]
 
 
 class ArtifactIntegrityError(ValueError):
@@ -84,11 +84,13 @@ class ArtifactLock:
             if not isinstance(size, int) or isinstance(size, bool) or size < 0:
                 raise ValueError(f"{artifact_id}: bytes must be a non-negative integer")
             storage = raw.get("storage")
-            if storage not in {"external", "git-lfs", "github-release"}:
+            if storage not in {"external", "git", "git-lfs", "github-release"}:
                 raise ValueError(f"{artifact_id}: unsupported storage")
             uri_env = raw.get("uri_env")
             if uri_env is not None and (not isinstance(uri_env, str) or not uri_env):
                 raise ValueError(f"{artifact_id}: uri_env must be a non-empty string")
+            if storage == "git" and uri_env is not None:
+                raise ValueError(f"{artifact_id}: Git-owned artifacts cannot use uri_env")
             records.append(
                 ArtifactRecord(
                     artifact_id=artifact_id,

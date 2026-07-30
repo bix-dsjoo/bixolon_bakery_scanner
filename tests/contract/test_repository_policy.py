@@ -82,7 +82,25 @@ def test_artifact_lock_is_versioned_and_uses_lowercase_sha256():
         assert len(artifact["sha256"]) == 64
         assert artifact["sha256"] == artifact["sha256"].lower()
         int(artifact["sha256"], 16)
-        assert artifact["storage"] in {"external", "git-lfs", "github-release"}
+        assert artifact["storage"] in {
+            "external",
+            "git",
+            "git-lfs",
+            "github-release",
+        }
+
+
+def test_artifact_storage_class_matches_git_ownership():
+    payload = json.loads((ROOT / "artifacts.lock.json").read_text(encoding="utf-8"))
+    tracked = set(_tracked_files())
+
+    for artifact in payload["artifacts"]:
+        path = artifact["local_path"]
+        if artifact["storage"] == "git":
+            assert path in tracked
+            assert "uri_env" not in artifact
+        else:
+            assert path not in tracked
 
 
 def test_lfs_rules_are_scoped_to_redistribution_cleared_release_assets():

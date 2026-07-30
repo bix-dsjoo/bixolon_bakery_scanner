@@ -94,8 +94,8 @@ Locked set이 선택에 사용되면 그 set은 더 이상 acceptance evidence�
 
 ## Artifact and Git policy
 
-Git에는 code, config, manifest, split identity, immutable policy, 작은 fixture와
-reviewed summary만 저장합니다. Dataset, checkpoint, full run, raw prediction,
+Git에는 code, config, manifest, split identity, 작은 immutable calibration과
+policy, 작은 fixture와 reviewed summary만 저장합니다. Dataset, checkpoint, full run, raw prediction,
 prototype/support bank, runtime, wheel, installer는 외부 artifact store에 둡니다.
 
 Git LFS는 license와 재배포 권한을 검토한
