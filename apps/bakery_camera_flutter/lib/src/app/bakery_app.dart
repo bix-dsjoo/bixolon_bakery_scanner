@@ -425,9 +425,9 @@ AuditRuntimeSnapshot _lockedRuntimeSnapshot() => AuditRuntimeSnapshot(
       '08c60483bc63c04f533611e34bf70b120eedb7240f469bc16e9e20bf344b941d',
   dinov3SupportSha256:
       'c2afaa2c2cca5e27179799f7cdedb21bab2034d812bf3ad9bf502458be353730',
-  calibrationId: 'policy_v2_manifest_rebound_cpu_smoke',
+  calibrationId: 'fusion_policy_fusion_local_or_global_consensus_margin_v1',
   calibrationSha256:
-      '213b08c536d4a344ab115f1acf8e7fc7d6b7da87646c5ae5b39e0e2688f29221',
+      '06c692d5b35583bfd99498805da474b7e9dfa7c8c36eeed04307695f7e885dcc',
   preprocessSha256:
       '69857c8c27bfc654207969c372f114569a8ce81f1040b27f47ec2613287ae73b',
   fusionPolicyId: 'fusion_local_or_global_consensus_margin_v1',
