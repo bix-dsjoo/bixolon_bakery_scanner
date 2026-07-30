@@ -64,6 +64,209 @@ References:
 - https://toss.tech/article/21022
 - https://toss.im/tossfeed/article/usercentric
 - https://developers-apps-in-toss.toss.im/design/components.html
+- https://toss.im/tossfeed/article/graphicdesign-team-interview
+- https://toss.tech/article/44097
+- https://toss.tech/article/44291
+- https://toss.tech/article/insurance-claim-process
+- https://toss.im/tossface
+
+## Visual design system and generated assets
+
+Version 1.1.0 treats typography, components, and graphics as one product system.
+Graphics must make the current question easier to answer or mark a meaningful
+transition. They are not decorative filler, inference evidence, or substitutes
+for real product photography.
+
+### Flutter foundation
+
+The visual implementation uses:
+
+- Flutter Material 3 as the component and accessibility foundation;
+- a BIXOLON `ColorScheme` rather than an off-the-shelf palette;
+- a project-owned `ThemeExtension` for status, spacing, radius, camera, and
+  checkout-specific tokens;
+- small project-owned customer and admin component families;
+- Widgetbook or an equivalent isolated component gallery for difficult states;
+- Flutter widget, golden, and accessibility-guideline tests; and
+- SVG or code-native drawing for precise icons, arrows, boxes, and diagrams.
+
+Version 1.1.0 does not replace the existing Material application with
+`fluent_ui`, a Shadcn-style kit, or another complete UI framework. It also does
+not require FlexColorScheme unless the built-in Material 3 theming proves
+insufficient during implementation.
+
+Project-owned components include:
+
+```text
+CustomerScaffold
+PrimaryCheckoutButton
+CustomerMessage
+BreadCandidateCard
+BreadSelectionProgress
+OrderLineTile
+OrderTotal
+
+AdminScaffold
+AdminNavigation
+AdminMetric
+TransactionTable
+InferenceComparison
+DiagnosticStatus
+SettingsField
+```
+
+The shared scaffold and action components enforce one emphasized customer CTA,
+stable title and supporting-copy placement, keyboard focus, minimum target
+size, fixed action placement, and supported-window behavior.
+
+### Typography
+
+All application interface text uses locally bundled Pretendard. The BIXOLON
+logo and official brand artwork remain unchanged.
+
+The app bundles only the required static faces:
+
+| Asset | Weight | Use |
+| --- | ---: | --- |
+| `Pretendard-Regular.ttf` | 400 | Body and secondary text |
+| `Pretendard-Medium.ttf` | 500 | Product names and compact emphasis |
+| `Pretendard-SemiBold.ttf` | 600 | Buttons and table headings |
+| `Pretendard-Bold.ttf` | 700 | Customer titles, totals, and completion |
+
+The initial type scale is:
+
+| Role | Size | Weight |
+| --- | ---: | ---: |
+| Customer title | 28–32 px | 700 |
+| Customer total | 24–28 px | 700 |
+| Customer body and product | 16–18 px | 400–500 |
+| Customer primary action | 17–18 px | 600 |
+| Customer supporting copy | 14–15 px | 400 |
+| Admin table body | 14–16 px | 400–500 |
+| Admin table heading | 13–14 px | 600 |
+
+Exact sizes are resolved against the supported Windows dimensions and text
+scaling during visual QA. The implementation must not download fonts at
+runtime. It pins the approved Pretendard release, records each bundled file's
+size and SHA-256, and includes the SIL Open Font License notice with the
+installer or third-party notices.
+
+### Generated-asset gate
+
+Before producing or accepting a generated bitmap, the asset owner must answer
+yes to all of these questions:
+
+1. Does the graphic make the customer's next action or transition easier to
+   understand?
+2. Does it help the customer answer the screen's question in about three
+   seconds?
+3. Does it strengthen the page's one primary goal?
+4. Is it clearly distinct from a real product photo and inference evidence?
+5. Can it follow the shared visual system rather than becoming a one-off style?
+
+An asset that fails any gate is omitted. Essential information remains in
+Flutter text, real imagery, and deterministic overlays, so generated assets may
+fail to load without blocking checkout.
+
+### Generated-asset scope
+
+Version 1.1.0 has exactly two required generated illustrations:
+
+| Asset ID | Screen | Job |
+| --- | --- | --- |
+| `manual-cart-entry` | Repeated-retake fallback | Show that checkout can continue through direct product selection |
+| `payment-complete` | Completed payment | Mark a trustworthy end to the transaction with no further action required |
+
+An admin review-empty state may reuse the same `payment-complete` asset at a
+smaller presentation size or use a code-native check icon. It is not a third
+generated asset.
+
+The following screens deliberately use no generated bitmap:
+
+- ready: live camera and deterministic tray guide;
+- retake: real capture, canonical problem region, and SVG or code overlays;
+- customer review: real selected object and real product photography;
+- catalog: real sale-product photography;
+- order review: real order content;
+- dashboard and diagnostics: measured data and code-native status;
+- transaction detail: real capture and immutable inference evidence.
+
+### Graphic direction
+
+The generated illustration family is `BIXOLON bakery receipt`:
+
+- simple bread silhouettes built from readable base shapes;
+- top-down tray composition;
+- black and neutral-gray line work;
+- one BIXOLON Orange registration or completion accent;
+- restrained thermal-receipt precision without dense hatching;
+- an adult, ordered, and trustworthy tone rather than a childlike mascot;
+- one consistent view direction, visual scale, line density, and palette;
+- transparent background;
+- no embedded words, prices, labels, or logos; and
+- no confetti, coins, exaggerated rewards, or unrelated decoration.
+
+The signature visual is a receipt-like line that connects the tray to direct
+selection or resolves into one orange completion check. This is the one
+expressive device; surrounding UI remains quiet.
+
+### Asset-specific briefs
+
+`manual-cart-entry` shows a simplified top-down tray and a small product-list
+shape connected by the orange receipt line. It communicates an alternate path,
+not an error. The Flutter screen asks `제품을 직접 담을까요?`, emphasizes
+`직접 담기`, and retains `다시 확인하기` as the secondary action.
+
+`payment-complete` shows a tray with bread and a short receipt whose line ends
+as the orange check. It appears with the Flutter text `결제가 끝났어요` and
+`이용해 주셔서 감사합니다`. It includes no fake payment-network, currency,
+reward, or celebration imagery.
+
+### Prohibited generated content
+
+Generated assets must not be used as:
+
+- sale-product or Top-3 candidate photography;
+- model training, calibration, prototype-bank, support-bank, or evaluation
+  data;
+- source camera frames or transaction evidence;
+- detection, count, location, or box explanations;
+- BIXOLON logo generation or modification;
+- customer-specific imagery;
+- baked UI copy, product name, price, or score; or
+- administrator evidence or model-health proof.
+
+If a sale product lacks a real photo, the catalog uses a neutral code-native
+`사진 준비 중` placeholder rather than a generated product image.
+
+### Production and provenance
+
+Asset production proceeds as:
+
+1. generate three visual-direction variants using `payment-complete`;
+2. place each variant in the real supported completion layout;
+3. select one direction based on comprehension, visual hierarchy, and brand
+   fit;
+4. generate `manual-cart-entry` from the approved direction;
+5. remove the flat generation background and validate alpha edges;
+6. validate both assets at 1280×820, 1024×720, high Windows display scaling,
+   and missing-asset fallback;
+7. retain only approved final assets in the application; and
+8. record prompt and file provenance.
+
+Project-bound final assets live under:
+
+```text
+apps/bakery_camera_flutter/assets/illustrations/v1_1_0/
+├── manual-cart-entry.png
+├── payment-complete.png
+└── manifest.json
+```
+
+The generated-asset manifest records asset ID, path, screen, purpose, prompt,
+generation date, generator path where exposed, byte size, SHA-256, alpha
+validation, review state, and the explicit `not_product_or_inference_evidence`
+classification.
 
 ## System boundaries
 
@@ -247,7 +450,9 @@ The full-catalog discovery order is:
 
 Manual-cart mode uses the same catalog but lets the customer add products and
 quantities without inference-object links. It records
-`customer_manual_cart`.
+`customer_manual_cart`. Its entry screen may show the approved
+`manual-cart-entry` illustration, but the question and actions remain fully
+usable when that asset is absent.
 
 ### 5. Order review
 
@@ -285,6 +490,8 @@ The completion sequence is:
 6. create a new session and return to the ready screen.
 
 The app must not display payment completion after a persistence failure.
+The completion screen uses the approved `payment-complete` illustration as
+secondary confirmation only; durable state and text remain authoritative.
 
 ## Admin information architecture
 
@@ -671,6 +878,19 @@ remain separately labeled sources.
 
 - each customer screen has one emphasized primary action;
 - all customer questions are short, concrete, and action-oriented;
+- Material 3, the BIXOLON theme extension, and project-owned components render
+  each required customer and admin state in isolation;
+- Pretendard 400, 500, 600, and 700 render without runtime network access and
+  retain legibility at supported Windows text scaling;
+- bundled font version, license notice, size, and SHA-256 are present;
+- exactly `manual-cart-entry` and `payment-complete` are required generated
+  illustrations;
+- the generated-asset manifest contains every required provenance field;
+- generated assets contain no text, logo, price, score, or product claim;
+- real product, candidate, camera, and administrator-evidence surfaces contain
+  no generated substitute;
+- missing generated assets do not remove instructions or actions;
+- alpha edges and one-illustration-per-screen limits pass visual review;
 - customer and admin state cannot leak into one another;
 - keyboard and touch input are supported;
 - layouts do not overflow at 1280×820 or 1024×720; and
@@ -693,5 +913,10 @@ remain separately labeled sources.
 - automatic training, calibration, or policy updates from live scans;
 - live threshold editing;
 - cloud backup or synchronization;
+- AI-generated sale-product or candidate photography;
+- generated images in model training, calibration, prototype or support banks,
+  or evaluation evidence;
+- more than the two required customer illustrations without a separately
+  approved design change;
 - formal accuracy claims from customer behavior; and
 - deletion or migration of legacy pipeline assets.
