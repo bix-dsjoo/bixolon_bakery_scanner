@@ -10699,6 +10699,668 @@ class RetentionEventsCompanion extends UpdateCompanion<RetentionEventRow> {
   }
 }
 
+class $AdminReviewAnnotationsTable extends AdminReviewAnnotations
+    with TableInfo<$AdminReviewAnnotationsTable, AdminReviewAnnotationRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AdminReviewAnnotationsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _annotationIdMeta = const VerificationMeta(
+    'annotationId',
+  );
+  @override
+  late final GeneratedColumn<String> annotationId = GeneratedColumn<String>(
+    'annotation_id',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sessionIdMeta = const VerificationMeta(
+    'sessionId',
+  );
+  @override
+  late final GeneratedColumn<String> sessionId = GeneratedColumn<String>(
+    'session_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES checkout_sessions (session_id)',
+    ),
+  );
+  static const VerificationMeta _attemptIdMeta = const VerificationMeta(
+    'attemptId',
+  );
+  @override
+  late final GeneratedColumn<String> attemptId = GeneratedColumn<String>(
+    'attempt_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES scan_attempts (attempt_id)',
+    ),
+  );
+  static const VerificationMeta _objectIdMeta = const VerificationMeta(
+    'objectId',
+  );
+  @override
+  late final GeneratedColumn<String> objectId = GeneratedColumn<String>(
+    'object_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES inference_objects (inference_object_id)',
+    ),
+  );
+  static const VerificationMeta _reviewStatusMeta = const VerificationMeta(
+    'reviewStatus',
+  );
+  @override
+  late final GeneratedColumn<String> reviewStatus = GeneratedColumn<String>(
+    'review_status',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _correctProductIdMeta = const VerificationMeta(
+    'correctProductId',
+  );
+  @override
+  late final GeneratedColumn<String> correctProductId = GeneratedColumn<String>(
+    'correct_product_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _reasonCodeMeta = const VerificationMeta(
+    'reasonCode',
+  );
+  @override
+  late final GeneratedColumn<String> reasonCode = GeneratedColumn<String>(
+    'reason_code',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _noteMeta = const VerificationMeta('note');
+  @override
+  late final GeneratedColumn<String> note = GeneratedColumn<String>(
+    'note',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _authorLabelMeta = const VerificationMeta(
+    'authorLabel',
+  );
+  @override
+  late final GeneratedColumn<String> authorLabel = GeneratedColumn<String>(
+    'author_label',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtUsMeta = const VerificationMeta(
+    'createdAtUs',
+  );
+  @override
+  late final GeneratedColumn<int> createdAtUs = GeneratedColumn<int>(
+    'created_at_us',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    annotationId,
+    sessionId,
+    attemptId,
+    objectId,
+    reviewStatus,
+    correctProductId,
+    reasonCode,
+    note,
+    authorLabel,
+    createdAtUs,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'admin_review_annotations';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AdminReviewAnnotationRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('annotation_id')) {
+      context.handle(
+        _annotationIdMeta,
+        annotationId.isAcceptableOrUnknown(
+          data['annotation_id']!,
+          _annotationIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_annotationIdMeta);
+    }
+    if (data.containsKey('session_id')) {
+      context.handle(
+        _sessionIdMeta,
+        sessionId.isAcceptableOrUnknown(data['session_id']!, _sessionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_sessionIdMeta);
+    }
+    if (data.containsKey('attempt_id')) {
+      context.handle(
+        _attemptIdMeta,
+        attemptId.isAcceptableOrUnknown(data['attempt_id']!, _attemptIdMeta),
+      );
+    }
+    if (data.containsKey('object_id')) {
+      context.handle(
+        _objectIdMeta,
+        objectId.isAcceptableOrUnknown(data['object_id']!, _objectIdMeta),
+      );
+    }
+    if (data.containsKey('review_status')) {
+      context.handle(
+        _reviewStatusMeta,
+        reviewStatus.isAcceptableOrUnknown(
+          data['review_status']!,
+          _reviewStatusMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_reviewStatusMeta);
+    }
+    if (data.containsKey('correct_product_id')) {
+      context.handle(
+        _correctProductIdMeta,
+        correctProductId.isAcceptableOrUnknown(
+          data['correct_product_id']!,
+          _correctProductIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('reason_code')) {
+      context.handle(
+        _reasonCodeMeta,
+        reasonCode.isAcceptableOrUnknown(data['reason_code']!, _reasonCodeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_reasonCodeMeta);
+    }
+    if (data.containsKey('note')) {
+      context.handle(
+        _noteMeta,
+        note.isAcceptableOrUnknown(data['note']!, _noteMeta),
+      );
+    }
+    if (data.containsKey('author_label')) {
+      context.handle(
+        _authorLabelMeta,
+        authorLabel.isAcceptableOrUnknown(
+          data['author_label']!,
+          _authorLabelMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_authorLabelMeta);
+    }
+    if (data.containsKey('created_at_us')) {
+      context.handle(
+        _createdAtUsMeta,
+        createdAtUs.isAcceptableOrUnknown(
+          data['created_at_us']!,
+          _createdAtUsMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtUsMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {annotationId};
+  @override
+  AdminReviewAnnotationRow map(
+    Map<String, dynamic> data, {
+    String? tablePrefix,
+  }) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AdminReviewAnnotationRow(
+      annotationId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}annotation_id'],
+      )!,
+      sessionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}session_id'],
+      )!,
+      attemptId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}attempt_id'],
+      ),
+      objectId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}object_id'],
+      ),
+      reviewStatus: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}review_status'],
+      )!,
+      correctProductId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}correct_product_id'],
+      ),
+      reasonCode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}reason_code'],
+      )!,
+      note: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}note'],
+      ),
+      authorLabel: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}author_label'],
+      )!,
+      createdAtUs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at_us'],
+      )!,
+    );
+  }
+
+  @override
+  $AdminReviewAnnotationsTable createAlias(String alias) {
+    return $AdminReviewAnnotationsTable(attachedDatabase, alias);
+  }
+}
+
+class AdminReviewAnnotationRow extends DataClass
+    implements Insertable<AdminReviewAnnotationRow> {
+  final String annotationId;
+  final String sessionId;
+  final String? attemptId;
+  final String? objectId;
+  final String reviewStatus;
+  final String? correctProductId;
+  final String reasonCode;
+  final String? note;
+  final String authorLabel;
+  final int createdAtUs;
+  const AdminReviewAnnotationRow({
+    required this.annotationId,
+    required this.sessionId,
+    this.attemptId,
+    this.objectId,
+    required this.reviewStatus,
+    this.correctProductId,
+    required this.reasonCode,
+    this.note,
+    required this.authorLabel,
+    required this.createdAtUs,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['annotation_id'] = Variable<String>(annotationId);
+    map['session_id'] = Variable<String>(sessionId);
+    if (!nullToAbsent || attemptId != null) {
+      map['attempt_id'] = Variable<String>(attemptId);
+    }
+    if (!nullToAbsent || objectId != null) {
+      map['object_id'] = Variable<String>(objectId);
+    }
+    map['review_status'] = Variable<String>(reviewStatus);
+    if (!nullToAbsent || correctProductId != null) {
+      map['correct_product_id'] = Variable<String>(correctProductId);
+    }
+    map['reason_code'] = Variable<String>(reasonCode);
+    if (!nullToAbsent || note != null) {
+      map['note'] = Variable<String>(note);
+    }
+    map['author_label'] = Variable<String>(authorLabel);
+    map['created_at_us'] = Variable<int>(createdAtUs);
+    return map;
+  }
+
+  AdminReviewAnnotationsCompanion toCompanion(bool nullToAbsent) {
+    return AdminReviewAnnotationsCompanion(
+      annotationId: Value(annotationId),
+      sessionId: Value(sessionId),
+      attemptId: attemptId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(attemptId),
+      objectId: objectId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(objectId),
+      reviewStatus: Value(reviewStatus),
+      correctProductId: correctProductId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(correctProductId),
+      reasonCode: Value(reasonCode),
+      note: note == null && nullToAbsent ? const Value.absent() : Value(note),
+      authorLabel: Value(authorLabel),
+      createdAtUs: Value(createdAtUs),
+    );
+  }
+
+  factory AdminReviewAnnotationRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AdminReviewAnnotationRow(
+      annotationId: serializer.fromJson<String>(json['annotationId']),
+      sessionId: serializer.fromJson<String>(json['sessionId']),
+      attemptId: serializer.fromJson<String?>(json['attemptId']),
+      objectId: serializer.fromJson<String?>(json['objectId']),
+      reviewStatus: serializer.fromJson<String>(json['reviewStatus']),
+      correctProductId: serializer.fromJson<String?>(json['correctProductId']),
+      reasonCode: serializer.fromJson<String>(json['reasonCode']),
+      note: serializer.fromJson<String?>(json['note']),
+      authorLabel: serializer.fromJson<String>(json['authorLabel']),
+      createdAtUs: serializer.fromJson<int>(json['createdAtUs']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'annotationId': serializer.toJson<String>(annotationId),
+      'sessionId': serializer.toJson<String>(sessionId),
+      'attemptId': serializer.toJson<String?>(attemptId),
+      'objectId': serializer.toJson<String?>(objectId),
+      'reviewStatus': serializer.toJson<String>(reviewStatus),
+      'correctProductId': serializer.toJson<String?>(correctProductId),
+      'reasonCode': serializer.toJson<String>(reasonCode),
+      'note': serializer.toJson<String?>(note),
+      'authorLabel': serializer.toJson<String>(authorLabel),
+      'createdAtUs': serializer.toJson<int>(createdAtUs),
+    };
+  }
+
+  AdminReviewAnnotationRow copyWith({
+    String? annotationId,
+    String? sessionId,
+    Value<String?> attemptId = const Value.absent(),
+    Value<String?> objectId = const Value.absent(),
+    String? reviewStatus,
+    Value<String?> correctProductId = const Value.absent(),
+    String? reasonCode,
+    Value<String?> note = const Value.absent(),
+    String? authorLabel,
+    int? createdAtUs,
+  }) => AdminReviewAnnotationRow(
+    annotationId: annotationId ?? this.annotationId,
+    sessionId: sessionId ?? this.sessionId,
+    attemptId: attemptId.present ? attemptId.value : this.attemptId,
+    objectId: objectId.present ? objectId.value : this.objectId,
+    reviewStatus: reviewStatus ?? this.reviewStatus,
+    correctProductId: correctProductId.present
+        ? correctProductId.value
+        : this.correctProductId,
+    reasonCode: reasonCode ?? this.reasonCode,
+    note: note.present ? note.value : this.note,
+    authorLabel: authorLabel ?? this.authorLabel,
+    createdAtUs: createdAtUs ?? this.createdAtUs,
+  );
+  AdminReviewAnnotationRow copyWithCompanion(
+    AdminReviewAnnotationsCompanion data,
+  ) {
+    return AdminReviewAnnotationRow(
+      annotationId: data.annotationId.present
+          ? data.annotationId.value
+          : this.annotationId,
+      sessionId: data.sessionId.present ? data.sessionId.value : this.sessionId,
+      attemptId: data.attemptId.present ? data.attemptId.value : this.attemptId,
+      objectId: data.objectId.present ? data.objectId.value : this.objectId,
+      reviewStatus: data.reviewStatus.present
+          ? data.reviewStatus.value
+          : this.reviewStatus,
+      correctProductId: data.correctProductId.present
+          ? data.correctProductId.value
+          : this.correctProductId,
+      reasonCode: data.reasonCode.present
+          ? data.reasonCode.value
+          : this.reasonCode,
+      note: data.note.present ? data.note.value : this.note,
+      authorLabel: data.authorLabel.present
+          ? data.authorLabel.value
+          : this.authorLabel,
+      createdAtUs: data.createdAtUs.present
+          ? data.createdAtUs.value
+          : this.createdAtUs,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AdminReviewAnnotationRow(')
+          ..write('annotationId: $annotationId, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('attemptId: $attemptId, ')
+          ..write('objectId: $objectId, ')
+          ..write('reviewStatus: $reviewStatus, ')
+          ..write('correctProductId: $correctProductId, ')
+          ..write('reasonCode: $reasonCode, ')
+          ..write('note: $note, ')
+          ..write('authorLabel: $authorLabel, ')
+          ..write('createdAtUs: $createdAtUs')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    annotationId,
+    sessionId,
+    attemptId,
+    objectId,
+    reviewStatus,
+    correctProductId,
+    reasonCode,
+    note,
+    authorLabel,
+    createdAtUs,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AdminReviewAnnotationRow &&
+          other.annotationId == this.annotationId &&
+          other.sessionId == this.sessionId &&
+          other.attemptId == this.attemptId &&
+          other.objectId == this.objectId &&
+          other.reviewStatus == this.reviewStatus &&
+          other.correctProductId == this.correctProductId &&
+          other.reasonCode == this.reasonCode &&
+          other.note == this.note &&
+          other.authorLabel == this.authorLabel &&
+          other.createdAtUs == this.createdAtUs);
+}
+
+class AdminReviewAnnotationsCompanion
+    extends UpdateCompanion<AdminReviewAnnotationRow> {
+  final Value<String> annotationId;
+  final Value<String> sessionId;
+  final Value<String?> attemptId;
+  final Value<String?> objectId;
+  final Value<String> reviewStatus;
+  final Value<String?> correctProductId;
+  final Value<String> reasonCode;
+  final Value<String?> note;
+  final Value<String> authorLabel;
+  final Value<int> createdAtUs;
+  final Value<int> rowid;
+  const AdminReviewAnnotationsCompanion({
+    this.annotationId = const Value.absent(),
+    this.sessionId = const Value.absent(),
+    this.attemptId = const Value.absent(),
+    this.objectId = const Value.absent(),
+    this.reviewStatus = const Value.absent(),
+    this.correctProductId = const Value.absent(),
+    this.reasonCode = const Value.absent(),
+    this.note = const Value.absent(),
+    this.authorLabel = const Value.absent(),
+    this.createdAtUs = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  AdminReviewAnnotationsCompanion.insert({
+    required String annotationId,
+    required String sessionId,
+    this.attemptId = const Value.absent(),
+    this.objectId = const Value.absent(),
+    required String reviewStatus,
+    this.correctProductId = const Value.absent(),
+    required String reasonCode,
+    this.note = const Value.absent(),
+    required String authorLabel,
+    required int createdAtUs,
+    this.rowid = const Value.absent(),
+  }) : annotationId = Value(annotationId),
+       sessionId = Value(sessionId),
+       reviewStatus = Value(reviewStatus),
+       reasonCode = Value(reasonCode),
+       authorLabel = Value(authorLabel),
+       createdAtUs = Value(createdAtUs);
+  static Insertable<AdminReviewAnnotationRow> custom({
+    Expression<String>? annotationId,
+    Expression<String>? sessionId,
+    Expression<String>? attemptId,
+    Expression<String>? objectId,
+    Expression<String>? reviewStatus,
+    Expression<String>? correctProductId,
+    Expression<String>? reasonCode,
+    Expression<String>? note,
+    Expression<String>? authorLabel,
+    Expression<int>? createdAtUs,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (annotationId != null) 'annotation_id': annotationId,
+      if (sessionId != null) 'session_id': sessionId,
+      if (attemptId != null) 'attempt_id': attemptId,
+      if (objectId != null) 'object_id': objectId,
+      if (reviewStatus != null) 'review_status': reviewStatus,
+      if (correctProductId != null) 'correct_product_id': correctProductId,
+      if (reasonCode != null) 'reason_code': reasonCode,
+      if (note != null) 'note': note,
+      if (authorLabel != null) 'author_label': authorLabel,
+      if (createdAtUs != null) 'created_at_us': createdAtUs,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  AdminReviewAnnotationsCompanion copyWith({
+    Value<String>? annotationId,
+    Value<String>? sessionId,
+    Value<String?>? attemptId,
+    Value<String?>? objectId,
+    Value<String>? reviewStatus,
+    Value<String?>? correctProductId,
+    Value<String>? reasonCode,
+    Value<String?>? note,
+    Value<String>? authorLabel,
+    Value<int>? createdAtUs,
+    Value<int>? rowid,
+  }) {
+    return AdminReviewAnnotationsCompanion(
+      annotationId: annotationId ?? this.annotationId,
+      sessionId: sessionId ?? this.sessionId,
+      attemptId: attemptId ?? this.attemptId,
+      objectId: objectId ?? this.objectId,
+      reviewStatus: reviewStatus ?? this.reviewStatus,
+      correctProductId: correctProductId ?? this.correctProductId,
+      reasonCode: reasonCode ?? this.reasonCode,
+      note: note ?? this.note,
+      authorLabel: authorLabel ?? this.authorLabel,
+      createdAtUs: createdAtUs ?? this.createdAtUs,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (annotationId.present) {
+      map['annotation_id'] = Variable<String>(annotationId.value);
+    }
+    if (sessionId.present) {
+      map['session_id'] = Variable<String>(sessionId.value);
+    }
+    if (attemptId.present) {
+      map['attempt_id'] = Variable<String>(attemptId.value);
+    }
+    if (objectId.present) {
+      map['object_id'] = Variable<String>(objectId.value);
+    }
+    if (reviewStatus.present) {
+      map['review_status'] = Variable<String>(reviewStatus.value);
+    }
+    if (correctProductId.present) {
+      map['correct_product_id'] = Variable<String>(correctProductId.value);
+    }
+    if (reasonCode.present) {
+      map['reason_code'] = Variable<String>(reasonCode.value);
+    }
+    if (note.present) {
+      map['note'] = Variable<String>(note.value);
+    }
+    if (authorLabel.present) {
+      map['author_label'] = Variable<String>(authorLabel.value);
+    }
+    if (createdAtUs.present) {
+      map['created_at_us'] = Variable<int>(createdAtUs.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AdminReviewAnnotationsCompanion(')
+          ..write('annotationId: $annotationId, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('attemptId: $attemptId, ')
+          ..write('objectId: $objectId, ')
+          ..write('reviewStatus: $reviewStatus, ')
+          ..write('correctProductId: $correctProductId, ')
+          ..write('reasonCode: $reasonCode, ')
+          ..write('note: $note, ')
+          ..write('authorLabel: $authorLabel, ')
+          ..write('createdAtUs: $createdAtUs, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$BakeryDatabase extends GeneratedDatabase {
   _$BakeryDatabase(QueryExecutor e) : super(e);
   $BakeryDatabaseManager get managers => $BakeryDatabaseManager(this);
@@ -10733,6 +11395,8 @@ abstract class _$BakeryDatabase extends GeneratedDatabase {
   late final $RetentionEventsTable retentionEvents = $RetentionEventsTable(
     this,
   );
+  late final $AdminReviewAnnotationsTable adminReviewAnnotations =
+      $AdminReviewAnnotationsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -10753,6 +11417,7 @@ abstract class _$BakeryDatabase extends GeneratedDatabase {
     auditEvents,
     appSettings,
     retentionEvents,
+    adminReviewAnnotations,
   ];
 }
 
@@ -12851,6 +13516,38 @@ final class $$CheckoutSessionsTableReferences
       manager.$state.copyWith(prefetchedData: cache),
     );
   }
+
+  static MultiTypedResultKey<
+    $AdminReviewAnnotationsTable,
+    List<AdminReviewAnnotationRow>
+  >
+  _adminReviewAnnotationsRefsTable(
+    _$BakeryDatabase db,
+  ) => MultiTypedResultKey.fromTable(
+    db.adminReviewAnnotations,
+    aliasName:
+        'checkout_sessions__session_id__admin_review_annotations__session_id',
+  );
+
+  $$AdminReviewAnnotationsTableProcessedTableManager
+  get adminReviewAnnotationsRefs {
+    final manager =
+        $$AdminReviewAnnotationsTableTableManager(
+          $_db,
+          $_db.adminReviewAnnotations,
+        ).filter(
+          (f) => f.sessionId.sessionId.sqlEquals(
+            $_itemColumn<String>('session_id')!,
+          ),
+        );
+
+    final cache = $_typedResult.readTableOrNull(
+      _adminReviewAnnotationsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
 }
 
 class $$CheckoutSessionsTableFilterComposer
@@ -13155,6 +13852,32 @@ class $$CheckoutSessionsTableFilterComposer
                 $removeJoinBuilderFromRootComposer,
           ),
     );
+    return f(composer);
+  }
+
+  Expression<bool> adminReviewAnnotationsRefs(
+    Expression<bool> Function($$AdminReviewAnnotationsTableFilterComposer f) f,
+  ) {
+    final $$AdminReviewAnnotationsTableFilterComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.sessionId,
+          referencedTable: $db.adminReviewAnnotations,
+          getReferencedColumn: (t) => t.sessionId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AdminReviewAnnotationsTableFilterComposer(
+                $db: $db,
+                $table: $db.adminReviewAnnotations,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
     return f(composer);
   }
 }
@@ -13618,6 +14341,32 @@ class $$CheckoutSessionsTableAnnotationComposer
     );
     return f(composer);
   }
+
+  Expression<T> adminReviewAnnotationsRefs<T extends Object>(
+    Expression<T> Function($$AdminReviewAnnotationsTableAnnotationComposer a) f,
+  ) {
+    final $$AdminReviewAnnotationsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.sessionId,
+          referencedTable: $db.adminReviewAnnotations,
+          getReferencedColumn: (t) => t.sessionId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AdminReviewAnnotationsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.adminReviewAnnotations,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
 }
 
 class $$CheckoutSessionsTableTableManager
@@ -13642,6 +14391,7 @@ class $$CheckoutSessionsTableTableManager
             bool finalOrdersRefs,
             bool simulatedPaymentsRefs,
             bool auditEventsRefs,
+            bool adminReviewAnnotationsRefs,
           })
         > {
   $$CheckoutSessionsTableTableManager(
@@ -13775,6 +14525,7 @@ class $$CheckoutSessionsTableTableManager
                 finalOrdersRefs = false,
                 simulatedPaymentsRefs = false,
                 auditEventsRefs = false,
+                adminReviewAnnotationsRefs = false,
               }) {
                 return PrefetchHooks(
                   db: db,
@@ -13785,6 +14536,7 @@ class $$CheckoutSessionsTableTableManager
                     if (finalOrdersRefs) db.finalOrders,
                     if (simulatedPaymentsRefs) db.simulatedPayments,
                     if (auditEventsRefs) db.auditEvents,
+                    if (adminReviewAnnotationsRefs) db.adminReviewAnnotations,
                   ],
                   addJoins:
                       <
@@ -13963,6 +14715,27 @@ class $$CheckoutSessionsTableTableManager
                               ),
                           typedResults: items,
                         ),
+                      if (adminReviewAnnotationsRefs)
+                        await $_getPrefetchedData<
+                          CheckoutSessionRow,
+                          $CheckoutSessionsTable,
+                          AdminReviewAnnotationRow
+                        >(
+                          currentTable: table,
+                          referencedTable: $$CheckoutSessionsTableReferences
+                              ._adminReviewAnnotationsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$CheckoutSessionsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).adminReviewAnnotationsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.sessionId == item.sessionId,
+                              ),
+                          typedResults: items,
+                        ),
                     ];
                   },
                 );
@@ -13992,6 +14765,7 @@ typedef $$CheckoutSessionsTableProcessedTableManager =
         bool finalOrdersRefs,
         bool simulatedPaymentsRefs,
         bool auditEventsRefs,
+        bool adminReviewAnnotationsRefs,
       })
     >;
 typedef $$ScanAttemptsTableCreateCompanionBuilder =
@@ -14124,6 +14898,37 @@ final class $$ScanAttemptsTableReferences
 
     final cache = $_typedResult.readTableOrNull(
       _retentionEventsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
+  static MultiTypedResultKey<
+    $AdminReviewAnnotationsTable,
+    List<AdminReviewAnnotationRow>
+  >
+  _adminReviewAnnotationsRefsTable(_$BakeryDatabase db) =>
+      MultiTypedResultKey.fromTable(
+        db.adminReviewAnnotations,
+        aliasName:
+            'scan_attempts__attempt_id__admin_review_annotations__attempt_id',
+      );
+
+  $$AdminReviewAnnotationsTableProcessedTableManager
+  get adminReviewAnnotationsRefs {
+    final manager =
+        $$AdminReviewAnnotationsTableTableManager(
+          $_db,
+          $_db.adminReviewAnnotations,
+        ).filter(
+          (f) => f.attemptId.attemptId.sqlEquals(
+            $_itemColumn<String>('attempt_id')!,
+          ),
+        );
+
+    final cache = $_typedResult.readTableOrNull(
+      _adminReviewAnnotationsRefsTable($_db),
     );
     return ProcessedTableManager(
       manager.$state.copyWith(prefetchedData: cache),
@@ -14350,6 +15155,32 @@ class $$ScanAttemptsTableFilterComposer
                 $removeJoinBuilderFromRootComposer,
           ),
     );
+    return f(composer);
+  }
+
+  Expression<bool> adminReviewAnnotationsRefs(
+    Expression<bool> Function($$AdminReviewAnnotationsTableFilterComposer f) f,
+  ) {
+    final $$AdminReviewAnnotationsTableFilterComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.attemptId,
+          referencedTable: $db.adminReviewAnnotations,
+          getReferencedColumn: (t) => t.attemptId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AdminReviewAnnotationsTableFilterComposer(
+                $db: $db,
+                $table: $db.adminReviewAnnotations,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
     return f(composer);
   }
 }
@@ -14738,6 +15569,32 @@ class $$ScanAttemptsTableAnnotationComposer
     );
     return f(composer);
   }
+
+  Expression<T> adminReviewAnnotationsRefs<T extends Object>(
+    Expression<T> Function($$AdminReviewAnnotationsTableAnnotationComposer a) f,
+  ) {
+    final $$AdminReviewAnnotationsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.attemptId,
+          referencedTable: $db.adminReviewAnnotations,
+          getReferencedColumn: (t) => t.attemptId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AdminReviewAnnotationsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.adminReviewAnnotations,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
 }
 
 class $$ScanAttemptsTableTableManager
@@ -14757,6 +15614,7 @@ class $$ScanAttemptsTableTableManager
             bool sessionId,
             bool inferenceObjectsRefs,
             bool retentionEventsRefs,
+            bool adminReviewAnnotationsRefs,
           })
         > {
   $$ScanAttemptsTableTableManager(_$BakeryDatabase db, $ScanAttemptsTable table)
@@ -14911,12 +15769,14 @@ class $$ScanAttemptsTableTableManager
                 sessionId = false,
                 inferenceObjectsRefs = false,
                 retentionEventsRefs = false,
+                adminReviewAnnotationsRefs = false,
               }) {
                 return PrefetchHooks(
                   db: db,
                   explicitlyWatchedTables: [
                     if (inferenceObjectsRefs) db.inferenceObjects,
                     if (retentionEventsRefs) db.retentionEvents,
+                    if (adminReviewAnnotationsRefs) db.adminReviewAnnotations,
                   ],
                   addJoins:
                       <
@@ -14996,6 +15856,27 @@ class $$ScanAttemptsTableTableManager
                               ),
                           typedResults: items,
                         ),
+                      if (adminReviewAnnotationsRefs)
+                        await $_getPrefetchedData<
+                          ScanAttemptRow,
+                          $ScanAttemptsTable,
+                          AdminReviewAnnotationRow
+                        >(
+                          currentTable: table,
+                          referencedTable: $$ScanAttemptsTableReferences
+                              ._adminReviewAnnotationsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$ScanAttemptsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).adminReviewAnnotationsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.attemptId == item.attemptId,
+                              ),
+                          typedResults: items,
+                        ),
                     ];
                   },
                 );
@@ -15020,6 +15901,7 @@ typedef $$ScanAttemptsTableProcessedTableManager =
         bool sessionId,
         bool inferenceObjectsRefs,
         bool retentionEventsRefs,
+        bool adminReviewAnnotationsRefs,
       })
     >;
 typedef $$InferenceObjectsTableCreateCompanionBuilder =
@@ -15139,6 +16021,38 @@ final class $$InferenceObjectsTableReferences
 
     final cache = $_typedResult.readTableOrNull(
       _objectResolutionsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
+  static MultiTypedResultKey<
+    $AdminReviewAnnotationsTable,
+    List<AdminReviewAnnotationRow>
+  >
+  _adminReviewAnnotationsRefsTable(
+    _$BakeryDatabase db,
+  ) => MultiTypedResultKey.fromTable(
+    db.adminReviewAnnotations,
+    aliasName:
+        'inference_objects__inference_object_id__admin_review_annotations__object_id',
+  );
+
+  $$AdminReviewAnnotationsTableProcessedTableManager
+  get adminReviewAnnotationsRefs {
+    final manager =
+        $$AdminReviewAnnotationsTableTableManager(
+          $_db,
+          $_db.adminReviewAnnotations,
+        ).filter(
+          (f) => f.objectId.inferenceObjectId.sqlEquals(
+            $_itemColumn<String>('inference_object_id')!,
+          ),
+        );
+
+    final cache = $_typedResult.readTableOrNull(
+      _adminReviewAnnotationsRefsTable($_db),
     );
     return ProcessedTableManager(
       manager.$state.copyWith(prefetchedData: cache),
@@ -15280,6 +16194,32 @@ class $$InferenceObjectsTableFilterComposer
                 $removeJoinBuilderFromRootComposer,
           ),
     );
+    return f(composer);
+  }
+
+  Expression<bool> adminReviewAnnotationsRefs(
+    Expression<bool> Function($$AdminReviewAnnotationsTableFilterComposer f) f,
+  ) {
+    final $$AdminReviewAnnotationsTableFilterComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.inferenceObjectId,
+          referencedTable: $db.adminReviewAnnotations,
+          getReferencedColumn: (t) => t.objectId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AdminReviewAnnotationsTableFilterComposer(
+                $db: $db,
+                $table: $db.adminReviewAnnotations,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
     return f(composer);
   }
 }
@@ -15502,6 +16442,32 @@ class $$InferenceObjectsTableAnnotationComposer
         );
     return f(composer);
   }
+
+  Expression<T> adminReviewAnnotationsRefs<T extends Object>(
+    Expression<T> Function($$AdminReviewAnnotationsTableAnnotationComposer a) f,
+  ) {
+    final $$AdminReviewAnnotationsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.inferenceObjectId,
+          referencedTable: $db.adminReviewAnnotations,
+          getReferencedColumn: (t) => t.objectId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AdminReviewAnnotationsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.adminReviewAnnotations,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
 }
 
 class $$InferenceObjectsTableTableManager
@@ -15521,6 +16487,7 @@ class $$InferenceObjectsTableTableManager
             bool attemptId,
             bool inferenceCandidatesRefs,
             bool objectResolutionsRefs,
+            bool adminReviewAnnotationsRefs,
           })
         > {
   $$InferenceObjectsTableTableManager(
@@ -15609,12 +16576,14 @@ class $$InferenceObjectsTableTableManager
                 attemptId = false,
                 inferenceCandidatesRefs = false,
                 objectResolutionsRefs = false,
+                adminReviewAnnotationsRefs = false,
               }) {
                 return PrefetchHooks(
                   db: db,
                   explicitlyWatchedTables: [
                     if (inferenceCandidatesRefs) db.inferenceCandidates,
                     if (objectResolutionsRefs) db.objectResolutions,
+                    if (adminReviewAnnotationsRefs) db.adminReviewAnnotations,
                   ],
                   addJoins:
                       <
@@ -15698,6 +16667,27 @@ class $$InferenceObjectsTableTableManager
                               ),
                           typedResults: items,
                         ),
+                      if (adminReviewAnnotationsRefs)
+                        await $_getPrefetchedData<
+                          InferenceObjectRow,
+                          $InferenceObjectsTable,
+                          AdminReviewAnnotationRow
+                        >(
+                          currentTable: table,
+                          referencedTable: $$InferenceObjectsTableReferences
+                              ._adminReviewAnnotationsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$InferenceObjectsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).adminReviewAnnotationsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.objectId == item.inferenceObjectId,
+                              ),
+                          typedResults: items,
+                        ),
                     ];
                   },
                 );
@@ -15722,6 +16712,7 @@ typedef $$InferenceObjectsTableProcessedTableManager =
         bool attemptId,
         bool inferenceCandidatesRefs,
         bool objectResolutionsRefs,
+        bool adminReviewAnnotationsRefs,
       })
     >;
 typedef $$InferenceCandidatesTableCreateCompanionBuilder =
@@ -20013,6 +21004,640 @@ typedef $$RetentionEventsTableProcessedTableManager =
       RetentionEventRow,
       PrefetchHooks Function({bool attemptId})
     >;
+typedef $$AdminReviewAnnotationsTableCreateCompanionBuilder =
+    AdminReviewAnnotationsCompanion Function({
+      required String annotationId,
+      required String sessionId,
+      Value<String?> attemptId,
+      Value<String?> objectId,
+      required String reviewStatus,
+      Value<String?> correctProductId,
+      required String reasonCode,
+      Value<String?> note,
+      required String authorLabel,
+      required int createdAtUs,
+      Value<int> rowid,
+    });
+typedef $$AdminReviewAnnotationsTableUpdateCompanionBuilder =
+    AdminReviewAnnotationsCompanion Function({
+      Value<String> annotationId,
+      Value<String> sessionId,
+      Value<String?> attemptId,
+      Value<String?> objectId,
+      Value<String> reviewStatus,
+      Value<String?> correctProductId,
+      Value<String> reasonCode,
+      Value<String?> note,
+      Value<String> authorLabel,
+      Value<int> createdAtUs,
+      Value<int> rowid,
+    });
+
+final class $$AdminReviewAnnotationsTableReferences
+    extends
+        BaseReferences<
+          _$BakeryDatabase,
+          $AdminReviewAnnotationsTable,
+          AdminReviewAnnotationRow
+        > {
+  $$AdminReviewAnnotationsTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static $CheckoutSessionsTable _sessionIdTable(_$BakeryDatabase db) =>
+      db.checkoutSessions.createAlias(
+        'admin_review_annotations__session_id__checkout_sessions__session_id',
+      );
+
+  $$CheckoutSessionsTableProcessedTableManager get sessionId {
+    final $_column = $_itemColumn<String>('session_id')!;
+
+    final manager = $$CheckoutSessionsTableTableManager(
+      $_db,
+      $_db.checkoutSessions,
+    ).filter((f) => f.sessionId.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $ScanAttemptsTable _attemptIdTable(_$BakeryDatabase db) =>
+      db.scanAttempts.createAlias(
+        'admin_review_annotations__attempt_id__scan_attempts__attempt_id',
+      );
+
+  $$ScanAttemptsTableProcessedTableManager? get attemptId {
+    final $_column = $_itemColumn<String>('attempt_id');
+    if ($_column == null) return null;
+    final manager = $$ScanAttemptsTableTableManager(
+      $_db,
+      $_db.scanAttempts,
+    ).filter((f) => f.attemptId.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_attemptIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $InferenceObjectsTable _objectIdTable(
+    _$BakeryDatabase db,
+  ) => db.inferenceObjects.createAlias(
+    'admin_review_annotations__object_id__inference_objects__inference_object_id',
+  );
+
+  $$InferenceObjectsTableProcessedTableManager? get objectId {
+    final $_column = $_itemColumn<String>('object_id');
+    if ($_column == null) return null;
+    final manager = $$InferenceObjectsTableTableManager(
+      $_db,
+      $_db.inferenceObjects,
+    ).filter((f) => f.inferenceObjectId.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_objectIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$AdminReviewAnnotationsTableFilterComposer
+    extends Composer<_$BakeryDatabase, $AdminReviewAnnotationsTable> {
+  $$AdminReviewAnnotationsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get annotationId => $composableBuilder(
+    column: $table.annotationId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get reviewStatus => $composableBuilder(
+    column: $table.reviewStatus,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get correctProductId => $composableBuilder(
+    column: $table.correctProductId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get reasonCode => $composableBuilder(
+    column: $table.reasonCode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get note => $composableBuilder(
+    column: $table.note,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get authorLabel => $composableBuilder(
+    column: $table.authorLabel,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAtUs => $composableBuilder(
+    column: $table.createdAtUs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$CheckoutSessionsTableFilterComposer get sessionId {
+    final $$CheckoutSessionsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.sessionId,
+      referencedTable: $db.checkoutSessions,
+      getReferencedColumn: (t) => t.sessionId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$CheckoutSessionsTableFilterComposer(
+            $db: $db,
+            $table: $db.checkoutSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$ScanAttemptsTableFilterComposer get attemptId {
+    final $$ScanAttemptsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.attemptId,
+      referencedTable: $db.scanAttempts,
+      getReferencedColumn: (t) => t.attemptId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ScanAttemptsTableFilterComposer(
+            $db: $db,
+            $table: $db.scanAttempts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$InferenceObjectsTableFilterComposer get objectId {
+    final $$InferenceObjectsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.objectId,
+      referencedTable: $db.inferenceObjects,
+      getReferencedColumn: (t) => t.inferenceObjectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$InferenceObjectsTableFilterComposer(
+            $db: $db,
+            $table: $db.inferenceObjects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AdminReviewAnnotationsTableOrderingComposer
+    extends Composer<_$BakeryDatabase, $AdminReviewAnnotationsTable> {
+  $$AdminReviewAnnotationsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get annotationId => $composableBuilder(
+    column: $table.annotationId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get reviewStatus => $composableBuilder(
+    column: $table.reviewStatus,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get correctProductId => $composableBuilder(
+    column: $table.correctProductId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get reasonCode => $composableBuilder(
+    column: $table.reasonCode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get note => $composableBuilder(
+    column: $table.note,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get authorLabel => $composableBuilder(
+    column: $table.authorLabel,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAtUs => $composableBuilder(
+    column: $table.createdAtUs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$CheckoutSessionsTableOrderingComposer get sessionId {
+    final $$CheckoutSessionsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.sessionId,
+      referencedTable: $db.checkoutSessions,
+      getReferencedColumn: (t) => t.sessionId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$CheckoutSessionsTableOrderingComposer(
+            $db: $db,
+            $table: $db.checkoutSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$ScanAttemptsTableOrderingComposer get attemptId {
+    final $$ScanAttemptsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.attemptId,
+      referencedTable: $db.scanAttempts,
+      getReferencedColumn: (t) => t.attemptId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ScanAttemptsTableOrderingComposer(
+            $db: $db,
+            $table: $db.scanAttempts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$InferenceObjectsTableOrderingComposer get objectId {
+    final $$InferenceObjectsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.objectId,
+      referencedTable: $db.inferenceObjects,
+      getReferencedColumn: (t) => t.inferenceObjectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$InferenceObjectsTableOrderingComposer(
+            $db: $db,
+            $table: $db.inferenceObjects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AdminReviewAnnotationsTableAnnotationComposer
+    extends Composer<_$BakeryDatabase, $AdminReviewAnnotationsTable> {
+  $$AdminReviewAnnotationsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get annotationId => $composableBuilder(
+    column: $table.annotationId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get reviewStatus => $composableBuilder(
+    column: $table.reviewStatus,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get correctProductId => $composableBuilder(
+    column: $table.correctProductId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get reasonCode => $composableBuilder(
+    column: $table.reasonCode,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get note =>
+      $composableBuilder(column: $table.note, builder: (column) => column);
+
+  GeneratedColumn<String> get authorLabel => $composableBuilder(
+    column: $table.authorLabel,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get createdAtUs => $composableBuilder(
+    column: $table.createdAtUs,
+    builder: (column) => column,
+  );
+
+  $$CheckoutSessionsTableAnnotationComposer get sessionId {
+    final $$CheckoutSessionsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.sessionId,
+      referencedTable: $db.checkoutSessions,
+      getReferencedColumn: (t) => t.sessionId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$CheckoutSessionsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.checkoutSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$ScanAttemptsTableAnnotationComposer get attemptId {
+    final $$ScanAttemptsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.attemptId,
+      referencedTable: $db.scanAttempts,
+      getReferencedColumn: (t) => t.attemptId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ScanAttemptsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.scanAttempts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$InferenceObjectsTableAnnotationComposer get objectId {
+    final $$InferenceObjectsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.objectId,
+      referencedTable: $db.inferenceObjects,
+      getReferencedColumn: (t) => t.inferenceObjectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$InferenceObjectsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.inferenceObjects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AdminReviewAnnotationsTableTableManager
+    extends
+        RootTableManager<
+          _$BakeryDatabase,
+          $AdminReviewAnnotationsTable,
+          AdminReviewAnnotationRow,
+          $$AdminReviewAnnotationsTableFilterComposer,
+          $$AdminReviewAnnotationsTableOrderingComposer,
+          $$AdminReviewAnnotationsTableAnnotationComposer,
+          $$AdminReviewAnnotationsTableCreateCompanionBuilder,
+          $$AdminReviewAnnotationsTableUpdateCompanionBuilder,
+          (AdminReviewAnnotationRow, $$AdminReviewAnnotationsTableReferences),
+          AdminReviewAnnotationRow,
+          PrefetchHooks Function({
+            bool sessionId,
+            bool attemptId,
+            bool objectId,
+          })
+        > {
+  $$AdminReviewAnnotationsTableTableManager(
+    _$BakeryDatabase db,
+    $AdminReviewAnnotationsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AdminReviewAnnotationsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$AdminReviewAnnotationsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$AdminReviewAnnotationsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> annotationId = const Value.absent(),
+                Value<String> sessionId = const Value.absent(),
+                Value<String?> attemptId = const Value.absent(),
+                Value<String?> objectId = const Value.absent(),
+                Value<String> reviewStatus = const Value.absent(),
+                Value<String?> correctProductId = const Value.absent(),
+                Value<String> reasonCode = const Value.absent(),
+                Value<String?> note = const Value.absent(),
+                Value<String> authorLabel = const Value.absent(),
+                Value<int> createdAtUs = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AdminReviewAnnotationsCompanion(
+                annotationId: annotationId,
+                sessionId: sessionId,
+                attemptId: attemptId,
+                objectId: objectId,
+                reviewStatus: reviewStatus,
+                correctProductId: correctProductId,
+                reasonCode: reasonCode,
+                note: note,
+                authorLabel: authorLabel,
+                createdAtUs: createdAtUs,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String annotationId,
+                required String sessionId,
+                Value<String?> attemptId = const Value.absent(),
+                Value<String?> objectId = const Value.absent(),
+                required String reviewStatus,
+                Value<String?> correctProductId = const Value.absent(),
+                required String reasonCode,
+                Value<String?> note = const Value.absent(),
+                required String authorLabel,
+                required int createdAtUs,
+                Value<int> rowid = const Value.absent(),
+              }) => AdminReviewAnnotationsCompanion.insert(
+                annotationId: annotationId,
+                sessionId: sessionId,
+                attemptId: attemptId,
+                objectId: objectId,
+                reviewStatus: reviewStatus,
+                correctProductId: correctProductId,
+                reasonCode: reasonCode,
+                note: note,
+                authorLabel: authorLabel,
+                createdAtUs: createdAtUs,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$AdminReviewAnnotationsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback:
+              ({sessionId = false, attemptId = false, objectId = false}) {
+                return PrefetchHooks(
+                  db: db,
+                  explicitlyWatchedTables: [],
+                  addJoins:
+                      <
+                        T extends TableManagerState<
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic
+                        >
+                      >(state) {
+                        if (sessionId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.sessionId,
+                                    referencedTable:
+                                        $$AdminReviewAnnotationsTableReferences
+                                            ._sessionIdTable(db),
+                                    referencedColumn:
+                                        $$AdminReviewAnnotationsTableReferences
+                                            ._sessionIdTable(db)
+                                            .sessionId,
+                                  )
+                                  as T;
+                        }
+                        if (attemptId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.attemptId,
+                                    referencedTable:
+                                        $$AdminReviewAnnotationsTableReferences
+                                            ._attemptIdTable(db),
+                                    referencedColumn:
+                                        $$AdminReviewAnnotationsTableReferences
+                                            ._attemptIdTable(db)
+                                            .attemptId,
+                                  )
+                                  as T;
+                        }
+                        if (objectId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.objectId,
+                                    referencedTable:
+                                        $$AdminReviewAnnotationsTableReferences
+                                            ._objectIdTable(db),
+                                    referencedColumn:
+                                        $$AdminReviewAnnotationsTableReferences
+                                            ._objectIdTable(db)
+                                            .inferenceObjectId,
+                                  )
+                                  as T;
+                        }
+
+                        return state;
+                      },
+                  getPrefetchedDataCallback: (items) async {
+                    return [];
+                  },
+                );
+              },
+        ),
+      );
+}
+
+typedef $$AdminReviewAnnotationsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$BakeryDatabase,
+      $AdminReviewAnnotationsTable,
+      AdminReviewAnnotationRow,
+      $$AdminReviewAnnotationsTableFilterComposer,
+      $$AdminReviewAnnotationsTableOrderingComposer,
+      $$AdminReviewAnnotationsTableAnnotationComposer,
+      $$AdminReviewAnnotationsTableCreateCompanionBuilder,
+      $$AdminReviewAnnotationsTableUpdateCompanionBuilder,
+      (AdminReviewAnnotationRow, $$AdminReviewAnnotationsTableReferences),
+      AdminReviewAnnotationRow,
+      PrefetchHooks Function({bool sessionId, bool attemptId, bool objectId})
+    >;
 
 class $BakeryDatabaseManager {
   final _$BakeryDatabase _db;
@@ -20047,4 +21672,9 @@ class $BakeryDatabaseManager {
       $$AppSettingsTableTableManager(_db, _db.appSettings);
   $$RetentionEventsTableTableManager get retentionEvents =>
       $$RetentionEventsTableTableManager(_db, _db.retentionEvents);
+  $$AdminReviewAnnotationsTableTableManager get adminReviewAnnotations =>
+      $$AdminReviewAnnotationsTableTableManager(
+        _db,
+        _db.adminReviewAnnotations,
+      );
 }

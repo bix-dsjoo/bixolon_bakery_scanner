@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../admin/admin_models.dart';
+import '../admin/review_service.dart';
 import '../audit/audit_file_store.dart';
 import '../camera/camera_service.dart';
 import '../catalog/catalog_seed.dart';
@@ -25,6 +26,7 @@ import '../ui/app_theme.dart';
 import '../ui/admin/admin_destination.dart';
 import '../ui/admin/dashboard_screen.dart';
 import '../ui/admin/transaction_history_screen.dart';
+import '../ui/admin/review_inbox_screen.dart';
 import 'app_mode_controller.dart';
 import 'app_mode_surface.dart';
 
@@ -66,6 +68,7 @@ class _BakeryAppState extends State<BakeryApp> {
                   context,
                   destination,
                   services.admin,
+                  services.reviews,
                   onAttention,
                 ),
           );
@@ -142,6 +145,11 @@ class _BakeryAppState extends State<BakeryApp> {
             }
           },
         ),
+        reviews: DatabaseReviewService(
+          database,
+          createId: (_) => const Uuid().v4(),
+          now: DateTime.now,
+        ),
       );
     } catch (_) {
       await database.close();
@@ -153,6 +161,7 @@ class _BakeryAppState extends State<BakeryApp> {
     BuildContext context,
     AdminDestination destination,
     DatabaseAdminRepository admin,
+    DatabaseReviewService reviews,
     ValueChanged<AttentionItem> onAttentionSelected,
   ) {
     if (destination == AdminDestination.dashboard) {
@@ -165,6 +174,9 @@ class _BakeryAppState extends State<BakeryApp> {
     if (destination == AdminDestination.transactions) {
       return TransactionHistoryScreen(repository: admin);
     }
+    if (destination == AdminDestination.reviewInbox) {
+      return ReviewInboxScreen(repository: reviews);
+    }
     return Center(
       child: Text(
         '${destination.label} 화면을 준비하고 있어요.',
@@ -175,10 +187,15 @@ class _BakeryAppState extends State<BakeryApp> {
 }
 
 final class _AppServices {
-  const _AppServices({required this.checkout, required this.admin});
+  const _AppServices({
+    required this.checkout,
+    required this.admin,
+    required this.reviews,
+  });
 
   final CheckoutController checkout;
   final DatabaseAdminRepository admin;
+  final DatabaseReviewService reviews;
 }
 
 DateRange _seoulTodayRange() {

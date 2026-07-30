@@ -555,6 +555,33 @@ CHECK (
   ];
 }
 
+/// Operator annotations are deliberately separate from checkout evidence.  A
+/// review records what the operator concluded; it never replaces an inference
+/// result, customer choice, order, or payment snapshot.
+@DataClassName('AdminReviewAnnotationRow')
+class AdminReviewAnnotations extends Table {
+  TextColumn get annotationId => text().withLength(min: 1)();
+  TextColumn get sessionId => text().references(CheckoutSessions, #sessionId)();
+  TextColumn get attemptId =>
+      text().nullable().references(ScanAttempts, #attemptId)();
+  TextColumn get objectId =>
+      text().nullable().references(InferenceObjects, #inferenceObjectId)();
+  TextColumn get reviewStatus => text().withLength(min: 1)();
+  TextColumn get correctProductId => text().nullable()();
+  TextColumn get reasonCode => text().withLength(min: 1)();
+  TextColumn get note => text().nullable()();
+  TextColumn get authorLabel => text().withLength(min: 1)();
+  IntColumn get createdAtUs => integer()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {annotationId};
+
+  @override
+  List<String> get customConstraints => const [
+    "CHECK (review_status IN ('open', 'reviewed', 'needs_follow_up'))",
+  ];
+}
+
 @DriftDatabase(
   tables: [
     CatalogRevisions,
@@ -572,6 +599,7 @@ CHECK (
     SettingsRevisions,
     AppSettings,
     RetentionEvents,
+    AdminReviewAnnotations,
   ],
 )
 class BakeryDatabase extends _$BakeryDatabase {
@@ -588,14 +616,14 @@ class BakeryDatabase extends _$BakeryDatabase {
   String _lastMigrationResult = 'not_opened';
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (migrator) async {
       await migrator.createAll();
       await _installIntegrityGuards();
-      _lastMigrationResult = 'created_schema_v1';
+      _lastMigrationResult = 'created_schema_v2';
       await _installSettings();
     },
     onUpgrade: (migrator, from, to) async {
@@ -603,6 +631,11 @@ class BakeryDatabase extends _$BakeryDatabase {
         throw StateError(
           'database schema $from is newer than supported schema $to',
         );
+      }
+      if (from == 1 && to == 2) {
+        await migrator.createTable(adminReviewAnnotations);
+        await _installReviewIntegrityGuards();
+        return;
       }
       throw StateError('no migration path from schema $from to $to');
     },
@@ -1147,6 +1180,41 @@ CREATE TRIGGER retention_event_no_delete
 BEFORE DELETE ON retention_events
 BEGIN
   SELECT RAISE(ABORT, 'retention event is immutable');
+END
+''');
+    await _installReviewIntegrityGuards();
+  }
+
+  Future<void> _installReviewIntegrityGuards() async {
+    await customStatement('''
+CREATE TRIGGER admin_review_annotation_target_context
+BEFORE INSERT ON admin_review_annotations
+WHEN (NEW.attempt_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM scan_attempts
+  WHERE attempt_id = NEW.attempt_id AND session_id = NEW.session_id
+)) OR (NEW.object_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM inference_objects AS object
+  JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  WHERE object.inference_object_id = NEW.object_id
+    AND attempt.session_id = NEW.session_id
+    AND (NEW.attempt_id IS NULL OR NEW.attempt_id = attempt.attempt_id)
+))
+BEGIN
+  SELECT RAISE(ABORT, 'review target does not belong to session');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER admin_review_annotation_no_update
+BEFORE UPDATE ON admin_review_annotations
+BEGIN
+  SELECT RAISE(ABORT, 'admin review annotation is append-only');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER admin_review_annotation_no_delete
+BEFORE DELETE ON admin_review_annotations
+BEGIN
+  SELECT RAISE(ABORT, 'admin review annotation is append-only');
 END
 ''');
   }
