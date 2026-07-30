@@ -83,9 +83,31 @@ void main() {
 
     expect(
       await verifyUiAssets(appRoot: root),
-      contains(contains('unlisted generated illustration')),
+      contains(contains('nested/not_approved.png')),
     );
   });
+
+  test(
+    'the verifier rejects every unallowlisted file below illustrations',
+    () async {
+      final root = await _copyAssetsToTempRoot();
+      addTearDown(() => root.delete(recursive: true));
+      final nestedWebp = File(
+        '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations${Platform.pathSeparator}nested${Platform.pathSeparator}not_approved.webp',
+      );
+      final arbitraryFile = File(
+        '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations${Platform.pathSeparator}unapproved-notes.txt',
+      );
+      await nestedWebp.parent.create(recursive: true);
+      await nestedWebp.writeAsBytes(const [0x52, 0x49, 0x46, 0x46]);
+      await arbitraryFile.writeAsString('not a shipped illustration');
+
+      final errors = await verifyUiAssets(appRoot: root);
+
+      expect(errors, contains(contains('not_approved.webp')));
+      expect(errors, contains(contains('unapproved-notes.txt')));
+    },
+  );
 
   test('the verifier rejects an opaque RGBA illustration', () async {
     final root = await _copyAssetsToTempRoot();

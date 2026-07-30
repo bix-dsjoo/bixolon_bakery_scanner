@@ -18,6 +18,7 @@ const _expectedAssetIds = {
   'manual_cart_entry': 'manual-cart-entry',
   'payment_complete': 'payment-complete',
 };
+const _safeIllustrationSentinel = 'assets/illustrations/.gitkeep';
 const _requiredAlphaValidation = {
   'decoded_rgba': true,
   'transparent_corners': true,
@@ -196,13 +197,13 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
       followLinks: false,
       recursive: true,
     )) {
-      if (entity is File &&
-          path.extension(entity.path).toLowerCase() == '.png') {
+      if (entity is File) {
         final relativePath = path
             .relative(entity.path, from: root.path)
             .replaceAll('\\', '/');
-        if (!manifestPaths.contains(relativePath)) {
-          errors.add('unlisted generated illustration: $relativePath');
+        if (relativePath != _safeIllustrationSentinel &&
+            !manifestPaths.contains(relativePath)) {
+          errors.add('unlisted illustration file: $relativePath');
         }
       }
     }
