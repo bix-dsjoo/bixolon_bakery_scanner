@@ -224,6 +224,69 @@ void main() {
     }
   });
 
+  test('needs_retake rejects a null retake scope', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            instructionCode: 'no_bread_detected',
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('scan retake rejects a null instruction', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'scan',
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('object retake with named objects rejects a null instruction', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'object',
+            retakeObjectIds: const ['object-1'],
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('object retake rejects duplicate retake object IDs', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'object',
+            retakeObjectIds: const ['object-1', 'object-1'],
+            instructionCode: 'separate_breads',
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test('rejects non-finite or non-positive image geometry', () {
     for (final dimensions in [
       {'width': double.nan, 'height': 480},
