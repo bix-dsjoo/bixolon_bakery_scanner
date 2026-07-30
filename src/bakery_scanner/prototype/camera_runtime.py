@@ -29,6 +29,7 @@ from bakery_scanner.data.preprocess import CanonicalImage, load_canonical_image
 from bakery_scanner.detectors.rfdetr import RFDetrRunner
 
 from .camera_protocol import WorkerPhase
+from .presentation_policy import PresentationPolicy
 
 
 _DETECTOR_ID = "rfdetr_large_bakery_v1"
@@ -136,6 +137,7 @@ class CameraInferenceRuntime:
         root: Path,
         backend: RuntimeBackend,
         startup_metrics: StartupMetrics,
+        presentation_policy: PresentationPolicy,
         clock: Callable[[], float],
     ) -> None:
         self._root = root
@@ -145,6 +147,7 @@ class CameraInferenceRuntime:
         self._closed = False
         self.device = startup_metrics.device
         self.startup_metrics = startup_metrics
+        self._presentation_policy = presentation_policy
 
     @classmethod
     def initialize(
@@ -197,6 +200,9 @@ class CameraInferenceRuntime:
                 else:
                     backend = backend_loader(device)
                 _validate_backend(backend, device)
+                presentation_policy = PresentationPolicy.load(
+                    root_path / "configs" / "camera_presentation_policy.json"
+                )
                 load_finished = _timestamp(runtime_clock, device)
             except Exception:
                 if backend is not None:
@@ -247,6 +253,7 @@ class CameraInferenceRuntime:
                 root=root_path,
                 backend=backend,
                 startup_metrics=metrics,
+                presentation_policy=presentation_policy,
                 clock=runtime_clock,
             )
         raise RuntimeError("runtime initialization exhausted device attempts")
@@ -329,6 +336,10 @@ class CameraInferenceRuntime:
             decisions,
             _load_sku_names(self._root),
         )
+        presentation = self._presentation_policy.evaluate(
+            proposals=objects,
+            decisions=objects,
+        ).to_payload()
         postprocess_finished = _timestamp(self._clock, self.device)
         timings = {
             "decode_preprocess": _milliseconds(total_started, decode_finished),
@@ -346,6 +357,7 @@ class CameraInferenceRuntime:
             "objects": objects,
             "counts": counts,
             "unknown_count": unknown_count,
+            "presentation": presentation,
             "timings_ms": timings,
         }
 

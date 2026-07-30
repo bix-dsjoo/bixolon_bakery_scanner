@@ -3,6 +3,7 @@ import math
 
 import pytest
 
+from bakery_scanner.prototype import camera_protocol
 from bakery_scanner.prototype.camera_protocol import (
     AnalyzeRequest,
     PingRequest,
@@ -12,6 +13,35 @@ from bakery_scanner.prototype.camera_protocol import (
     parse_request,
     progress_event,
 )
+
+_POLICY_SHA256 = "a" * 64
+
+
+def _presentation(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "state": "normal",
+        "final_count_usable": True,
+        "retake_scope": None,
+        "retake_object_ids": [],
+        "instruction_code": None,
+        "candidate_object_ids": [],
+        "policy_id": "camera_action_state_v1",
+        "policy_sha256": _POLICY_SHA256,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _result(presentation: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": "result",
+        "request_id": "request-1",
+        "objects": [
+            {"object_id": "object-1", "sku_id": 6},
+            {"object_id": "object-2", "sku_id": None},
+        ],
+        "presentation": presentation,
+    }
 
 
 def test_analyze_requires_unique_fields_absolute_existing_image(tmp_path):
@@ -109,3 +139,67 @@ def test_encode_event_appends_exactly_one_newline():
 def test_encode_event_rejects_non_finite_numbers(value):
     with pytest.raises(ValueError):
         encode_event({"value": value})
+
+
+@pytest.mark.parametrize(
+    "presentation",
+    [
+        _presentation(),
+        _presentation(
+            state="unknown",
+            candidate_object_ids=["object-2"],
+        ),
+        _presentation(
+            state="needs_retake",
+            final_count_usable=False,
+            retake_scope="scan",
+            instruction_code="no_bread_detected",
+        ),
+        _presentation(
+            state="needs_retake",
+            final_count_usable=False,
+            retake_scope="object",
+            retake_object_ids=["object-1"],
+            instruction_code="separate_breads",
+        ),
+    ],
+)
+def test_validate_result_event_accepts_each_consistent_presentation_state(
+    presentation,
+):
+    camera_protocol.validate_result_event(_result(presentation))
+
+
+@pytest.mark.parametrize(
+    "presentation",
+    [
+        _presentation(final_count_usable=False),
+        _presentation(policy_sha256="A" * 64),
+        _presentation(
+            state="needs_retake",
+            final_count_usable=False,
+            retake_scope="scan",
+            retake_object_ids=["object-1"],
+            instruction_code="no_bread_detected",
+        ),
+        _presentation(
+            state="needs_retake",
+            final_count_usable=False,
+            retake_scope="object",
+            instruction_code="separate_breads",
+        ),
+        _presentation(instruction_code="candidate_evidence_weak"),
+        _presentation(
+            state="unknown",
+            instruction_code="candidate_evidence_weak",
+            candidate_object_ids=["object-2"],
+        ),
+        _presentation(
+            state="unknown",
+            candidate_object_ids=["object-1"],
+        ),
+    ],
+)
+def test_validate_result_event_rejects_inconsistent_presentation(presentation):
+    with pytest.raises(ValueError):
+        camera_protocol.validate_result_event(_result(presentation))

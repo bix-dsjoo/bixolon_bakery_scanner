@@ -9,6 +9,21 @@ import pytest
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
 from bakery_scanner.prototype.camera_worker import serve
 
+_POLICY_SHA256 = "a" * 64
+
+
+def _normal_presentation() -> dict[str, object]:
+    return {
+        "state": "normal",
+        "final_count_usable": True,
+        "retake_scope": None,
+        "retake_object_ids": [],
+        "instruction_code": None,
+        "candidate_object_ids": [],
+        "policy_id": "camera_action_state_v1",
+        "policy_sha256": _POLICY_SHA256,
+    }
+
 
 @dataclass(frozen=True)
 class FakeStartupMetrics:
@@ -28,11 +43,15 @@ class FakeRuntime:
         ),
         device: str = "cpu",
         startup_metrics: object | None = None,
+        presentation: object | None = None,
     ) -> None:
         self.fail_analyze = fail_analyze
         self.phases = phases
         self.device = device
         self.startup_metrics = startup_metrics
+        self.presentation = (
+            _normal_presentation() if presentation is None else presentation
+        )
         self.closed = False
         self.close_calls = 0
 
@@ -42,7 +61,12 @@ class FakeRuntime:
             raise RuntimeError("inference failed")
         for phase in self.phases:
             on_progress(phase)
-        return {"type": "result", "request_id": request_id, "objects": []}
+        return {
+            "type": "result",
+            "request_id": request_id,
+            "objects": [],
+            "presentation": self.presentation,
+        }
 
     def close(self) -> None:
         self.close_calls += 1
@@ -128,8 +152,45 @@ def test_worker_emits_legal_correlated_progress_before_result(tmp_path: Path):
         {"type": "progress", "request_id": "analysis-1", "phase": "detecting"},
         {"type": "progress", "request_id": "analysis-1", "phase": "classifying"},
         {"type": "progress", "request_id": "analysis-1", "phase": "aggregating"},
-        {"type": "result", "request_id": "analysis-1", "objects": []},
+        {
+            "type": "result",
+            "request_id": "analysis-1",
+            "objects": [],
+            "presentation": _normal_presentation(),
+        },
     ]
+
+
+def test_worker_converts_invalid_presentation_to_correlated_analysis_failure(
+    tmp_path: Path,
+):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    stdout = io.StringIO()
+
+    serve(
+        io.StringIO(
+            json.dumps(
+                {
+                    "type": "analyze",
+                    "request_id": "invalid-result",
+                    "image_path": str(image),
+                }
+            )
+            + "\n"
+            + '{"type":"shutdown","request_id":"stop-invalid"}\n'
+        ),
+        stdout,
+        runtime_factory=lambda emit: FakeRuntime(presentation={"state": "normal"}),
+        stderr=io.StringIO(),
+    )
+
+    analysis_events = [
+        row for row in _events(stdout) if row.get("request_id") == "invalid-result"
+    ]
+    assert analysis_events[-1]["type"] == "error"
+    assert analysis_events[-1]["code"] == "analysis_failed"
+    assert all(row["type"] != "result" for row in analysis_events)
 
 
 def test_worker_accepts_rechecking_before_terminal_aggregating(tmp_path: Path):

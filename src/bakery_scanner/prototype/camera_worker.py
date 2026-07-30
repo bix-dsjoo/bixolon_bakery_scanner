@@ -18,6 +18,7 @@ from .camera_protocol import (
     encode_event,
     parse_request,
     progress_event,
+    validate_result_event,
 )
 
 
@@ -157,6 +158,7 @@ def _serve_analysis(
             raise ValueError("runtime result type must be result")
         if result.get("request_id") != request.request_id:
             raise ValueError("runtime result request_id does not match request")
+        validate_result_event(result)
         emit(result)
     except Exception as exc:
         _write_diagnostic(diagnostics, f"analysis failed for {request.request_id}", exc)

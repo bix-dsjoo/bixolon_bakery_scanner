@@ -56,17 +56,21 @@ def _confirmed(sku_id: int, box: Box, *, repvit_ms: float = 2.0) -> Classificati
     )
 
 
-def _unknown(box: Box) -> ClassificationDecision:
+def _unknown(
+    box: Box,
+    *,
+    scores: tuple[float, float, float] = (0.61, 0.22, 0.17),
+) -> ClassificationDecision:
     return ClassificationDecision(
         decision="unknown",
         sku_id=None,
-        confidence=0.61,
+        confidence=scores[0],
         box=box,
         decision_path=DecisionPath.UNKNOWN_TOP3,
         top3=(
-            SkuCandidate(rank=1, sku_id=4, score=0.61),
-            SkuCandidate(rank=2, sku_id=7, score=0.22),
-            SkuCandidate(rank=3, sku_id=12, score=0.17),
+            SkuCandidate(rank=1, sku_id=4, score=scores[0]),
+            SkuCandidate(rank=2, sku_id=7, score=scores[1]),
+            SkuCandidate(rank=3, sku_id=12, score=scores[2]),
         ),
         provenance=_provenance(),
         timings=StageTimings(repvit_ms=3.0, dinov3_ms=5.0, total_ms=8.0),
@@ -217,6 +221,13 @@ def class_map(tmp_path: Path) -> None:
             ]
         ),
         encoding="utf-8",
+    )
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "camera_presentation_policy.json").write_bytes(
+        b'{"box_overlap_iou":0.7,"candidate_top12_min_margin":0.05,'
+        b'"candidate_top1_min_score":0.3,"policy_id":"camera_action_state_v1",'
+        b'"schema_version":1}'
     )
 
 
@@ -503,7 +514,7 @@ def test_initialize_rejects_detector_calibration_hash_mismatch(detector_repo):
 
 def test_initialize_rejects_threshold_only_direct_policy_mutation(detector_repo):
     config_dir = detector_repo.root / "configs"
-    config_dir.mkdir()
+    config_dir.mkdir(exist_ok=True)
     policy_path = detector_repo.root / "policy.json"
     original_policy = b'{"direct_threshold":0.9}'
     policy_path.write_bytes(original_policy)
@@ -665,6 +676,53 @@ def test_analyze_returns_deterministic_fail_closed_result_contract(tmp_path: Pat
         WorkerPhase.RECHECKING,
         WorkerPhase.AGGREGATING,
     ]
+
+
+def test_analyze_marks_weak_unknown_for_object_retake_without_changing_counts(
+    tmp_path: Path,
+):
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    image_path = _write_image(tmp_path / "capture.jpg")
+    registered_box = Box(5, 5, 20, 20)
+    weak_unknown_box = Box(40, 5, 20, 20)
+    backend = FakeBackend(
+        "cpu",
+        proposals=(
+            _proposal(weak_unknown_box, score=0.88),
+            _proposal(registered_box, score=0.93),
+        ),
+        decisions=(
+            _confirmed(6, registered_box),
+            _unknown(weak_unknown_box, scores=(0.32, 0.29, 0.20)),
+        ),
+    )
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="cpu",
+        backend_loader=lambda device: backend,
+    )
+
+    result = runtime.analyze(image_path, "weak-unknown")
+
+    assert [row["object_id"] for row in result["objects"]] == [
+        "object-1",
+        "object-2",
+    ]
+    assert result["counts"] == {"6": 1}
+    assert result["unknown_count"] == 1
+    assert result["presentation"] == {
+        "state": "needs_retake",
+        "final_count_usable": False,
+        "retake_scope": "object",
+        "retake_object_ids": ["object-2"],
+        "instruction_code": "candidate_evidence_weak",
+        "candidate_object_ids": [],
+        "policy_id": "camera_action_state_v1",
+        "policy_sha256": (
+            "0a15a5c208d8a86e8b1d94e34c0acaf9232e48cc72abdb1c928fb47986404a89"
+        ),
+    }
 
 
 def test_progress_observer_time_is_excluded_from_detector_and_postprocess(
