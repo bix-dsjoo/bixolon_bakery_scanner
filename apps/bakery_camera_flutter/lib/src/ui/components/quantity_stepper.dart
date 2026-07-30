@@ -12,6 +12,21 @@ class QuantityStepper extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = BixolonThemeExtension.of(context);
+    final controlStyle = ButtonStyle(
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(tokens.controlRadius),
+        ),
+      ),
+      side: WidgetStateProperty.resolveWith(
+        (states) => BorderSide(
+          color: states.contains(WidgetState.focused)
+              ? tokens.focus
+              : Colors.transparent,
+          width: states.contains(WidgetState.focused) ? 3 : 0,
+        ),
+      ),
+    );
     return Semantics(
       label: '수량 $quantity',
       child: DecoratedBox(
@@ -28,6 +43,7 @@ class QuantityStepper extends StatelessWidget {
                   ? null
                   : () => onChanged!(quantity - 1),
               constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+              style: controlStyle,
               icon: const Icon(Icons.remove),
             ),
             SizedBox(
@@ -44,6 +60,7 @@ class QuantityStepper extends StatelessWidget {
                   ? null
                   : () => onChanged!(quantity + 1),
               constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+              style: controlStyle,
               icon: const Icon(Icons.add),
             ),
           ],

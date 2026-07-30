@@ -10,7 +10,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+final Future<void> _pretendardFontsLoaded = _loadPretendardFonts();
+
 void main() {
+  setUpAll(() => _pretendardFontsLoaded);
+
+  test('bundled Pretendard fonts load in the visual test renderer', () async {
+    await _pretendardFontsLoaded;
+  });
+
   test('theme exposes the approved Material 3 BIXOLON token contract', () {
     final theme = buildBakeryTheme();
     final tokens = theme.extension<BixolonThemeExtension>();
@@ -177,6 +185,44 @@ void main() {
     expect(side.width, greaterThanOrEqualTo(2));
   });
 
+  testWidgets(
+    'keyboard-focused quantity actions have a visible focus outline',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildBakeryTheme(),
+          home: Scaffold(body: QuantityStepper(quantity: 2, onChanged: (_) {})),
+        ),
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+
+      final decrement = tester.widget<IconButton>(
+        find.byType(IconButton).first,
+      );
+      final side = decrement.style!.side!.resolve(<WidgetState>{
+        WidgetState.focused,
+      });
+      expect(side!.color, const Color(0xFF176BFF));
+      expect(side.width, greaterThanOrEqualTo(2));
+      expect(
+        tester.getSemantics(find.byType(IconButton).first),
+        matchesSemantics(
+          isFocused: true,
+          isButton: true,
+          isFocusable: true,
+          hasEnabledState: true,
+          isEnabled: true,
+          hasFocusAction: true,
+          hasTapAction: true,
+        ),
+      );
+      semantics.dispose();
+    },
+  );
+
   testWidgets('design-system catalog matches the kiosk receipt layout', (
     tester,
   ) async {
@@ -192,6 +238,15 @@ void main() {
       matchesGoldenFile('goldens/design_system_1280x820.png'),
     );
   });
+}
+
+Future<void> _loadPretendardFonts() async {
+  final fontLoader = FontLoader('Pretendard')
+    ..addFont(rootBundle.load('assets/fonts/Pretendard-Regular.otf'))
+    ..addFont(rootBundle.load('assets/fonts/Pretendard-Medium.otf'))
+    ..addFont(rootBundle.load('assets/fonts/Pretendard-SemiBold.otf'))
+    ..addFont(rootBundle.load('assets/fonts/Pretendard-Bold.otf'));
+  await fontLoader.load();
 }
 
 class _DesignSystemCatalog extends StatelessWidget {
