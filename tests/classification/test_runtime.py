@@ -132,18 +132,22 @@ class PreflightRecordingRepVit(RecordingRunner):
         self.serial_calls = 0
         self.batch_calls = 0
         self.batch_max_objects: int | None = None
+        self.returned_evidence: list[RepVitEvidence] = []
 
     def score_with_evidence(self, crops: tuple[Image.Image, ...]) -> RepVitEvidence:
         self.serial_calls += 1
-        return super().score_with_evidence(crops)
+        evidence = super().score_with_evidence(crops)
+        self.returned_evidence.append(evidence)
+        return evidence
 
     def score_many_with_evidence(self, crop_groups, *, max_objects):
         self.batch_calls += 1
         self.batch_max_objects = max_objects
-        return tuple(
-            RecordingRunner.score_with_evidence(self, crops)
-            for crops in crop_groups
+        evidence = tuple(
+            RecordingRunner.score_with_evidence(self, crops) for crops in crop_groups
         )
+        self.returned_evidence.extend(evidence)
+        return evidence
 
 
 class PreflightRecordingDino(RecordingRunner):
@@ -152,6 +156,8 @@ class PreflightRecordingDino(RecordingRunner):
         self.global_local_calls = 0
         self.product_boxes: tuple[Box, ...] | None = None
         self.local_bank = None
+        self.repvit_scores: ModelScoreVector | None = None
+        self.local_scores = {6: 0.90, 5: 0.10}
 
     def score_global_and_local_evidence(
         self, crops, product_boxes, local_bank, *, repvit_scores
@@ -160,8 +166,9 @@ class PreflightRecordingDino(RecordingRunner):
         self.received_crops = crops
         self.product_boxes = tuple(product_boxes)
         self.local_bank = local_bank
+        self.repvit_scores = repvit_scores
         assert repvit_scores.model_id == "repvit_m1_15plus5_v1"
-        return self.scores, {6: 0.90, 5: 0.10}, 32, 0.5
+        return self.scores, self.local_scores, 32, 0.5
 
 
 class StepClock:
@@ -352,21 +359,30 @@ def test_preflight_models_loads_and_scores_dino_before_all_direct_inference():
     ],
 )
 def test_benchmark_preflight_exercises_repvit_dino_local_and_fusion(
-    mode, expected_serial, expected_batch
+    monkeypatch, mode, expected_serial, expected_batch
 ):
     recorder = PreflightRecordingRepVit(_repvit_scores({6: 0.80, 5: 0.20}))
     dino = PreflightRecordingDino(_dino_scores({6: 0.70, 5: 0.20}))
     local_bank = object()
+    first_box = Box(1, 1, 10, 10)
     pipeline = _fusion_pipeline(
         mode=mode,
         repvit=recorder,
         dino_loader=lambda: dino,
         local_bank=local_bank,
     )
+    real_fusion_decision = pipeline._fusion_decision
+    fusion_calls = []
+
+    def record_real_fusion_call(**kwargs):
+        fusion_calls.append(kwargs)
+        return real_fusion_decision(**kwargs)
+
+    monkeypatch.setattr(pipeline, "_fusion_decision", record_real_fusion_call)
 
     evidence = pipeline.preflight_benchmark(
         _image(),
-        (Box(1, 1, 10, 10), Box(12, 1, 10, 10), Box(24, 1, 10, 10)),
+        (first_box, Box(12, 1, 10, 10), Box(24, 1, 10, 10)),
         repvit_max_objects=2,
         dino_max_objects=2,
     )
@@ -378,6 +394,13 @@ def test_benchmark_preflight_exercises_repvit_dino_local_and_fusion(
     assert dino.local_bank is local_bank
     assert tuple(crop.size for crop in dino.received_crops) == ((12, 12),) * 3
     assert dino.product_boxes == (Box(1, 1, 10, 10),) * 3
+    assert len(fusion_calls) == 1
+    fusion_call = fusion_calls[0]
+    assert fusion_call["box"] is first_box
+    assert fusion_call["repvit_scores"] is recorder.returned_evidence[0].scores
+    assert fusion_call["repvit_scores"] is dino.repvit_scores
+    assert fusion_call["dino_scores"] is dino.scores
+    assert fusion_call["local_scores"] is dino.local_scores
     assert evidence.repvit == 3
     assert evidence.dinov3_global_local == 1
     assert evidence.fusion == 1
