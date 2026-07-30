@@ -208,6 +208,167 @@ void main() {
       throwsA(isA<Exception>()),
     );
   });
+
+  test(
+    'abandoned and interrupted sessions reject resurrection deletion and child writes',
+    () async {
+      await _seedAttempt(db);
+      for (final state in ['abandoned', 'interrupted']) {
+        final sessionId = 'session-$state';
+        await _seedSession(db, sessionId);
+        await (db.update(
+          db.checkoutSessions,
+        )..where((row) => row.sessionId.equals(sessionId))).write(
+          CheckoutSessionsCompanion(
+            state: Value(state),
+            terminalAtUs: const Value(10),
+            terminalReason: Value('$state-for-test'),
+          ),
+        );
+
+        await expectLater(
+          (db.update(
+            db.checkoutSessions,
+          )..where((row) => row.sessionId.equals(sessionId))).write(
+            const CheckoutSessionsCompanion(
+              state: Value('active'),
+              terminalAtUs: Value(null),
+              terminalReason: Value(null),
+            ),
+          ),
+          throwsA(isA<Exception>()),
+        );
+        await expectLater(
+          (db.delete(
+            db.checkoutSessions,
+          )..where((row) => row.sessionId.equals(sessionId))).go(),
+          throwsA(isA<Exception>()),
+        );
+        await expectLater(
+          db
+              .into(db.scanAttempts)
+              .insert(
+                ScanAttemptsCompanion.insert(
+                  attemptId: 'attempt-$state',
+                  sessionId: sessionId,
+                  attemptNumber: 1,
+                  capturedAtUs: 11,
+                  imageRelativePath: 'sessions/$sessionId/attempt-001.jpg',
+                  imageByteSize: 42,
+                  imageSha256: _hash('4'),
+                  status: 'staged',
+                ),
+              ),
+          throwsA(isA<Exception>()),
+        );
+      }
+    },
+  );
+
+  test('raw SQL rejects short catalog and audit SHA-256 values', () async {
+    await expectLater(
+      db.customStatement(
+        '''
+INSERT INTO catalog_revisions
+  (revision_id, sha256, created_at_us, is_active)
+VALUES (?, ?, ?, ?)
+''',
+        ['catalog-short', 'a', 1, 0],
+      ),
+      throwsA(isA<Exception>()),
+    );
+
+    await _seedAttempt(db);
+    await expectLater(
+      db.customStatement(
+        '''
+INSERT INTO scan_attempts (
+  attempt_id, session_id, attempt_number, captured_at_us,
+  image_relative_path, image_byte_size, image_sha256, status
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+''',
+        [
+          'attempt-short-hash',
+          'session-1',
+          2,
+          4,
+          'sessions/session-1/attempt-002.jpg',
+          42,
+          'a',
+          'staged',
+        ],
+      ),
+      throwsA(isA<Exception>()),
+    );
+  });
+
+  test('raw SQL rejects short or empty final receipt metadata', () async {
+    await _seedAttempt(db);
+
+    await expectLater(
+      db.customStatement(
+        '''
+INSERT INTO final_orders (
+  order_id, session_id, catalog_revision_id, created_at_us,
+  total_quantity, total_amount_krw, receipt_relative_path,
+  receipt_byte_size, receipt_sha256
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+''',
+        [
+          'order-short-hash',
+          'session-1',
+          'catalog-v1',
+          5,
+          1,
+          2800,
+          'sessions/session-1/final-order.json',
+          42,
+          'a',
+        ],
+      ),
+      throwsA(isA<Exception>()),
+    );
+    await expectLater(
+      db.customStatement(
+        '''
+INSERT INTO final_orders (
+  order_id, session_id, catalog_revision_id, created_at_us,
+  total_quantity, total_amount_krw, receipt_relative_path,
+  receipt_byte_size, receipt_sha256
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+''',
+        [
+          'order-empty-path',
+          'session-1',
+          'catalog-v1',
+          6,
+          1,
+          2800,
+          '',
+          42,
+          _hash('6'),
+        ],
+      ),
+      throwsA(isA<Exception>()),
+    );
+  });
+
+  test('raw SQL rejects an empty retained audit path', () async {
+    await _seedAttempt(db);
+
+    await expectLater(
+      db.customStatement(
+        '''
+INSERT INTO retention_events (
+  retention_event_id, attempt_id, relative_path, original_byte_size,
+  original_sha256, pruned_at_us, reason
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+''',
+        ['retention-empty-path', 'attempt-1', '', 42, _hash('4'), 5, 'expired'],
+      ),
+      throwsA(isA<Exception>()),
+    );
+  });
 }
 
 Future<void> _seedAttempt(BakeryDatabase db) async {
@@ -221,11 +382,29 @@ Future<void> _seedAttempt(BakeryDatabase db) async {
           isActive: true,
         ),
       );
+  await _seedSession(db, 'session-1');
+  await db
+      .into(db.scanAttempts)
+      .insert(
+        ScanAttemptsCompanion.insert(
+          attemptId: 'attempt-1',
+          sessionId: 'session-1',
+          attemptNumber: 1,
+          capturedAtUs: 3,
+          imageRelativePath: 'sessions/session-1/attempt-001.jpg',
+          imageByteSize: 42,
+          imageSha256: _hash('4'),
+          status: 'staged',
+        ),
+      );
+}
+
+Future<void> _seedSession(BakeryDatabase db, String sessionId) async {
   await db
       .into(db.checkoutSessions)
       .insert(
         CheckoutSessionsCompanion.insert(
-          sessionId: 'session-1',
+          sessionId: sessionId,
           state: 'active',
           startedAtUs: 2,
           catalogRevisionId: 'catalog-v1',
@@ -245,20 +424,6 @@ Future<void> _seedAttempt(BakeryDatabase db) async {
           fusionPolicyId: 'fusion-v1',
           fusionPolicySha256: _hash('3'),
           configSnapshotJson: '{"pipeline":"canonical_cpu"}',
-        ),
-      );
-  await db
-      .into(db.scanAttempts)
-      .insert(
-        ScanAttemptsCompanion.insert(
-          attemptId: 'attempt-1',
-          sessionId: 'session-1',
-          attemptNumber: 1,
-          capturedAtUs: 3,
-          imageRelativePath: 'sessions/session-1/attempt-001.jpg',
-          imageByteSize: 42,
-          imageSha256: _hash('4'),
-          status: 'staged',
         ),
       );
 }

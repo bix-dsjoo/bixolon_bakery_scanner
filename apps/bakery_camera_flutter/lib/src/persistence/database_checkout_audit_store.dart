@@ -903,16 +903,13 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
       throw StateError('object-linked resolution cannot be manual cart');
     }
     if (!object.isUnknown) {
-      if (source == CustomerResolutionSource.customerTop3) {
-        throw StateError('registered inference object has no Top 3 candidates');
-      }
-      if (source == CustomerResolutionSource.aiAutoCustomerAccepted &&
-          product.recognitionSkuId != object.skuId) {
-        throw StateError('AI acceptance must retain the registered SKU');
-      }
-      if (source == CustomerResolutionSource.customerOverrodeAuto &&
-          product.recognitionSkuId == object.skuId) {
-        throw StateError('override must replace the registered SKU');
+      final expectedSource = product.recognitionSkuId == object.skuId
+          ? CustomerResolutionSource.aiAutoCustomerAccepted
+          : CustomerResolutionSource.customerOverrodeAuto;
+      if (source != expectedSource) {
+        throw StateError(
+          'registered resolution source does not match AI product identity',
+        );
       }
       return null;
     }
@@ -1022,17 +1019,13 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         throw StateError('catalog resolution cannot claim a candidate rank');
       }
     } else {
-      if (source == CustomerResolutionSource.customerTop3 ||
-          source == CustomerResolutionSource.customerManualCart) {
-        throw StateError('registered resolution source is invalid');
-      }
-      if (source == CustomerResolutionSource.aiAutoCustomerAccepted &&
-          resolution.recognitionSkuId != object.skuId) {
-        throw StateError('AI acceptance differs from registered SKU');
-      }
-      if (source == CustomerResolutionSource.customerOverrodeAuto &&
-          resolution.recognitionSkuId == object.skuId) {
-        throw StateError('override did not replace the registered SKU');
+      final expectedSource = resolution.recognitionSkuId == object.skuId
+          ? CustomerResolutionSource.aiAutoCustomerAccepted
+          : CustomerResolutionSource.customerOverrodeAuto;
+      if (source != expectedSource) {
+        throw StateError(
+          'registered resolution source does not match AI product identity',
+        );
       }
       if (resolution.candidateRank != null) {
         throw StateError('registered resolution cannot claim candidate rank');

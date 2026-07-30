@@ -418,6 +418,119 @@ void main() {
   );
 
   test(
+    'registered resolution source exactly follows AI product identity',
+    () async {
+      final otherProduct = Product(
+        productId: 'product-baguette',
+        displayName: 'Baguette',
+        unitPrice: 3200,
+        recognitionSkuId: 10,
+        categoryId: 'bread',
+        photoAssetPath: null,
+        active: true,
+        sortOrder: 2,
+      );
+      await _seedProduct(db, revision, otherProduct);
+      final registered = buildUiInferenceResult().objects.singleWhere(
+        (object) => !object.isUnknown,
+      );
+
+      final matchingSessionId = await _beginSession(store, revision);
+      await _completeAttempt(store, matchingSessionId);
+      for (final source in [
+        CustomerResolutionSource.customerTop3,
+        CustomerResolutionSource.customerCatalog,
+        CustomerResolutionSource.customerOverrodeAuto,
+        CustomerResolutionSource.customerManualCart,
+      ]) {
+        await expectLater(
+          store.recordResolution(
+            ObjectResolutionDraft(
+              sessionId: matchingSessionId,
+              inferenceObject: registered,
+              product: product,
+              source: source,
+              resolvedAt: DateTime.utc(2026, 7, 30, 7, 45),
+            ),
+          ),
+          throwsA(isA<StateError>()),
+        );
+      }
+      await store.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: matchingSessionId,
+          inferenceObject: registered,
+          product: product,
+          source: CustomerResolutionSource.aiAutoCustomerAccepted,
+          resolvedAt: DateTime.utc(2026, 7, 30, 7, 46),
+        ),
+      );
+
+      final differingSessionId = await _beginSession(store, revision);
+      await _completeAttempt(store, differingSessionId);
+      for (final source in [
+        CustomerResolutionSource.aiAutoCustomerAccepted,
+        CustomerResolutionSource.customerTop3,
+        CustomerResolutionSource.customerCatalog,
+        CustomerResolutionSource.customerManualCart,
+      ]) {
+        await expectLater(
+          store.recordResolution(
+            ObjectResolutionDraft(
+              sessionId: differingSessionId,
+              inferenceObject: registered,
+              product: otherProduct,
+              source: source,
+              resolvedAt: DateTime.utc(2026, 7, 30, 7, 47),
+            ),
+          ),
+          throwsA(isA<StateError>()),
+        );
+      }
+      await store.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: differingSessionId,
+          inferenceObject: registered,
+          product: otherProduct,
+          source: CustomerResolutionSource.customerOverrodeAuto,
+          resolvedAt: DateTime.utc(2026, 7, 30, 7, 48),
+        ),
+      );
+
+      expect(await db.select(db.objectResolutions).get(), hasLength(2));
+    },
+  );
+
+  test('payment revalidates registered resolution source semantics', () async {
+    final setup = await _resolvedOrder(
+      store: store,
+      revision: revision,
+      product: product,
+    );
+    final registered = (await db.select(db.inferenceObjects).get()).singleWhere(
+      (object) => object.skuId != null,
+    );
+    await (db.update(db.objectResolutions)..where(
+          (row) => row.inferenceObjectId.equals(registered.inferenceObjectId),
+        ))
+        .write(
+          ObjectResolutionsCompanion(
+            source: Value(
+              CustomerResolutionSource.customerCatalog.storageValue,
+            ),
+          ),
+        );
+
+    await expectLater(
+      store.commitSimulatedPayment(setup.order),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(await db.select(db.finalOrders).get(), isEmpty);
+    expect(await db.select(db.simulatedPayments).get(), isEmpty);
+  });
+
+  test(
     'completed evidence and paid order rows reject mutation and deletion',
     () async {
       final setup = await _resolvedOrder(

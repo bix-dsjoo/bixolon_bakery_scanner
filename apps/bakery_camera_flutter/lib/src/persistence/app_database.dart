@@ -19,7 +19,7 @@ class CatalogRevisions extends Table {
 
   @override
   List<String> get customConstraints => const [
-    "CHECK (sha256 NOT GLOB '*[^0-9a-f]*')",
+    "CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*')",
   ];
 }
 
@@ -141,14 +141,23 @@ class CheckoutSessions extends Table {
     'CHECK (json_valid(config_snapshot_json))',
     '''
 CHECK (
-  detector_sha256 NOT GLOB '*[^0-9a-f]*'
+  length(detector_sha256) = 64
+  AND detector_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(repvit_sha256) = 64
   AND repvit_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(repvit_manifest_sha256) = 64
   AND repvit_manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(repvit_prototype_sha256) = 64
   AND repvit_prototype_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(dinov3_sha256) = 64
   AND dinov3_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(dinov3_support_sha256) = 64
   AND dinov3_support_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(calibration_sha256) = 64
   AND calibration_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(preprocess_sha256) = 64
   AND preprocess_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(fusion_policy_sha256) = 64
   AND fusion_policy_sha256 NOT GLOB '*[^0-9a-f]*'
 )''',
     '''
@@ -207,7 +216,9 @@ class ScanAttempts extends Table {
     "CHECK (status IN ('staged', 'completed'))",
     '''
 CHECK (
-  image_sha256 NOT GLOB '*[^0-9a-f]*'
+  length(image_sha256) = 64
+  AND image_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(image_relative_path) > 0
   AND image_relative_path NOT GLOB '/*'
   AND image_relative_path NOT GLOB '\\*'
   AND image_relative_path NOT LIKE '%:%'
@@ -415,7 +426,9 @@ class FinalOrders extends Table {
     'UNIQUE (session_id)',
     '''
 CHECK (
-  receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+  length(receipt_sha256) = 64
+  AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(receipt_relative_path) > 0
   AND receipt_relative_path NOT GLOB '/*'
   AND receipt_relative_path NOT GLOB '\\*'
   AND receipt_relative_path NOT LIKE '%:%'
@@ -474,7 +487,8 @@ class SimulatedPayments extends Table {
     'UNIQUE (order_id)',
     'UNIQUE (session_id)',
     "CHECK (currency = 'KRW' AND provider = 'simulated' AND status = 'approved')",
-    "CHECK (final_order_sha256 NOT GLOB '*[^0-9a-f]*')",
+    "CHECK (length(final_order_sha256) = 64 "
+        "AND final_order_sha256 NOT GLOB '*[^0-9a-f]*')",
   ];
 }
 
@@ -509,7 +523,9 @@ class RetentionEvents extends Table {
   List<String> get customConstraints => const [
     '''
 CHECK (
-  original_sha256 NOT GLOB '*[^0-9a-f]*'
+  length(original_sha256) = 64
+  AND original_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND length(relative_path) > 0
   AND relative_path NOT GLOB '/*'
   AND relative_path NOT GLOB '\\*'
   AND relative_path NOT LIKE '%:%'
@@ -645,6 +661,21 @@ BEGIN
 END
 ''');
     await customStatement('''
+CREATE TRIGGER immutable_inference_candidate_no_insert
+BEFORE INSERT ON inference_candidates
+WHEN EXISTS (
+  SELECT 1
+  FROM inference_objects AS object
+  JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE object.inference_object_id = NEW.inference_object_id
+    AND (attempt.status = 'completed' OR session.state <> 'active')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'immutable scan cannot gain inference candidates');
+END
+''');
+    await customStatement('''
 CREATE TRIGGER completed_attempt_evidence_guard
 BEFORE UPDATE OF status ON scan_attempts
 WHEN NEW.status = 'completed'
@@ -686,19 +717,19 @@ BEGIN
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_checkout_session_no_update
+CREATE TRIGGER terminal_checkout_session_no_update
 BEFORE UPDATE ON checkout_sessions
-WHEN OLD.state = 'completed'
+WHEN OLD.state <> 'active'
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout session is immutable');
+  SELECT RAISE(ABORT, 'terminal checkout session is immutable');
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_checkout_session_no_delete
+CREATE TRIGGER terminal_checkout_session_no_delete
 BEFORE DELETE ON checkout_sessions
-WHEN OLD.state = 'completed'
+WHEN OLD.state <> 'active'
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout session is immutable');
+  SELECT RAISE(ABORT, 'terminal checkout session is immutable');
 END
 ''');
     await customStatement('''
@@ -768,47 +799,78 @@ BEGIN
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_session_scan_attempt_no_insert
+CREATE TRIGGER terminal_session_scan_attempt_no_insert
 BEFORE INSERT ON scan_attempts
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = NEW.session_id AND state = 'completed'
+  WHERE session_id = NEW.session_id AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout cannot gain scan attempts');
+  SELECT RAISE(ABORT, 'terminal checkout cannot gain scan attempts');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER terminal_session_scan_attempt_no_update
+BEFORE UPDATE ON scan_attempts
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id IN (OLD.session_id, NEW.session_id) AND state <> 'active'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'terminal checkout scan attempts are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER terminal_session_scan_attempt_no_delete
+BEFORE DELETE ON scan_attempts
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = OLD.session_id AND state <> 'active'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'terminal checkout scan attempts are immutable');
 END
 ''');
     await customStatement('''
 CREATE TRIGGER completed_inference_object_no_insert
 BEFORE INSERT ON inference_objects
 WHEN EXISTS (
-  SELECT 1 FROM scan_attempts
-  WHERE attempt_id = NEW.attempt_id AND status = 'completed'
+  SELECT 1
+  FROM scan_attempts AS attempt
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE attempt.attempt_id = NEW.attempt_id
+    AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed scan cannot gain inference objects');
+  SELECT RAISE(ABORT, 'immutable scan cannot gain inference objects');
 END
 ''');
     await customStatement('''
 CREATE TRIGGER completed_inference_object_no_update
 BEFORE UPDATE ON inference_objects
 WHEN EXISTS (
-  SELECT 1 FROM scan_attempts
-  WHERE attempt_id = OLD.attempt_id AND status = 'completed'
+  SELECT 1
+  FROM scan_attempts AS attempt
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE attempt.attempt_id = OLD.attempt_id
+    AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed inference object is immutable');
+  SELECT RAISE(ABORT, 'inference object is immutable');
 END
 ''');
     await customStatement('''
 CREATE TRIGGER completed_inference_object_no_delete
 BEFORE DELETE ON inference_objects
 WHEN EXISTS (
-  SELECT 1 FROM scan_attempts
-  WHERE attempt_id = OLD.attempt_id AND status = 'completed'
+  SELECT 1
+  FROM scan_attempts AS attempt
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE attempt.attempt_id = OLD.attempt_id
+    AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed inference object is immutable');
+  SELECT RAISE(ABORT, 'inference object is immutable');
 END
 ''');
     await customStatement('''
@@ -818,11 +880,12 @@ WHEN EXISTS (
   SELECT 1
   FROM inference_objects AS object
   JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
   WHERE object.inference_object_id = OLD.inference_object_id
-    AND attempt.status = 'completed'
+    AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed inference candidate is immutable');
+  SELECT RAISE(ABORT, 'inference candidate is immutable');
 END
 ''');
     await customStatement('''
@@ -832,11 +895,12 @@ WHEN EXISTS (
   SELECT 1
   FROM inference_objects AS object
   JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
   WHERE object.inference_object_id = OLD.inference_object_id
-    AND attempt.status = 'completed'
+    AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed inference candidate is immutable');
+  SELECT RAISE(ABORT, 'inference candidate is immutable');
 END
 ''');
     await customStatement('''
@@ -870,69 +934,80 @@ BEGIN
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_resolution_no_insert
+CREATE TRIGGER terminal_resolution_no_insert
 BEFORE INSERT ON object_resolutions
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = NEW.session_id AND state = 'completed'
+  WHERE session_id = NEW.session_id AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout resolutions are immutable');
+  SELECT RAISE(ABORT, 'terminal checkout resolutions are immutable');
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_resolution_no_update
+CREATE TRIGGER terminal_resolution_no_update
 BEFORE UPDATE ON object_resolutions
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = OLD.session_id AND state = 'completed'
+  WHERE session_id IN (OLD.session_id, NEW.session_id) AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout resolutions are immutable');
+  SELECT RAISE(ABORT, 'terminal checkout resolutions are immutable');
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_resolution_no_delete
+CREATE TRIGGER terminal_resolution_no_delete
 BEFORE DELETE ON object_resolutions
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = OLD.session_id AND state = 'completed'
+  WHERE session_id = OLD.session_id AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout resolutions are immutable');
+  SELECT RAISE(ABORT, 'terminal checkout resolutions are immutable');
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_draft_line_no_insert
+CREATE TRIGGER terminal_draft_line_no_insert
 BEFORE INSERT ON draft_order_lines
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = NEW.session_id AND state = 'completed'
+  WHERE session_id = NEW.session_id AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout draft is immutable');
+  SELECT RAISE(ABORT, 'terminal checkout draft is immutable');
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_draft_line_no_update
+CREATE TRIGGER terminal_draft_line_no_update
 BEFORE UPDATE ON draft_order_lines
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = OLD.session_id AND state = 'completed'
+  WHERE session_id IN (OLD.session_id, NEW.session_id) AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout draft is immutable');
+  SELECT RAISE(ABORT, 'terminal checkout draft is immutable');
 END
 ''');
     await customStatement('''
-CREATE TRIGGER completed_draft_line_no_delete
+CREATE TRIGGER terminal_draft_line_no_delete
 BEFORE DELETE ON draft_order_lines
 WHEN EXISTS (
   SELECT 1 FROM checkout_sessions
-  WHERE session_id = OLD.session_id AND state = 'completed'
+  WHERE session_id = OLD.session_id AND state <> 'active'
 )
 BEGIN
-  SELECT RAISE(ABORT, 'completed checkout draft is immutable');
+  SELECT RAISE(ABORT, 'terminal checkout draft is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER terminal_final_order_no_insert
+BEFORE INSERT ON final_orders
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = NEW.session_id AND state <> 'active'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'terminal checkout cannot gain a final order');
 END
 ''');
     await customStatement('''
@@ -947,6 +1022,20 @@ CREATE TRIGGER final_order_no_delete
 BEFORE DELETE ON final_orders
 BEGIN
   SELECT RAISE(ABORT, 'final order is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER terminal_final_line_no_insert
+BEFORE INSERT ON final_order_lines
+WHEN EXISTS (
+  SELECT 1
+  FROM final_orders AS final_order
+  JOIN checkout_sessions AS session
+    ON session.session_id = final_order.session_id
+  WHERE final_order.order_id = NEW.order_id AND session.state <> 'active'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'terminal checkout cannot gain final order lines');
 END
 ''');
     await customStatement('''
@@ -971,6 +1060,17 @@ CREATE TRIGGER final_order_line_no_delete
 BEFORE DELETE ON final_order_lines
 BEGIN
   SELECT RAISE(ABORT, 'final order line is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER terminal_payment_no_insert
+BEFORE INSERT ON simulated_payments
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = NEW.session_id AND state <> 'active'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'terminal checkout cannot gain a payment');
 END
 ''');
     await customStatement('''
