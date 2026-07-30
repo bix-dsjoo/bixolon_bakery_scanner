@@ -12,9 +12,12 @@ void main() {
   testWidgets(
     'leads with customer sale facts and keeps technical mapping advanced',
     (tester) async {
-      final database = openInMemoryBakeryDatabase();
-      await CatalogSeed(database).installIfEmpty();
-      addTearDown(database.close);
+      final database = (await tester.runAsync(() async {
+        final database = openInMemoryBakeryDatabase();
+        await CatalogSeed(database).installIfEmpty();
+        return database;
+      }))!;
+      addTearDown(() => tester.runAsync(database.close));
       final service = ProductManagementService(
         database: database,
         createId: () => 'unused',
@@ -30,19 +33,26 @@ void main() {
       expect(find.textContaining('AI 연결됨'), findsWidgets);
       expect(find.text('Model SKU mapping'), findsNothing);
       await tester.tap(find.text('상세 정보').first);
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.text('Model SKU mapping'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
     },
   );
 
   testWidgets('editor exposes SKU and trusted-photo intake controls', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(1280, 1600));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final database = openInMemoryBakeryDatabase();
-    await CatalogSeed(database).installIfEmpty();
-    addTearDown(database.close);
+    tester.view.physicalSize = const Size(1280, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final database = (await tester.runAsync(() async {
+      final database = openInMemoryBakeryDatabase();
+      await CatalogSeed(database).installIfEmpty();
+      return database;
+    }))!;
+    addTearDown(() => tester.runAsync(database.close));
     final service = ProductManagementService(
       database: database,
       createId: () => 'unused',
@@ -63,5 +73,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('직접 선택 전용'), findsWidgets);
     expect(find.text('SKU 20'), findsOneWidget);
+    await tester.tap(find.text('SKU 20'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 }

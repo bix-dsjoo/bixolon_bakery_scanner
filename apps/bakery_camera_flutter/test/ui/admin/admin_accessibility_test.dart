@@ -29,27 +29,78 @@ void main() {
     'admin panels remain keyboard-readable at kiosk dimensions and 200 percent text',
     (tester) async {
       final semantics = tester.ensureSemantics();
+      final database = (await tester.runAsync(() async {
+        final database = openInMemoryBakeryDatabase();
+        await CatalogSeed(database).installIfEmpty();
+        return database;
+      }))!;
+      addTearDown(() => tester.runAsync(database.close));
+      final products = ProductManagementService(
+        database: database,
+        createId: () => 'accessibility-catalog-v2',
+        now: () => DateTime.utc(2026, 7, 30),
+      );
       for (final size in const [Size(1024, 720), Size(1280, 820)]) {
         tester.view.physicalSize = size;
         tester.view.devicePixelRatio = 1;
         for (final scale in const [1.0, 2.0]) {
-          await tester.pumpWidget(_app(_dashboard(), scale: scale));
-          await tester.pumpAndSettle();
-          expect(tester.takeException(), isNull, reason: '$size / $scale');
-          _expectMinimumTargets(tester);
-          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-          await tester.pump();
-          expect(tester.binding.focusManager.primaryFocus, isNotNull);
-
-          await tester.pumpWidget(_app(_detail(), scale: scale));
-          await tester.pumpAndSettle();
-          expect(find.byType(ListView), findsWidgets);
-          expect(tester.takeException(), isNull);
-
-          await tester.pumpWidget(_app(_settings(), scale: scale));
-          await tester.pumpAndSettle();
-          await _scrollTo(tester, find.byKey(const Key('retention-preview')));
-          expect(find.byKey(const Key('retention-preview')), findsOneWidget);
+          for (final surface in <_AdminSurface>[
+            _AdminSurface('dashboard', _dashboard),
+            _AdminSurface('detail', _detail),
+            _AdminSurface('review', _review),
+            _AdminSurface(
+              'products',
+              () => ProductManagementScreen(service: products),
+            ),
+            _AdminSurface('diagnostics', _diagnostics),
+            _AdminSurface('settings', _settings),
+          ]) {
+            await tester.pumpWidget(_app(surface.build(), scale: scale));
+            await tester.pumpAndSettle();
+            expect(
+              tester.takeException(),
+              isNull,
+              reason: '${surface.name}: $size / $scale',
+            );
+            expect(
+              find.bySemanticsLabel(RegExp(r'[가-힣]')),
+              findsWidgets,
+              reason: '${surface.name} exposes Korean semantics',
+            );
+            _expectMinimumTargets(tester);
+            await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+            await tester.pump();
+            expect(
+              tester.binding.focusManager.primaryFocus?.hasFocus,
+              isTrue,
+              reason: '${surface.name} has visible keyboard focus',
+            );
+            if (surface.name == 'detail') {
+              expect(find.byType(SelectableText), findsWidgets);
+            }
+            if (surface.name == 'products') {
+              expect(find.byType(ExpansionTile), findsWidgets);
+              await tester.tap(find.byType(ExpansionTile).first);
+              await tester.pumpAndSettle();
+              expect(find.text('Model SKU mapping'), findsOneWidget);
+            }
+            if (surface.name == 'review') {
+              expect(
+                find.byKey(const Key('review-inbox-session-1')),
+                findsOneWidget,
+              );
+            }
+            if (surface.name == 'settings') {
+              await _scrollTo(
+                tester,
+                find.byKey(const Key('retention-preview')),
+              );
+              expect(
+                find.byKey(const Key('retention-preview')),
+                findsOneWidget,
+              );
+            }
+          }
         }
       }
       addTearDown(tester.view.resetPhysicalSize);
@@ -61,9 +112,12 @@ void main() {
   testWidgets('admin golden surfaces match reviewed desktop layouts', (
     tester,
   ) async {
-    final database = openInMemoryBakeryDatabase();
-    addTearDown(database.close);
-    await CatalogSeed(database).installIfEmpty();
+    final database = (await tester.runAsync(() async {
+      final database = openInMemoryBakeryDatabase();
+      await CatalogSeed(database).installIfEmpty();
+      return database;
+    }))!;
+    addTearDown(() => tester.runAsync(database.close));
     final products = ProductManagementService(
       database: database,
       createId: () => 'golden-catalog-v2',
@@ -150,6 +204,13 @@ Widget _settings() => SettingsScreen(
   settings: _SettingsRepository(),
   retention: _RetentionRepository(),
 );
+
+final class _AdminSurface {
+  const _AdminSurface(this.name, this.build);
+
+  final String name;
+  final Widget Function() build;
+}
 
 Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
   tester.view.physicalSize = const Size(1280, 820);

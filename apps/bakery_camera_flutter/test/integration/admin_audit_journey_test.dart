@@ -10,6 +10,8 @@ import 'package:bakery_camera_prototype/src/admin/review_models.dart';
 import 'package:bakery_camera_prototype/src/admin/review_service.dart';
 import 'package:bakery_camera_prototype/src/admin/settings_models.dart';
 import 'package:bakery_camera_prototype/src/admin/settings_service.dart';
+import 'package:bakery_camera_prototype/src/app/app_mode_controller.dart';
+import 'package:bakery_camera_prototype/src/app/app_mode_surface.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/persistence/database_admin_repository.dart';
 import 'package:crypto/crypto.dart';
@@ -21,7 +23,9 @@ void main() {
   test(
     'admin audit journey preserves inference while recording review, catalog, settings, and ready reset',
     () async {
-      final fixture = await CustomerCheckoutJourneyFixture.create();
+      final fixture = await CustomerCheckoutJourneyFixture.create(
+        includeUnchangedRegisteredObject: true,
+      );
       addTearDown(fixture.dispose);
 
       await fixture.controller.initialize();
@@ -35,6 +39,14 @@ void main() {
       );
       await fixture.controller.addManualProduct('croissant');
       await fixture.controller.pay();
+      expect(fixture.controller.state.phase, CheckoutPhase.paymentComplete);
+      final modes = AppModeController(
+        customerLifecycle: CheckoutCustomerModeLifecycle(fixture.controller),
+      );
+      addTearDown(modes.dispose);
+      expect(modes.mode, AppMode.customer);
+      expect(await modes.enterAdmin(abandonConfirmed: true), isTrue);
+      expect(modes.mode, AppMode.admin);
       expect(fixture.controller.state.phase, CheckoutPhase.paymentComplete);
 
       final session = await fixture.database
@@ -85,11 +97,16 @@ void main() {
       );
       expect(
         detail.resolutions.map((row) => row.source),
-        containsAll(<String>['customer_top3', 'customer_overrode_auto']),
+        containsAll(<String>[
+          'ai_auto_customer_accepted',
+          'customer_top3',
+          'customer_overrode_auto',
+        ]),
       );
       expect(
         detail.order!.lines.map((line) => line.resolutionSource),
         containsAll(<String>[
+          'ai_auto_customer_accepted',
           'customer_top3',
           'customer_overrode_auto',
           'customer_manual_cart',
@@ -220,7 +237,8 @@ void main() {
       final preview = await retention.preview(DateTime.utc(2026, 7, 1));
       expect(preview.files, isEmpty);
 
-      await fixture.controller.startNextCustomer();
+      await modes.exitAdmin();
+      expect(modes.mode, AppMode.customer);
       expect(fixture.controller.state.phase, CheckoutPhase.ready);
       expect(await settings.current(), isNotNull);
     },

@@ -39,7 +39,9 @@ final class CustomerCheckoutJourneyFixture {
   final Directory _temporaryDirectory;
   bool customerReturnedToReady = false;
 
-  static Future<CustomerCheckoutJourneyFixture> create() async {
+  static Future<CustomerCheckoutJourneyFixture> create({
+    bool includeUnchangedRegisteredObject = false,
+  }) async {
     final temporaryDirectory = await Directory.systemTemp.createTemp(
       'customer-checkout-journey-',
     );
@@ -66,7 +68,9 @@ final class CustomerCheckoutJourneyFixture {
       createId: (_) => _uuid(++nextId),
       now: () => DateTime.utc(2026, 7, 30, 12),
     );
-    final result = buildUiInferenceResult();
+    final result = buildUiInferenceResult(
+      includeUnchangedRegisteredObject: includeUnchangedRegisteredObject,
+    );
     final receiptJson = canonicalInferenceReceiptJson(
       result: result,
       runtimeSnapshot: runtime,
