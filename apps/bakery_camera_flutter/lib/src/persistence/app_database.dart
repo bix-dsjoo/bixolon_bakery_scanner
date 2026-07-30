@@ -229,11 +229,16 @@ CHECK (
   (status = 'staged' AND canonical_width IS NULL AND canonical_height IS NULL
     AND receipt_relative_path IS NULL AND receipt_byte_size IS NULL
     AND receipt_sha256 IS NULL)
-  OR
-  (status = 'completed' AND canonical_width > 0 AND canonical_height > 0
-    AND length(receipt_relative_path) > 0 AND receipt_byte_size > 0
-    AND length(receipt_sha256) = 64
+  OR (status = 'completed'
+    AND canonical_width IS NOT NULL AND canonical_width > 0
+    AND canonical_height IS NOT NULL AND canonical_height > 0
+    AND receipt_relative_path IS NOT NULL
+    AND length(receipt_relative_path) > 0
+    AND receipt_byte_size IS NOT NULL AND receipt_byte_size > 0
+    AND receipt_sha256 IS NOT NULL AND length(receipt_sha256) = 64
+    AND presentation_policy_id IS NOT NULL
     AND length(presentation_policy_id) > 0
+    AND presentation_policy_sha256 IS NOT NULL
     AND length(presentation_policy_sha256) = 64)
 )''',
     '''
@@ -244,7 +249,9 @@ CHECK (
     AND receipt_relative_path NOT GLOB '\\*'
     AND receipt_relative_path NOT LIKE '%:%'
     AND receipt_relative_path NOT LIKE '%..%'
+    AND receipt_sha256 IS NOT NULL
     AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+    AND presentation_policy_sha256 IS NOT NULL
     AND presentation_policy_sha256 NOT GLOB '*[^0-9a-f]*'
   )
 )''',
@@ -289,26 +296,40 @@ CHECK (
   CASE WHEN json_valid(provenance_json) THEN
     json_type(provenance_json, '\$.detector_id') = 'text'
     AND json_type(provenance_json, '\$.repvit_artifact_id') = 'text'
+    AND json_extract(provenance_json, '\$.repvit_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.repvit_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.repvit_sha256')) = 64
     AND json_extract(provenance_json, '\$.repvit_sha256')
       NOT GLOB '*[^0-9a-f]*'
+    AND json_extract(provenance_json, '\$.repvit_manifest_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.repvit_manifest_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.repvit_manifest_sha256')) = 64
     AND json_extract(provenance_json, '\$.repvit_manifest_sha256')
       NOT GLOB '*[^0-9a-f]*'
+    AND json_extract(provenance_json, '\$.repvit_prototype_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.repvit_prototype_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.repvit_prototype_sha256')) = 64
     AND json_extract(provenance_json, '\$.repvit_prototype_sha256')
       NOT GLOB '*[^0-9a-f]*'
     AND json_type(provenance_json, '\$.dinov3_artifact_id') = 'text'
+    AND json_extract(provenance_json, '\$.dinov3_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.dinov3_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.dinov3_sha256')) = 64
     AND json_extract(provenance_json, '\$.dinov3_sha256')
       NOT GLOB '*[^0-9a-f]*'
+    AND json_extract(provenance_json, '\$.dinov3_support_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.dinov3_support_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.dinov3_support_sha256')) = 64
     AND json_extract(provenance_json, '\$.dinov3_support_sha256')
       NOT GLOB '*[^0-9a-f]*'
     AND json_type(provenance_json, '\$.calibration_id') = 'text'
+    AND json_extract(provenance_json, '\$.calibration_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.calibration_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.calibration_sha256')) = 64
     AND json_extract(provenance_json, '\$.calibration_sha256')
       NOT GLOB '*[^0-9a-f]*'
+    AND json_extract(provenance_json, '\$.preprocess_sha256') IS NOT NULL
+    AND json_type(provenance_json, '\$.preprocess_sha256') = 'text'
     AND length(json_extract(provenance_json, '\$.preprocess_sha256')) = 64
     AND json_extract(provenance_json, '\$.preprocess_sha256')
       NOT GLOB '*[^0-9a-f]*'
@@ -852,7 +873,7 @@ WHEN EXISTS (
   SELECT 1
   FROM scan_attempts AS attempt
   JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
-  WHERE attempt.attempt_id = OLD.attempt_id
+  WHERE attempt.attempt_id IN (OLD.attempt_id, NEW.attempt_id)
     AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
@@ -881,7 +902,9 @@ WHEN EXISTS (
   FROM inference_objects AS object
   JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
   JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
-  WHERE object.inference_object_id = OLD.inference_object_id
+  WHERE object.inference_object_id IN (
+    OLD.inference_object_id, NEW.inference_object_id
+  )
     AND (attempt.status = 'completed' OR session.state <> 'active')
 )
 BEGIN
@@ -1060,6 +1083,17 @@ CREATE TRIGGER final_order_line_no_delete
 BEFORE DELETE ON final_order_lines
 BEGIN
   SELECT RAISE(ABORT, 'final order line is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER payment_order_session_guard
+BEFORE INSERT ON simulated_payments
+WHEN NOT EXISTS (
+  SELECT 1 FROM final_orders
+  WHERE order_id = NEW.order_id AND session_id = NEW.session_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'payment order does not belong to session');
 END
 ''');
     await customStatement('''

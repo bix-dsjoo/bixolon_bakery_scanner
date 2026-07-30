@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:bakery_camera_prototype/src/persistence/app_database.dart';
@@ -369,6 +370,206 @@ INSERT INTO retention_events (
       throwsA(isA<Exception>()),
     );
   });
+
+  test(
+    'raw SQL cannot re-parent an inference object into a terminal session',
+    () async {
+      await _seedAttempt(db);
+      await _seedSession(db, 'session-terminal');
+      await _seedStagedAttempt(
+        db,
+        sessionId: 'session-terminal',
+        attemptId: 'attempt-terminal',
+        attemptNumber: 1,
+      );
+      await _insertInferenceObject(
+        db,
+        inferenceObjectId: 'object-move',
+        attemptId: 'attempt-1',
+        objectId: 'object-move',
+        isUnknown: false,
+      );
+      await _makeTerminal(db, 'session-terminal', 'abandoned');
+
+      await expectLater(
+        db.customStatement(
+          '''
+UPDATE inference_objects SET attempt_id = ?
+WHERE inference_object_id = ?
+''',
+          ['attempt-terminal', 'object-move'],
+        ),
+        throwsA(isA<Exception>()),
+      );
+    },
+  );
+
+  test(
+    'raw SQL cannot re-parent a candidate into a terminal session',
+    () async {
+      await _seedAttempt(db);
+      await _seedSession(db, 'session-terminal');
+      await _seedStagedAttempt(
+        db,
+        sessionId: 'session-terminal',
+        attemptId: 'attempt-terminal',
+        attemptNumber: 1,
+      );
+      await _insertInferenceObject(
+        db,
+        inferenceObjectId: 'object-active',
+        attemptId: 'attempt-1',
+        objectId: 'object-active',
+        isUnknown: true,
+      );
+      await _insertInferenceObject(
+        db,
+        inferenceObjectId: 'object-terminal',
+        attemptId: 'attempt-terminal',
+        objectId: 'object-terminal',
+        isUnknown: true,
+      );
+      await db
+          .into(db.inferenceCandidates)
+          .insert(
+            InferenceCandidatesCompanion.insert(
+              inferenceCandidateId: 'candidate-move',
+              inferenceObjectId: 'object-active',
+              rank: 1,
+              skuId: 10,
+              skuName: 'Candidate',
+              score: 0.8,
+            ),
+          );
+      await _makeTerminal(db, 'session-terminal', 'interrupted');
+
+      await expectLater(
+        db.customStatement(
+          '''
+UPDATE inference_candidates SET inference_object_id = ?
+WHERE inference_candidate_id = ?
+''',
+          ['object-terminal', 'candidate-move'],
+        ),
+        throwsA(isA<Exception>()),
+      );
+    },
+  );
+
+  test(
+    'raw SQL rejects a payment whose order belongs to another session',
+    () async {
+      await _seedAttempt(db);
+      await _seedSession(db, 'session-active');
+      await db
+          .into(db.finalOrders)
+          .insert(
+            FinalOrdersCompanion.insert(
+              orderId: 'order-terminal',
+              sessionId: 'session-1',
+              catalogRevisionId: 'catalog-v1',
+              createdAtUs: 5,
+              totalQuantity: 1,
+              totalAmountKrw: 2800,
+              receiptRelativePath: 'sessions/session-1/final-order.json',
+              receiptByteSize: 42,
+              receiptSha256: _hash('6'),
+            ),
+          );
+      await _makeTerminal(db, 'session-1', 'completed');
+
+      await expectLater(
+        db.customStatement(
+          '''
+INSERT INTO simulated_payments (
+  payment_id, order_id, session_id, amount_krw, currency, provider,
+  status, final_order_sha256, paid_at_us
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+''',
+          [
+            'payment-mismatched',
+            'order-terminal',
+            'session-active',
+            2800,
+            'KRW',
+            'simulated',
+            'approved',
+            _hash('6'),
+            6,
+          ],
+        ),
+        throwsA(isA<Exception>()),
+      );
+    },
+  );
+
+  test(
+    'raw SQL rejects a completed attempt missing its receipt path',
+    () async {
+      await _seedAttempt(db);
+
+      await expectLater(
+        _insertRawCompletedAttempt(
+          db,
+          attemptId: 'attempt-missing-path',
+          attemptNumber: 2,
+          receiptRelativePath: null,
+          receiptSha256: _hash('5'),
+        ),
+        throwsA(isA<Exception>()),
+      );
+    },
+  );
+
+  test(
+    'raw SQL rejects a completed attempt missing its receipt hash',
+    () async {
+      await _seedAttempt(db);
+
+      await expectLater(
+        _insertRawCompletedAttempt(
+          db,
+          attemptId: 'attempt-missing-hash',
+          attemptNumber: 2,
+          receiptRelativePath:
+              'sessions/session-1/attempt-missing-hash.inference.json',
+          receiptSha256: null,
+        ),
+        throwsA(isA<Exception>()),
+      );
+    },
+  );
+
+  test('raw SQL rejects provenance missing a required SHA key', () async {
+    await _seedAttempt(db);
+
+    await expectLater(
+      db.customStatement(
+        '''
+INSERT INTO inference_objects (
+  inference_object_id, attempt_id, object_id, sku_id, sku_name,
+  decision_path, confidence, bbox_json, detector_source, detector_score,
+  provenance_json, unknown_reason
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+''',
+        [
+          'object-missing-sha',
+          'attempt-1',
+          'object-missing-sha',
+          7,
+          'Registered SKU',
+          'repvit_direct',
+          0.9,
+          '[10,20,100,150]',
+          'rfdetr_large_bakery_v1',
+          0.95,
+          _provenanceJson(includeRepvitSha256: false),
+          null,
+        ],
+      ),
+      throwsA(isA<Exception>()),
+    );
+  });
 }
 
 Future<void> _seedAttempt(BakeryDatabase db) async {
@@ -426,6 +627,122 @@ Future<void> _seedSession(BakeryDatabase db, String sessionId) async {
           configSnapshotJson: '{"pipeline":"canonical_cpu"}',
         ),
       );
+}
+
+Future<void> _seedStagedAttempt(
+  BakeryDatabase db, {
+  required String sessionId,
+  required String attemptId,
+  required int attemptNumber,
+}) {
+  return db
+      .into(db.scanAttempts)
+      .insert(
+        ScanAttemptsCompanion.insert(
+          attemptId: attemptId,
+          sessionId: sessionId,
+          attemptNumber: attemptNumber,
+          capturedAtUs: 3,
+          imageRelativePath: 'sessions/$sessionId/$attemptId.jpg',
+          imageByteSize: 42,
+          imageSha256: _hash('4'),
+          status: 'staged',
+        ),
+      );
+}
+
+Future<void> _insertInferenceObject(
+  BakeryDatabase db, {
+  required String inferenceObjectId,
+  required String attemptId,
+  required String objectId,
+  required bool isUnknown,
+}) {
+  return db
+      .into(db.inferenceObjects)
+      .insert(
+        InferenceObjectsCompanion.insert(
+          inferenceObjectId: inferenceObjectId,
+          attemptId: attemptId,
+          objectId: objectId,
+          skuId: Value(isUnknown ? null : 7),
+          skuName: isUnknown ? 'Unknown' : 'Registered SKU',
+          decisionPath: isUnknown ? 'unknown_top3' : 'repvit_direct',
+          confidence: 0.9,
+          bboxJson: '[10,20,100,150]',
+          detectorSource: 'rfdetr_large_bakery_v1',
+          detectorScore: 0.95,
+          provenanceJson: _provenanceJson(),
+          unknownReason: Value(isUnknown ? 'ambiguous' : null),
+        ),
+      );
+}
+
+Future<void> _makeTerminal(BakeryDatabase db, String sessionId, String state) {
+  return (db.update(
+    db.checkoutSessions,
+  )..where((row) => row.sessionId.equals(sessionId))).write(
+    CheckoutSessionsCompanion(
+      state: Value(state),
+      terminalAtUs: const Value(10),
+      terminalReason: Value('$state-for-test'),
+    ),
+  );
+}
+
+Future<void> _insertRawCompletedAttempt(
+  BakeryDatabase db, {
+  required String attemptId,
+  required int attemptNumber,
+  required String? receiptRelativePath,
+  required String? receiptSha256,
+}) {
+  return db.customStatement(
+    '''
+INSERT INTO scan_attempts (
+  attempt_id, session_id, attempt_number, captured_at_us,
+  image_relative_path, image_byte_size, image_sha256, status,
+  canonical_width, canonical_height, receipt_relative_path,
+  receipt_byte_size, receipt_sha256, presentation_policy_id,
+  presentation_policy_sha256
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+''',
+    [
+      attemptId,
+      'session-1',
+      attemptNumber,
+      4,
+      'sessions/session-1/$attemptId.jpg',
+      42,
+      _hash('4'),
+      'completed',
+      1920,
+      1080,
+      receiptRelativePath,
+      42,
+      receiptSha256,
+      'presentation-v1',
+      _hash('3'),
+    ],
+  );
+}
+
+String _provenanceJson({bool includeRepvitSha256 = true}) {
+  return jsonEncode({
+    'detector_id': 'rfdetr_large_bakery_v1',
+    'repvit_artifact_id': 'repvit_m1_15plus5_v1',
+    if (includeRepvitSha256) 'repvit_sha256': _hash('c'),
+    'repvit_manifest_sha256': _hash('d'),
+    'repvit_prototype_sha256': _hash('e'),
+    'dinov3_artifact_id': 'dinov3_vits16_15plus5_v1',
+    'dinov3_sha256': _hash('f'),
+    'dinov3_support_sha256': _hash('0'),
+    'calibration_id': 'calibration-v1',
+    'calibration_sha256': _hash('1'),
+    'preprocess_sha256': _hash('2'),
+    'canonical_frame_version': 'exif_visual_rgb_v1',
+    'exif_orientation': 1,
+  });
 }
 
 String _hash(String character) => character * 64;
