@@ -73,7 +73,248 @@ void main() {
     expect(find.text('session-new'), findsOneWidget);
     expect(find.text('session-old-page'), findsNothing);
   });
+
+  testWidgets(
+    'history ignores a stale reload error after a newer filter result',
+    (tester) async {
+      final repository = _ReloadErrorRaceRepository();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildBakeryTheme(),
+          home: TransactionHistoryScreen(repository: repository),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('transaction-filter-session')),
+        'old',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('transaction-filter-session')),
+        'new',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      repository.completeOldError();
+      await tester.pumpAndSettle();
+
+      expect(find.text('session-new'), findsOneWidget);
+      expect(find.byKey(const Key('transaction-reload-error')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('history ignores a stale load-more error after a filter reload', (
+    tester,
+  ) async {
+    final repository = _LoadMoreErrorRaceRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: TransactionHistoryScreen(repository: repository),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('transaction-load-more')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('transaction-filter-session')),
+      'new',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    repository.completeLoadMoreError();
+    await tester.pumpAndSettle();
+
+    expect(find.text('session-new'), findsOneWidget);
+    expect(find.byKey(const Key('transaction-load-more-error')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('history ignores a reload error after it is disposed', (
+    tester,
+  ) async {
+    final repository = _DeferredInitialRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: TransactionHistoryScreen(repository: repository),
+      ),
+    );
+    await tester.pump();
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    repository.completeError();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'history shows retryable reload and load-more errors after busy recovery',
+    (tester) async {
+      final repository = _CurrentErrorRepository();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildBakeryTheme(),
+          home: TransactionHistoryScreen(repository: repository),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('transaction-reload-error')), findsOneWidget);
+      expect(find.byKey(const Key('transaction-retry-reload')), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const Key('transaction-retry-reload')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(find.byKey(const Key('transaction-retry-reload')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('transaction-load-more')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('transaction-load-more-error')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('transaction-load-more')), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const Key('transaction-load-more')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+    },
+  );
 }
+
+final class _ReloadErrorRaceRepository implements TransactionAuditRepository {
+  final _old = Completer<TransactionPage>();
+  var _requestCount = 0;
+
+  void completeOldError() =>
+      _old.completeError(StateError('old reload failed'));
+
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<TransactionPage> transactions(
+    TransactionFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  }) {
+    _requestCount++;
+    if (_requestCount == 1) {
+      return Future.value(TransactionPage(items: [_item('session-first')]));
+    }
+    if (filter.sessionQuery == 'old') return _old.future;
+    return Future.value(TransactionPage(items: [_item('session-new')]));
+  }
+}
+
+final class _LoadMoreErrorRaceRepository implements TransactionAuditRepository {
+  final _more = Completer<TransactionPage>();
+  var _initialServed = false;
+
+  void completeLoadMoreError() =>
+      _more.completeError(StateError('more failed'));
+
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<TransactionPage> transactions(
+    TransactionFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  }) {
+    if (!_initialServed) {
+      _initialServed = true;
+      return Future.value(
+        TransactionPage(
+          items: [_item('session-first')],
+          nextCursor: PageCursor(
+            startedAt: DateTime.utc(2026),
+            sessionId: 'first',
+          ),
+        ),
+      );
+    }
+    if (after != null) return _more.future;
+    return Future.value(TransactionPage(items: [_item('session-new')]));
+  }
+}
+
+final class _DeferredInitialRepository implements TransactionAuditRepository {
+  final _initial = Completer<TransactionPage>();
+  void completeError() => _initial.completeError(StateError('disposed'));
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) =>
+      throw UnimplementedError();
+  @override
+  Future<TransactionPage> transactions(
+    TransactionFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  }) => _initial.future;
+}
+
+final class _CurrentErrorRepository implements TransactionAuditRepository {
+  var _attempt = 0;
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) =>
+      throw UnimplementedError();
+  @override
+  Future<TransactionPage> transactions(
+    TransactionFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  }) {
+    _attempt++;
+    if (_attempt == 1) return Future.error(StateError('reload failed'));
+    if (after == null) {
+      return Future.value(
+        TransactionPage(
+          items: [_item('session-recovered')],
+          nextCursor: PageCursor(
+            startedAt: DateTime.utc(2026),
+            sessionId: 'recovered',
+          ),
+        ),
+      );
+    }
+    return Future.error(StateError('load more failed'));
+  }
+}
+
+TransactionListItem _item(String sessionId) => TransactionListItem(
+  sessionId: sessionId,
+  startedAt: DateTime.utc(2026),
+  terminalState: 'completed',
+  breadCount: 1,
+  finalAmountKrw: 1000,
+  scanAttemptCount: 1,
+  resolutionSources: const [],
+  hasUnknown: false,
+  hasRetake: false,
+  hasFailure: false,
+);
 
 final class _RacingRepository implements TransactionAuditRepository {
   final _more = Completer<TransactionPage>();

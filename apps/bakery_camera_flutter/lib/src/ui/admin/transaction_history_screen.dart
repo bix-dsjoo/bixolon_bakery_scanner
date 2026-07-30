@@ -20,6 +20,8 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   PageCursor? _nextCursor;
   bool _isLoading = true;
   bool _isLoadingMore = false;
+  Object? _reloadError;
+  Object? _loadMoreError;
   int _requestGeneration = 0;
 
   @override
@@ -29,50 +31,79 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   }
 
   Future<void> _reload() async {
+    if (!mounted) return;
     final generation = ++_requestGeneration;
     final filter = _filter;
+    if (!_isCurrentReload(generation, filter)) return;
     setState(() {
       _isLoading = true;
       _isLoadingMore = false;
+      _reloadError = null;
+      _loadMoreError = null;
     });
-    final page = await widget.repository.transactions(filter, null);
-    if (!mounted ||
-        generation != _requestGeneration ||
-        !identical(filter, _filter)) {
-      return;
+    try {
+      final page = await widget.repository.transactions(filter, null);
+      if (!_isCurrentReload(generation, filter)) return;
+      setState(() {
+        _items
+          ..clear()
+          ..addAll(page.items);
+        _nextCursor = page.nextCursor;
+        _isLoading = false;
+        _isLoadingMore = false;
+        _reloadError = null;
+        _loadMoreError = null;
+      });
+    } catch (error) {
+      if (!_isCurrentReload(generation, filter)) return;
+      setState(() {
+        _isLoading = false;
+        _isLoadingMore = false;
+        _reloadError = error;
+      });
     }
-    setState(() {
-      _items
-        ..clear()
-        ..addAll(page.items);
-      _nextCursor = page.nextCursor;
-      _isLoading = false;
-    });
   }
 
   Future<void> _loadMore() async {
     final cursor = _nextCursor;
-    if (cursor == null || _isLoadingMore) return;
+    if (cursor == null || _isLoading || _isLoadingMore || !mounted) return;
     final generation = _requestGeneration;
     final filter = _filter;
-    setState(() => _isLoadingMore = true);
-    final page = await widget.repository.transactions(filter, cursor);
-    if (!mounted ||
-        generation != _requestGeneration ||
-        !identical(filter, _filter) ||
-        !identical(cursor, _nextCursor)) {
-      return;
-    }
+    if (!_isCurrentLoadMore(generation, filter, cursor)) return;
     setState(() {
-      _items.addAll(page.items);
-      _nextCursor = page.nextCursor;
-      _isLoadingMore = false;
+      _isLoadingMore = true;
+      _loadMoreError = null;
     });
+    try {
+      final page = await widget.repository.transactions(filter, cursor);
+      if (!_isCurrentLoadMore(generation, filter, cursor)) return;
+      setState(() {
+        _items.addAll(page.items);
+        _nextCursor = page.nextCursor;
+        _isLoadingMore = false;
+        _loadMoreError = null;
+      });
+    } catch (error) {
+      if (!_isCurrentLoadMore(generation, filter, cursor)) return;
+      setState(() {
+        _isLoadingMore = false;
+        _loadMoreError = error;
+      });
+    }
   }
+
+  bool _isCurrentReload(int generation, TransactionFilter filter) =>
+      mounted && generation == _requestGeneration && identical(filter, _filter);
+
+  bool _isCurrentLoadMore(
+    int generation,
+    TransactionFilter filter,
+    PageCursor cursor,
+  ) => _isCurrentReload(generation, filter) && identical(cursor, _nextCursor);
 
   @override
   Widget build(BuildContext context) => Material(
-    child: _isLoading
+    child: _isLoading && _items.isEmpty
         ? const Center(child: CircularProgressIndicator())
         : Column(
             children: [
@@ -85,31 +116,53 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
               ),
               const SizedBox(height: 16),
               Expanded(
-                child: _items.isEmpty
+                child: _items.isEmpty && _reloadError == null
                     ? const Center(child: Text('조건에 맞는 거래가 없습니다'))
                     : ListView.separated(
                         itemCount:
-                            _items.length + (_nextCursor == null ? 0 : 1),
+                            _items.length +
+                            (_nextCursor == null ? 0 : 1) +
+                            (_reloadError == null ? 0 : 1),
                         separatorBuilder: (_, _) => const SizedBox(height: 8),
                         itemBuilder: (context, index) {
-                          if (index == _items.length) {
-                            return Center(
-                              child: FilledButton.tonal(
-                                key: const Key('transaction-load-more'),
-                                onPressed: _isLoadingMore ? null : _loadMore,
-                                child: _isLoadingMore
-                                    ? const SizedBox(
-                                        height: 20,
-                                        width: 20,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Text('더 보기'),
-                              ),
+                          final errorOffset = _reloadError == null ? 0 : 1;
+                          if (_reloadError != null && index == 0) {
+                            return _ReloadErrorBanner(onRetry: _reload);
+                          }
+                          final itemIndex = index - errorOffset;
+                          if (itemIndex == _items.length) {
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_loadMoreError != null)
+                                  const Padding(
+                                    padding: EdgeInsets.only(bottom: 8),
+                                    child: Text(
+                                      '추가 거래를 불러오지 못했습니다.',
+                                      key: Key('transaction-load-more-error'),
+                                    ),
+                                  ),
+                                Center(
+                                  child: FilledButton.tonal(
+                                    key: const Key('transaction-load-more'),
+                                    onPressed: _isLoading || _isLoadingMore
+                                        ? null
+                                        : _loadMore,
+                                    child: _isLoadingMore
+                                        ? const SizedBox(
+                                            height: 20,
+                                            width: 20,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Text('더 보기'),
+                                  ),
+                                ),
+                              ],
                             );
                           }
-                          final item = _items[index];
+                          final item = _items[itemIndex];
                           return _TransactionTile(
                             item: item,
                             onTap: () async {
@@ -129,6 +182,35 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
               ),
             ],
           ),
+  );
+}
+
+class _ReloadErrorBanner extends StatelessWidget {
+  const _ReloadErrorBanner({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            '거래 내역을 불러오지 못했습니다.',
+            key: Key('transaction-reload-error'),
+          ),
+          const SizedBox(height: 8),
+          FilledButton(
+            key: const Key('transaction-retry-reload'),
+            onPressed: onRetry,
+            child: const Text('다시 시도'),
+          ),
+        ],
+      ),
+    ),
   );
 }
 
