@@ -82,6 +82,7 @@ def payload_root(tmp_path: Path) -> Path:
     )
 
 
+@pytest.mark.artifact
 def test_camera_payload_contains_hashed_presentation_policy(
     payload_root: Path,
 ) -> None:

@@ -1,77 +1,127 @@
-# 빅솔론 베이커리 스캐너
+# Bixolon Bakery AI
 
-스캔 이미지에서 베이커리 SKU, 수량, 위치를 결정론적으로 추론하는
-CPU 추론 파이프라인입니다. 최종 경로는 정확성과 재현성, 그리고
-오분류를 피하는 fail-closed `Unknown` 처리를 우선합니다.
+베이커리 scan image에서 SKU, 수량, 위치를 재현 가능하게 추론하기 위한
+연구·개발 저장소입니다. 데이터 구축, 모델 학습, 실험, canonical CPU 추론,
+평가·benchmark, Windows camera app과 배포를 하나의 versioned control plane으로
+관리합니다.
 
-## 최종 CPU 파이프라인
+정확성과 재현성이 latency보다 우선이며, 근거가 acceptance rule을 통과하지
+못하면 반드시 `Unknown`으로 종료합니다.
 
-입력 이미지는 먼저 EXIF 방향을 반영하고 RGB로 변환한 canonical frame으로
-고정됩니다. 그 프레임에서 다음 순서로 실행합니다.
+## Canonical CPU pipeline
 
 ```text
-EXIF-transposed RGB canonical frame
-  -> RF-DETR-L (CPU/FP32, manifest의 보정 임계값)
-  -> RepViT-M1 직접 결정 gate
-  -> 거부된 후보에 한해 DINOv3 global + local evidence
+Input image
+  -> EXIF-transposed RGB canonical frame
+  -> RF-DETR-L (CPU/FP32, manifest calibration)
+  -> RepViT-M1 immutable direct-decision gate
+  -> conditional DINOv3 global + local evidence
   -> immutable fusion consensus
-  -> SKU 또는 Unknown
+  -> registered SKU or Unknown
 ```
 
-RF-DETR-L의 박스와 결과 위치는 canonical frame 좌표를 사용합니다. 모델,
-보정값, 전처리, support/prototype bank, fusion 정책은 구성 파일에 지정된
-SHA-256 무결성 검증을 통과해야 실행됩니다.
+- Detector threshold는
+  `models/rfdetr_large_bakery_v1/manifest.json`에서만 읽습니다.
+- RepViT direct gate가 거절한 object에만 DINOv3를 실행합니다.
+- Fusion SKU는 local Top-1과 같거나, RepViT/DINO global Top-1 consensus와
+  margin `>= 0.85`를 동시에 만족할 때만 승인합니다.
+- 등록 SKU만 SKU 합계에 포함하고 `Unknown`은 decision path·ranked evidence와
+  함께 별도 보고합니다.
+- 모델, calibration, policy, prototype/support bank는 실행 전 SHA-256 검증을
+  통과해야 합니다.
 
-RepViT 직접 결정 gate가 승인하면 그 결정이 최종 결과입니다. 직접 결정이
-거부된 경우에만 DINOv3 evidence와 fusion을 실행하며, fusion SKU는 다음 둘
-중 하나일 때만 승인됩니다.
+Composition은 `configs/pipelines/canonical_cpu.yaml`, classifier artifact binding은
+`configs/cpu_rfdetr_classifier_policy.yaml`, 저장소 전체 외부 자산 identity는
+`artifacts.lock.json`이 정의합니다.
 
-1. fusion Top-1이 DINOv3 local Top-1과 같다.
-2. fusion Top-1, RepViT Top-1, DINOv3 global Top-1이 모두 같고 fusion
-   Top-1/Top-2 margin이 0.85 이상이다.
+## Repository map
 
-이 조건을 충족하지 못하는 모든 분류 결과는 `Unknown`입니다. 임의의 등록
-SKU로 대체하지 않으며, `Unknown`은 SKU 합계와 분리해 decision path 및
-근거와 함께 보고합니다.
+| 경로 | 책임 |
+|---|---|
+| `apps/` | Flutter camera evaluator 등 사용자 application |
+| `src/bakery_scanner/` | data, detection, classification, pipelines, evaluation, benchmarking, artifact code |
+| `configs/` | pipeline/data/training/evaluation/deployment configuration |
+| `data/` | catalog, dataset manifest, split identity, synthetic fixture |
+| `models/` | model README와 manifest; weight는 외부 저장 |
+| `policies/` | Git에서 관리하는 immutable calibrated policy |
+| `experiments/` | hypothesis, resolved config, receipt, compact conclusion |
+| `benchmarks/` | protocol, reviewed baseline, locked evidence identity |
+| `tools/` | 새 운영 도구의 책임별 entry point |
+| `scripts/` | 기존 command compatibility path |
+| `deployment/` | installer와 runtime lock |
+| `tests/` | hermetic, contract, integration, artifact, GPU suite |
+| `docs/` | architecture, workflow, runbook, ADR, research/archive |
 
-## 오프라인 ZIP 실행
+상세 설계는 `docs/architecture/repository.md`, 실험 흐름은
+`docs/workflows/experiment-lifecycle.md`를 참고하세요.
 
-최종 오프라인 CPU 패키지는 `portable_rfdetr_cpu/`입니다. ZIP을 로컬 드라이브에
-압축 해제한 뒤, 해당 디렉터리에서 PowerShell을 실행합니다. Python 설치,
-패키지 설치, 네트워크, GPU는 필요하지 않습니다.
+## Quick start
+
+Python 3.11 환경에서:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Verify-Package.ps1
-powershell -ExecutionPolicy Bypass -File .\Run-CPU-Batch2.ps1
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+python -m pytest
+python -m bakery_scanner.artifacts.cli --manifest-only
 ```
 
-`portable_rfdetr_cpu/Verify-Package.ps1`는 `package-manifest.json`에 기록된
-모든 패키지 파일의 SHA-256과 CPU 전용 런타임 import를 확인합니다.
-`portable_rfdetr_cpu/Run-CPU-Batch2.ps1`는 번들 런타임으로
-`scripts/run_cpu_rfdetr_fusion.py`를 실행하고, 기본적으로
-`results/batch2-<timestamp>/`에 결과를 만듭니다. 세부 패키지 안내는
-[portable RF-DETR CPU README](portable_rfdetr_cpu/README.md)를 참고하세요.
+기본 test suite는 외부 자산 없이 실행되는 first-party test만 수집합니다.
+로컬 model/data를 materialize한 뒤 전체 artifact integration을 실행하려면:
 
-## `report.json` 계약
+```powershell
+python -m bakery_scanner.artifacts.cli
+python -m pytest -m artifact
+```
 
-실행 결과의 `report.json`은 고정 Batch2 9개 이미지에 대한 CPU 결과를 담습니다.
-검출 평가는 canonical-frame 박스를 one-to-one IoU `0.50`으로 매칭하며,
-`metrics`에는 GT, predictions, matched, FP, FN, Top-1, Top-3 및 비율이
-포함됩니다. `images`에는 이미지별 결과와 객체 결정(예측 SKU 또는 `Unknown`,
-Top-3, IoU, 사유)이 기록되고, `profiles`에는 E/M/H 그룹별 end-to-end 시간
-요약이 기록됩니다. 오버레이 이미지는 `overlays/`에 저장됩니다.
+`gpu`, `slow` suite는 각각 명시적으로 선택합니다. Test skip은 release gate 통과를
+의미하지 않습니다.
 
-성능 또는 정확도 수치는 생성된 보고서에 실제로 기록된 값만 사용해야 합니다.
+## Data and experiment workflow
 
-## 레거시 D-FINE smoke 경로
+1. `data/manifests/`와 `data/splits/`에서 dataset와 역할을 version합니다.
+2. `experiments/template/experiment.yaml`로 hypothesis와 모든 입력 identity를
+   고정합니다.
+3. Development에서 학습·탐색하고 calibration에서 threshold/policy를 선택합니다.
+4. Candidate를 freeze한 후 locked acceptance를 한 번 평가합니다.
+5. IoU `0.50` one-to-one error taxonomy와 warmed CPU E/M/H benchmark를 별도
+   기록합니다.
+6. Evidence가 baseline을 통과할 때만 새 model/policy version과 배포 package를
+   만듭니다.
 
-`portable_cpu_smoke`는 보존된 레거시 D-FINE CPU smoke 경로이며 최종 런타임이
-아닙니다. 기존 D-FINE, Box Assurance, resolver, GPU 실행 및 portable CPU smoke
-파일의 동작은 이 최종 CPU 경로 문서화로 변경하지 않습니다.
+Locked set이 선택에 사용되면 그 set은 더 이상 acceptance evidence가 아닙니다.
 
-## 설계 문서
+## Artifact and Git policy
 
-- [최종 CPU RF-DETR 문서화 설계](docs/superpowers/specs/2026-07-29-cpu-rfdetr-final-documentation-design.md)
-- [오프라인 CPU RF-DETR fusion 배포 설계](docs/superpowers/specs/2026-07-29-offline-cpu-rfdetr-fusion-deployment-design.md)
-- [RF-DETR desktop 9-image 평가 설계](docs/superpowers/specs/2026-07-29-rfdetr-desktop-nine-image-evaluation-design.md)
-- [RF-DETR fusion consensus 설계](docs/superpowers/specs/2026-07-29-rfdetr-fusion-consensus-design.md)
+Git에는 code, config, manifest, split identity, immutable policy, 작은 fixture와
+reviewed summary만 저장합니다. Dataset, checkpoint, full run, raw prediction,
+prototype/support bank, runtime, wheel, installer는 외부 artifact store에 둡니다.
+
+Git LFS는 license와 재배포 권한을 검토한
+`release-assets/models/**`와 `release-assets/prototype-banks/**`에만 제한합니다.
+일반 `*.pt`, `*.pth`, `*.onnx` wildcard LFS rule은 사용하지 않습니다. 자세한
+복구·검증 절차는 `docs/runbooks/artifacts.md`에 있습니다.
+
+## Evaluation and performance
+
+Canonical-frame box를 deterministic one-to-one IoU `0.50`으로 match하고 SKU
+error, miss, duplicate, non-target, split, merge, `Unknown`, final/GT count를
+보고합니다. CPU 성능은 warm-up 뒤 detector, crop, RepViT, conditional DINOv3,
+fusion을 포함한 E/M/H mean과 stage timing, DINO execution rate로 측정합니다.
+
+측정된 result receipt 없이 정확도나 속도 향상을 주장하지 않습니다.
+
+## Applications and deployment
+
+Windows Flutter evaluator는 `apps/bakery_camera_flutter/`, installer definition과
+runtime lock은 `deployment/camera_installer/`에 있습니다. Package builder는
+allowlist와 hash manifest를 사용하며 생성된 runtime·payload·installer는 Git에
+commit하지 않습니다.
+
+## Legacy compatibility
+
+기존 D-FINE-N → MobileNetV4 Box Assurance → conditional ConvNeXt-Tiny →
+component resolver → RepViT → conditional DINOv3 GPU pipeline은 legacy입니다.
+`portable_cpu_smoke/`와 기존 config/script/import path의 동작은 보존됩니다.
+Canonical RF-DETR 문서나 구현이 legacy 경로로 silently fallback해서는 안 됩니다.

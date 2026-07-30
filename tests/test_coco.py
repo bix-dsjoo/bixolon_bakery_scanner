@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from bakery_scanner.config import ScannerConfig
 from bakery_scanner.data.coco import load_sources, stage_single_class_dataset
 
 
+@pytest.mark.artifact
 def test_real_sources_merge_to_one_bread_class(tmp_path: Path):
     config = ScannerConfig.load(Path("configs/box_system.yaml"))
 

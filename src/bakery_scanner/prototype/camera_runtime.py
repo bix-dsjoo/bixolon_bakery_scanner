@@ -711,7 +711,7 @@ def _provenance_payload(provenance: ModelProvenance) -> dict[str, object]:
 
 
 def _load_sku_names(root: Path) -> dict[int, str]:
-    path = root / "datasets" / "classes.json"
+    path = root / "data" / "catalogs" / "classes.json"
     try:
         payload = json.loads(path.read_text("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:

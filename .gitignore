@@ -1,16 +1,46 @@
+# Python and test state
 .venv/
 .venvs/
-third_party/
-artifacts/
-acceptance_data/
 __pycache__/
+*.egg-info/
+.coverage
 .pytest_cache/
-build/
-dist/
-.worktrees/
+.ruff_cache/
+
+# Worktree-local third-party checkouts and isolated Git worktrees
+/third_party/
+/.worktrees/
+
+# External data and generated experiment/evaluation outputs
+acceptance_data/
+/artifacts/
+/data/local/
+/datasets/detection/
+/samples/
+/benchmarks/runs/
+/experiments/*/outputs/
+/experiments/*/checkpoints/
+/models/rfdetr_large_bakery_v1/calibration.json
+
+# Build, packaging, installer, and application runtime outputs
+/build/
+/dist/
+apps/**/.dart_tool/
+apps/**/build/
+apps/**/windows/flutter/ephemeral/
+deployment/**/payload/
+
+# Model/runtime binaries are external by default.
+*.bin
+*.onnx
 *.pt
 *.pth
-*.onnx
+*.whl
 *.xml
-*.bin
-*.egg-info/
+
+# Only reviewed, redistribution-cleared assets under these paths may use LFS.
+!release-assets/
+!release-assets/models/
+!release-assets/models/**
+!release-assets/prototype-banks/
+!release-assets/prototype-banks/**

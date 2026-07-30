@@ -1,121 +1,137 @@
 # AGENTS.md
 
-## Mission
+## Mission and priorities
 
-All work in this repository supports a deterministic CPU inference pipeline that
-infers bakery SKU, count, and location from a scan image. The canonical final
-path is RF-DETR-L detection, RepViT-M1 direct decision, and conditional DINOv3
-global and local evidence fusion. Accuracy, reproducibility, and a fail-closed
-`Unknown` outcome take precedence over latency.
+All work supports a deterministic pipeline that infers bakery SKU, count, and
+location from a scan image. Accuracy, reproducibility, provenance, and a
+fail-closed `Unknown` outcome take precedence over latency.
 
-Priorities are:
+Priorities, in order:
 
 1. Prevent misclassification, misses, duplicates, and non-target detections.
-2. Produce deterministic, reproducible results.
-3. Keep the CPU implementation maintainable and simple.
-4. Measure performance as end-to-end CPU latency; do not claim an improvement
-   without measured evidence.
+2. Preserve deterministic, reproducible behavior and artifact integrity.
+3. Keep the CPU implementation and responsibility boundaries maintainable.
+4. Measure end-to-end CPU latency before making performance claims.
 
-## Canonical CPU pipeline
-
-The processing contract is:
+## Canonical CPU contract
 
 ```text
 Input image
   -> EXIF-transposed RGB canonical frame
-  -> RF-DETR-L (CPU/FP32, calibrated threshold)
+  -> RF-DETR-L (CPU/FP32, calibrated manifest threshold)
   -> RepViT-M1 direct-decision gate
   -> conditional DINOv3 global + local evidence
   -> immutable fusion consensus
-  -> SKU or Unknown, aggregate and evaluation report
+  -> registered SKU or Unknown
 ```
 
 ### Input and detection
 
-- Apply EXIF transpose and convert to RGB before any model runs. This visual
-  image is the canonical coordinate frame.
-- RF-DETR-L runs on CPU in FP32. Its calibrated score threshold comes from
-  `models/rfdetr_large_bakery_v1/manifest.json`; do not hard-code a competing
+- Apply EXIF transpose and RGB conversion before any model runs. This visual
+  image is the only canonical coordinate frame.
+- Load the RF-DETR-L threshold from
+  `models/rfdetr_large_bakery_v1/manifest.json`; never hard-code a competing
   threshold.
-- Normalize detection boxes to `[x_min, y_min, x_max, y_max]` in the canonical
-  image frame. Boxes must be finite, valid, and within that image's bounds.
-- Preserve detector provenance and calibrated score with every candidate.
+- Normalize boxes to finite, valid, in-bounds
+  `[x_min, y_min, x_max, y_max]` coordinates in the canonical frame.
+- Preserve detector artifact identity, calibrated score, and provenance with
+  every candidate.
 
 ### Classification and fail-closed acceptance
 
-- Run RepViT-M1 (`repvit_m1_15plus5_v1`) on each accepted RF-DETR-L crop.
-  The runtime evaluates the RepViT direct-decision gate before conditional
-  DINOv3/fusion. A direct decision is final only when the immutable calibrated
-  direct gate accepts it.
-- Only direct-gate rejections run DINOv3 ViT-S/16
-  (`dinov3_vits16_15plus5_v1`) for both global and local evidence.
-- The fusion policy is immutable and must be loaded from the configured
-  versioned artifact. A fusion SKU is accepted only when either its ranked
-  SKU equals the local Top-1, or both model global Top-1 results equal that
-  SKU and the fusion margin is at least `0.85`.
-- Every classification result that fails its applicable direct or fusion
-  acceptance rule is `Unknown`. Never substitute an arbitrary registered SKU.
-  `Unknown` is not silently counted as a bakery SKU; report it explicitly with
-  its decision path and ranked evidence where available.
-- Use the configured CPU policy and artifacts in
-  `configs/cpu_rfdetr_classifier_policy.yaml`. Model weights, manifests,
-  prototype/support banks, preprocessing, calibration, and fusion policy must
-  pass their declared SHA-256 integrity checks before inference or evaluation.
+- Run `repvit_m1_15plus5_v1` on each accepted detector crop.
+- A direct decision is final only when the immutable calibrated RepViT gate
+  accepts it.
+- Only direct-gate rejections run `dinov3_vits16_15plus5_v1` global and local
+  evidence.
+- Load the configured immutable fusion policy. Accept its ranked SKU only when
+  it equals local Top-1, or when both model global Top-1 values equal that SKU
+  and the fusion margin is at least `0.85`.
+- Every other result is `Unknown`. Never replace it with an arbitrary
+  registered SKU, and never include it in per-SKU totals.
+- Before inference or evaluation, verify every declared model, calibration,
+  preprocessing, prototype/support bank, and policy SHA-256.
 
 ### Output and aggregation
 
-Each final object must include at least:
+Each final object includes a registered SKU or `Unknown`, canonical box,
+confidence, decision path, and enough model/calibration/policy provenance to
+reproduce the decision. Per-SKU totals equal the number of registered final
+objects; `Unknown` totals remain separate.
 
-- a registered SKU identifier or `Unknown`;
-- its canonical-frame bounding box;
-- decision confidence;
-- decision path (`repvit_direct`, conditional DINOv3/fusion, or `Unknown`);
-- enough provenance to identify the fixed model, calibration, and policy
-  artifacts used.
+## Evaluation and performance
 
-Aggregate only final registered-SKU objects. Per-SKU totals must equal the
-number of final registered objects; `Unknown` counts remain separate.
+- Use deterministic one-to-one matching at IoU `0.50` in the canonical frame.
+- Report SKU errors, misses, duplicates, non-target detections, splits, merges,
+  `Unknown`, and final-versus-ground-truth counts.
+- Keep development, calibration, and locked acceptance evidence disjoint. If a
+  locked set informs a choice, validate on a newly locked set.
+- Measure warmed end-to-end CPU latency for fixed E/M/H groups, with per-stage
+  timings and conditional-DINO execution rate.
+- Never claim a speed or accuracy improvement without a committed result
+  receipt. Never trade accuracy away solely for lower latency.
 
-## Evaluation and performance contract
+## Repository responsibility boundaries
 
-- Evaluate canonical-frame boxes with deterministic one-to-one matching at
-  IoU `0.50`. Report SKU errors, misses, duplicates, non-target detections,
-  splits, merges, `Unknown` count, and final-versus-ground-truth box counts.
-- Keep development, calibration, and locked acceptance evidence separate.
-  Do not tune models, thresholds, preprocessing, or policies on locked
-  acceptance data; if a locked set informs a decision, validate on a newly
-  locked set.
-- Report end-to-end CPU latency after warm-up, including the detector,
-  classifier, and conditional recheck. The required latency summary is the
-  mean time for fixed E/M/H image groups, together with per-stage timings and
-  conditional-DINO execution rate.
-- Do not claim a speed or accuracy gain until the relevant evaluation and CPU
-  latency results are recorded. Accuracy is never traded away merely to reduce
-  runtime.
+- `configs/pipelines/canonical_cpu.yaml` is the canonical composition.
+- `data/` owns catalogs, manifests, split identities, and synthetic fixtures.
+  Real scans and derived data are external.
+- `models/` owns documentation and manifests; weights are external.
+- `policies/` owns small immutable calibrated policies tracked by Git.
+- `experiments/` records hypotheses, resolved inputs, receipts, and compact
+  conclusions; full outputs are external.
+- `benchmarks/` owns protocols and reviewed summaries, not raw runs.
+- `src/bakery_scanner/artifacts` verifies `artifacts.lock.json`.
+- New code uses `bakery_scanner.detection`, `bakery_scanner.pipelines`, and
+  `bakery_scanner.benchmarking`. Existing namespaces remain compatibility
+  facades until an explicit migration.
+- New operational implementations go under responsibility-oriented `tools/`;
+  existing `scripts/` paths remain compatible wrappers.
 
-## Legacy pipeline preservation
+Dependencies flow from apps/tools into library contracts. Model adapters do
+not import app or deployment code. Canonical code must not silently fall back
+to legacy implementations.
 
-The previous D-FINE-N -> MobileNetV4 Box Assurance -> conditional ConvNeXt-Tiny
--> component resolver -> RepViT -> conditional DINOv3 GPU pipeline remains
-legacy (레거시) code and documentation context only. Do not delete, move, or change its
-portable CPU smoke files or its existing behavior as part of CPU RF-DETR-L
-documentation work.
+## Artifact, LFS, and public repository rules
 
-## Change and verification rules
+- Git contains source, configs, manifests, policies, split identities, tiny
+  fixtures, and reviewed compact summaries.
+- External storage contains datasets, checkpoints, raw predictions, full
+  runs, prototype/support banks, runtimes, wheels, and installers.
+- Git LFS is allowed only under `release-assets/models/` and
+  `release-assets/prototype-banks/` after redistribution and quota review.
+- Do not add a blanket LFS rule for model extensions.
+- Every external artifact is versioned by ID, byte size, SHA-256, storage
+  class, and expected local path in `artifacts.lock.json` or a stricter
+  component manifest.
+- Do not commit private, proprietary, or unapproved model/data payloads to the
+  public repository.
 
-- Limit each change to one pipeline responsibility when practical. When an
-  interface changes, update its producer and consumer tests together.
-- Version and record model, calibration, policy, preprocessing, data split,
-  seed, and artifact hashes with results. Avoid training/validation leakage.
-- Preserve pre-existing user changes and do not mix unrelated refactors.
-- Validate the changed contract with relevant unit, integration, regression,
-  evaluation, and CPU performance checks. Do not state that a release gate has
-  passed without its recorded evidence.
+## Legacy preservation
+
+The D-FINE-N → MobileNetV4 Box Assurance → conditional ConvNeXt-Tiny →
+component resolver → RepViT → conditional DINOv3 GPU path is legacy context.
+Do not delete, move, or change `portable_cpu_smoke/` files or legacy behavior
+while changing the canonical RF-DETR path. Compatibility changes require
+focused regression tests and explicit documentation.
+
+## Change workflow
+
+1. State one responsibility and its acceptance test.
+2. Write or identify the failing test before behavior changes.
+3. Change the smallest producer/consumer surface; update both sides of an
+   interface together.
+4. Record model, calibration, policy, preprocessing, data/split, seed, code,
+   and artifact hashes with results.
+5. Run hermetic unit/contract tests. Run artifact, integration, GPU, package,
+   and performance suites when their boundary changes.
+6. Treat skipped or unavailable suites as unverified, never passed.
+7. Preserve unrelated user changes and never delete the only ignored copy of
+   an artifact.
 
 ## Completion criteria
 
-Work is complete only when the requested behavior and contracts are implemented,
-the relevant automated checks pass, output SKU/count/location/confidence/path
-fields are mutually consistent, and documentation/configuration match observed
-runtime behavior. The fail-closed `Unknown` policy is part of the contract, not
-a successful SKU classification.
+Work is complete only when requested behavior is implemented, relevant checks
+pass, SKU/count/location/confidence/path fields agree, configs and docs match
+runtime behavior, and required evidence is recorded. `Unknown` is a correct
+fail-closed outcome, not a successful SKU classification.

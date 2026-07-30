@@ -22,7 +22,7 @@ runtime:
   device: CUDA:0
   precision: FP32
 calibration:
-  artifact: ../artifacts/e2e_current_source/classification/policy_v2_manifest_rebound_cpu_smoke.json
-  artifact_sha256: d3f4537e7805e1dbaf8043e4ad3d9240645ba18f8f83ab73620b64e2f4d0ecb0
-  fusion_policy: ../artifacts/e2e_current_source/classification/fusion_local_or_global_consensus_margin_v1_reference_rebound.json
+  artifact: ../policies/classification/policy_v2_manifest_rebound_cpu_smoke.json
+  artifact_sha256: 213b08c536d4a344ab115f1acf8e7fc7d6b7da87646c5ae5b39e0e2688f29221
+  fusion_policy: ../policies/classification/fusion_local_or_global_consensus_margin_v1.json
   fusion_policy_sha256: 06c692d5b35583bfd99498805da474b7e9dfa7c8c36eeed04307695f7e885dcc

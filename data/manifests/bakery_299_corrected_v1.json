@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "dataset_id": "bakery_299_corrected_v1",
+  "storage": "external",
+  "catalog": "data/catalogs/classes.json",
+  "expected_images": 299,
+  "expected_boxes": 1406,
+  "sources": [
+    {
+      "id": "group_15class",
+      "images": 90,
+      "boxes": 379,
+      "annotation_sha256_lf": "b6457c705b282b6f8440871aad8d59c41ff3129cd00ad31bfa3d10951cfd1ef9"
+    },
+    {
+      "id": "group_20class_batch01",
+      "images": 103,
+      "boxes": 506,
+      "annotation_sha256_lf": "8c2b550518ec7d0060d90bce27289c7e3f56b549f03e215722dabccaad90f22c"
+    },
+    {
+      "id": "group_20class_batch02",
+      "images": 106,
+      "boxes": 521,
+      "annotation_sha256_lf": "629ca3eeb189d7643953573dadb107ee4e0edbad4b132528e81e90669ecc5eb2"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {"id": 1, "key": "bread_01_walnut_donut", "name": "Walnut Donut", "set": "base_15class"},
+  {"id": 2, "key": "bread_02_croffle", "name": "Croffle", "set": "base_15class"},
+  {"id": 3, "key": "bread_03_waffle", "name": "Waffle", "set": "base_15class"},
+  {"id": 4, "key": "bread_04_scon", "name": "Scon", "set": "incremental_5class"},
+  {"id": 5, "key": "bread_05_half_moon_croissant", "name": "Half-moon Croissant", "set": "base_15class"},
+  {"id": 6, "key": "bread_06_croissant", "name": "Croissant", "set": "incremental_5class"},
+  {"id": 7, "key": "bread_07_flower_bread", "name": "Flower Bread", "set": "base_15class"},
+  {"id": 8, "key": "bread_08_almond_scon", "name": "Almond Scon", "set": "base_15class"},
+  {"id": 9, "key": "bread_09_dinner_roll", "name": "Dinner Roll", "set": "incremental_5class"},
+  {"id": 10, "key": "bread_10_sugar_donut", "name": "Sugar Donut", "set": "base_15class"},
+  {"id": 11, "key": "bread_11_bagel", "name": "Bagel", "set": "base_15class"},
+  {"id": 12, "key": "bread_12_egg_tart", "name": "Egg Tart", "set": "base_15class"},
+  {"id": 13, "key": "bread_13_muffin", "name": "Muffin", "set": "base_15class"},
+  {"id": 14, "key": "bread_14_burger", "name": "Burger", "set": "base_15class"},
+  {"id": 15, "key": "bread_15_sandwich", "name": "Sandwich", "set": "incremental_5class"},
+  {"id": 16, "key": "bread_16_grain_campagne", "name": "Grain Campagne", "set": "incremental_5class"},
+  {"id": 17, "key": "bread_17_almond_campagne", "name": "Almond Campagne", "set": "base_15class"},
+  {"id": 18, "key": "bread_18_mini_bread", "name": "Mini Bread", "set": "base_15class"},
+  {"id": 19, "key": "bread_19_pastry_bread", "name": "Pastry Bread", "set": "base_15class"},
+  {"id": 20, "key": "bread_20_plain_bread", "name": "Plain Bread", "set": "base_15class"}
+]

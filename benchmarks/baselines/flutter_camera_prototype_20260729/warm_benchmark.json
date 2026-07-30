@@ -1,0 +1,56 @@
+{
+  "detector_threshold": 0.5691395401954651,
+  "device": "cuda:0",
+  "image": "C:\\workspace\\bixolon_bakery_scanner\\.worktrees\\codex-flutter-camera-evaluation\\samples\\batch2_e3_m3_h3\\g20_b02_e_0301.jpg",
+  "model_ids": {
+    "detector": "rfdetr_large_bakery_v1",
+    "dinov3": "dinov3_vits16_15plus5_v1",
+    "repvit": "repvit_m1_15plus5_v1"
+  },
+  "policy_id": "fusion_local_or_global_consensus_margin_v1",
+  "run_count": 20,
+  "schema_version": 1,
+  "startup": {
+    "fallback_reason": null,
+    "load_ms": 2120.958100014832,
+    "warmup_ms": 1475.9357000002638
+  },
+  "timings_ms": {
+    "decode_preprocess": {
+      "count": 20,
+      "max": 108.79189998377115,
+      "p50": 76.19679998606443,
+      "p95": 98.68100000312552
+    },
+    "detector": {
+      "count": 20,
+      "max": 138.39470001403242,
+      "p50": 99.4094000197947,
+      "p95": 123.69910004781559
+    },
+    "dinov3": {
+      "count": 20,
+      "max": 96.05039999587461,
+      "p50": 73.30730010289699,
+      "p95": 90.40420001838356
+    },
+    "postprocess": {
+      "count": 20,
+      "max": 0.38760004099458456,
+      "p50": 0.33930002246052027,
+      "p95": 0.381199992261827
+    },
+    "repvit": {
+      "count": 20,
+      "max": 81.4323999802582,
+      "p50": 62.81659996602684,
+      "p95": 80.00020001782104
+    },
+    "total": {
+      "count": 20,
+      "max": 438.9266000362113,
+      "p50": 368.6829000362195,
+      "p95": 419.1968999803066
+    }
+  }
+}

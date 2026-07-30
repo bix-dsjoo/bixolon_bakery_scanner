@@ -21,7 +21,7 @@ from bakery_scanner.e2e.metrics import E2EImageResult, evaluate_run
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--classes", type=Path, default=Path("datasets/classes.json"))
+    parser.add_argument("--classes", type=Path, default=Path("data/catalogs/classes.json"))
     parser.add_argument("--detector-report", type=Path, default=Path("artifacts/box_system/reports/detector_only_development.json"))
     parser.add_argument("--classifier-config", type=Path, default=Path("configs/classifier_policy.yaml"))
     parser.add_argument("--output", type=Path, required=True)

@@ -427,6 +427,7 @@ def test_publish_refuses_overwrite_and_rejects_non_finite_json(tmp_path):
     assert not (tmp_path / "new").exists()
 
 
+@pytest.mark.artifact
 def test_publish_is_canonical_atomic_and_leaves_v2_fixture_bytes_unchanged(
     tmp_path,
 ):

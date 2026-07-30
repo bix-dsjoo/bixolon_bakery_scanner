@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-29T19:31:00+09:00",
+  "release": {
+    "build_status": "passed",
+    "executable": "apps/bakery_camera_flutter/build/windows/x64/runner/Release/bakery_camera_prototype.exe",
+    "executable_size_bytes": 91136,
+    "executable_sha256": "1ee94f4909e6d9f7483db6f8cff2da6f9b80ceb071d583f10a92cd343f2f1237"
+  },
+  "fixed_image": "samples/batch2_e3_m3_h3/g20_b02_e_0301.jpg",
+  "automatic_device_smoke": {
+    "status": "passed",
+    "ready_device": "cuda:0",
+    "load_ms": 2548.1685999548063,
+    "warmup_ms": 1565.9599999780767,
+    "detector_threshold": 0.5691395401954651,
+    "ping": "pong",
+    "analysis_total_ms": 457.38839998375624,
+    "object_count": 3,
+    "unknown_count": 0,
+    "shutdown": "stopped",
+    "exit_code": 0
+  },
+  "forced_cpu_smoke": {
+    "status": "passed",
+    "ready_device": "cpu",
+    "load_ms": 2366.132099996321,
+    "warmup_ms": 1023.7832000129856,
+    "detector_threshold": 0.5691395401954651,
+    "ping": "pong",
+    "analysis_total_ms": 711.4470999804325,
+    "object_count": 3,
+    "unknown_count": 0,
+    "shutdown": "stopped",
+    "exit_code": 0
+  },
+  "warm_benchmark": {
+    "status": "passed",
+    "path": "artifacts/evaluations/flutter_camera_prototype_20260729/warm_benchmark.json",
+    "sha256": "b0499df1dfc73fa2512c5e3383c03f04e24de3ca6c701ee918500adef735777c",
+    "device": "cuda:0",
+    "run_count": 20,
+    "worker_total_p50_ms": 368.6829000362195,
+    "worker_total_p95_ms": 419.1968999803066,
+    "worker_total_max_ms": 438.9266000362113
+  },
+  "connected_camera_smoke": {
+    "status": "manual_interaction_pending",
+    "detected_camera": "ABKO APC925 QHD WEBCAM",
+    "camera_device_status": "OK",
+    "app_process_started": true,
+    "app_process_responding": true,
+    "worker_process_started": true,
+    "worker_device_process_observed_by_nvidia_smi": true,
+    "live_preview": "not_observed",
+    "still_capture": "not_observed",
+    "two_consecutive_analyses": "not_observed",
+    "overlay_alignment": "not_observed",
+    "count_invariant": "not_observed",
+    "unknown_top3_invariant": "not_observed",
+    "first_press_to_result_ms": null,
+    "second_press_to_result_ms": null,
+    "reason": "The release app is running visibly on the connected-camera PC, but this session had no callable Windows UI automation entry point for pressing the camera controls. No UI interaction result is inferred from process state."
+  },
+  "accuracy_percentage_recorded": false
+}

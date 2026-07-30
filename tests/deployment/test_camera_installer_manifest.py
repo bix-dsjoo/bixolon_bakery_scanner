@@ -127,7 +127,7 @@ def test_installer_allowlist_bundles_sku_class_map() -> None:
         ).read_text(encoding="utf-8")
     )
 
-    assert "datasets/classes.json" in payload["pipeline_files"]
+    assert "data/catalogs/classes.json" in payload["pipeline_files"]
 
 
 def test_allowlist_rejects_missing_file_absolute_path_and_symlink(

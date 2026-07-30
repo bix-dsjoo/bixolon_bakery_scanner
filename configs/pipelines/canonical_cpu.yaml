@@ -1,0 +1,24 @@
+schema_version: 1
+pipeline_id: rfdetr_l_repvit_m1_dinov3_vits16_cpu
+status: canonical
+runtime:
+  device: CPU
+  precision: FP32
+  deterministic: true
+canonical_frame:
+  exif_transpose: true
+  color_mode: RGB
+detection:
+  implementation: bakery_scanner.detection.rfdetr
+  artifact_manifest: models/rfdetr_large_bakery_v1/manifest.json
+  box_format: [x_min, y_min, x_max, y_max]
+classification:
+  config: configs/cpu_rfdetr_classifier_policy.yaml
+  order:
+    - repvit_direct_gate
+    - conditional_dinov3_global_local
+    - immutable_fusion_consensus
+  reject_label: Unknown
+evaluation:
+  protocol: configs/evaluation/canonical_iou50.yaml
+artifact_lock: artifacts.lock.json

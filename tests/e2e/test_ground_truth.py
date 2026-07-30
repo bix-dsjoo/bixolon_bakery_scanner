@@ -7,11 +7,14 @@ from bakery_scanner.config import ScannerConfig
 from bakery_scanner.e2e.ground_truth import load_source_sku_ground_truth
 
 
+pytestmark = pytest.mark.artifact
+
+
 def test_source_sku_loader_accepts_current_annotation_count():
     root = Path(__file__).resolve().parents[2]
     labels = load_source_sku_ground_truth(
         ScannerConfig.load(root / "configs" / "box_system.yaml"),
-        classes_path=root / "datasets" / "classes.json",
+        classes_path=root / "data" / "catalogs" / "classes.json",
     )
 
     assert sum(len(rows) for rows in labels.values()) == 1406
@@ -21,7 +24,7 @@ def test_source_sku_loader_uses_staged_canonical_coordinates():
     root = Path(__file__).resolve().parents[2]
     config = ScannerConfig.load(root / "configs" / "e2e_current_source.yaml")
 
-    labels = load_source_sku_ground_truth(config, classes_path=root / "datasets" / "classes.json")
+    labels = load_source_sku_ground_truth(config, classes_path=root / "data" / "catalogs" / "classes.json")
 
     annotations = json.loads((config.artifact_root / "staged" / "annotations.json").read_text(encoding="utf-8"))
     expected = {

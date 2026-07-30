@@ -206,9 +206,9 @@ def class_map(tmp_path: Path) -> None:
         "Pastry Bread",
         "Plain Bread",
     )
-    dataset_dir = tmp_path / "datasets"
-    dataset_dir.mkdir(exist_ok=True)
-    (dataset_dir / "classes.json").write_text(
+    catalog_dir = tmp_path / "data" / "catalogs"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / "classes.json").write_text(
         json.dumps(
             [
                 {

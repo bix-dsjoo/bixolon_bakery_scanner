@@ -86,6 +86,7 @@ def test_preflight_names_package_relative_missing_repvit(tmp_path: Path):
         preflight_cpu_assets(assets)
 
 
+@pytest.mark.artifact
 def test_preflight_rejects_missing_dfine_worker_dependency_before_worker_starts(monkeypatch):
     """D-FINE worker imports are checked before the JSONL worker can be created."""
     root = Path(__file__).resolve().parents[2]
@@ -100,6 +101,7 @@ def test_preflight_rejects_missing_dfine_worker_dependency_before_worker_starts(
         preflight_cpu_assets(CpuSmokeAssets.from_root(root))
 
 
+@pytest.mark.artifact
 def test_rebound_cpu_smoke_policy_changes_only_manifest_metadata(monkeypatch):
     """The rebind preserves threshold semantics while fixing only stale metadata."""
     root = Path(__file__).resolve().parents[2]

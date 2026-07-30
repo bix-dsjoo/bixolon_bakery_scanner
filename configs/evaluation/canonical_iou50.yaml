@@ -1,0 +1,20 @@
+schema_version: 1
+protocol_id: canonical_iou50_v1
+coordinate_frame: exif_transposed_rgb
+matching:
+  method: deterministic_one_to_one
+  iou_threshold: 0.50
+report:
+  - sku_errors
+  - misses
+  - duplicates
+  - non_target_detections
+  - splits
+  - merges
+  - unknown_count
+  - final_box_count
+  - ground_truth_box_count
+data_roles:
+  - development
+  - calibration
+  - locked_acceptance

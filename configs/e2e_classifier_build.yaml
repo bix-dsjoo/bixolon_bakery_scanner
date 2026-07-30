@@ -22,4 +22,4 @@ runtime:
   device: CUDA:0
   precision: FP32
 calibration:
-  artifact: ../artifacts/e2e_current_source/classification/policy_fail_closed.json
+  artifact: ../policies/classification/policy_fail_closed_v2.json

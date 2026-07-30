@@ -51,6 +51,7 @@ def test_manifest_scopes_real_cpu_runtime_and_exactly_nine_samples() -> None:
     ]
 
 
+@pytest.mark.artifact
 def test_manifest_paths_exist_and_do_not_include_full_datasets() -> None:
     """Catch stale manifest entries before an operator receives an unusable ZIP."""
     manifest = _manifest()

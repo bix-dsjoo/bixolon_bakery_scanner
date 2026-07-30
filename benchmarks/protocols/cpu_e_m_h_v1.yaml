@@ -1,0 +1,14 @@
+schema_version: 1
+protocol_id: cpu_e_m_h_v1
+device: CPU
+precision: FP32
+warmup:
+  required: true
+groups:
+  E: 3
+  M: 3
+  H: 3
+report:
+  aggregate: mean
+  stages: [canonical, detector, crop, repvit, dinov3, fusion, total]
+  include_conditional_dino_execution_rate: true

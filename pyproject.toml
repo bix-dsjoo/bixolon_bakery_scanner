@@ -24,6 +24,19 @@ dev = ["pytest>=9.1,<10", "pytest-cov>=7.1,<8"]
 
 [project.scripts]
 bakery-boxes = "bakery_scanner.cli:main"
+bakery-artifacts = "bakery_scanner.artifacts.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not artifact and not gpu and not slow'"
+markers = [
+  "artifact: requires local datasets, model weights, prototype banks, or packaged runtimes",
+  "contract: immutable pipeline, output, integrity, and repository policy contracts",
+  "gpu: requires the declared CUDA device and GPU runtime",
+  "integration: crosses component, subprocess, application, or packaging boundaries",
+  "slow: intentionally long-running benchmark, dataset, or packaging verification",
+  "unit: hermetic first-party unit test",
+]

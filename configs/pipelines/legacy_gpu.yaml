@@ -1,0 +1,12 @@
+schema_version: 1
+pipeline_id: dfine_mobilenet_convnext_repvit_dinov3_gpu_legacy
+status: legacy
+mutable: false
+compatibility_paths:
+  - portable_cpu_smoke
+  - configs/e2e_current_source.yaml
+  - configs/cpu_smoke_classifier_policy.yaml
+notes: >
+  Historical D-FINE-N, MobileNetV4 assurance, conditional ConvNeXt-Tiny,
+  component resolver, RepViT, and conditional DINOv3 behavior. Preserve its
+  portable CPU smoke files and runtime semantics.

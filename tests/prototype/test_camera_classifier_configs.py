@@ -26,12 +26,11 @@ def test_gpu_and_cpu_rfdetr_configs_differ_only_by_device(repo_root: Path):
     cpu["runtime"] = gpu["runtime"]
     assert cpu == gpu
     assert gpu["calibration"]["fusion_policy"].endswith(
-        "fusion_local_or_global_consensus_margin_v1_reference_rebound.json"
+        "fusion_local_or_global_consensus_margin_v1.json"
     )
     calibration_path = (
         repo_root
-        / "artifacts"
-        / "e2e_current_source"
+        / "policies"
         / "classification"
         / "policy_v2_manifest_rebound_cpu_smoke.json"
     )

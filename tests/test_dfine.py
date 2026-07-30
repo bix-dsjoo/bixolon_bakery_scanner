@@ -255,6 +255,7 @@ def test_dfine_overlay_keeps_terminal_tensor_and_box_transforms_for_each_input_s
 
 
 @pytest.mark.parametrize("size", (640, 768))
+@pytest.mark.artifact
 def test_dfine_pinned_config_transforms_a_dataset_sample_to_tensor_with_normalized_cxcywh_boxes(tmp_path, size):
     """Exercise the pinned loader and actual configured transforms, not a mock pipeline."""
     checkout = Path("third_party/D-FINE").resolve()
@@ -312,6 +313,7 @@ def test_dfine_pinned_config_transforms_a_dataset_sample_to_tensor_with_normaliz
     }
 
 
+@pytest.mark.artifact
 def test_matrix_writes_dfine_include_and_data_paths_relative_to_their_consumers(tmp_path):
     """D-FINE loads includes beside the config but opens dataset fields from repo CWD."""
     script = Path("scripts/run_detector_matrix.ps1").read_text(encoding="utf-8")

@@ -1,0 +1,18 @@
+* text=auto
+
+*.css text eol=lf
+*.dart text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf
+
+# Git LFS is reserved for redistribution-cleared release assets. Training
+# checkpoints, datasets, experiment runs, runtimes, wheels, and installers stay
+# in the external artifact store even when their extension appears below.
+release-assets/models/** filter=lfs diff=lfs merge=lfs -text
+release-assets/prototype-banks/** filter=lfs diff=lfs merge=lfs -text

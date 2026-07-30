@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "canonical_pipeline": "rfdetr_l_repvit_m1_dinov3_vits16_cpu",
+  "artifacts": [
+    {
+      "id": "rfdetr_large_bakery_v1_checkpoint",
+      "kind": "model",
+      "local_path": "models/rfdetr_large_bakery_v1/checkpoint.pth",
+      "sha256": "1e1588a8677d6211ee5733223afa48a65e45743b563c824362d41d67ee15fd33",
+      "bytes": 134663251,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    },
+    {
+      "id": "rfdetr_large_bakery_v1_calibration",
+      "kind": "calibration",
+      "local_path": "models/rfdetr_large_bakery_v1/calibration_corrected_gt_299_fp0_20260729.json",
+      "sha256": "96eea207e916f51b55ec8170488e19f495e08f049de1a9304d14707d95e7d12d",
+      "bytes": 551,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    },
+    {
+      "id": "repvit_m1_15plus5_v1_checkpoint",
+      "kind": "model",
+      "local_path": "models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt",
+      "sha256": "0369c148c3b208ea41140cc220a6871367eaa8ed52b0cedfa97d39f4b2d76cfc",
+      "bytes": 19339931,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    },
+    {
+      "id": "repvit_m1_15plus5_v1_prototypes",
+      "kind": "prototype-bank",
+      "local_path": "artifacts/e2e_current_source/classification/repvit_m1_15plus5_prototypes.pt",
+      "sha256": "2a970f99bda1ba1623a650b47a549de251680573c722a921ed3d999d5bbfdc77",
+      "bytes": 33020,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    },
+    {
+      "id": "dinov3_vits16_15plus5_v1_weights",
+      "kind": "model",
+      "local_path": "models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
+      "sha256": "08c60483bc63c04f533611e34bf70b120eedb7240f469bc16e9e20bf344b941d",
+      "bytes": 86531063,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    },
+    {
+      "id": "dinov3_vits16_15plus5_v1_support",
+      "kind": "support-bank",
+      "local_path": "artifacts/e2e_current_source/classification/dinov3_vits16_support.pt",
+      "sha256": "c2afaa2c2cca5e27179799f7cdedb21bab2034d812bf3ad9bf502458be353730",
+      "bytes": 34059,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    },
+    {
+      "id": "dinov3_vits16_15plus5_v1_local_bank",
+      "kind": "support-bank",
+      "local_path": "artifacts/e2e_current_source/classification/dinov3_vits16_local_patch_bank.pt",
+      "sha256": "79886645009a3109ee605afac54e4613750d4e9b03119102fb761b9660393694",
+      "bytes": 31227517,
+      "storage": "external",
+      "uri_env": "BAKERY_ARTIFACT_BASE_URI"
+    }
+  ]
+}

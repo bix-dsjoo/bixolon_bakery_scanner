@@ -1,0 +1,7 @@
+schema_version: 1
+dataset_id: bakery_299_corrected_v1
+manifest: data/manifests/bakery_299_corrected_v1.json
+local_root: datasets/detection
+expected_images: 299
+expected_boxes: 1406
+materialization: external
