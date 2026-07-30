@@ -83,6 +83,11 @@ class OutOfMemoryEncoder(torch.nn.Module):
         raise torch.OutOfMemoryError("sensitive backend detail")
 
 
+class OutOfMemoryFeatureEncoder(torch.nn.Module):
+    def forward_features(self, batch: torch.Tensor):
+        raise torch.OutOfMemoryError("sensitive backend detail")
+
+
 class ProgrammingErrorDino:
     def score(self, crops: tuple[Image.Image, ...]) -> ModelScoreVector:
         raise ValueError("wrong tensor shape")
@@ -818,6 +823,30 @@ def test_dino_failure_returns_unknown_repvit_top3_and_safe_failure_code():
     assert result.provenance.failure_code == "dino_out_of_memory"
     assert b"sensitive backend detail" not in result.to_json_bytes()
     assert result.box == _box()
+
+
+def test_fusion_pipeline_dino_failure_keeps_effective_fusion_provenance():
+    real_dino = DinoV3Rechecker(
+        OutOfMemoryFeatureEncoder(),
+        torch.eye(384, dtype=torch.float32)[:20],
+        SKU_IDS,
+        build_transform(224),
+        "dinov3_vits16_15plus5_v1",
+        torch.device("cpu"),
+    )
+
+    result = _fusion_pipeline(
+        mode="serial_reference",
+        repvit=RecordingRunner(_repvit_scores({19: 0.40, 6: 0.30, 5: 0.20})),
+        dino_loader=lambda: real_dino,
+        local_bank=object(),
+    ).infer(_image(), _box())
+
+    assert result.decision == "unknown"
+    assert result.decision_path is DecisionPath.UNKNOWN_TOP3
+    assert result.provenance.calibration_id == "fusion_policy_v1"
+    assert result.provenance.calibration_sha256 == "9" * 64
+    assert result.provenance.failure_code == "dino_out_of_memory"
 
 
 def test_serial_timing_sink_records_dino_failure_policy_evaluation(monkeypatch):
