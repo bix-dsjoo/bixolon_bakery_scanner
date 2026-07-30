@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'bixolon_brand.dart';
+import 'bixolon_theme_extension.dart';
 
 const counterCanvas = bixolonCanvas;
 const cameraInk = bixolonInk;
@@ -13,6 +14,7 @@ const failureRed = Color(0xFFC43A3A);
 const tabularFigures = <FontFeature>[FontFeature.tabularFigures()];
 
 ThemeData buildBakeryTheme() {
+  const tokens = BixolonThemeExtension.bixolon;
   const textTheme = TextTheme(
     headlineSmall: TextStyle(
       fontSize: 24,
@@ -45,30 +47,31 @@ ThemeData buildBakeryTheme() {
     useMaterial3: true,
     fontFamily: 'Pretendard',
     fontFamilyFallback: const ['Pretendard', 'Malgun Gothic', 'Segoe UI'],
-    scaffoldBackgroundColor: counterCanvas,
-    colorScheme: const ColorScheme.light(
-      primary: bixolonOrange,
+    scaffoldBackgroundColor: tokens.canvas,
+    colorScheme: ColorScheme.light(
+      primary: tokens.action,
       onPrimary: Colors.white,
-      surface: resultPaper,
-      onSurface: cameraInk,
-      error: failureRed,
+      surface: tokens.paper,
+      onSurface: tokens.ink,
+      error: tokens.error,
       onError: Colors.white,
     ),
+    extensions: [tokens],
     textTheme: textTheme,
-    dividerColor: bixolonDivider,
-    focusColor: actionBlue.withValues(alpha: 0.14),
+    dividerColor: tokens.divider,
+    focusColor: tokens.focus.withValues(alpha: 0.14),
     filledButtonTheme: FilledButtonThemeData(
       style: ButtonStyle(
         minimumSize: const WidgetStatePropertyAll(Size(44, 52)),
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(bixolonControlRadius),
+            borderRadius: BorderRadius.circular(tokens.controlRadius),
           ),
         ),
         side: WidgetStateProperty.resolveWith(
           (states) => BorderSide(
             color: states.contains(WidgetState.focused)
-                ? actionBlue
+                ? tokens.focus
                 : Colors.transparent,
             width: states.contains(WidgetState.focused)
                 ? bixolonControlBorderWidth
@@ -82,7 +85,7 @@ ThemeData buildBakeryTheme() {
         minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(bixolonControlRadius),
+            borderRadius: BorderRadius.circular(tokens.controlRadius),
           ),
         ),
       ),
@@ -92,11 +95,11 @@ ThemeData buildBakeryTheme() {
         minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(bixolonControlRadius),
+            borderRadius: BorderRadius.circular(tokens.controlRadius),
           ),
         ),
-        side: const WidgetStatePropertyAll(
-          BorderSide(color: bixolonDivider, width: bixolonControlBorderWidth),
+        side: WidgetStatePropertyAll(
+          BorderSide(color: tokens.divider, width: bixolonControlBorderWidth),
         ),
       ),
     ),
