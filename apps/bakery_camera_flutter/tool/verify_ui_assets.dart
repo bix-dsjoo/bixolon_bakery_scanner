@@ -192,12 +192,19 @@ Future<List<String>> verifyUiAssets({
     errors.add('manifest paths must be the two approved illustration files');
   }
 
-  final illustrations = Directory(
-    path.join(root.path, 'assets', 'illustrations'),
+  final illustrationsPath = path.join(root.path, 'assets', 'illustrations');
+  final illustrationsType = await FileSystemEntity.type(
+    illustrationsPath,
+    followLinks: false,
   );
-  if (!await illustrations.exists()) {
+  if (illustrationsType == FileSystemEntityType.notFound) {
     errors.add('assets/illustrations directory is missing');
+  } else if (illustrationsType == FileSystemEntityType.link) {
+    errors.add('assets/illustrations must be a directory, not a link');
+  } else if (illustrationsType != FileSystemEntityType.directory) {
+    errors.add('assets/illustrations must be a directory');
   } else {
+    final illustrations = Directory(illustrationsPath);
     final entities =
         illustrationEntities?.call(illustrations) ??
         illustrations.list(followLinks: false, recursive: true);

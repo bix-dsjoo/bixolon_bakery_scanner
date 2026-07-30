@@ -129,6 +129,40 @@ void main() {
     },
   );
 
+  test(
+    'the verifier rejects an illustrations root directory link during normal enumeration',
+    () async {
+      final root = await _copyAssetsToTempRoot();
+      addTearDown(() => root.delete(recursive: true));
+      final illustrations = Directory(
+        '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations',
+      );
+      final linkedTarget = Directory(
+        '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations-target',
+      );
+
+      try {
+        await illustrations.rename(linkedTarget.path);
+        await Link(illustrations.path).create(linkedTarget.path);
+      } on FileSystemException {
+        // Windows can deny directory-link creation without Developer Mode or
+        // elevated privileges. The injected-entity seam above still covers
+        // the link rejection branch on those hosts.
+        markTestSkipped(
+          'directory-link creation is unavailable on this host; the injected '
+          'entity seam still exercises the link rejection branch',
+        );
+      }
+
+      expect(
+        await verifyUiAssets(appRoot: root),
+        contains(
+          contains('assets/illustrations must be a directory, not a link'),
+        ),
+      );
+    },
+  );
+
   test('the verifier rejects an opaque RGBA illustration', () async {
     final root = await _copyAssetsToTempRoot();
     addTearDown(() => root.delete(recursive: true));
