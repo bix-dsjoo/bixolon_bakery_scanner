@@ -140,6 +140,63 @@ void main() {
     },
   );
 
+  test(
+    'review detail reads immutable AI outcome candidates unknown reason and customer resolution before annotations',
+    () async {
+      await database
+          .into(database.inferenceCandidates)
+          .insert(
+            InferenceCandidatesCompanion.insert(
+              inferenceCandidateId: 'unknown-candidate-1',
+              inferenceObjectId: 'unknown-object',
+              rank: 1,
+              skuId: 7,
+              skuName: 'Suggested bread',
+              score: .71,
+            ),
+          );
+      await service.annotate(
+        const AdminReviewAnnotationDraft(
+          sessionId: 'unknown',
+          objectId: 'unknown-object',
+          reviewStatus: ReviewStatus.reviewed,
+          reasonCode: 'image_quality',
+          note: 'first review',
+          authorLabel: 'prototype-admin',
+        ),
+      );
+      await DatabaseReviewService(
+        database,
+        createId: (_) => 'other-target-annotation',
+        now: () => DateTime.utc(2026, 7, 31, 1),
+      ).annotate(
+        const AdminReviewAnnotationDraft(
+          sessionId: 'unknown',
+          reviewStatus: ReviewStatus.reviewed,
+          reasonCode: 'catalog_issue',
+          note: 'unrelated target note',
+          authorLabel: 'prototype-admin',
+        ),
+      );
+
+      final detail = await service.reviewDetail(
+        const ReviewTarget(sessionId: 'unknown', objectId: 'unknown-object'),
+      );
+
+      expect(detail.immutableSession.sessionId, 'unknown');
+      expect(detail.immutableSession.targetObjectId, 'unknown-object');
+      expect(detail.immutableObjects, hasLength(1));
+      final object = detail.immutableObjects.single;
+      expect(object.skuName, 'Unknown');
+      expect(object.unknownReason, 'ambiguous');
+      expect(object.candidates.single.skuName, 'Suggested bread');
+      expect(object.customerResolution!.source, 'customer_catalog');
+      expect(object.customerResolution!.productName, 'Bread');
+      expect(detail.annotations, hasLength(1));
+      expect(detail.annotations.single.note, 'first review');
+    },
+  );
+
   test('same annotation id retries idempotently without another row', () async {
     const draft = AdminReviewAnnotationDraft(
       sessionId: 'catalog',

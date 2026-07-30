@@ -19,6 +19,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('review-inbox-session-1')));
     await tester.pumpAndSettle();
+    await _show(tester, find.byKey(const Key('review-save')));
     await tester.tap(find.byKey(const Key('review-save')));
     await tester.pumpAndSettle();
 
@@ -37,6 +38,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('review-inbox-session-1')));
     await tester.pumpAndSettle();
+    await _show(tester, find.byKey(const Key('review-save')));
     await tester.tap(find.byKey(const Key('review-save')));
     await tester.pumpAndSettle();
 
@@ -76,6 +78,7 @@ void main() {
 
       await tester.tap(find.byKey(const Key('review-inbox-session-1')));
       await tester.pumpAndSettle();
+      await _show(tester, find.byKey(const Key('review-save')));
       await tester.tap(find.byKey(const Key('review-save')));
       await tester.pumpAndSettle();
 
@@ -93,6 +96,10 @@ void main() {
       await tester.pumpAndSettle();
 
       for (final conclusion in ReviewConclusion.values) {
+        await _show(
+          tester,
+          find.byKey(Key('review-conclusion-${conclusion.storageValue}')),
+        );
         expect(
           find.byKey(Key('review-conclusion-${conclusion.storageValue}')),
           findsOneWidget,
@@ -101,8 +108,8 @@ void main() {
       await tester.tap(
         find.byKey(const Key('review-conclusion-both_incorrect')),
       );
-      await tester.tap(find.byKey(const Key('review-save')));
       await tester.pump();
+      await _show(tester, find.byKey(const Key('review-correct-product')));
       expect(find.byKey(const Key('review-correct-product')), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('review-correct-product')));
@@ -145,6 +152,7 @@ void main() {
     expect(find.byKey(const Key('review-detail-retry')), findsOneWidget);
     await tester.tap(find.byKey(const Key('review-detail-retry')));
     await tester.pumpAndSettle();
+    await _show(tester, find.byKey(const Key('review-save')));
     await tester.tap(find.byKey(const Key('review-save')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('review-save-retry')), findsOneWidget);
@@ -180,6 +188,54 @@ void main() {
       expect(find.byKey(const Key('review-inbox-session-1')), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'review detail shows immutable AI and customer facts with prior annotations before the new form',
+    (tester) async {
+      final repository = _EvidenceReviewRepository();
+      await tester.pumpWidget(_app(repository));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('review-inbox-session-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('review-immutable-session')), findsOneWidget);
+      expect(
+        find.byKey(const Key('review-immutable-object-object-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('review-annotation-history')),
+        findsOneWidget,
+      );
+      final aiOutcome = find.textContaining('AI 결과: Unknown');
+      await _show(tester, aiOutcome);
+      expect(aiOutcome, findsOneWidget);
+      final unknownReason = find.textContaining('Unknown 사유: ambiguous');
+      await _show(tester, unknownReason);
+      expect(unknownReason, findsOneWidget);
+      final candidate = find.textContaining('1. Suggested bread');
+      await _show(tester, candidate);
+      expect(candidate, findsOneWidget);
+      final customerChoice = find.textContaining('상품: Customer bread');
+      await _show(tester, customerChoice);
+      expect(customerChoice, findsOneWidget);
+      await _show(tester, find.text('existing append-only note'));
+      expect(find.text('existing append-only note'), findsOneWidget);
+      await _show(tester, find.byKey(const Key('review-save')));
+      expect(find.byKey(const Key('review-save')), findsOneWidget);
+    },
+  );
+}
+
+Future<void> _show(WidgetTester tester, Finder finder) async {
+  await tester.scrollUntilVisible(
+    finder,
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await Scrollable.ensureVisible(tester.element(finder), alignment: .5);
+  await tester.pump();
 }
 
 Widget _app(
@@ -208,6 +264,13 @@ class _ReviewRepository implements ReviewRepository {
   Future<ReviewDetail> reviewDetail(ReviewTarget requested) async =>
       ReviewDetail(
         target: requested,
+        immutableSession: ReviewImmutableSession(
+          sessionId: requested.sessionId,
+          terminalState: 'completed',
+          targetAttemptId: requested.attemptId,
+          targetObjectId: requested.objectId,
+        ),
+        immutableObjects: const [],
         annotations: const [],
         products: const [
           ReviewProductOption(
@@ -234,6 +297,66 @@ class _ReviewRepository implements ReviewRepository {
       ),
     ],
   );
+}
+
+final class _EvidenceReviewRepository extends _ReviewRepository {
+  @override
+  Future<ReviewDetail> reviewDetail(ReviewTarget requested) async =>
+      ReviewDetail(
+        target: requested,
+        immutableSession: ReviewImmutableSession(
+          sessionId: requested.sessionId,
+          terminalState: 'completed',
+          targetAttemptId: requested.attemptId,
+          targetObjectId: requested.objectId,
+        ),
+        immutableObjects: [
+          ReviewImmutableObject(
+            inferenceObjectId: 'object-1',
+            objectId: 'object-1',
+            skuId: null,
+            skuName: 'Unknown',
+            decisionPath: 'unknown_top3',
+            confidence: .4,
+            unknownReason: 'ambiguous',
+            candidates: const [
+              AdminInferenceCandidate(
+                rank: 1,
+                skuId: 7,
+                skuName: 'Suggested bread',
+                score: .71,
+              ),
+            ],
+            customerResolution: const ReviewCustomerResolution(
+              productId: 'customer-bread',
+              productName: 'Customer bread',
+              unitPriceKrw: 2300,
+              source: 'customer_catalog',
+              candidateRank: null,
+            ),
+          ),
+        ],
+        annotations: [
+          AdminReviewAnnotation(
+            annotationId: 'prior-annotation',
+            target: requested,
+            reviewStatus: ReviewStatus.reviewed,
+            reasonCode: 'image_quality',
+            note: 'existing append-only note',
+            correctProductId: null,
+            conclusion: ReviewConclusion.customerCorrect,
+            authorLabel: 'prior-admin',
+            createdAt: DateTime.utc(2026, 7, 31),
+          ),
+        ],
+        products: const [
+          ReviewProductOption(
+            productId: 'bread',
+            displayName: 'Bread',
+            active: true,
+          ),
+        ],
+      );
 }
 
 final class _FailingReviewRepository extends _ReviewRepository {

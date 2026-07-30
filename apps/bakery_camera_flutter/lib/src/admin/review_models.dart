@@ -191,15 +191,77 @@ final class ReviewProductOption {
   final bool active;
 }
 
+/// Read-only checkout facts shown before an operator adds a new annotation.
+/// These facts are copied from immutable inference and resolution rows; they
+/// never provide a path to edit a model result, customer choice, or order.
+final class ReviewImmutableSession {
+  const ReviewImmutableSession({
+    required this.sessionId,
+    required this.terminalState,
+    required this.targetAttemptId,
+    required this.targetObjectId,
+  });
+
+  final String sessionId;
+  final String terminalState;
+  final String? targetAttemptId;
+  final String? targetObjectId;
+}
+
+final class ReviewCustomerResolution {
+  const ReviewCustomerResolution({
+    required this.productId,
+    required this.productName,
+    required this.unitPriceKrw,
+    required this.source,
+    required this.candidateRank,
+  });
+
+  final String productId;
+  final String productName;
+  final int unitPriceKrw;
+  final String source;
+  final int? candidateRank;
+}
+
+final class ReviewImmutableObject {
+  ReviewImmutableObject({
+    required this.inferenceObjectId,
+    required this.objectId,
+    required this.skuId,
+    required this.skuName,
+    required this.decisionPath,
+    required this.confidence,
+    required this.unknownReason,
+    required List<AdminInferenceCandidate> candidates,
+    required this.customerResolution,
+  }) : candidates = List.unmodifiable(candidates);
+
+  final String inferenceObjectId;
+  final String objectId;
+  final int? skuId;
+  final String skuName;
+  final String decisionPath;
+  final double confidence;
+  final String? unknownReason;
+  final List<AdminInferenceCandidate> candidates;
+  final ReviewCustomerResolution? customerResolution;
+}
+
 final class ReviewDetail {
   ReviewDetail({
     required this.target,
+    required this.immutableSession,
+    required List<ReviewImmutableObject> immutableObjects,
     required List<AdminReviewAnnotation> annotations,
     required List<ReviewProductOption> products,
-  }) : annotations = List.unmodifiable(annotations),
+  }) : immutableObjects = List.unmodifiable(immutableObjects),
+       annotations = List.unmodifiable(annotations),
        products = List.unmodifiable(products);
 
   final ReviewTarget target;
+  final ReviewImmutableSession immutableSession;
+  final List<ReviewImmutableObject> immutableObjects;
   final List<AdminReviewAnnotation> annotations;
   final List<ReviewProductOption> products;
 }

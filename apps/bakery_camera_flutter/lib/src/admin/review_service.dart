@@ -148,9 +148,37 @@ INSERT OR IGNORE INTO admin_review_annotations (
     final session = await (_database.select(
       _database.checkoutSessions,
     )..where((row) => row.sessionId.equals(target.sessionId))).getSingle();
-    final annotations = await (_database.select(
+    final attempts = await (_database.select(
+      _database.scanAttempts,
+    )..where((row) => row.sessionId.equals(target.sessionId))).get();
+    final attemptIds = attempts.map((row) => row.attemptId).toSet();
+    final sessionObjects =
+        (await _database.select(_database.inferenceObjects).get())
+            .where((row) => attemptIds.contains(row.attemptId))
+            .toList();
+    final objects = target.objectId == null
+        ? sessionObjects
+        : sessionObjects
+              .where((row) => row.inferenceObjectId == target.objectId)
+              .toList(growable: false);
+    final objectIds = objects.map((row) => row.inferenceObjectId).toSet();
+    final candidates =
+        (await _database.select(_database.inferenceCandidates).get())
+            .where((row) => objectIds.contains(row.inferenceObjectId))
+            .toList();
+    final resolutions = await (_database.select(
+      _database.objectResolutions,
+    )..where((row) => row.sessionId.equals(target.sessionId))).get();
+    final sessionAnnotations = await (_database.select(
       _database.adminReviewAnnotations,
     )..where((row) => row.sessionId.equals(target.sessionId))).get();
+    final annotations = sessionAnnotations
+        .where(
+          (row) =>
+              row.attemptId == target.attemptId &&
+              row.objectId == target.objectId,
+        )
+        .toList(growable: false);
     final products =
         await (_database.select(_database.products)..where(
               (row) => row.catalogRevisionId.equals(session.catalogRevisionId),
@@ -160,6 +188,59 @@ INSERT OR IGNORE INTO admin_review_annotations (
     products.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     return ReviewDetail(
       target: target,
+      immutableSession: ReviewImmutableSession(
+        sessionId: session.sessionId,
+        terminalState: session.state,
+        targetAttemptId: target.attemptId,
+        targetObjectId: target.objectId,
+      ),
+      immutableObjects: objects
+          .map((object) {
+            final objectCandidates =
+                candidates
+                    .where(
+                      (candidate) =>
+                          candidate.inferenceObjectId ==
+                          object.inferenceObjectId,
+                    )
+                    .map(
+                      (candidate) => AdminInferenceCandidate(
+                        rank: candidate.rank,
+                        skuId: candidate.skuId,
+                        skuName: candidate.skuName,
+                        score: candidate.score,
+                      ),
+                    )
+                    .toList()
+                  ..sort((left, right) => left.rank.compareTo(right.rank));
+            final resolution = resolutions
+                .where(
+                  (row) =>
+                      row.inferenceObjectId == object.inferenceObjectId &&
+                      row.isCurrent,
+                )
+                .firstOrNull;
+            return ReviewImmutableObject(
+              inferenceObjectId: object.inferenceObjectId,
+              objectId: object.objectId,
+              skuId: object.skuId,
+              skuName: object.skuName,
+              decisionPath: object.decisionPath,
+              confidence: object.confidence,
+              unknownReason: object.unknownReason,
+              candidates: objectCandidates,
+              customerResolution: resolution == null
+                  ? null
+                  : ReviewCustomerResolution(
+                      productId: resolution.productId,
+                      productName: resolution.productName,
+                      unitPriceKrw: resolution.unitPriceKrw,
+                      source: resolution.source,
+                      candidateRank: resolution.candidateRank,
+                    ),
+            );
+          })
+          .toList(growable: false),
       annotations: annotations.map(_annotation).toList(growable: false),
       products: products
           .map(

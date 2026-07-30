@@ -172,6 +172,8 @@ class _ReviewForm extends StatelessWidget {
     children: [
       const Text('이 기록은 모델 결과를 바꾸지 않습니다.'),
       const SizedBox(height: 20),
+      _ImmutableReviewFacts(detail: detail),
+      const SizedBox(height: 24),
       const Text('검토 결론'),
       for (final option in _conclusionOptions)
         Padding(
@@ -233,6 +235,120 @@ class _ReviewForm extends StatelessWidget {
         key: Key(error == null ? 'review-save' : 'review-save-retry'),
         onPressed: saving ? null : onSave,
         child: Text(saving ? '저장 중' : '검토 완료'),
+      ),
+    ],
+  );
+}
+
+/// A read-only audit block. It intentionally contains no selection controls:
+/// an operator's new conclusion belongs in the annotation form below, while
+/// the original AI/customer facts remain exactly as they were recorded.
+class _ImmutableReviewFacts extends StatelessWidget {
+  const _ImmutableReviewFacts({required this.detail});
+
+  final ReviewDetail detail;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Card(
+        key: const Key('review-immutable-session'),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '검토 대상',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Text('세션 ID: ${detail.immutableSession.sessionId}'),
+              Text('종료 상태: ${detail.immutableSession.terminalState}'),
+              if (detail.immutableSession.targetAttemptId case final attemptId?)
+                Text('촬영 시도 ID: $attemptId'),
+              if (detail.immutableSession.targetObjectId case final objectId?)
+                Text('대상 객체 ID: $objectId'),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 12),
+      for (final object in detail.immutableObjects) ...[
+        Card(
+          key: Key('review-immutable-object-${object.inferenceObjectId}'),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '저장된 AI 판단',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 8),
+                Text('객체 ID: ${object.objectId}'),
+                Text('AI 결과: ${object.skuName}'),
+                Text('판단 경로: ${object.decisionPath}'),
+                Text('신뢰도: ${(object.confidence * 100).toStringAsFixed(1)}%'),
+                if (object.unknownReason case final unknownReason?)
+                  Text('Unknown 사유: $unknownReason'),
+                if (object.candidates.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('저장된 추천 후보'),
+                  for (final candidate in object.candidates)
+                    Text(
+                      '${candidate.rank}. ${candidate.skuName} '
+                      '(${(candidate.score * 100).toStringAsFixed(1)}%)',
+                    ),
+                ],
+                const SizedBox(height: 12),
+                if (object.customerResolution case final resolution?) ...[
+                  const Text('고객의 최종 선택'),
+                  Text('상품: ${resolution.productName}'),
+                  Text('확정 방식: ${resolution.source}'),
+                ] else
+                  const Text('이 객체에 저장된 고객 확정이 없습니다.'),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+      Card(
+        key: const Key('review-annotation-history'),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '이전 검토 기록',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              if (detail.annotations.isEmpty)
+                const Text('이전 검토 기록이 없습니다.')
+              else
+                for (final annotation in detail.annotations)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${annotation.authorLabel} · '
+                          '${annotation.reviewStatus.storageValue} · '
+                          '${annotation.reasonCode}',
+                        ),
+                        if (annotation.note case final note?) Text(note),
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+        ),
       ),
     ],
   );

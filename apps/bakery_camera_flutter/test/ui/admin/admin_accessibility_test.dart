@@ -296,8 +296,18 @@ final class _ReviewRepository implements ReviewRepository {
   @override
   Future<void> annotate(AdminReviewAnnotationDraft draft) async {}
   @override
-  Future<ReviewDetail> reviewDetail(ReviewTarget target) async =>
-      ReviewDetail(target: target, annotations: const [], products: const []);
+  Future<ReviewDetail> reviewDetail(ReviewTarget target) async => ReviewDetail(
+    target: target,
+    immutableSession: ReviewImmutableSession(
+      sessionId: target.sessionId,
+      terminalState: 'completed',
+      targetAttemptId: target.attemptId,
+      targetObjectId: target.objectId,
+    ),
+    immutableObjects: const [],
+    annotations: const [],
+    products: const [],
+  );
   @override
   Future<ReviewPage> reviewInbox(
     ReviewFilter filter,
