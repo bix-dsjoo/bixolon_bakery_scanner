@@ -191,8 +191,12 @@ CheckoutState _completeState() => CheckoutState(
   lines: const [],
   paymentReceipt: PaymentReceipt(
     paymentId: 'payment',
+    orderId: 'order',
     sessionId: 'session',
     amount: 1000,
+    currency: 'KRW',
+    provider: 'simulated',
+    status: 'approved',
     paidAt: DateTime.utc(2026),
   ),
 );

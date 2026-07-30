@@ -805,7 +805,10 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   }
 
   @override
-  Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order) async {
+  Future<PaymentReceipt> commitSimulatedPayment(
+    FinalOrderDraft order, {
+    SimulatedPaymentRequest? request,
+  }) async {
     committedOrder = order;
     committedOrders.add(order);
     if (!paymentCalled.isCompleted) paymentCalled.complete();
@@ -815,9 +818,13 @@ final class _FakeAuditStore implements CheckoutAuditStore {
       throw StateError('temporary payment persistence failure');
     }
     return PaymentReceipt(
-      paymentId: 'payment-1',
+      paymentId: request?.paymentId ?? 'payment-1',
+      orderId: request?.orderId ?? 'order-1',
       sessionId: order.sessionId,
       amount: order.totalPrice,
+      currency: 'KRW',
+      provider: 'simulated',
+      status: 'approved',
       paidAt: order.createdAt,
     );
   }

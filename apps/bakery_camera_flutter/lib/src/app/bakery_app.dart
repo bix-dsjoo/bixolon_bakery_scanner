@@ -12,6 +12,7 @@ import '../camera/camera_service.dart';
 import '../catalog/catalog_seed.dart';
 import '../checkout/checkout_controller.dart';
 import '../checkout/checkout_models.dart';
+import '../checkout/simulated_payment_service.dart';
 import '../inference/inference_launch_config.dart';
 import '../inference/inference_worker_client.dart';
 import '../persistence/database_catalog_repository.dart';
@@ -96,6 +97,11 @@ class _BakeryAppState extends State<BakeryApp> {
             sha256: sha256.convert(utf8.encode(canonicalJson)).toString(),
           );
         },
+        paymentService: SimulatedPaymentService(
+          auditStore: store,
+          clock: DateTime.now,
+          createId: (_) => const Uuid().v4(),
+        ),
       );
       await controller.initialize();
       return controller;

@@ -10,8 +10,10 @@ import '../inference/inference_models.dart';
 import '../scanner/scanner_controller.dart';
 import 'checkout_models.dart';
 import 'checkout_ports.dart';
+import 'checkout_recovery.dart';
 import 'checkout_state.dart';
 import 'inference_checkout_mapper.dart';
+import 'simulated_payment_service.dart';
 
 typedef CheckoutClock = DateTime Function();
 typedef InferenceReceiptFactory =
@@ -42,6 +44,7 @@ final class CheckoutController extends ChangeNotifier {
     required CatalogRepository catalogRepository,
     required InferenceReceiptFactory createInferenceReceipt,
     CheckoutClock? now,
+    SimulatedPaymentService? paymentService,
   }) : _scanner = scanner,
        _auditStore = auditStore,
        _evidenceStore = evidenceStore,
@@ -49,7 +52,14 @@ final class CheckoutController extends ChangeNotifier {
        _catalogRepository = catalogRepository,
        _mapper = const InferenceCheckoutMapper(),
        _createInferenceReceipt = createInferenceReceipt,
-       _now = now ?? DateTime.now;
+       _now = now ?? DateTime.now,
+       _paymentService =
+           paymentService ??
+           SimulatedPaymentService(
+             auditStore: auditStore,
+             clock: now ?? DateTime.now,
+             createId: _FallbackPaymentIds.next,
+           );
 
   final ScannerController _scanner;
   final CheckoutAuditStore _auditStore;
@@ -59,6 +69,7 @@ final class CheckoutController extends ChangeNotifier {
   final InferenceCheckoutMapper _mapper;
   final InferenceReceiptFactory _createInferenceReceipt;
   final CheckoutClock _now;
+  final SimulatedPaymentService _paymentService;
 
   CheckoutState _state = CheckoutState(
     phase: CheckoutPhase.ready,
@@ -114,9 +125,7 @@ final class CheckoutController extends ChangeNotifier {
     _initialized = true;
     _reserveSessionStart();
     try {
-      _interruptedCheckouts = List.unmodifiable(
-        await _auditStore.interruptNonterminalSessions(_utcNow()),
-      );
+      _interruptedCheckouts = List.unmodifiable(await _recoverAtStartup());
       await _beginSession();
       await _scanner.initialize();
       if (!_scanner.state.cameraReady ||
@@ -586,6 +595,21 @@ final class CheckoutController extends ChangeNotifier {
     _manualQuantities.clear();
   }
 
+  Future<List<InterruptedCheckout>> _recoverAtStartup() async {
+    final store = _auditStore;
+    if (store is CheckoutRecoveryPort) {
+      final result = await CheckoutRecovery(
+        port: store as CheckoutRecoveryPort,
+        clock: _utcNow,
+      ).recover();
+      return [
+        for (final sessionId in result.interruptedSessionIds)
+          InterruptedCheckout(sessionId: sessionId, interruptedAt: _utcNow()),
+      ];
+    }
+    return store.interruptNonterminalSessions(_utcNow());
+  }
+
   void _reserveSessionStart() {
     _ensureOpen();
     if (_sessionStartInFlight) {
@@ -779,7 +803,7 @@ final class CheckoutController extends ChangeNotifier {
     FinalOrderDraft order,
     CheckoutState review,
   ) async {
-    final receipt = await _auditStore.commitSimulatedPayment(order);
+    final receipt = await _paymentService.commit(order);
     _sessionActive = false;
     _frozenOrder = null;
     _frozenReviewState = null;
@@ -966,4 +990,9 @@ final class CheckoutController extends ChangeNotifier {
     _state = next;
     notifyListeners();
   }
+}
+
+final class _FallbackPaymentIds {
+  static int _next = 0;
+  static String next(String prefix) => '$prefix-local-${++_next}';
 }

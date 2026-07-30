@@ -144,6 +144,15 @@ final class AuditFileStoreReferenceVerifier
     error: error,
   );
 
+  /// Finds retained files that cannot be trusted at process startup. This is
+  /// deliberately read-only; recovery records an audit flag instead of
+  /// deleting the only copy of the evidence.
+  Future<List<String>> findRecoveryCandidates(
+    Iterable<String> referencedRelativePaths,
+  ) => _files.findRecoveryCandidates(
+    referencedRelativePaths: referencedRelativePaths,
+  );
+
   VerifiedAuditFileReference _reference(StoredAuditFile file) =>
       VerifiedAuditFileReference(
         relativePath: file.relativePath,
@@ -331,7 +340,8 @@ String canonicalInferenceReceiptJson({
   return canonicalJsonEncode(receipt);
 }
 
-final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
+final class DatabaseCheckoutAuditStore
+    implements CheckoutAuditStore, CheckoutRecoveryPort {
   DatabaseCheckoutAuditStore({
     required BakeryDatabase database,
     required AuditRuntimeSnapshot runtimeSnapshot,
@@ -349,6 +359,95 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
   final AuditReferenceVerifier _references;
   final AuditIdGenerator _createId;
   final AuditClock _now;
+
+  @override
+  Future<CheckoutRecoveryReport> recoverInterruptedCheckout(
+    DateTime detectedAt,
+  ) {
+    final recoveredAt = detectedAt.toUtc();
+    final recoveredAtUs = _utcMicros(recoveredAt, 'detectedAt');
+    return _database.transaction(() async {
+      final active = await (_database.select(
+        _database.checkoutSessions,
+      )..where((row) => row.state.equals('active'))).get();
+      final interrupted = <String>[];
+      final repaired = <String>[];
+      for (final session in active) {
+        final payment =
+            await (_database.select(_database.simulatedPayments)
+                  ..where((row) => row.sessionId.equals(session.sessionId)))
+                .getSingleOrNull();
+        if (payment != null) {
+          await (_database.update(
+            _database.checkoutSessions,
+          )..where((row) => row.sessionId.equals(session.sessionId))).write(
+            CheckoutSessionsCompanion(
+              state: const Value('completed'),
+              terminalAtUs: Value(payment.paidAtUs),
+              terminalReason: const Value('payment_repaired_after_restart'),
+            ),
+          );
+          await _appendEvent(
+            session.sessionId,
+            'payment_state_repaired_after_restart',
+            recoveredAt,
+          );
+          repaired.add(session.sessionId);
+          continue;
+        }
+        await (_database.update(
+          _database.checkoutSessions,
+        )..where((row) => row.sessionId.equals(session.sessionId))).write(
+          CheckoutSessionsCompanion(
+            state: const Value('interrupted'),
+            terminalAtUs: Value(recoveredAtUs),
+            terminalReason: const Value('process_restart'),
+          ),
+        );
+        await _appendEvent(
+          session.sessionId,
+          'session_interrupted',
+          recoveredAt,
+        );
+        interrupted.add(session.sessionId);
+      }
+      final evidenceIssues = await _findAndFlagRecoveryEvidence(recoveredAt);
+      return CheckoutRecoveryReport(
+        interruptedSessionIds: List.unmodifiable(interrupted),
+        repairedPaymentSessionIds: List.unmodifiable(repaired),
+        evidenceIssuePaths: evidenceIssues,
+      );
+    });
+  }
+
+  Future<List<String>> _findAndFlagRecoveryEvidence(DateTime detectedAt) async {
+    final references = _references;
+    if (references is! AuditFileStoreReferenceVerifier) return const [];
+    final attempts = await _database.select(_database.scanAttempts).get();
+    final orders = await _database.select(_database.finalOrders).get();
+    final paths = [
+      for (final attempt in attempts) attempt.imageRelativePath,
+      for (final attempt in attempts)
+        if (attempt.receiptRelativePath != null) attempt.receiptRelativePath!,
+      for (final order in orders) order.receiptRelativePath,
+    ];
+    final issues = await references.findRecoveryCandidates(paths);
+    if (issues.isEmpty) return const [];
+    for (final issue in issues) {
+      final segments = issue.split('/');
+      final index = segments.indexOf('sessions');
+      final sessionId = index >= 0 && segments.length > index + 4
+          ? segments[index + 4]
+          : null;
+      if (sessionId == null) continue;
+      final session = await (_database.select(
+        _database.checkoutSessions,
+      )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+      if (session == null) continue;
+      await _appendEvent(sessionId, 'evidence_recovery_required', detectedAt);
+    }
+    return List.unmodifiable(issues);
+  }
 
   @override
   Future<List<InterruptedCheckout>> interruptNonterminalSessions(
@@ -813,7 +912,10 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
   }
 
   @override
-  Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order) async {
+  Future<PaymentReceipt> commitSimulatedPayment(
+    FinalOrderDraft order, {
+    SimulatedPaymentRequest? request,
+  }) async {
     VerifiedAuditFileReference? retainedReceipt;
     try {
       return await _database.transaction(() async {
@@ -824,6 +926,13 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         if (existing != null) return _receipt(existing);
 
         final session = await _activeSession(order.sessionId);
+        final paymentRequest =
+            request ??
+            SimulatedPaymentRequest(
+              paymentId: _newId('payment'),
+              orderId: _newId('order'),
+              committedAt: _now().toUtc(),
+            );
         await _verifyOrderCatalog(order, session);
         for (final line in order.lines) {
           await _sessionProduct(session, line.product);
@@ -900,9 +1009,9 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
 
         final receiptReference = await _references.finalOrderReceipt(order);
         retainedReceipt = receiptReference;
-        final orderId = _newId('order');
-        final paymentId = _newId('payment');
-        final paidAt = _now().toUtc();
+        final orderId = paymentRequest.orderId;
+        final paymentId = paymentRequest.paymentId;
+        final paidAt = paymentRequest.committedAt.toUtc();
         await _database
             .into(_database.finalOrders)
             .insert(
@@ -966,9 +1075,9 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
                 orderId: orderId,
                 sessionId: order.sessionId,
                 amountKrw: amount,
-                currency: 'KRW',
-                provider: 'simulated',
-                status: 'approved',
+                currency: paymentRequest.currency,
+                provider: paymentRequest.provider,
+                status: paymentRequest.status,
                 finalOrderSha256: receiptReference.sha256,
                 paidAtUs: paidAt.microsecondsSinceEpoch,
               ),
@@ -985,8 +1094,12 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         await _appendEvent(order.sessionId, 'payment_committed', paidAt);
         return PaymentReceipt(
           paymentId: paymentId,
+          orderId: orderId,
           sessionId: order.sessionId,
           amount: amount,
+          currency: paymentRequest.currency,
+          provider: paymentRequest.provider,
+          status: paymentRequest.status,
           paidAt: paidAt,
         );
       });
@@ -1344,8 +1457,12 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
 
   PaymentReceipt _receipt(SimulatedPaymentRow payment) => PaymentReceipt(
     paymentId: payment.paymentId,
+    orderId: payment.orderId,
     sessionId: payment.sessionId,
     amount: payment.amountKrw,
+    currency: payment.currency,
+    provider: payment.provider,
+    status: payment.status,
     paidAt: DateTime.fromMicrosecondsSinceEpoch(payment.paidAtUs, isUtc: true),
   );
 

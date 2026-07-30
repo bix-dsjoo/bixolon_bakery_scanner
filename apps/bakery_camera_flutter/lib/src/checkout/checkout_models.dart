@@ -148,8 +148,12 @@ final class FinalOrderDraft {
 final class PaymentReceipt {
   PaymentReceipt({
     required this.paymentId,
+    required this.orderId,
     required this.sessionId,
     required this.amount,
+    required this.currency,
+    required this.provider,
+    required this.status,
     required this.paidAt,
   }) : assert(paymentId != ''),
        assert(sessionId != '') {
@@ -159,9 +163,41 @@ final class PaymentReceipt {
   }
 
   final String paymentId;
+  final String orderId;
   final String sessionId;
   final int amount;
+  final String currency;
+  final String provider;
+  final String status;
   final DateTime paidAt;
+}
+
+/// The deterministic intent created before the only durable payment commit.
+/// The database either records exactly this approved simulation or records
+/// nothing; it never generates a second receipt after a retry.
+final class SimulatedPaymentRequest {
+  SimulatedPaymentRequest({
+    required this.paymentId,
+    required this.orderId,
+    required this.committedAt,
+    this.currency = 'KRW',
+    this.provider = 'simulated',
+    this.status = 'approved',
+  }) {
+    if (paymentId.trim().isEmpty || orderId.trim().isEmpty) {
+      throw ArgumentError('payment and order IDs must not be empty');
+    }
+    if (currency != 'KRW' || provider != 'simulated' || status != 'approved') {
+      throw ArgumentError('only approved KRW simulated payments are supported');
+    }
+  }
+
+  final String paymentId;
+  final String orderId;
+  final DateTime committedAt;
+  final String currency;
+  final String provider;
+  final String status;
 }
 
 final class CheckoutFailure {

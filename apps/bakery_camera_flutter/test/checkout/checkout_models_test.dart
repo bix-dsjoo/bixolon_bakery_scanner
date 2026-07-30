@@ -154,8 +154,12 @@ void main() {
     expect(
       () => PaymentReceipt(
         paymentId: 'payment-invalid',
+        orderId: 'order-invalid',
         sessionId: 'session-1',
         amount: -1,
+        currency: 'KRW',
+        provider: 'simulated',
+        status: 'approved',
         paidAt: DateTime.utc(2026, 7, 30),
       ),
       throwsA(isA<ArgumentError>()),

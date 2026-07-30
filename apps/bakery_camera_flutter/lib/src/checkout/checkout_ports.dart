@@ -22,8 +22,31 @@ abstract interface class CheckoutAuditStore {
   });
   Future<void> recordResolution(ObjectResolutionDraft resolution);
   Future<void> replaceDraftOrder(String sessionId, List<CheckoutLine> lines);
-  Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order);
+  Future<PaymentReceipt> commitSimulatedPayment(
+    FinalOrderDraft order, {
+    SimulatedPaymentRequest? request,
+  });
   Future<void> abandonSession(String sessionId, String reason);
+}
+
+/// Startup recovery runs before a new customer session. The returned data is
+/// audit-only and must never be used to resume or charge a prior session.
+abstract interface class CheckoutRecoveryPort {
+  Future<CheckoutRecoveryReport> recoverInterruptedCheckout(
+    DateTime detectedAt,
+  );
+}
+
+final class CheckoutRecoveryReport {
+  const CheckoutRecoveryReport({
+    required this.interruptedSessionIds,
+    required this.repairedPaymentSessionIds,
+    required this.evidenceIssuePaths,
+  });
+
+  final List<String> interruptedSessionIds;
+  final List<String> repairedPaymentSessionIds;
+  final List<String> evidenceIssuePaths;
 }
 
 abstract interface class CatalogRepository {
