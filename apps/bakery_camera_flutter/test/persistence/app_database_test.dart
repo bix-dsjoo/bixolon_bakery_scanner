@@ -192,6 +192,37 @@ INSERT INTO admin_review_annotations (
   created_at_us
 ) VALUES ('annotation-v2', 'session-v2-history', 'reviewed', 'catalog_issue', 'admin', 3)
 ''');
+      await original.customStatement('''
+CREATE TRIGGER admin_review_annotation_target_context
+BEFORE INSERT ON admin_review_annotations
+WHEN (NEW.attempt_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM scan_attempts
+  WHERE attempt_id = NEW.attempt_id AND session_id = NEW.session_id
+)) OR (NEW.object_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM inference_objects AS object
+  JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  WHERE object.inference_object_id = NEW.object_id
+    AND attempt.session_id = NEW.session_id
+    AND (NEW.attempt_id IS NULL OR NEW.attempt_id = attempt.attempt_id)
+))
+BEGIN
+  SELECT RAISE(ABORT, 'review target does not belong to session');
+END
+''');
+      await original.customStatement('''
+CREATE TRIGGER admin_review_annotation_no_update
+BEFORE UPDATE ON admin_review_annotations
+BEGIN
+  SELECT RAISE(ABORT, 'admin review annotation is append-only');
+END
+''');
+      await original.customStatement('''
+CREATE TRIGGER admin_review_annotation_no_delete
+BEFORE DELETE ON admin_review_annotations
+BEGIN
+  SELECT RAISE(ABORT, 'admin review annotation is append-only');
+END
+''');
       await original.customStatement('PRAGMA user_version = 2');
       await original.close();
 
@@ -203,6 +234,37 @@ INSERT INTO admin_review_annotations (
 
       expect(annotation.annotationId, 'annotation-v2');
       expect(annotation.conclusionCode, 'ai_correct');
+      expect(
+        await upgraded
+            .customSelect(
+              "SELECT count(*) AS count FROM sqlite_master "
+              "WHERE type = 'trigger' "
+              "AND name LIKE 'admin_review_annotation_%'",
+            )
+            .getSingle()
+            .then((row) => row.read<int>('count')),
+        4,
+      );
+      await expectLater(
+        upgraded.customStatement('''
+UPDATE admin_review_annotations
+SET note = 'rewritten'
+WHERE annotation_id = 'annotation-v2'
+'''),
+        throwsA(isA<Exception>()),
+      );
+      await expectLater(
+        upgraded.customStatement('''
+INSERT INTO admin_review_annotations (
+  annotation_id, session_id, review_status, conclusion_code,
+  correct_product_id, reason_code, author_label, created_at_us
+) VALUES (
+  'annotation-v3-invalid-product', 'session-v2-history', 'reviewed',
+  'both_incorrect', 'not-in-frozen-catalog', 'catalog_issue', 'admin', 4
+)
+'''),
+        throwsA(isA<Exception>()),
+      );
       expect(
         (await upgraded.diagnostics()).lastMigrationResult,
         'migrated_2_to_3',

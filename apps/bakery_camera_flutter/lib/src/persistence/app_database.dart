@@ -1202,8 +1202,20 @@ END
   }
 
   Future<void> _installReviewIntegrityGuards() async {
+    // Schema v2 already owns the first three named guards. Recreate every
+    // review guard so a real v2 database upgrades to the v3 contract instead
+    // of failing on SQLite's duplicate-trigger error.
+    await customStatement(
+      'DROP TRIGGER IF EXISTS admin_review_annotation_target_context',
+    );
     await customStatement(
       'DROP TRIGGER IF EXISTS admin_review_annotation_correct_product_context',
+    );
+    await customStatement(
+      'DROP TRIGGER IF EXISTS admin_review_annotation_no_update',
+    );
+    await customStatement(
+      'DROP TRIGGER IF EXISTS admin_review_annotation_no_delete',
     );
     await customStatement('''
 CREATE TRIGGER admin_review_annotation_target_context

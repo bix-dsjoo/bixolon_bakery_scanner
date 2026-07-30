@@ -109,12 +109,18 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
       );
     }
     if (_items.isEmpty) return const Center(child: Text('확인할 기록이 없습니다.'));
+    final reloadErrorOffset = _initialError == null ? 0 : 1;
     return ListView.separated(
       padding: const EdgeInsets.all(16),
-      itemCount: _items.length + (_nextCursor == null ? 0 : 1),
+      itemCount:
+          _items.length + (_nextCursor == null ? 0 : 1) + reloadErrorOffset,
       separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
-        if (index == _items.length) {
+        if (_initialError != null && index == 0) {
+          return _ReviewInboxReloadErrorBanner(onRetry: _reload);
+        }
+        final itemIndex = index - reloadErrorOffset;
+        if (itemIndex == _items.length) {
           if (_loadingMore) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -126,7 +132,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
             ),
           );
         }
-        final item = _items[index];
+        final item = _items[itemIndex];
         return Card(
           child: ListTile(
             key: Key('review-inbox-${item.sessionId}'),
@@ -154,6 +160,35 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
       },
     );
   }
+}
+
+class _ReviewInboxReloadErrorBanner extends StatelessWidget {
+  const _ReviewInboxReloadErrorBanner({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    child: Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            '리뷰 목록을 불러오지 못했어요.',
+            key: Key('review-inbox-reload-error'),
+          ),
+          const SizedBox(height: 8),
+          FilledButton(
+            key: const Key('review-inbox-retry-reload'),
+            onPressed: onRetry,
+            child: const Text('다시 시도'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 String _priorityLabel(ReviewPriority priority) => switch (priority) {

@@ -89,6 +89,37 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('review-save-retry')), findsOneWidget);
   });
+
+  testWidgets(
+    'retained inbox shows a reload error banner and clears it after retry succeeds',
+    (tester) async {
+      final repository = _RetainedItemsReloadErrorRepository();
+      await tester.pumpWidget(_app(repository));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('review-inbox-session-1')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('review-inbox-session-1')));
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('review-inbox-reload-error')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('review-inbox-retry-reload')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('review-inbox-session-1')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('review-inbox-retry-reload')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('review-inbox-reload-error')), findsNothing);
+      expect(find.byKey(const Key('review-inbox-session-1')), findsOneWidget);
+    },
+  );
 }
 
 Widget _app(ReviewRepository repository) => MaterialApp(
@@ -163,6 +194,20 @@ final class _FailingReviewRepository extends _ReviewRepository {
     int limit = 50,
   }) async {
     if (_inboxCalls++ == 0) throw StateError('inbox unavailable');
+    return super.reviewInbox(filter, after, limit: limit);
+  }
+}
+
+final class _RetainedItemsReloadErrorRepository extends _ReviewRepository {
+  int _inboxCalls = 0;
+
+  @override
+  Future<ReviewPage> reviewInbox(
+    ReviewFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  }) async {
+    if (_inboxCalls++ == 1) throw StateError('inbox reload unavailable');
     return super.reviewInbox(filter, after, limit: limit);
   }
 }
