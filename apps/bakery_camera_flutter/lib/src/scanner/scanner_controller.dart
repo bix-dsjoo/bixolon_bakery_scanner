@@ -370,6 +370,56 @@ final class ScannerController extends ChangeNotifier {
     }
   }
 
+  Future<void> retryAnalysis({BeforeInference? beforeInference}) async {
+    _ensureOpen();
+    final capturePath = _state.capturedImagePath;
+    if (_state.isAnalyzing ||
+        _state.phase != ScannerPhase.failure ||
+        _state.workerStatus != WorkerStatus.ready ||
+        capturePath == null) {
+      throw StateError('retry requires a retained failed capture');
+    }
+    _replaceState(
+      _state.copyWith(
+        isAnalyzing: true,
+        phase: ScannerPhase.detecting,
+        analysisError: null,
+        result: null,
+        awaitingRenderedResult: false,
+        selectedObjectId: null,
+      ),
+    );
+    try {
+      final imageSize =
+          _state.capturedImageSize ?? await _readImageSize(capturePath);
+      _replaceState(_state.copyWith(capturedImageSize: imageSize));
+      await beforeInference?.call(
+        ScannerCapture(path: capturePath, imageSize: imageSize),
+      );
+      final result = await _worker.analyze(capturePath);
+      _replaceState(
+        _state.copyWith(
+          isAnalyzing: false,
+          phase: ScannerPhase.result,
+          result: result,
+          awaitingRenderedResult: true,
+          selectedObjectId: _initialSelectedObjectId(result),
+        ),
+      );
+    } catch (error, stackTrace) {
+      const message = '분석을 완료하지 못했습니다.';
+      _replaceState(
+        _state.copyWith(
+          isAnalyzing: false,
+          phase: ScannerPhase.failure,
+          analysisError: message,
+          awaitingRenderedResult: false,
+        ),
+      );
+      Error.throwWithStackTrace(StateError('$message: $error'), stackTrace);
+    }
+  }
+
   static String? _initialSelectedObjectId(InferenceResult result) {
     if (result.objects.isEmpty) {
       return null;

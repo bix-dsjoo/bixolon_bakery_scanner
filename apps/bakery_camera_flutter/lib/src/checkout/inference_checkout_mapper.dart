@@ -2,7 +2,6 @@ import '../catalog/product.dart';
 import '../inference/inference_models.dart';
 import '../scanner/scanner_controller.dart';
 import 'checkout_models.dart';
-import 'checkout_ports.dart';
 
 final class InferenceCheckoutMapping {
   InferenceCheckoutMapping({
@@ -23,13 +22,12 @@ final class InferenceCheckoutMapping {
 }
 
 final class InferenceCheckoutMapper {
-  const InferenceCheckoutMapper(this._catalog);
-
-  final CatalogRepository _catalog;
+  const InferenceCheckoutMapper();
 
   Future<InferenceCheckoutMapping> map({
     required InferenceResult result,
     required CapturedImageSize imageSize,
+    required CatalogSnapshot catalog,
   }) async {
     if (result.imageWidth != imageSize.width ||
         result.imageHeight != imageSize.height) {
@@ -50,7 +48,7 @@ final class InferenceCheckoutMapper {
     final candidateProducts = <String, Map<int, Product?>>{};
     for (final object in result.objects) {
       if (!object.isUnknown) {
-        final product = await _catalog.productForRecognitionSku(object.skuId!);
+        final product = _productForSku(catalog, object.skuId!);
         drafts.add(
           product == null
               ? ObjectDraft.unresolvedCatalog(object)
@@ -62,9 +60,7 @@ final class InferenceCheckoutMapper {
       drafts.add(ObjectDraft.unresolved(object));
       candidateProducts[object.objectId] = {
         for (final candidate in object.candidates)
-          candidate.skuId: await _catalog.productForRecognitionSku(
-            candidate.skuId,
-          ),
+          candidate.skuId: _productForSku(catalog, candidate.skuId),
       };
     }
     return InferenceCheckoutMapping(
@@ -104,4 +100,24 @@ final class InferenceCheckoutMapper {
           'Candidate evidence is too weak for customer selection.',
         null => 'The inference result is not safe for checkout.',
       };
+
+  static Product? _productForSku(
+    CatalogSnapshot catalog,
+    int recognitionSkuId,
+  ) {
+    Product? match;
+    for (final product in catalog.products) {
+      if (!product.active || product.recognitionSkuId != recognitionSkuId) {
+        continue;
+      }
+      if (match != null) {
+        throw StateError(
+          'session catalog maps recognition SKU $recognitionSkuId more than '
+          'once',
+        );
+      }
+      match = product;
+    }
+    return match;
+  }
 }

@@ -14,6 +14,15 @@ typedef CheckoutClock = DateTime Function();
 typedef InferenceReceiptFactory =
     ImmutableJsonReceipt Function(InferenceResult result);
 
+final class _ScanRecovery {
+  _ScanRecovery({required this.sessionId, required this.attemptNumber});
+
+  final String sessionId;
+  final int attemptNumber;
+  DateTime? capturedAt;
+  StagedAttempt? stagedAttempt;
+}
+
 final class CheckoutController extends ChangeNotifier {
   CheckoutController({
     required ScannerController scanner,
@@ -26,7 +35,7 @@ final class CheckoutController extends ChangeNotifier {
        _auditStore = auditStore,
        _evidenceStore = evidenceStore,
        _catalogRepository = catalogRepository,
-       _mapper = InferenceCheckoutMapper(catalogRepository),
+       _mapper = const InferenceCheckoutMapper(),
        _createInferenceReceipt = createInferenceReceipt,
        _now = now ?? DateTime.now;
 
@@ -57,6 +66,9 @@ final class CheckoutController extends ChangeNotifier {
   Map<String, Map<int, Product?>> _candidateProducts = const {};
   final Set<String> _explicitlyResolvedObjectIds = {};
   final Map<String, int> _manualQuantities = {};
+  FinalOrderDraft? _frozenOrder;
+  CheckoutState? _frozenReviewState;
+  _ScanRecovery? _scanRecovery;
 
   CheckoutState get state => _state;
   List<InterruptedCheckout> get interruptedCheckouts => _interruptedCheckouts;
@@ -119,75 +131,25 @@ final class CheckoutController extends ChangeNotifier {
     final generation = ++_scanGeneration;
     _attemptNumber += 1;
     final attemptNumber = _attemptNumber;
-    StagedAttempt? stagedAttempt;
-    DateTime? capturedAt;
+    final recovery = _ScanRecovery(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+    );
+    _scanRecovery = recovery;
     _replaceState(_emptyState(CheckoutPhase.analyzing));
 
     try {
       await _scanner.analyze(
-        beforeInference: (capture) async {
-          capturedAt = _utcNow();
-          final retained = await _evidenceStore.retainCapture(
-            sessionId: sessionId,
-            attemptNumber: attemptNumber,
-            capturedAtUtc: capturedAt!,
-            sourcePath: capture.path,
-          );
-          stagedAttempt = await _auditStore.stageAttempt(
-            sessionId: sessionId,
-            attemptNumber: attemptNumber,
-            image: retained,
-          );
-        },
+        beforeInference: (capture) => _stageRecovery(recovery, capture),
       );
       if (generation != _scanGeneration) {
-        await _releaseCanceledCapture(stagedAttempt);
+        await _releaseCanceledCapture(recovery.stagedAttempt);
         return;
       }
-      final result = _scanner.state.result;
-      final imageSize = _scanner.state.capturedImageSize;
-      if (result == null ||
-          imageSize == null ||
-          stagedAttempt == null ||
-          capturedAt == null) {
-        throw StateError('analysis completed without staged strict evidence');
-      }
-
-      final receipt = _createInferenceReceipt(result);
-      await _evidenceStore.retainInferenceReceipt(
-        sessionId: sessionId,
-        attemptNumber: attemptNumber,
-        capturedAtUtc: capturedAt!,
-        receipt: receipt,
-      );
-      await _auditStore.completeAttempt(
-        attempt: stagedAttempt!,
-        result: result,
-        receipt: receipt,
-      );
-      await _scanner.releaseCurrentCapture();
-
-      final mapping = await _mapper.map(result: result, imageSize: imageSize);
-      _candidateProducts = mapping.candidateProducts;
-      _explicitlyResolvedObjectIds.clear();
-      _manualQuantities.clear();
-      _manualCartMode = false;
-      final lines = _linesFor(mapping.objectDrafts);
-      await _auditStore.replaceDraftOrder(sessionId, lines);
-      if (mapping.phase == CheckoutPhase.retakeRequired) {
-        _failedAttempts += 1;
-      }
-      _replaceState(
-        CheckoutState(
-          phase: mapping.phase,
-          objectDrafts: mapping.objectDrafts,
-          lines: lines,
-          failure: mapping.failure,
-        ),
-      );
+      await _completeAndPresent(recovery);
     } catch (error) {
       if (generation != _scanGeneration) {
-        await _releaseCanceledCapture(stagedAttempt);
+        await _releaseCanceledCapture(recovery.stagedAttempt);
         return;
       }
       final terminal =
@@ -214,8 +176,24 @@ final class CheckoutController extends ChangeNotifier {
     if (_state.phase != CheckoutPhase.analyzing) {
       throw StateError('cancel requires an active analysis');
     }
+    try {
+      await _abandonActiveSession('customer_cancelled_analysis');
+    } catch (error) {
+      _replaceState(
+        CheckoutState(
+          phase: CheckoutPhase.analyzing,
+          objectDrafts: const [],
+          lines: const [],
+          failure: CheckoutFailure(
+            code: 'cancellation_persistence_failure',
+            message: 'Cancellation could not be durably recorded: $error',
+            recoverable: true,
+          ),
+        ),
+      );
+      return;
+    }
     _scanGeneration += 1;
-    await _abandonActiveSession('customer_cancelled_analysis');
     _replaceState(
       _failureState(
         phase: CheckoutPhase.terminalFailure,
@@ -287,9 +265,7 @@ final class CheckoutController extends ChangeNotifier {
     if (object.isUnknown) {
       throw StateError('Unknown objects have no AI selection to accept');
     }
-    final product = await _catalogRepository.productForRecognitionSku(
-      object.skuId!,
-    );
+    final product = _productForRecognitionSku(object.skuId!);
     if (product == null) {
       throw StateError('AI selection has no active catalog product');
     }
@@ -319,6 +295,9 @@ final class CheckoutController extends ChangeNotifier {
     if (_state.phase != CheckoutPhase.customerReview &&
         _state.phase != CheckoutPhase.orderReview) {
       throw StateError('count mismatch requires a customer-visible result');
+    }
+    if (_manualCartMode) {
+      throw StateError('manual cart mode is session-absorbing');
     }
     _failedAttempts += 1;
     _candidateProducts = const {};
@@ -403,6 +382,7 @@ final class CheckoutController extends ChangeNotifier {
               resolvedAt: _utcNow(),
             ),
           );
+          _explicitlyResolvedObjectIds.add(object.objectId);
         }
       }
       await _persistLines(prior.lines);
@@ -412,30 +392,70 @@ final class CheckoutController extends ChangeNotifier {
         lines: prior.lines,
         createdAt: _utcNow(),
       );
-      final receipt = await _auditStore.commitSimulatedPayment(order);
-      _sessionActive = false;
+      _frozenOrder = order;
+      _frozenReviewState = prior;
+      await _commitFrozenPayment(order, prior);
+    } catch (error) {
+      _publishPaymentFailure(prior, error);
+    }
+  }
+
+  Future<void> retryFailure() async {
+    _ensurePhase(CheckoutPhase.recoverableFailure, 'retry failure');
+    if (_state.failure?.code == 'payment_commit_failure') {
+      final order = _frozenOrder;
+      final review = _frozenReviewState;
+      if (order == null || review == null) {
+        throw StateError('payment failure has no frozen order to retry');
+      }
       _replaceState(
         CheckoutState(
-          phase: CheckoutPhase.paymentComplete,
-          objectDrafts: prior.objectDrafts,
-          lines: prior.lines,
-          paymentReceipt: receipt,
+          phase: CheckoutPhase.paying,
+          objectDrafts: review.objectDrafts,
+          lines: review.lines,
         ),
       );
-    } catch (error) {
-      _replaceState(
-        CheckoutState(
-          phase: CheckoutPhase.recoverableFailure,
-          objectDrafts: const [],
-          lines: const [],
-          failure: CheckoutFailure(
-            code: 'payment_commit_failure',
-            message: 'Payment could not be safely committed: $error',
+      try {
+        await _commitFrozenPayment(order, review);
+      } catch (error) {
+        _publishPaymentFailure(review, error);
+      }
+      return;
+    }
+    if (_state.failure?.code == 'audit_or_scan_failure') {
+      final recovery = _scanRecovery;
+      if (recovery == null) {
+        throw StateError('scan failure has no retained recovery context');
+      }
+      _replaceState(_emptyState(CheckoutPhase.analyzing));
+      try {
+        if (_scanner.state.result == null) {
+          if (_scanner.state.capturedImagePath == null) {
+            await _scanner.resetCapture();
+            _scanRecovery = null;
+            _replaceState(_emptyState(CheckoutPhase.ready));
+            return;
+          }
+          await _scanner.retryAnalysis(
+            beforeInference: recovery.stagedAttempt == null
+                ? (capture) => _stageRecovery(recovery, capture)
+                : null,
+          );
+        }
+        await _completeAndPresent(recovery);
+      } catch (error) {
+        _replaceState(
+          _failureState(
+            phase: CheckoutPhase.recoverableFailure,
+            code: 'audit_or_scan_failure',
+            message: 'The scan retry could not be safely completed: $error',
             recoverable: true,
           ),
-        ),
-      );
+        );
+      }
+      return;
     }
+    throw StateError('recoverable failure has no supported retry path');
   }
 
   Future<void> startNextCustomer() async {
@@ -463,17 +483,20 @@ final class CheckoutController extends ChangeNotifier {
         catalogRevision: catalog.revision,
       ),
     );
+    _catalog = catalog;
+    _sessionId = sessionId;
+    _sessionActive = true;
     final retryLimit = await _auditStore.retryLimitForSession(sessionId);
     if (retryLimit < 0) {
       throw StateError('session retry limit must be non-negative');
     }
-    _catalog = catalog;
-    _sessionId = sessionId;
     _retryLimit = retryLimit;
     _attemptNumber = 0;
     _failedAttempts = 0;
-    _sessionActive = true;
     _manualCartMode = false;
+    _frozenOrder = null;
+    _frozenReviewState = null;
+    _scanRecovery = null;
     _candidateProducts = const {};
     _explicitlyResolvedObjectIds.clear();
     _manualQuantities.clear();
@@ -529,6 +552,106 @@ final class CheckoutController extends ChangeNotifier {
   Future<void> _persistLines(List<CheckoutLine> lines) =>
       _auditStore.replaceDraftOrder(_requireSession(), lines);
 
+  Future<void> _stageRecovery(
+    _ScanRecovery recovery,
+    ScannerCapture capture,
+  ) async {
+    recovery.capturedAt ??= _utcNow();
+    final retained = await _evidenceStore.retainCapture(
+      sessionId: recovery.sessionId,
+      attemptNumber: recovery.attemptNumber,
+      capturedAtUtc: recovery.capturedAt!,
+      sourcePath: capture.path,
+    );
+    recovery.stagedAttempt = await _auditStore.stageAttempt(
+      sessionId: recovery.sessionId,
+      attemptNumber: recovery.attemptNumber,
+      image: retained,
+    );
+  }
+
+  Future<void> _completeAndPresent(_ScanRecovery recovery) async {
+    final result = _scanner.state.result;
+    final imageSize = _scanner.state.capturedImageSize;
+    final stagedAttempt = recovery.stagedAttempt;
+    final capturedAt = recovery.capturedAt;
+    if (result == null ||
+        imageSize == null ||
+        stagedAttempt == null ||
+        capturedAt == null) {
+      throw StateError('analysis completed without staged strict evidence');
+    }
+    final receipt = _createInferenceReceipt(result);
+    await _evidenceStore.retainInferenceReceipt(
+      sessionId: recovery.sessionId,
+      attemptNumber: recovery.attemptNumber,
+      capturedAtUtc: capturedAt,
+      receipt: receipt,
+    );
+    await _auditStore.completeAttempt(
+      attempt: stagedAttempt,
+      result: result,
+      receipt: receipt,
+    );
+    await _scanner.releaseCurrentCapture();
+
+    final mapping = await _mapper.map(
+      result: result,
+      imageSize: imageSize,
+      catalog: _requireCatalog(),
+    );
+    _candidateProducts = mapping.candidateProducts;
+    _explicitlyResolvedObjectIds.clear();
+    _manualQuantities.clear();
+    final lines = _linesFor(mapping.objectDrafts);
+    await _auditStore.replaceDraftOrder(recovery.sessionId, lines);
+    if (mapping.phase == CheckoutPhase.retakeRequired) {
+      _failedAttempts += 1;
+    }
+    _scanRecovery = null;
+    _replaceState(
+      CheckoutState(
+        phase: mapping.phase,
+        objectDrafts: mapping.objectDrafts,
+        lines: lines,
+        failure: mapping.failure,
+      ),
+    );
+  }
+
+  Future<void> _commitFrozenPayment(
+    FinalOrderDraft order,
+    CheckoutState review,
+  ) async {
+    final receipt = await _auditStore.commitSimulatedPayment(order);
+    _sessionActive = false;
+    _frozenOrder = null;
+    _frozenReviewState = null;
+    _replaceState(
+      CheckoutState(
+        phase: CheckoutPhase.paymentComplete,
+        objectDrafts: review.objectDrafts,
+        lines: review.lines,
+        paymentReceipt: receipt,
+      ),
+    );
+  }
+
+  void _publishPaymentFailure(CheckoutState review, Object error) {
+    _replaceState(
+      CheckoutState(
+        phase: CheckoutPhase.recoverableFailure,
+        objectDrafts: review.objectDrafts,
+        lines: review.lines,
+        failure: CheckoutFailure(
+          code: 'payment_commit_failure',
+          message: 'Payment could not be safely committed: $error',
+          recoverable: true,
+        ),
+      ),
+    );
+  }
+
   List<CheckoutLine> _linesFor(List<ObjectDraft> drafts) {
     final products = <String, Product>{};
     final quantities = <String, int>{};
@@ -575,6 +698,23 @@ final class CheckoutController extends ChangeNotifier {
     throw StateError('product is not active in the session catalog');
   }
 
+  Product? _productForRecognitionSku(int recognitionSkuId) {
+    Product? match;
+    for (final product in _requireCatalog().products) {
+      if (!product.active || product.recognitionSkuId != recognitionSkuId) {
+        continue;
+      }
+      if (match != null) {
+        throw StateError(
+          'session catalog maps recognition SKU $recognitionSkuId more than '
+          'once',
+        );
+      }
+      match = product;
+    }
+    return match;
+  }
+
   Future<void> _releaseCanceledCapture(StagedAttempt? stagedAttempt) async {
     if (stagedAttempt != null && _scanner.state.capturedImagePath != null) {
       await _scanner.releaseCurrentCapture();
@@ -584,8 +724,8 @@ final class CheckoutController extends ChangeNotifier {
   Future<void> _abandonActiveSession(String reason) async {
     final sessionId = _sessionId;
     if (!_sessionActive || sessionId == null) return;
-    _sessionActive = false;
     await _auditStore.abandonSession(sessionId, reason);
+    _sessionActive = false;
   }
 
   CheckoutState _emptyState(CheckoutPhase phase) =>

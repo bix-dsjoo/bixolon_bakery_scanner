@@ -243,6 +243,7 @@ void main() {
       expect(controller.manualCartEligible, isTrue);
       await controller.enterManualCart();
       await controller.addManualProduct('product-donut');
+      await expectLater(controller.reportCountMismatch(), throwsStateError);
       await controller.pay();
 
       expect(audit.manualCartEntries, 1);
@@ -290,6 +291,28 @@ void main() {
     },
   );
 
+  test('failed cancellation retains identity and can be retried', () async {
+    worker.nextResult = _registeredResult();
+    worker.analysisGate = Completer<void>();
+    audit.abandonFailuresRemaining = 1;
+    await controller.initialize();
+    final scan = controller.scan();
+    await worker.analysisStarted.future;
+
+    await controller.cancelScan();
+
+    expect(controller.state.phase, CheckoutPhase.analyzing);
+    expect(controller.state.failure!.code, 'cancellation_persistence_failure');
+    expect(audit.abandonAttempts, 1);
+
+    await controller.cancelScan();
+
+    expect(audit.abandonAttempts, 2);
+    expect(controller.state.phase, CheckoutPhase.terminalFailure);
+    worker.analysisGate!.complete();
+    await scan;
+  });
+
   test('camera and worker startup failures are terminal', () async {
     camera.initializeResult = false;
 
@@ -316,6 +339,74 @@ void main() {
       expect(controller.state.phase, CheckoutPhase.ready);
     },
   );
+
+  test('retry snapshot failure abandons the durably begun session', () async {
+    audit.retryError = StateError('settings snapshot unavailable');
+
+    await controller.initialize();
+
+    expect(audit.abandonReasons, ['checkout_initialization_failure']);
+    expect(controller.state.phase, CheckoutPhase.terminalFailure);
+  });
+
+  test('storage failure can retry the same retained capture', () async {
+    evidence.captureError = StateError('temporary storage failure');
+    worker.nextResult = _registeredResult();
+    await controller.initialize();
+    await controller.scan();
+    expect(controller.state.phase, CheckoutPhase.recoverableFailure);
+    expect(worker.analyzeCalls, 0);
+
+    evidence.captureError = null;
+    await controller.retryFailure();
+
+    expect(worker.analyzeCalls, 1);
+    expect(audit.completedAttempts, hasLength(1));
+    expect(controller.state.phase, CheckoutPhase.orderReview);
+  });
+
+  test(
+    'payment failure retains frozen order and retries idempotently',
+    () async {
+      worker.nextResult = _registeredResult();
+      audit.paymentFailuresRemaining = 1;
+      await controller.initialize();
+      await controller.scan();
+
+      await controller.pay();
+
+      expect(controller.state.phase, CheckoutPhase.recoverableFailure);
+      expect(controller.state.lines, hasLength(1));
+      final frozen = audit.committedOrders.single;
+
+      await controller.retryFailure();
+
+      expect(controller.state.phase, CheckoutPhase.paymentComplete);
+      expect(audit.committedOrders, hasLength(2));
+      expect(audit.committedOrders.last, same(frozen));
+      expect(audit.resolutions, hasLength(1));
+    },
+  );
+
+  test('mapping and candidates use the session catalog snapshot', () async {
+    final sessionCroissant = catalog.productsBySku[6]!;
+    final sessionDonut = catalog.productsBySku[10]!;
+    worker.nextResult = buildUiInferenceResult();
+    await controller.initialize();
+
+    catalog.productsBySku
+      ..remove(10)
+      ..[6] = _product('replacement-croissant', 'Replacement', 6);
+    await controller.scan();
+
+    expect(
+      controller.state.objectDrafts.first.acceptedProduct,
+      same(sessionCroissant),
+    );
+    expect(controller.productForCandidate('object-2', 10), same(sessionDonut));
+    await controller.chooseTop3('object-2', 10);
+    expect(audit.resolutions.single.product, same(sessionDonut));
+  });
 
   test(
     'scan and payment commands are single flight and phase guarded',
@@ -362,12 +453,17 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   final List<String> events;
   List<InterruptedCheckout> interrupted = [];
   int retryLimit = 2;
+  Object? retryError;
   int manualCartEntries = 0;
   final List<ObjectResolutionDraft> resolutions = [];
   final List<PersistedAttempt> completedAttempts = [];
   final List<String> abandonReasons = [];
+  int abandonAttempts = 0;
+  int abandonFailuresRemaining = 0;
+  int paymentFailuresRemaining = 0;
   List<CheckoutLine> draftLines = [];
   FinalOrderDraft? committedOrder;
+  final List<FinalOrderDraft> committedOrders = [];
   Completer<void>? completeGate;
   Completer<void>? paymentGate;
   final completeCalled = Completer<void>();
@@ -388,7 +484,11 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   }
 
   @override
-  Future<int> retryLimitForSession(String sessionId) async => retryLimit;
+  Future<int> retryLimitForSession(String sessionId) async {
+    final error = retryError;
+    if (error != null) throw error;
+    return retryLimit;
+  }
 
   @override
   Future<void> enterManualCartMode(String sessionId, DateTime enteredAt) async {
@@ -439,8 +539,13 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   @override
   Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order) async {
     committedOrder = order;
+    committedOrders.add(order);
     if (!paymentCalled.isCompleted) paymentCalled.complete();
     await paymentGate?.future;
+    if (paymentFailuresRemaining > 0) {
+      paymentFailuresRemaining -= 1;
+      throw StateError('temporary payment persistence failure');
+    }
     return PaymentReceipt(
       paymentId: 'payment-1',
       sessionId: order.sessionId,
@@ -451,6 +556,11 @@ final class _FakeAuditStore implements CheckoutAuditStore {
 
   @override
   Future<void> abandonSession(String sessionId, String reason) async {
+    abandonAttempts += 1;
+    if (abandonFailuresRemaining > 0) {
+      abandonFailuresRemaining -= 1;
+      throw StateError('temporary abandonment persistence failure');
+    }
     abandonReasons.add(reason);
   }
 }
