@@ -128,6 +128,13 @@ class BatchInferenceResult:
             raise ValueError("dino_object_count must be within the decision count")
 
 
+@dataclass(frozen=True, slots=True)
+class BenchmarkPreflightEvidence:
+    repvit: int
+    dinov3_global_local: int
+    fusion: int
+
+
 def configure_cpu_process(runtime: ClassifierRuntimeConfig) -> None:
     """Apply CPU-global runtime settings once in a dedicated worker process."""
     if runtime.device != "CPU":
@@ -610,6 +617,87 @@ class ClassifierPipeline:
                 total_ms=total_ms,
             ),
             len(recheck_indexes),
+        )
+
+    def preflight_benchmark(
+        self,
+        image: Image.Image | CanonicalImage,
+        boxes: Sequence[Box],
+        *,
+        repvit_max_objects: int,
+        dino_max_objects: int,
+    ) -> BenchmarkPreflightEvidence:
+        """Execute benchmark warm-up work without producing an evaluated decision."""
+        frame = _canonical_frame(image)
+        ordered_boxes = tuple(boxes)
+        if not ordered_boxes:
+            raise ValueError("benchmark preflight requires at least one box")
+        for box in ordered_boxes:
+            _validate_visual_box(frame, box)
+        if type(repvit_max_objects) is not int or repvit_max_objects <= 0:
+            raise ValueError("repvit_max_objects must be a positive integer")
+        if type(dino_max_objects) is not int or dino_max_objects <= 0:
+            raise ValueError("dino_max_objects must be a positive integer")
+        if self.fusion_policy is None or self.fusion_provenance is None:
+            raise ValueError("benchmark preflight requires an immutable fusion policy")
+        local_bank = self._get_local_bank()
+        if local_bank is None:
+            raise ValueError("benchmark preflight requires a DINO local bank")
+
+        crop_groups: list[tuple[Image.Image, ...]] = []
+        product_box_groups: list[tuple[Box, ...]] = []
+        for box in ordered_boxes:
+            crops, product_boxes = make_padded_crops_with_product_boxes(
+                frame.image,
+                box,
+                self.config.preprocess.paddings,
+            )
+            crop_groups.append(crops)
+            product_box_groups.append(product_boxes)
+
+        if self.config.runtime.mode == "serial_reference":
+            repvit_evidence = tuple(
+                self.repvit.score_with_evidence(crops) for crops in crop_groups
+            )
+        else:
+            score_many = getattr(self.repvit, "score_many_with_evidence", None)
+            if not callable(score_many):
+                raise ValueError("RepViT runner does not expose batch evidence scoring")
+            repvit_evidence = tuple(
+                score_many(tuple(crop_groups), max_objects=repvit_max_objects)
+            )
+            if len(repvit_evidence) != len(ordered_boxes):
+                raise ValueError("RepViT batch evidence must align with input boxes")
+
+        dino = self._get_dino()
+        score_global_and_local = getattr(dino, "score_global_and_local_evidence", None)
+        if not callable(score_global_and_local):
+            raise ValueError("benchmark preflight requires DINO local evidence scoring")
+        first_repvit = repvit_evidence[0]
+        dino_scores, local_scores, patch_count, patch_ratio = score_global_and_local(
+            crop_groups[0],
+            product_box_groups[0],
+            local_bank,
+            repvit_scores=first_repvit.scores,
+        )
+        nearest_prototype_distance = min(
+            self.prototype_bank.distances(first_repvit.feature)
+        )
+        self._fusion_decision(
+            repvit_scores=first_repvit.scores,
+            dino_scores=dino_scores,
+            local_scores=local_scores,
+            crop_disagreement=first_repvit.crop_disagreement,
+            nearest_prototype_distance=nearest_prototype_distance,
+            patch_count=patch_count,
+            patch_ratio=patch_ratio,
+            box=ordered_boxes[0],
+        )
+        self.clock.synchronize()
+        return BenchmarkPreflightEvidence(
+            repvit=len(repvit_evidence),
+            dinov3_global_local=1,
+            fusion=1,
         )
 
     def preflight_models(self, image: Image.Image | CanonicalImage, box: Box) -> None:

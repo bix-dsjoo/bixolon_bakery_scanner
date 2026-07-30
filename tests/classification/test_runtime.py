@@ -126,6 +126,44 @@ class ManyFullEvidenceDino(FullEvidenceDino):
         return self.evidence
 
 
+class PreflightRecordingRepVit(RecordingRunner):
+    def __init__(self, scores: ModelScoreVector) -> None:
+        super().__init__(scores)
+        self.serial_calls = 0
+        self.batch_calls = 0
+        self.batch_max_objects: int | None = None
+
+    def score_with_evidence(self, crops: tuple[Image.Image, ...]) -> RepVitEvidence:
+        self.serial_calls += 1
+        return super().score_with_evidence(crops)
+
+    def score_many_with_evidence(self, crop_groups, *, max_objects):
+        self.batch_calls += 1
+        self.batch_max_objects = max_objects
+        return tuple(
+            RecordingRunner.score_with_evidence(self, crops)
+            for crops in crop_groups
+        )
+
+
+class PreflightRecordingDino(RecordingRunner):
+    def __init__(self, scores: ModelScoreVector) -> None:
+        super().__init__(scores)
+        self.global_local_calls = 0
+        self.product_boxes: tuple[Box, ...] | None = None
+        self.local_bank = None
+
+    def score_global_and_local_evidence(
+        self, crops, product_boxes, local_bank, *, repvit_scores
+    ):
+        self.global_local_calls += 1
+        self.received_crops = crops
+        self.product_boxes = tuple(product_boxes)
+        self.local_bank = local_bank
+        assert repvit_scores.model_id == "repvit_m1_15plus5_v1"
+        return self.scores, {6: 0.90, 5: 0.10}, 32, 0.5
+
+
 class StepClock:
     def __init__(self, values: tuple[float, ...]) -> None:
         self._values = iter(values)
@@ -304,6 +342,96 @@ def test_preflight_models_loads_and_scores_dino_before_all_direct_inference():
         (44, 22),
         (46, 24),
     )
+
+
+@pytest.mark.parametrize(
+    "mode, expected_serial, expected_batch",
+    [
+        ("serial_reference", 3, 0),
+        ("batch_pytorch", 0, 1),
+    ],
+)
+def test_benchmark_preflight_exercises_repvit_dino_local_and_fusion(
+    mode, expected_serial, expected_batch
+):
+    recorder = PreflightRecordingRepVit(_repvit_scores({6: 0.80, 5: 0.20}))
+    dino = PreflightRecordingDino(_dino_scores({6: 0.70, 5: 0.20}))
+    local_bank = object()
+    pipeline = _fusion_pipeline(
+        mode=mode,
+        repvit=recorder,
+        dino_loader=lambda: dino,
+        local_bank=local_bank,
+    )
+
+    evidence = pipeline.preflight_benchmark(
+        _image(),
+        (Box(1, 1, 10, 10), Box(12, 1, 10, 10), Box(24, 1, 10, 10)),
+        repvit_max_objects=2,
+        dino_max_objects=2,
+    )
+
+    assert recorder.serial_calls == expected_serial
+    assert recorder.batch_calls == expected_batch
+    assert recorder.batch_max_objects == (2 if mode == "batch_pytorch" else None)
+    assert dino.global_local_calls == 1
+    assert dino.local_bank is local_bank
+    assert tuple(crop.size for crop in dino.received_crops) == ((12, 12),) * 3
+    assert dino.product_boxes == (Box(1, 1, 10, 10),) * 3
+    assert evidence.repvit == 3
+    assert evidence.dinov3_global_local == 1
+    assert evidence.fusion == 1
+
+
+def test_benchmark_preflight_rejects_an_empty_box_sequence():
+    pipeline = _fusion_pipeline(
+        mode="serial_reference",
+        repvit=PreflightRecordingRepVit(_repvit_scores({6: 0.80, 5: 0.20})),
+        dino_loader=lambda: pytest.fail("DINO must not load"),
+        local_bank=object(),
+    )
+
+    with pytest.raises(ValueError, match="requires at least one box"):
+        pipeline.preflight_benchmark(
+            _image(),
+            (),
+            repvit_max_objects=2,
+            dino_max_objects=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "with_fusion, with_local, expected_message",
+    [
+        (False, True, "requires an immutable fusion policy"),
+        (True, False, "requires a DINO local bank"),
+    ],
+)
+def test_benchmark_preflight_rejects_missing_fusion_or_local_artifacts(
+    with_fusion, with_local, expected_message
+):
+    repvit = PreflightRecordingRepVit(_repvit_scores({6: 0.80, 5: 0.20}))
+    if with_fusion:
+        pipeline = _fusion_pipeline(
+            mode="serial_reference",
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=object() if with_local else None,
+        )
+    else:
+        pipeline = _pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=object() if with_local else None,
+        )
+
+    with pytest.raises(ValueError, match=expected_message):
+        pipeline.preflight_benchmark(
+            _image(),
+            (_box(),),
+            repvit_max_objects=2,
+            dino_max_objects=2,
+        )
 
 
 def test_ambiguous_repvit_loads_dino_once_and_reuses_the_same_crops():
@@ -721,6 +849,61 @@ def _pipeline(
         prototype_bank=prototype_bank or FixedPrototypeBank(),
         local_bank=local_bank,
         stage_timing_sink=stage_timing_sink,
+    )
+
+
+def _fusion_pipeline(
+    *,
+    mode: str,
+    repvit: RecordingRunner,
+    dino_loader,
+    local_bank: object | None,
+) -> ClassifierPipeline:
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    config = config.model_copy(
+        update={"runtime": config.runtime.model_copy(update={"mode": mode})}
+    )
+    selected = _calibration()
+    provenance = ModelProvenance(
+        repvit_artifact_id=selected.repvit_artifact_id,
+        repvit_sha256="1" * 64,
+        dinov3_artifact_id=selected.dinov3_artifact_id,
+        dinov3_sha256="2" * 64,
+        dinov3_support_sha256="3" * 64,
+        calibration_id=selected.calibration_id,
+        calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
+    )
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": preprocess_sha256(config.preprocess),
+        },
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    return ClassifierPipeline(
+        config=config,
+        repvit=repvit,
+        dino_loader=dino_loader,
+        policy=DecisionPolicy(selected, provenance=provenance),
+        prototype_bank=FixedPrototypeBank(),
+        fusion_policy=fusion,
+        fusion_provenance=replace(
+            provenance,
+            calibration_id="fusion_policy_v1",
+            calibration_sha256="9" * 64,
+        ),
+        local_bank=local_bank,
     )
 
 
