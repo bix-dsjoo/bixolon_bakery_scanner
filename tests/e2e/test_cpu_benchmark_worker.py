@@ -38,6 +38,7 @@ from bakery_scanner.e2e.cpu_benchmark_worker import (
     BenchmarkWorker,
     BenchmarkWorkerFailure,
     WorkerDependencies,
+    select_benchmark_samples,
     worker_process_main,
 )
 from bakery_scanner.e2e.cpu_dataset import CpuEvaluationSample, CpuEvaluationTarget
@@ -343,6 +344,45 @@ def _worker(
 ) -> tuple[BenchmarkWorker, RecordingWorkerDependencies]:
     recorder = RecordingWorkerDependencies(mode=mode, **dependency_options)
     return BenchmarkWorker(_worker_spec(mode), dependencies=recorder.dependencies()), recorder
+
+
+def test_sample_selector_supports_the_cli_profile_adapter(tmp_path):
+    from bakery_scanner.e2e.cpu_profile import BATCH2_E3_M3_H3_NAMES
+
+    samples = _samples()
+    selected_paths = tuple(tmp_path / name for name in BATCH2_E3_M3_H3_NAMES)
+    selected_by_name = {
+        path.name: replace(sample, image_path=path, profile=profile)
+        for path, sample, profile in zip(
+            selected_paths,
+            samples[-9:],
+            ("E", "E", "E", "M", "M", "M", "H", "H", "H"),
+            strict=True,
+        )
+    }
+
+    selected = select_benchmark_samples(
+        samples,
+        sample_profile="batch2_e3_m3_h3",
+        package_root=tmp_path,
+        resolve_profile=lambda source: selected_paths,
+        sample_for_path=lambda path: selected_by_name[path.name],
+    )
+
+    assert tuple(sample.image_path.name for sample in selected) == (
+        BATCH2_E3_M3_H3_NAMES
+    )
+    assert tuple(sample.profile for sample in selected) == (
+        "E",
+        "E",
+        "E",
+        "M",
+        "M",
+        "M",
+        "H",
+        "H",
+        "H",
+    )
 
 
 def test_prepare_loads_once_applies_runtime_once_and_warms_two_e_m_h_repetitions():

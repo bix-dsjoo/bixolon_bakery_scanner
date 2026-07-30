@@ -574,13 +574,25 @@ def select_benchmark_samples(
     *,
     sample_profile: str,
     package_root: Path,
+    resolve_profile: Callable[[Path], tuple[Path, ...]] = resolve_batch2_e3_m3_h3,
+    sample_for_path: Callable[[Path], CpuEvaluationSample] | None = None,
 ) -> tuple[CpuEvaluationSample, ...]:
-    """Worker-local live adapter for the existing immutable selection rules."""
+    """Select either the fixed acceptance corpus or prescribed 3/3/3 screen."""
     if sample_profile == "all299":
         return samples
     if sample_profile != "batch2_e3_m3_h3":
         raise ValueError("sample profile is not recognized")
-    by_path = {sample.image_path.resolve(): sample for sample in samples}
+    if sample_for_path is None:
+        by_path = {sample.image_path.resolve(): sample for sample in samples}
+
+        def sample_for_path(path: Path) -> CpuEvaluationSample:
+            try:
+                return by_path[path.resolve()]
+            except KeyError as exc:
+                raise ValueError(
+                    f"screen image is not in the fixed CPU dataset: {path}"
+                ) from exc
+
     source = (
         package_root
         / "datasets"
@@ -588,15 +600,7 @@ def select_benchmark_samples(
         / "group_20class_batch02"
         / "images"
     )
-    selected: list[CpuEvaluationSample] = []
-    for path in resolve_batch2_e3_m3_h3(source):
-        try:
-            selected.append(by_path[path.resolve()])
-        except KeyError as exc:
-            raise ValueError(
-                f"screen image is not in the fixed CPU dataset: {path}"
-            ) from exc
-    result = tuple(selected)
+    result = tuple(sample_for_path(path) for path in resolve_profile(source))
     if (
         len(result) != 9
         or tuple(sample.profile for sample in result)
