@@ -89,3 +89,45 @@ final class CustomerCatalogDiscovery {
   final CatalogSnapshot catalog;
   final List<Product> featuredProducts;
 }
+
+/// Full product record used only by the administrator catalog surface. Customer
+/// checkout continues to use the smaller immutable [Product] projection.
+final class ManagedCatalogProduct {
+  const ManagedCatalogProduct({
+    required this.productId,
+    required this.displayName,
+    required this.unitPriceKrw,
+    required this.recognitionSkuId,
+    required this.categoryId,
+    required this.active,
+    required this.sortOrder,
+    this.photoAssetPath,
+    this.photoByteSize,
+    this.photoSha256,
+    this.photoMediaType,
+    this.photoProvenanceNote,
+  });
+
+  final String productId;
+  final String displayName;
+  final int unitPriceKrw;
+  final int? recognitionSkuId;
+  final String categoryId;
+  final bool active;
+  final int sortOrder;
+  final String? photoAssetPath;
+  final int? photoByteSize;
+  final String? photoSha256;
+  final String? photoMediaType;
+  final String? photoProvenanceNote;
+}
+
+final class ManagedCatalogSnapshot {
+  const ManagedCatalogSnapshot({
+    required this.revision,
+    required this.products,
+  });
+
+  final CatalogRevision revision;
+  final List<ManagedCatalogProduct> products;
+}

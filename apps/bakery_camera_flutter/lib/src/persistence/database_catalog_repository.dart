@@ -87,6 +87,33 @@ final class DatabaseCatalogRepository implements CatalogRepository {
   Future<CustomerCatalogDiscovery> customerDiscovery() async =>
       customerDiscoveryFor(await activeCatalog());
 
+  /// Includes inactive products for the administrator only. It intentionally
+  /// resolves one frozen active revision and never changes a live checkout
+  /// snapshot.
+  Future<ManagedCatalogSnapshot> activeCatalogForManagement() async {
+    final revisions = await (_database.select(
+      _database.catalogRevisions,
+    )..where((row) => row.isActive.equals(true))).get();
+    if (revisions.length != 1) {
+      throw StateError('exactly one active catalog revision is required');
+    }
+    final revision = revisions.single;
+    final rows =
+        await (_database.select(_database.products)
+              ..where(
+                (row) => row.catalogRevisionId.equals(revision.revisionId),
+              )
+              ..orderBy([
+                (row) => OrderingTerm.asc(row.sortOrder),
+                (row) => OrderingTerm.asc(row.productId),
+              ]))
+            .get();
+    return ManagedCatalogSnapshot(
+      revision: _revision(revision),
+      products: List.unmodifiable(rows.map(_managedProduct)),
+    );
+  }
+
   @override
   Future<Product?> productForRecognitionSku(int recognitionSkuId) async {
     if (recognitionSkuId < 1 || recognitionSkuId > 20) {
@@ -129,4 +156,20 @@ final class DatabaseCatalogRepository implements CatalogRepository {
     active: row.active,
     sortOrder: row.sortOrder,
   );
+
+  ManagedCatalogProduct _managedProduct(ProductRow row) =>
+      ManagedCatalogProduct(
+        productId: row.productId,
+        displayName: row.displayName,
+        unitPriceKrw: row.unitPriceKrw,
+        recognitionSkuId: row.recognitionSkuId,
+        categoryId: row.categoryId,
+        active: row.active,
+        sortOrder: row.sortOrder,
+        photoAssetPath: row.photoRelativePath,
+        photoByteSize: row.photoByteSize,
+        photoSha256: row.photoSha256,
+        photoMediaType: row.photoMediaType,
+        photoProvenanceNote: row.photoProvenanceNote,
+      );
 }

@@ -9,9 +9,11 @@ import 'package:uuid/uuid.dart';
 
 import '../admin/admin_models.dart';
 import '../admin/review_service.dart';
+import '../admin/product_management_service.dart';
 import '../audit/audit_file_store.dart';
 import '../camera/camera_service.dart';
 import '../catalog/catalog_seed.dart';
+import '../catalog/catalog_photo_store.dart';
 import '../checkout/checkout_controller.dart';
 import '../checkout/checkout_models.dart';
 import '../checkout/simulated_payment_service.dart';
@@ -27,6 +29,7 @@ import '../ui/admin/admin_destination.dart';
 import '../ui/admin/dashboard_screen.dart';
 import '../ui/admin/transaction_history_screen.dart';
 import '../ui/admin/review_inbox_screen.dart';
+import '../ui/admin/product_management_screen.dart';
 import 'app_mode_controller.dart';
 import 'app_mode_surface.dart';
 
@@ -69,6 +72,7 @@ class _BakeryAppState extends State<BakeryApp> {
                   destination,
                   services.admin,
                   services.reviews,
+                  services.products,
                   onAttention,
                 ),
           );
@@ -150,6 +154,12 @@ class _BakeryAppState extends State<BakeryApp> {
           createId: (_) => const Uuid().v4(),
           now: DateTime.now,
         ),
+        products: ProductManagementService(
+          database: database,
+          createId: () => const Uuid().v4(),
+          now: DateTime.now,
+          photoStore: CatalogPhotoStore(support),
+        ),
       );
     } catch (_) {
       await database.close();
@@ -162,6 +172,7 @@ class _BakeryAppState extends State<BakeryApp> {
     AdminDestination destination,
     DatabaseAdminRepository admin,
     DatabaseReviewService reviews,
+    ProductManagementService products,
     ValueChanged<AttentionItem> onAttentionSelected,
   ) {
     if (destination == AdminDestination.dashboard) {
@@ -177,6 +188,9 @@ class _BakeryAppState extends State<BakeryApp> {
     if (destination == AdminDestination.reviewInbox) {
       return ReviewInboxScreen(repository: reviews);
     }
+    if (destination == AdminDestination.products) {
+      return ProductManagementScreen(service: products);
+    }
     return Center(
       child: Text(
         '${destination.label} 화면을 준비하고 있어요.',
@@ -191,11 +205,13 @@ final class _AppServices {
     required this.checkout,
     required this.admin,
     required this.reviews,
+    required this.products,
   });
 
   final CheckoutController checkout;
   final DatabaseAdminRepository admin;
   final DatabaseReviewService reviews;
+  final ProductManagementService products;
 }
 
 DateRange _seoulTodayRange() {
