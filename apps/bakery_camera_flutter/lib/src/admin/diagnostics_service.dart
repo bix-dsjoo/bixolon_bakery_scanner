@@ -40,7 +40,7 @@ final class DiagnosticsService {
     final storage = results[0] as DiagnosticsStorageStatus;
     final observed = results[1] as DiagnosticsObservedArtifacts?;
     final attempts = results[2] as List<DiagnosticsStoredAttempt>;
-    final artifacts = _artifacts(observed);
+    final artifacts = _artifacts(live, observed);
     final impact =
         live.cameraReady &&
             live.worker.isReady &&
@@ -53,11 +53,19 @@ final class DiagnosticsService {
       live: live,
       artifacts: artifacts,
       storage: storage,
-      timing: _timing(attempts),
+      timing: _timing(
+        attempts,
+        device: live.worker.isReady ? live.worker.device : null,
+        configSha256: expectedArtifacts.configSha256,
+      ),
+      historicalReceiptArtifacts: observed?.asStaleAgainst(
+        expectedArtifacts.configSha256,
+      ),
     );
   }
 
   DiagnosticsArtifactReport _artifacts(
+    DiagnosticsLiveState live,
     DiagnosticsObservedArtifacts? observed,
   ) => DiagnosticsArtifactReport(
     detector: DiagnosticsArtifactStatus(
@@ -66,6 +74,7 @@ final class DiagnosticsService {
       expectedSha256: expectedArtifacts.detectorSha256,
       observedId: observed?.detectorId,
       observedSha256: observed?.detectorSha256,
+      currentStartupId: live.worker.isReady ? live.worker.detectorId : null,
     ),
     repvit: DiagnosticsArtifactStatus(
       label: 'RepViT-M1',
@@ -73,6 +82,7 @@ final class DiagnosticsService {
       expectedSha256: expectedArtifacts.repvitSha256,
       observedId: observed?.repvitId,
       observedSha256: observed?.repvitSha256,
+      currentStartupId: live.worker.isReady ? live.worker.repvitId : null,
     ),
     dinov3: DiagnosticsArtifactStatus(
       label: 'DINOv3',
@@ -80,6 +90,7 @@ final class DiagnosticsService {
       expectedSha256: expectedArtifacts.dinov3Sha256,
       observedId: observed?.dinov3Id,
       observedSha256: observed?.dinov3Sha256,
+      currentStartupId: live.worker.isReady ? live.worker.dinov3Id : null,
     ),
     fusion: DiagnosticsArtifactStatus(
       label: 'Fusion policy',
@@ -87,11 +98,22 @@ final class DiagnosticsService {
       expectedSha256: expectedArtifacts.fusionPolicySha256,
       observedId: observed?.fusionPolicyId,
       observedSha256: observed?.fusionPolicySha256,
+      currentStartupId: live.worker.isReady ? live.worker.fusionPolicyId : null,
     ),
   );
 
-  DiagnosticsTimingSummary _timing(List<DiagnosticsStoredAttempt> rows) {
-    if (rows.isEmpty) return const DiagnosticsTimingSummary.empty();
+  DiagnosticsTimingSummary _timing(
+    List<DiagnosticsStoredAttempt> rows, {
+    required String? device,
+    required String configSha256,
+  }) {
+    if (device == null) return const DiagnosticsTimingSummary.empty();
+    final comparable = rows
+        .where(
+          (row) => row.device == device && row.configSha256 == configSha256,
+        )
+        .toList(growable: false);
+    if (comparable.isEmpty) return const DiagnosticsTimingSummary.empty();
     DiagnosticsDistribution distribution(Iterable<double> values) {
       final sorted = values.toList()..sort();
       final p50Index = ((sorted.length - 1) * .5).round();
@@ -103,15 +125,20 @@ final class DiagnosticsService {
     }
 
     return DiagnosticsTimingSummary(
-      sampleCount: rows.length,
+      sampleCount: comparable.length,
+      device: device,
+      configSha256: configSha256,
       conditionalDinoRate:
-          rows.where((row) => row.dinov3Ms > 0).length / rows.length,
-      decodePreprocess: distribution(rows.map((row) => row.decodePreprocessMs)),
-      detector: distribution(rows.map((row) => row.detectorMs)),
-      repvit: distribution(rows.map((row) => row.repvitMs)),
-      dinov3: distribution(rows.map((row) => row.dinov3Ms)),
-      postprocess: distribution(rows.map((row) => row.postprocessMs)),
-      total: distribution(rows.map((row) => row.totalMs)),
+          comparable.where((row) => row.dinov3Ms > 0).length /
+          comparable.length,
+      decodePreprocess: distribution(
+        comparable.map((row) => row.decodePreprocessMs),
+      ),
+      detector: distribution(comparable.map((row) => row.detectorMs)),
+      repvit: distribution(comparable.map((row) => row.repvitMs)),
+      dinov3: distribution(comparable.map((row) => row.dinov3Ms)),
+      postprocess: distribution(comparable.map((row) => row.postprocessMs)),
+      total: distribution(comparable.map((row) => row.totalMs)),
     );
   }
 }
@@ -207,6 +234,13 @@ final class DatabaseDiagnosticsAuditReader implements DiagnosticsAuditReader {
   @override
   Future<List<DiagnosticsStoredAttempt>> completedAttempts() async {
     final rows = await database.select(database.scanAttempts).get();
+    final sessions = await database.select(database.checkoutSessions).get();
+    final configBySessionId = {
+      for (final session in sessions)
+        session.sessionId: sha256
+            .convert(utf8.encode(session.configSnapshotJson))
+            .toString(),
+    };
     return rows
         .where(
           (row) =>
@@ -216,10 +250,14 @@ final class DatabaseDiagnosticsAuditReader implements DiagnosticsAuditReader {
               row.repvitMs != null &&
               row.dinov3Ms != null &&
               row.postprocessMs != null &&
-              row.totalMs != null,
+              row.totalMs != null &&
+              row.startupDevice != null &&
+              configBySessionId.containsKey(row.sessionId),
         )
         .map(
           (row) => DiagnosticsStoredAttempt(
+            device: row.startupDevice!,
+            configSha256: configBySessionId[row.sessionId]!,
             decodePreprocessMs: row.decodePreprocessMs!,
             detectorMs: row.detectorMs!,
             repvitMs: row.repvitMs!,

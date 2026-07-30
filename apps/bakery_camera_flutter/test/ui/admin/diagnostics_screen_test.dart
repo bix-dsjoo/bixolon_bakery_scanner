@@ -41,6 +41,14 @@ void main() {
     await tester.ensureVisible(detectorId);
     await tester.pumpAndSettle();
     expect(find.textContaining('설정 변경'), findsNothing);
+    expect(
+      find.textContaining('출처: 완료된 추론 영수증 · 기기 cpu', skipOffstage: false),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('최근 영수증 증적은 현재 설정과 달라', skipOffstage: false),
+      findsOneWidget,
+    );
 
     await tester.tap(
       find.byKey(const ValueKey('copy-기대 ID-rfdetr_large_bakery_v1')),
@@ -60,6 +68,10 @@ const _snapshot = DiagnosticsSnapshot(
       loadMs: 320,
       warmupMs: 85,
       detectorThreshold: 0.42,
+      detectorId: 'rfdetr_large_bakery_v1',
+      repvitId: 'repvit_m1_15plus5_v1',
+      dinov3Id: 'dinov3_vits16_15plus5_v1',
+      fusionPolicyId: 'fusion_local_or_global_consensus_margin_v1',
       lastError: 'previous request failed',
     ),
   ),
@@ -72,6 +84,7 @@ const _snapshot = DiagnosticsSnapshot(
       observedId: 'rfdetr_large_bakery_v1',
       observedSha256:
           '1111111111111111111111111111111111111111111111111111111111111111',
+      currentStartupId: 'rfdetr_large_bakery_v1',
     ),
     repvit: DiagnosticsArtifactStatus(
       label: 'RepViT-M1',
@@ -81,6 +94,7 @@ const _snapshot = DiagnosticsSnapshot(
       observedId: 'repvit_m1_15plus5_v1',
       observedSha256:
           '2222222222222222222222222222222222222222222222222222222222222222',
+      currentStartupId: 'repvit_m1_15plus5_v1',
     ),
     dinov3: DiagnosticsArtifactStatus(
       label: 'DINOv3',
@@ -90,6 +104,7 @@ const _snapshot = DiagnosticsSnapshot(
       observedId: 'dinov3_vits16_15plus5_v1',
       observedSha256:
           '3333333333333333333333333333333333333333333333333333333333333333',
+      currentStartupId: 'dinov3_vits16_15plus5_v1',
     ),
     fusion: DiagnosticsArtifactStatus(
       label: 'Fusion policy',
@@ -99,6 +114,7 @@ const _snapshot = DiagnosticsSnapshot(
       observedId: 'fusion_local_or_global_consensus_margin_v1',
       observedSha256:
           '4444444444444444444444444444444444444444444444444444444444444444',
+      currentStartupId: 'fusion_local_or_global_consensus_margin_v1',
     ),
   ),
   storage: DiagnosticsStorageStatus(
@@ -108,5 +124,38 @@ const _snapshot = DiagnosticsSnapshot(
     persistenceReady: true,
     activeCatalogRevisionId: 'catalog-v2',
   ),
-  timing: DiagnosticsTimingSummary.empty(),
+  timing: DiagnosticsTimingSummary(
+    sampleCount: 1,
+    device: 'cpu',
+    configSha256:
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    conditionalDinoRate: 0,
+    decodePreprocess: DiagnosticsDistribution(
+      minimumMs: 1,
+      p50Ms: 1,
+      maximumMs: 1,
+    ),
+    detector: DiagnosticsDistribution(minimumMs: 1, p50Ms: 1, maximumMs: 1),
+    repvit: DiagnosticsDistribution(minimumMs: 1, p50Ms: 1, maximumMs: 1),
+    dinov3: DiagnosticsDistribution(minimumMs: 0, p50Ms: 0, maximumMs: 0),
+    postprocess: DiagnosticsDistribution(minimumMs: 1, p50Ms: 1, maximumMs: 1),
+    total: DiagnosticsDistribution(minimumMs: 4, p50Ms: 4, maximumMs: 4),
+  ),
+  historicalReceiptArtifacts: DiagnosticsObservedArtifacts(
+    detectorId: 'rfdetr_large_bakery_v1',
+    detectorSha256:
+        '1111111111111111111111111111111111111111111111111111111111111111',
+    repvitId: 'repvit_m1_15plus5_v1',
+    repvitSha256:
+        '2222222222222222222222222222222222222222222222222222222222222222',
+    dinov3Id: 'dinov3_vits16_15plus5_v1',
+    dinov3Sha256:
+        '3333333333333333333333333333333333333333333333333333333333333333',
+    fusionPolicyId: 'fusion_local_or_global_consensus_margin_v1',
+    fusionPolicySha256:
+        '4444444444444444444444444444444444444444444444444444444444444444',
+    configSha256:
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    isStale: true,
+  ),
 );

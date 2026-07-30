@@ -291,6 +291,10 @@ DiagnosticsLiveState _diagnosticsLiveState(
           loadMs: metrics.loadMs,
           warmupMs: metrics.warmupMs,
           detectorThreshold: metrics.detectorThreshold,
+          detectorId: metrics.detectorId,
+          repvitId: metrics.repvitId,
+          dinov3Id: metrics.dinov3Id,
+          fusionPolicyId: metrics.fusionPolicyId,
           lastError: error,
           diagnostics: worker.diagnostics,
         )
@@ -318,6 +322,9 @@ DiagnosticsExpectedArtifacts _diagnosticsExpectedArtifacts(
   dinov3Sha256: runtime.dinov3Sha256,
   fusionPolicyId: runtime.fusionPolicyId,
   fusionPolicySha256: runtime.fusionPolicySha256,
+  configSha256: sha256
+      .convert(utf8.encode(runtime.configSnapshotJson))
+      .toString(),
 );
 
 DateRange _seoulTodayRange() {

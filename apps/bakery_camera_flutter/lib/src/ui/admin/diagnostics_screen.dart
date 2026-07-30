@@ -100,12 +100,18 @@ class _DiagnosticsBody extends StatelessWidget {
                 const SizedBox(height: 8),
                 const Text('값은 검증된 시작 정보에서만 읽습니다. 여기서 변경할 수 없습니다.'),
                 const SizedBox(height: 12),
+                const Text('현재 워커 시작 검증 결과입니다. 영수증 증적은 아래에 별도로 표시됩니다.'),
+                const SizedBox(height: 12),
                 for (final artifact in [
                   snapshot.artifacts.detector,
                   snapshot.artifacts.repvit,
                   snapshot.artifacts.dinov3,
                   snapshot.artifacts.fusion,
                 ]) ...[_ArtifactRow(artifact: artifact), const Divider()],
+                if (snapshot.historicalReceiptArtifacts != null)
+                  _HistoricalReceiptNotice(
+                    artifacts: snapshot.historicalReceiptArtifacts!,
+                  ),
               ],
             ),
           ),
@@ -245,19 +251,25 @@ class _ArtifactRow extends StatelessWidget {
       _StatusRow(
         label: artifact.label,
         isHealthy: artifact.isVerified,
-        detail: artifact.isVerified ? '기대 해시와 일치' : '기대 해시와 일치하지 않음',
+        detail: artifact.isVerified
+            ? '현재 워커 시작 검증 완료'
+            : '현재 워커 시작 ID가 기대값과 일치하지 않음',
       ),
       const SizedBox(height: 8),
       _CopyValue(label: '기대 ID', value: artifact.expectedId),
       const SizedBox(height: 6),
       _CopyValue(label: '기대 SHA-256', value: artifact.expectedSha256),
+      if (artifact.currentStartupId != null) ...[
+        const SizedBox(height: 6),
+        _CopyValue(label: '현재 시작 ID', value: artifact.currentStartupId!),
+      ],
       if (artifact.observedId != null) ...[
         const SizedBox(height: 6),
-        _CopyValue(label: '관측 ID', value: artifact.observedId!),
+        _CopyValue(label: '최근 영수증 ID', value: artifact.observedId!),
       ],
       if (artifact.observedSha256 != null) ...[
         const SizedBox(height: 6),
-        _CopyValue(label: '관측 SHA-256', value: artifact.observedSha256!),
+        _CopyValue(label: '최근 영수증 SHA-256', value: artifact.observedSha256!),
       ],
     ],
   );
@@ -288,6 +300,22 @@ class _CopyValue extends StatelessWidget {
   );
 }
 
+class _HistoricalReceiptNotice extends StatelessWidget {
+  const _HistoricalReceiptNotice({required this.artifacts});
+
+  final DiagnosticsObservedArtifacts artifacts;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 8),
+    child: Text(
+      artifacts.isStale
+          ? '최근 영수증 증적은 현재 설정과 달라, 계산 가능 여부를 판단하지 않습니다.'
+          : '최근 영수증 증적은 이력 확인용이며, 계산 가능 여부를 판단하지 않습니다.',
+    ),
+  );
+}
+
 class _TimingCard extends StatelessWidget {
   const _TimingCard({required this.timing});
   final DiagnosticsTimingSummary timing;
@@ -302,6 +330,10 @@ class _TimingCard extends StatelessWidget {
             children: [
               Text(
                 '표본 ${timing.sampleCount}건 · 조건부 DINO 실행 ${(timing.conditionalDinoRate * 100).toStringAsFixed(0)}%',
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '출처: 완료된 추론 영수증 · 기기 ${timing.device} · 설정 ${_shorten(timing.configSha256!)}',
               ),
               const SizedBox(height: 8),
               _TimingLine(label: '총 시간', value: timing.total),
