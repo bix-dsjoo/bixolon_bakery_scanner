@@ -9,10 +9,10 @@ def test_rtmdet_xyxy_is_normalized_to_source_xywh():
     assert rows[0].box == Box(10, 20, 30, 40)
 
 
-def test_rtmdet_drops_scores_below_retention_floor_and_rejects_invalid_box():
+def test_rtmdet_drops_scores_below_retention_floor_and_clamps_edge_overshoot():
     assert parse_rtmdet_output(3, (100, 80), [0], [[0, 0, 10, 10]], [.0009], "rtmdet_tiny_768") == ()
-    with pytest.raises(ValueError, match="coordinates"):
-        parse_rtmdet_output(3, (100, 80), [0], [[0, 0, 101, 10]], [.2], "rtmdet_tiny_768")
+    rows = parse_rtmdet_output(3, (100, 80), [0], [[0, 0, 101, 10]], [.2], "rtmdet_tiny_768")
+    assert rows[0].box == Box(0, 0, 100, 10)
 
 
 def test_runner_uses_injected_command_runner():
