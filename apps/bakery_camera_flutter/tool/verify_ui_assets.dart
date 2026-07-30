@@ -39,10 +39,15 @@ Future<void> main() async {
 
 /// Validates the only generated customer illustrations permitted in this app.
 ///
-/// The tool deliberately rejects any unmanifested PNG in the illustration
-/// directory, so generated art cannot be repurposed as product, evidence, or
-/// model material by merely adding a file.
-Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
+/// The tool allowlists only the two rooted manifest PNGs and the root
+/// `.gitkeep`; it rejects every other file-system entity (including links)
+/// below the illustration directory, so generated art cannot be repurposed as
+/// product, evidence, or model material by merely adding a file.
+Future<List<String>> verifyUiAssets({
+  Directory? appRoot,
+  Stream<FileSystemEntity> Function(Directory illustrations)?
+  illustrationEntities,
+}) async {
   final root = appRoot ?? Directory.current;
   final errors = <String>[];
   final manifestFile = File(
@@ -193,19 +198,26 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
   if (!await illustrations.exists()) {
     errors.add('assets/illustrations directory is missing');
   } else {
-    await for (final entity in illustrations.list(
-      followLinks: false,
-      recursive: true,
-    )) {
+    final entities =
+        illustrationEntities?.call(illustrations) ??
+        illustrations.list(followLinks: false, recursive: true);
+    await for (final entity in entities) {
+      final relativePath = path
+          .relative(entity.path, from: root.path)
+          .replaceAll('\\', '/');
+      if (entity is Directory) continue;
+      if (entity is Link) {
+        errors.add('illustration link is not allowed: $relativePath');
+        continue;
+      }
       if (entity is File) {
-        final relativePath = path
-            .relative(entity.path, from: root.path)
-            .replaceAll('\\', '/');
         if (relativePath != _safeIllustrationSentinel &&
             !manifestPaths.contains(relativePath)) {
           errors.add('unlisted illustration file: $relativePath');
         }
+        continue;
       }
+      errors.add('unexpected illustration entity: $relativePath');
     }
   }
   return errors;

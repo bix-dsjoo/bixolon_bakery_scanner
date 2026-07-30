@@ -109,6 +109,26 @@ void main() {
     },
   );
 
+  test(
+    'the verifier rejects illustration links without following them',
+    () async {
+      final root = await _copyAssetsToTempRoot();
+      addTearDown(() => root.delete(recursive: true));
+      final link = Link(
+        '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations${Platform.pathSeparator}linked_illustration',
+      );
+
+      final errors = await verifyUiAssets(
+        appRoot: root,
+        illustrationEntities: (_) async* {
+          yield link;
+        },
+      );
+
+      expect(errors, contains(contains('illustration link is not allowed')));
+    },
+  );
+
   test('the verifier rejects an opaque RGBA illustration', () async {
     final root = await _copyAssetsToTempRoot();
     addTearDown(() => root.delete(recursive: true));
