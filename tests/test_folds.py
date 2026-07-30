@@ -1,12 +1,15 @@
 from pathlib import Path
 import json
 
+import pytest
+
 from bakery_scanner.config import ScannerConfig
 from bakery_scanner.data.coco import load_sources, load_staged_dataset, stage_single_class_dataset
 from bakery_scanner.contracts import SceneKey
 from bakery_scanner.data.folds import FoldManifest, build_scene_folds, write_fold_manifests
 
 
+@pytest.mark.artifact
 def test_same_batch_and_scene_never_cross_folds(tmp_path: Path):
     config = ScannerConfig.load(Path("configs/e2e_current_source.yaml"))
     staged = stage_single_class_dataset(

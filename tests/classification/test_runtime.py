@@ -948,6 +948,10 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
         "bakery_scanner.classification.runtime.RepVitM1Runner.load",
         lambda loaded_config: repvit,
     )
+    monkeypatch.setattr(
+        "bakery_scanner.classification.runtime.RepVitPrototypeBank.load",
+        lambda *args, **kwargs: FixedPrototypeBank(),
+    )
 
     def load_dino(loaded_config):
         nonlocal dino_loads

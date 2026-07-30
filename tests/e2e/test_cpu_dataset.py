@@ -1,11 +1,14 @@
 from pathlib import Path
 
+import pytest
+
 from bakery_scanner.e2e.cpu_dataset import (
     _profile_from_name,
     load_cpu_evaluation_samples,
 )
 
 
+@pytest.mark.artifact
 def test_cpu_dataset_has_fixed_counts_profiles_and_unique_keys():
     samples = load_cpu_evaluation_samples(Path("."))
 

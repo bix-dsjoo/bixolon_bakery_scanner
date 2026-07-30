@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -124,9 +125,27 @@ def test_score_many_rejects_invalid_group_contract(crop_groups, max_objects, mes
         _recording_evidence_runner().score_many_with_evidence(crop_groups, max_objects=max_objects)
 
 
-def test_load_rejects_hash_mismatch_before_model_construction(monkeypatch):
+def test_load_rejects_hash_mismatch_before_model_construction(
+    monkeypatch,
+    tmp_path,
+):
     config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
-    bad = config.model_copy(update={"repvit": config.repvit.model_copy(update={"checkpoint_sha256": "0" * 64})})
+    checkpoint = tmp_path / "checkpoint.pt"
+    manifest = tmp_path / "manifest.json"
+    checkpoint.write_bytes(b"checkpoint")
+    manifest.write_text(
+        json.dumps({"class_map": [{"id": sku} for sku in range(1, 21)]}),
+        encoding="utf-8",
+    )
+    repvit = config.repvit.model_copy(
+        update={
+            "checkpoint": checkpoint,
+            "checkpoint_sha256": "0" * 64,
+            "manifest": manifest,
+            "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        }
+    )
+    bad = config.model_copy(update={"repvit": repvit})
     monkeypatch.setattr("bakery_scanner.classification.repvit.timm.create_model", lambda *args, **kwargs: pytest.fail("model must not be constructed"))
     with pytest.raises(ValueError, match="SHA-256"):
         RepVitM1Runner.load(bad, device=torch.device("cpu"))

@@ -13,8 +13,28 @@ def test_config_loads_current_dataset_paths():
     assert config.canonical_frame.width == 1152
     assert config.canonical_frame.height == 1536
     assert not hasattr(config, "camera")
-    assert all(source.images.is_dir() for source in config.dataset.sources)
-    assert all(source.annotations.is_file() for source in config.dataset.sources)
+    repository = Path(".").resolve()
+    assert [source.images for source in config.dataset.sources] == [
+        repository / "datasets" / "detection" / name / "images"
+        for name in (
+            "group_15class",
+            "group_20class_batch01",
+            "group_20class_batch02",
+        )
+    ]
+    assert [source.annotations for source in config.dataset.sources] == [
+        repository
+        / "datasets"
+        / "detection"
+        / name
+        / "annotations"
+        / "instances.json"
+        for name in (
+            "group_15class",
+            "group_20class_batch01",
+            "group_20class_batch02",
+        )
+    ]
     assert config.artifact_root == Path("artifacts/box_system").resolve()
     assert config.runtime.device == "CUDA:0"
 

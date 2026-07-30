@@ -383,11 +383,12 @@ def test_dinov3_rejects_non_finite_prototypes():
 )
 def test_load_rejects_hash_mismatch_before_model_construction(
     monkeypatch,
+    tmp_path,
     section,
     field,
     message,
 ):
-    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    config = _write_fake_artifacts(tmp_path, _valid_support())
     bad_section = getattr(config, section).model_copy(update={field: "0" * 64})
     bad = config.model_copy(update={section: bad_section})
     monkeypatch.setattr(
