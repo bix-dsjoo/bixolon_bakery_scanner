@@ -22,12 +22,8 @@ final class DatabaseAdminRepository implements AdminRepository {
     final sessionById = {
       for (final session in sessions) session.sessionId: session,
     };
-    final inRangeSessions = sessions
-        .where((row) => range.includes(_utc(row.startedAtUs)))
-        .toList(growable: false);
-    final sessionIds = inRangeSessions.map((row) => row.sessionId).toSet();
     final inRangeAttempts = attempts
-        .where((row) => sessionIds.contains(row.sessionId))
+        .where((row) => range.includes(_utc(row.capturedAtUs)))
         .toList(growable: false);
     final attemptIds = inRangeAttempts.map((row) => row.attemptId).toSet();
     final inRangeObjects = objects
@@ -39,8 +35,7 @@ final class DatabaseAdminRepository implements AdminRepository {
 
     final committedPayments = payments
         .where((payment) {
-          final session = sessionById[payment.sessionId];
-          return session?.state == 'completed' &&
+          return sessionById[payment.sessionId]?.state == 'completed' &&
               range.includes(_utc(payment.paidAtUs));
         })
         .toList(growable: false);
@@ -52,7 +47,7 @@ final class DatabaseAdminRepository implements AdminRepository {
         .toList(growable: false);
 
     final currentResolutions = resolutions
-        .where((row) => row.isCurrent && sessionIds.contains(row.sessionId))
+        .where((row) => row.isCurrent && range.includes(_utc(row.resolvedAtUs)))
         .toList(growable: false);
     final resolvedUnknownIds = currentResolutions
         .where(
@@ -90,12 +85,24 @@ final class DatabaseAdminRepository implements AdminRepository {
       manualCartLines: currentResolutions
           .where((row) => row.source == 'customer_manual_cart')
           .length,
-      failedSessions: inRangeSessions
-          .where((row) => row.state == 'failed')
+      failedSessions: sessions
+          .where(
+            (row) =>
+                row.state == 'failed' &&
+                row.terminalAtUs != null &&
+                range.includes(_utc(row.terminalAtUs!)),
+          )
           .length,
       unresolvedAttentionCount:
           unknownObjectIds.difference(resolvedUnknownIds).length +
-          inRangeSessions.where((row) => row.state == 'failed').length,
+          sessions
+              .where(
+                (row) =>
+                    row.state == 'failed' &&
+                    row.terminalAtUs != null &&
+                    range.includes(_utc(row.terminalAtUs!)),
+              )
+              .length,
     );
   }
 

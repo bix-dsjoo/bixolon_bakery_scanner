@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../admin/admin_models.dart';
 import '../checkout/checkout_controller.dart';
 import '../ui/admin/admin_destination.dart';
 import '../ui/admin/admin_shell.dart';
@@ -8,6 +9,13 @@ import 'app_mode_controller.dart';
 
 typedef AppModeControllerFactory =
     AppModeController Function(CustomerModeLifecycle customerLifecycle);
+
+typedef AdminDestinationBuilder =
+    Widget Function(
+      BuildContext context,
+      AdminDestination destination,
+      ValueChanged<AttentionItem> onAttentionSelected,
+    );
 
 /// The live customer/admin surface used after checkout bootstrap succeeds.
 ///
@@ -58,19 +66,35 @@ class _BakeryAppSurfaceState extends State<BakeryAppSurface> {
       AppMode.admin => AdminShell(
         controller: _modes,
         onReturnToCustomer: _modes.exitAdmin,
-        destinationBuilder: widget.adminDestinationBuilder ?? _adminPlaceholder,
+        destinationBuilder: (context, destination) =>
+            (widget.adminDestinationBuilder ?? _adminPlaceholder)(
+              context,
+              destination,
+              _onAttentionSelected,
+            ),
       ),
     },
   );
+
+  void _onAttentionSelected(AttentionItem item) {
+    _modes.selectDestination(
+      item.kind == AttentionKind.unresolvedUnknown
+          ? AdminDestination.reviewInbox
+          : AdminDestination.transactions,
+    );
+  }
 }
 
-Widget _adminPlaceholder(BuildContext context, AdminDestination destination) =>
-    Center(
-      child: Text(
-        '${destination.label} 화면을 준비하고 있어요.',
-        style: Theme.of(context).textTheme.bodyLarge,
-      ),
-    );
+Widget _adminPlaceholder(
+  BuildContext context,
+  AdminDestination destination,
+  ValueChanged<AttentionItem> _,
+) => Center(
+  child: Text(
+    '${destination.label} 화면을 준비하고 있어요.',
+    style: Theme.of(context).textTheme.bodyLarge,
+  ),
+);
 
 final class CheckoutCustomerModeLifecycle implements CustomerModeLifecycle {
   const CheckoutCustomerModeLifecycle(this._checkout);

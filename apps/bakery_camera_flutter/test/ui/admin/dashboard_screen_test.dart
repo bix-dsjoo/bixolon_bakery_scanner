@@ -1,9 +1,14 @@
 import 'package:bakery_camera_prototype/src/admin/admin_models.dart';
 import 'package:bakery_camera_prototype/src/admin/admin_repository.dart';
+import 'package:bakery_camera_prototype/src/app/app_mode_controller.dart';
+import 'package:bakery_camera_prototype/src/app/app_mode_surface.dart';
 import 'package:bakery_camera_prototype/src/ui/admin/dashboard_screen.dart';
+import 'package:bakery_camera_prototype/src/ui/admin/admin_destination.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/customer_checkout_journey_fixture.dart';
 
 void main() {
   testWidgets(
@@ -24,6 +29,101 @@ void main() {
       expect(find.textContaining('정확도'), findsNothing);
     },
   );
+
+  testWidgets('dashboard never shows ready without injected diagnostics', (
+    tester,
+  ) async {
+    final repository = _Repository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: DashboardScreen(repository: repository, range: _range),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('진단 전'), findsOneWidget);
+    expect(find.text('정상'), findsNothing);
+  });
+
+  testWidgets('dashboard renders unavailable when live diagnostics fail', (
+    tester,
+  ) async {
+    final repository = _Repository();
+    final availability = ValueNotifier(DashboardAvailability.unavailable);
+    addTearDown(availability.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: DashboardScreen(
+          repository: repository,
+          range: _range,
+          readiness: availability,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('점검 필요'), findsOneWidget);
+    expect(find.text('정상'), findsNothing);
+  });
+
+  testWidgets(
+    'attention tap routes unknown work to the admin review destination',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      late CustomerCheckoutJourneyFixture fixture;
+      await tester.runAsync(() async {
+        fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+      });
+      addTearDown(() => tester.runAsync(fixture.dispose));
+      final lifecycle = _DashboardLifecycle();
+      final modes = AppModeController(customerLifecycle: lifecycle);
+      await modes.enterAdmin(abandonConfirmed: true);
+      final repository = _AttentionRepository();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildBakeryTheme(),
+          home: BakeryAppSurface(
+            checkout: fixture.controller,
+            customerLifecycle: lifecycle,
+            createModeController: (_) => modes,
+            adminDestinationBuilder: (context, destination, onAttention) =>
+                destination == AdminDestination.dashboard
+                ? DashboardScreen(
+                    repository: repository,
+                    range: _range,
+                    onAttentionSelected: onAttention,
+                  )
+                : Text('destination:${destination.name}'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('고객 선택이 필요한 빵'));
+      await tester.pumpAndSettle();
+
+      expect(modes.destination, AdminDestination.reviewInbox);
+      expect(find.text('destination:reviewInbox'), findsOneWidget);
+    },
+  );
+}
+
+final class _DashboardLifecycle implements CustomerModeLifecycle {
+  @override
+  Future<void> abandonForAdminEntry(String reason) async {}
+
+  @override
+  bool get hasActiveCustomerCheckout => false;
+
+  @override
+  Future<void> startFreshCustomerSession() async {}
 }
 
 final _range = DateRange.utc(
@@ -55,6 +155,20 @@ final class _Repository implements AdminRepository {
   @override
   Stream<AdminDashboardSummary> watchDashboard(DateRange range) =>
       Stream.value(awaitableSummary);
+}
+
+final class _AttentionRepository extends _Repository {
+  @override
+  Future<List<AttentionItem>> recentAttentionItems({
+    required int limit,
+  }) async => [
+    AttentionItem(
+      sessionId: 'session-review',
+      kind: AttentionKind.unresolvedUnknown,
+      occurredAt: DateTime.utc(2026, 7, 30, 12),
+      label: '고객 선택이 필요한 빵',
+    ),
+  ];
 }
 
 const awaitableSummary = AdminDashboardSummary(

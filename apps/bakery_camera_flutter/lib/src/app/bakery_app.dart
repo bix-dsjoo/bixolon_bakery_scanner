@@ -60,8 +60,13 @@ class _BakeryAppState extends State<BakeryApp> {
             customerLifecycle: _CheckoutCustomerModeLifecycle(
               services.checkout,
             ),
-            adminDestinationBuilder: (context, destination) =>
-                _adminDestination(context, destination, services.admin),
+            adminDestinationBuilder: (context, destination, onAttention) =>
+                _adminDestination(
+                  context,
+                  destination,
+                  services.admin,
+                  onAttention,
+                ),
           );
         }
         if (snapshot.hasError) return const _UnavailableBootstrapScreen();
@@ -131,9 +136,14 @@ class _BakeryAppState extends State<BakeryApp> {
     BuildContext context,
     AdminDestination destination,
     DatabaseAdminRepository admin,
+    ValueChanged<AttentionItem> onAttentionSelected,
   ) {
     if (destination == AdminDestination.dashboard) {
-      return DashboardScreen(repository: admin, range: _seoulTodayRange());
+      return DashboardScreen(
+        repository: admin,
+        range: _seoulTodayRange(),
+        onAttentionSelected: onAttentionSelected,
+      );
     }
     return Center(
       child: Text(

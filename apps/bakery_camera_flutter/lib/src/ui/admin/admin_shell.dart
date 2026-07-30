@@ -5,7 +5,7 @@ import '../bixolon_brand.dart';
 import '../bixolon_theme_extension.dart';
 import 'admin_destination.dart';
 
-typedef AdminDestinationBuilder =
+typedef AdminShellDestinationBuilder =
     Widget Function(BuildContext context, AdminDestination destination);
 
 /// A navigation-only administrator shell. Customer checkout controls and cart
@@ -22,7 +22,7 @@ class AdminShell extends StatelessWidget {
 
   final AppModeController controller;
   final Future<void> Function() onReturnToCustomer;
-  final AdminDestinationBuilder destinationBuilder;
+  final AdminShellDestinationBuilder destinationBuilder;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(

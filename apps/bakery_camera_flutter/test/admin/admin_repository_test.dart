@@ -61,14 +61,48 @@ void main() {
       expect(summary.failedSessions, 1);
     },
   );
+
+  test(
+    'dashboard assigns each metric to its audited event time across Seoul midnight',
+    () async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      const afterSeoulDay = 1785423600000000; // 2026-07-30T13:00:00Z
+      await _seedDashboard(
+        database,
+        earlierSessionIds: const {'paid-1', 'failed'},
+        resolutionAtUs: afterSeoulDay,
+      );
+
+      final summary = await DatabaseAdminRepository(database).dashboard(
+        DateRange.utc(
+          DateTime.utc(2026, 7, 29, 15),
+          DateTime.utc(2026, 7, 30, 15),
+        ),
+      );
+
+      expect(summary.completedOrders, 3);
+      expect(summary.grossKrw, 21600);
+      expect(summary.scanAttempts, 5);
+      expect(summary.retakeSessions, 1);
+      expect(summary.unknownObjects, 2);
+      expect(summary.customerResolvedUnknownObjects, 0);
+      expect(summary.customerOverrides, 0);
+      expect(summary.manualCartLines, 0);
+      expect(summary.failedSessions, 1);
+    },
+  );
 }
 
 const _hash =
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _at = 1785373200000000; // 2026-07-30T00:00:00Z
 
-Future<void> _seedDashboard(BakeryDatabase db) async {
-  await db.customStatement('PRAGMA ignore_check_constraints = ON');
+Future<void> _seedDashboard(
+  BakeryDatabase db, {
+  Set<String> earlierSessionIds = const {},
+  int resolutionAtUs = _at,
+}) async {
   await db
       .into(db.catalogRevisions)
       .insertOnConflictUpdate(
@@ -119,7 +153,11 @@ Future<void> _seedDashboard(BakeryDatabase db) async {
         ),
       );
   for (final session in const ['paid-1', 'paid-2', 'paid-3', 'failed']) {
-    await _insertSession(db, session);
+    await _insertSession(
+      db,
+      session,
+      startedAtUs: earlierSessionIds.contains(session) ? 1785298800000000 : _at,
+    );
   }
   await _attempt(db, 'attempt-1', 'paid-1', 1);
   await _attempt(db, 'attempt-2', 'paid-1', 2);
@@ -129,12 +167,27 @@ Future<void> _seedDashboard(BakeryDatabase db) async {
   await _object(db, 'unknown-unresolved', 'attempt-1', unknown: true);
   await _object(db, 'unknown-resolved', 'attempt-3', unknown: true);
   await _object(db, 'known-overridden', 'attempt-4', unknown: false);
+  for (final object in const ['unknown-unresolved', 'unknown-resolved']) {
+    for (var rank = 1; rank <= 3; rank += 1) {
+      await _candidate(db, object, rank);
+    }
+  }
+  for (final attempt in const [
+    ('attempt-1', 'paid-1'),
+    ('attempt-2', 'paid-1'),
+    ('attempt-3', 'paid-2'),
+    ('attempt-4', 'paid-3'),
+    ('attempt-5', 'failed'),
+  ]) {
+    await _completeAttempt(db, attempt.$1, attempt.$2);
+  }
   await _resolution(
     db,
     'resolved-unknown',
     'paid-2',
     'unknown-resolved',
     'customer_catalog',
+    resolvedAtUs: resolutionAtUs,
   );
   await _resolution(
     db,
@@ -142,8 +195,16 @@ Future<void> _seedDashboard(BakeryDatabase db) async {
     'paid-3',
     'known-overridden',
     'customer_overrode_auto',
+    resolvedAtUs: resolutionAtUs,
   );
-  await _resolution(db, 'manual', 'paid-1', null, 'customer_manual_cart');
+  await _resolution(
+    db,
+    'manual',
+    'paid-1',
+    null,
+    'customer_manual_cart',
+    resolvedAtUs: resolutionAtUs,
+  );
   for (final session in const ['paid-1', 'paid-2', 'paid-3']) {
     final order = 'order-$session';
     await db
@@ -190,13 +251,17 @@ Future<void> _seedDashboard(BakeryDatabase db) async {
   }
 }
 
-Future<void> _insertSession(BakeryDatabase db, String id) => db
+Future<void> _insertSession(
+  BakeryDatabase db,
+  String id, {
+  required int startedAtUs,
+}) => db
     .into(db.checkoutSessions)
     .insert(
       CheckoutSessionsCompanion.insert(
         sessionId: id,
         state: 'active',
-        startedAtUs: _at,
+        startedAtUs: startedAtUs,
         catalogRevisionId: 'catalog',
         settingsRevisionId: 'settings',
         detectorId: 'detector',
@@ -237,6 +302,22 @@ Future<void> _attempt(
       ),
     );
 
+Future<void> _completeAttempt(BakeryDatabase db, String id, String session) =>
+    (db.update(
+      db.scanAttempts,
+    )..where((row) => row.attemptId.equals(id))).write(
+      ScanAttemptsCompanion(
+        status: const Value('completed'),
+        canonicalWidth: const Value(1),
+        canonicalHeight: const Value(1),
+        receiptRelativePath: Value('$session/$id.receipt.json'),
+        receiptByteSize: const Value(1),
+        receiptSha256: const Value(_hash),
+        presentationPolicyId: const Value('customer_presentation_v1'),
+        presentationPolicySha256: const Value(_hash),
+      ),
+    );
+
 Future<void> _object(
   BakeryDatabase db,
   String id,
@@ -256,9 +337,39 @@ Future<void> _object(
         bboxJson: '[0,0,1,1]',
         detectorSource: 'detector',
         detectorScore: .8,
-        provenanceJson:
-            '{"padding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}',
+        provenanceJson: _provenance,
         unknownReason: unknown ? const Value('seed') : const Value(null),
+      ),
+    );
+
+const _provenance = '''
+{
+  "detector_id":"detector",
+  "repvit_artifact_id":"repvit",
+  "repvit_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "repvit_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "repvit_prototype_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dinov3_artifact_id":"dino",
+  "dinov3_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dinov3_support_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "calibration_id":"calibration",
+  "calibration_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "preprocess_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "canonical_frame_version":"exif_visual_rgb_v1",
+  "exif_orientation":1
+}
+''';
+
+Future<void> _candidate(BakeryDatabase db, String objectId, int rank) => db
+    .into(db.inferenceCandidates)
+    .insert(
+      InferenceCandidatesCompanion.insert(
+        inferenceCandidateId: '$objectId/candidate-$rank',
+        inferenceObjectId: objectId,
+        rank: rank,
+        skuId: rank,
+        skuName: 'candidate $rank',
+        score: 1 - rank / 10,
       ),
     );
 
@@ -267,8 +378,9 @@ Future<void> _resolution(
   String id,
   String session,
   String? object,
-  String source,
-) => db
+  String source, {
+  required int resolvedAtUs,
+}) => db
     .into(db.objectResolutions)
     .insert(
       ObjectResolutionsCompanion.insert(
@@ -280,7 +392,7 @@ Future<void> _resolution(
         productName: '크루아상',
         unitPriceKrw: 2400,
         source: source,
-        resolvedAtUs: _at,
+        resolvedAtUs: resolvedAtUs,
         canonicalBboxJson: Value(object == null ? null : '[0,0,1,1]'),
         isCurrent: true,
       ),
