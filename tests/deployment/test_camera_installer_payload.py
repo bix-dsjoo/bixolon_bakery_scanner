@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from scripts.build_camera_installer_payload import (
+    assemble_payload,
+    load_pipeline_allowlist,
+)
 from scripts.camera_runtime_validation import (
     validate_python_path_file,
     validate_runtime_lock,
@@ -16,6 +21,79 @@ from scripts.prune_camera_installer_runtime import (
     archive_dist_info_licenses,
     prune_bytecode,
 )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _load_payload_manifest(payload_root: Path) -> dict:
+    return json.loads(
+        (payload_root / "package-manifest.json").read_text(encoding="utf-8")
+    )
+
+
+@pytest.fixture
+def payload_root(tmp_path: Path) -> Path:
+    """Build a minimal payload using the production policy allowlist entry."""
+    repo_root = Path(__file__).parents[2]
+    allowlist = load_pipeline_allowlist(
+        repo_root,
+        repo_root / "deployment" / "camera_installer" / "payload-paths.json",
+    )
+    policy_relative = "configs/camera_presentation_policy.json"
+    assert policy_relative in {
+        relative for relative, _ in allowlist["pipeline_files"]
+    }
+
+    release_dir = tmp_path / "release"
+    release_dir.mkdir()
+    (release_dir / "bakery_camera_prototype.exe").write_bytes(b"release")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    vc_runtime_dir = tmp_path / "vc-runtime"
+    vc_runtime_dir.mkdir()
+    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
+        (vc_runtime_dir / name).write_bytes(name.encode("ascii"))
+    readme = tmp_path / "README.txt"
+    readme.write_text("offline evaluator\n", encoding="utf-8")
+    minimal_allowlist = tmp_path / "payload-paths.json"
+    minimal_allowlist.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "pipeline_directories": [],
+                "pipeline_files": [policy_relative],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "payload"
+    return assemble_payload(
+        repo_root=repo_root,
+        release_dir=release_dir,
+        runtime_root=runtime_root,
+        output=output,
+        vc_runtime_dir=vc_runtime_dir,
+        allowlist_path=minimal_allowlist,
+        readme_path=readme,
+        app_version="1.0.2",
+    )
+
+
+def test_camera_payload_contains_hashed_presentation_policy(
+    payload_root: Path,
+) -> None:
+    policy = payload_root / "pipeline" / "configs" / "camera_presentation_policy.json"
+    manifest = _load_payload_manifest(payload_root)
+
+    assert policy.is_file()
+    assert (
+        manifest["files"]["pipeline/configs/camera_presentation_policy.json"]
+        ["sha256"]
+        == _sha256(policy)
+    )
 
 
 def test_runtime_lock_rejects_non_pinned_python(tmp_path: Path) -> None:
