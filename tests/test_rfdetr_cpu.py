@@ -1,8 +1,70 @@
 import pytest
 import json
 from pathlib import Path
+from copy import deepcopy
 
 from bakery_scanner.e2e.rfdetr_cpu import summarize_profile_stages, summarize_profiles
+
+
+def _profile_rows():
+    return (
+        {
+            "profile": "E",
+            "object_count": 2,
+            "canonical_ms": 1.0,
+            "detector_ms": 2.0,
+            "crop_ms": 3.0,
+            "repvit_ms": 4.0,
+            "dinov3_ms": 5.0,
+            "fusion_ms": 6.0,
+            "elapsed_ms": 21.0,
+            "dino_object_count": 1,
+            "registered_count": 2,
+            "unknown_count": 0,
+        },
+        {
+            "profile": "E",
+            "object_count": 3,
+            "canonical_ms": 3.0,
+            "detector_ms": 4.0,
+            "crop_ms": 5.0,
+            "repvit_ms": 6.0,
+            "dinov3_ms": 7.0,
+            "fusion_ms": 8.0,
+            "elapsed_ms": 33.0,
+            "dino_object_count": 1,
+            "registered_count": 2,
+            "unknown_count": 1,
+        },
+        {
+            "profile": "M",
+            "object_count": 0,
+            "canonical_ms": 1.0,
+            "detector_ms": 1.0,
+            "crop_ms": 1.0,
+            "repvit_ms": 1.0,
+            "dinov3_ms": 1.0,
+            "fusion_ms": 1.0,
+            "elapsed_ms": 1.0,
+            "dino_object_count": 0,
+            "registered_count": 0,
+            "unknown_count": 0,
+        },
+        {
+            "profile": "H",
+            "object_count": 0,
+            "canonical_ms": 1.0,
+            "detector_ms": 1.0,
+            "crop_ms": 1.0,
+            "repvit_ms": 1.0,
+            "dinov3_ms": 1.0,
+            "fusion_ms": 1.0,
+            "elapsed_ms": 1.0,
+            "dino_object_count": 0,
+            "registered_count": 0,
+            "unknown_count": 0,
+        },
+    )
 
 
 def test_summarize_profiles_reports_each_fixed_batch2_group_mean():
@@ -21,59 +83,52 @@ def test_summarize_profiles_reports_each_fixed_batch2_group_mean():
 
 
 def test_typed_profile_summary_records_all_stage_percentiles():
-    summary = summarize_profile_stages(
-        (
-            {
-                "profile": "E",
-                "object_count": 2,
-                "canonical_ms": 1.0,
-                "detector_ms": 2.0,
-                "crop_ms": 3.0,
-                "repvit_ms": 4.0,
-                "dinov3_ms": 5.0,
-                "fusion_ms": 6.0,
-                "elapsed_ms": 21.0,
-            },
-            {
-                "profile": "E",
-                "object_count": 3,
-                "canonical_ms": 3.0,
-                "detector_ms": 4.0,
-                "crop_ms": 5.0,
-                "repvit_ms": 6.0,
-                "dinov3_ms": 7.0,
-                "fusion_ms": 8.0,
-                "elapsed_ms": 33.0,
-            },
-            {
-                "profile": "M",
-                "object_count": 0,
-                "canonical_ms": 1.0,
-                "detector_ms": 1.0,
-                "crop_ms": 1.0,
-                "repvit_ms": 1.0,
-                "dinov3_ms": 1.0,
-                "fusion_ms": 1.0,
-                "elapsed_ms": 1.0,
-            },
-            {
-                "profile": "H",
-                "object_count": 0,
-                "canonical_ms": 1.0,
-                "detector_ms": 1.0,
-                "crop_ms": 1.0,
-                "repvit_ms": 1.0,
-                "dinov3_ms": 1.0,
-                "fusion_ms": 1.0,
-                "elapsed_ms": 1.0,
-            },
-        )
-    )
+    summary = summarize_profile_stages(_profile_rows())
 
     assert summary["E"]["images"] == 2
     assert summary["E"]["objects"] == 5
     assert summary["E"]["total"]["mean_ms"] == pytest.approx(27.0)
     assert summary["E"]["detector"]["p95_ms"] == pytest.approx(3.9)
+
+
+def test_profile_stage_summary_records_dino_rate_and_decision_counts():
+    summary = summarize_profile_stages(_profile_rows())
+
+    assert summary["E"]["objects"] == 5
+    assert summary["E"]["dino_objects"] == 2
+    assert summary["E"]["dino_execution_rate"] == pytest.approx(0.4)
+    assert summary["E"]["registered"] == 4
+    assert summary["E"]["unknown"] == 1
+    assert summary["M"]["dino_execution_rate"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("dino_object_count", 3, "DINO"),
+        ("dino_object_count", float("nan"), "non-negative integer"),
+        ("registered_count", -1, "non-negative integer"),
+        ("unknown_count", float("inf"), "non-negative integer"),
+        ("detector_ms", float("nan"), "finite"),
+        ("elapsed_ms", float("inf"), "finite"),
+        ("crop_ms", -1.0, "non-negative"),
+    ),
+)
+def test_profile_stage_summary_rejects_invalid_counts_and_timings(
+    field, value, message
+):
+    rows = deepcopy(_profile_rows())
+    rows[0][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        summarize_profile_stages(rows)
+
+
+def test_profile_stage_summary_requires_every_fixed_profile():
+    rows = tuple(row for row in _profile_rows() if row["profile"] != "H")
+
+    with pytest.raises(ValueError, match="missing profile H"):
+        summarize_profile_stages(rows)
 
 
 def test_offline_package_manifest_includes_embedded_runtime_and_cpu_runner():
