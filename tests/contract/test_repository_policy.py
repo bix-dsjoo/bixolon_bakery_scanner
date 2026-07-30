@@ -132,3 +132,12 @@ def test_git_contains_no_oversized_or_runtime_generated_payloads():
         for path in tracked
         if (ROOT / path).is_file() and (ROOT / path).stat().st_size > 100 * 1024 * 1024
     ]
+
+
+def test_ci_installs_the_vendored_dinov3_package_before_pytest():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    install = 'python -m pip install --no-deps -e ./dino'
+    pytest = "python -m pytest"
+    assert install in workflow
+    assert workflow.index(install) < workflow.index(pytest)
