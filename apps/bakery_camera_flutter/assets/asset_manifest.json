@@ -4,6 +4,9 @@
     {
       "kind": "generated_ui_illustration",
       "allowed_use": "manual_cart_entry",
+      "asset_id": "manual-cart-entry",
+      "screen": "repeated_retake_fallback",
+      "purpose": "Show direct catalog selection after repeated retakes without presenting an error.",
       "path": "assets/illustrations/manual_cart_entry.png",
       "format": "png",
       "transparent_background": true,
@@ -15,6 +18,14 @@
       "generation_prompt_addendum": "Rendered on flat #00ff00 chroma-key background; local alpha extraction used remove_chroma_key.py with auto border sampling, soft matte, thresholds 12/220, and despill.",
       "generated_at_utc": "2026-07-30T11:53:10.0373066Z",
       "tool_provenance": "built-in image_gen output exec-bf5ecdb8-ee87-4fcf-970d-a8434881f7c3.png; local remove_chroma_key.py chroma-key extraction",
+      "generator_path": "built-in image_gen; local remove_chroma_key.py chroma-key extraction",
+      "alpha_validation": {
+        "decoded_rgba": true,
+        "transparent_corners": true,
+        "transparent_edge_pixels": true
+      },
+      "review_state": "approved",
+      "not_product_or_inference_evidence": true,
       "prohibited_uses": [
         "product_photo",
         "camera_evidence",
@@ -26,6 +37,9 @@
     {
       "kind": "generated_ui_illustration",
       "allowed_use": "payment_complete",
+      "asset_id": "payment-complete",
+      "screen": "payment_completion",
+      "purpose": "Provide secondary completion confirmation after durable simulated payment persistence.",
       "path": "assets/illustrations/payment_complete.png",
       "format": "png",
       "transparent_background": true,
@@ -37,6 +51,14 @@
       "generation_prompt_addendum": "Rendered on flat #00ff00 chroma-key background; local alpha extraction used remove_chroma_key.py with auto border sampling, soft matte, thresholds 12/220, and despill.",
       "generated_at_utc": "2026-07-30T11:53:10.0373066Z",
       "tool_provenance": "built-in image_gen output exec-f927fda1-5770-442a-97c2-8beb6fc1f8d5.png; local remove_chroma_key.py chroma-key extraction",
+      "generator_path": "built-in image_gen; local remove_chroma_key.py chroma-key extraction",
+      "alpha_validation": {
+        "decoded_rgba": true,
+        "transparent_corners": true,
+        "transparent_edge_pixels": true
+      },
+      "review_state": "approved",
+      "not_product_or_inference_evidence": true,
       "prohibited_uses": [
         "product_photo",
         "camera_evidence",

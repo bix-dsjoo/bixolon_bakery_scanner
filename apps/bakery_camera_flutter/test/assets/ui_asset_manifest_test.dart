@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../tool/verify_ui_assets.dart';
@@ -34,6 +36,17 @@ void main() {
             'evaluation_data',
           ]),
         );
+        expect(entry['asset_id'], isA<String>());
+        expect(entry['screen'], isA<String>());
+        expect(entry['purpose'], isA<String>());
+        expect(entry['generator_path'], isA<String>());
+        expect(entry['alpha_validation'], {
+          'decoded_rgba': true,
+          'transparent_corners': true,
+          'transparent_edge_pixels': true,
+        });
+        expect(entry['review_state'], 'approved');
+        expect(entry['not_product_or_inference_evidence'], isTrue);
         expect(entry['path'], isA<String>());
         expect(await File(entry['path'] as String).exists(), isTrue);
         expect(entry['format'], 'png');
@@ -50,7 +63,7 @@ void main() {
     },
   );
 
-  test('the verifier rejects an unlisted illustration', () async {
+  test('the verifier rejects a nested unlisted illustration', () async {
     final root = await Directory.systemTemp.createTemp('ui-asset-gate-');
     addTearDown(() => root.delete(recursive: true));
     final sourceAssets = Directory('assets');
@@ -63,8 +76,9 @@ void main() {
       await entity.copy(destination.path);
     }
     final unlisted = File(
-      '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations${Platform.pathSeparator}not_approved.png',
+      '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations${Platform.pathSeparator}nested${Platform.pathSeparator}not_approved.png',
     );
+    await unlisted.parent.create(recursive: true);
     await unlisted.writeAsBytes(const [137, 80, 78, 71, 13, 10, 26, 10]);
 
     expect(
@@ -72,4 +86,112 @@ void main() {
       contains(contains('unlisted generated illustration')),
     );
   });
+
+  test('the verifier rejects an opaque RGBA illustration', () async {
+    final root = await _copyAssetsToTempRoot();
+    addTearDown(() => root.delete(recursive: true));
+    final asset = File(
+      '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}illustrations${Platform.pathSeparator}manual_cart_entry.png',
+    );
+    final opaquePng = _opaqueRgbaPng();
+    await asset.writeAsBytes(opaquePng);
+
+    final manifestFile = File(
+      '${root.path}${Platform.pathSeparator}assets${Platform.pathSeparator}asset_manifest.json',
+    );
+    final manifest =
+        jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
+    final entry = (manifest['generated_ui_illustrations'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .singleWhere((value) => value['allowed_use'] == 'manual_cart_entry');
+    entry['width'] = 1;
+    entry['height'] = 1;
+    entry['byte_size'] = opaquePng.length;
+    entry['sha256'] = sha256.convert(opaquePng).toString();
+    await manifestFile.writeAsString(jsonEncode(manifest));
+
+    expect(
+      await verifyUiAssets(appRoot: root),
+      contains(contains('genuinely transparent alpha pixels')),
+    );
+  });
 }
+
+Future<Directory> _copyAssetsToTempRoot() async {
+  final root = await Directory.systemTemp.createTemp('ui-asset-gate-');
+  final sourceAssets = Directory('assets');
+  await for (final entity in sourceAssets.list(recursive: true)) {
+    if (entity is! File) continue;
+    final destination = File(
+      '${root.path}${Platform.pathSeparator}${entity.path}',
+    );
+    await destination.parent.create(recursive: true);
+    await entity.copy(destination.path);
+  }
+  return root;
+}
+
+Uint8List _opaqueRgbaPng() {
+  final compressed = ZLibEncoder().convert(<int>[0, 0xFF, 0x80, 0x00, 0xFF]);
+  return Uint8List.fromList(<int>[
+    137,
+    80,
+    78,
+    71,
+    13,
+    10,
+    26,
+    10,
+    0,
+    0,
+    0,
+    13,
+    73,
+    72,
+    68,
+    82,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    8,
+    6,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    ..._chunk('IDAT', compressed),
+    0,
+    0,
+    0,
+    0,
+    73,
+    69,
+    78,
+    68,
+    0,
+    0,
+    0,
+    0,
+  ]);
+}
+
+List<int> _chunk(String type, List<int> data) => <int>[
+  (data.length >> 24) & 0xFF,
+  (data.length >> 16) & 0xFF,
+  (data.length >> 8) & 0xFF,
+  data.length & 0xFF,
+  ...type.codeUnits,
+  ...data,
+  0,
+  0,
+  0,
+  0,
+];

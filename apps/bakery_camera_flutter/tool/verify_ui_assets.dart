@@ -14,6 +14,15 @@ const _requiredProhibitions = {
   'evaluation_data',
 };
 const _pngSignature = <int>[137, 80, 78, 71, 13, 10, 26, 10];
+const _expectedAssetIds = {
+  'manual_cart_entry': 'manual-cart-entry',
+  'payment_complete': 'payment-complete',
+};
+const _requiredAlphaValidation = {
+  'decoded_rgba': true,
+  'transparent_corners': true,
+  'transparent_edge_pixels': true,
+};
 
 Future<void> main() async {
   final errors = await verifyUiAssets();
@@ -92,9 +101,24 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
         (entry['prompt'] as String).trim().isEmpty) {
       errors.add('$label is missing its approved prompt');
     }
+    if (entry['asset_id'] != _expectedAssetIds[allowedUse]) {
+      errors.add('$label must record its approved asset_id');
+    }
+    if (entry['screen'] is! String ||
+        (entry['screen'] as String).trim().isEmpty) {
+      errors.add('$label is missing its screen provenance');
+    }
+    if (entry['purpose'] is! String ||
+        (entry['purpose'] as String).trim().isEmpty) {
+      errors.add('$label is missing its purpose provenance');
+    }
     if (entry['tool_provenance'] is! String ||
         (entry['tool_provenance'] as String).trim().isEmpty) {
       errors.add('$label is missing generation tool provenance');
+    }
+    if (entry['generator_path'] is! String ||
+        (entry['generator_path'] as String).trim().isEmpty) {
+      errors.add('$label is missing generator path provenance');
     }
     final generatedAt = entry['generated_at_utc'];
     if (generatedAt is! String ||
@@ -105,6 +129,19 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
     if (prohibitedUses is! List ||
         !_requiredProhibitions.every(prohibitedUses.contains)) {
       errors.add('$label is missing a required prohibited use');
+    }
+    final alphaValidation = entry['alpha_validation'];
+    if (alphaValidation is! Map ||
+        !_requiredAlphaValidation.entries.every(
+          (value) => alphaValidation[value.key] == value.value,
+        )) {
+      errors.add('$label is missing required alpha validation provenance');
+    }
+    if (entry['review_state'] != 'approved') {
+      errors.add('$label must have approved visual review state');
+    }
+    if (entry['not_product_or_inference_evidence'] != true) {
+      errors.add('$label must be classified as non-product, non-evidence UI');
     }
 
     final file = File(path.join(root.path, assetPath));
@@ -119,12 +156,21 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
     if (entry['sha256'] != sha256.convert(bytes).toString()) {
       errors.add('$label SHA-256 does not match the file');
     }
-    final dimensions = _readTransparentPngDimensions(bytes);
-    if (dimensions == null) {
+    final png = _decodeRgbaPng(bytes);
+    if (png == null) {
       errors.add('$label is not an RGBA PNG with an alpha channel');
-    } else if (entry['width'] != dimensions.$1 ||
-        entry['height'] != dimensions.$2) {
+    } else if (entry['width'] != png.width || entry['height'] != png.height) {
       errors.add('$label declared dimensions do not match the PNG');
+    } else {
+      if (!png.hasTransparentPixel) {
+        errors.add('$label must contain genuinely transparent alpha pixels');
+      }
+      if (!png.hasTransparentCorners) {
+        errors.add('$label must retain transparent alpha corners');
+      }
+      if (!png.hasTransparentEdgePixels) {
+        errors.add('$label must retain transparent alpha edge pixels');
+      }
     }
   }
 
@@ -146,7 +192,10 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
   if (!await illustrations.exists()) {
     errors.add('assets/illustrations directory is missing');
   } else {
-    await for (final entity in illustrations.list(followLinks: false)) {
+    await for (final entity in illustrations.list(
+      followLinks: false,
+      recursive: true,
+    )) {
       if (entity is File &&
           path.extension(entity.path).toLowerCase() == '.png') {
         final relativePath = path
@@ -161,17 +210,135 @@ Future<List<String>> verifyUiAssets({Directory? appRoot}) async {
   return errors;
 }
 
-(int, int)? _readTransparentPngDimensions(Uint8List bytes) {
-  if (bytes.length < 29) return null;
+_DecodedRgbaPng? _decodeRgbaPng(Uint8List bytes) {
+  if (bytes.length < 33) return null;
   for (var index = 0; index < _pngSignature.length; index++) {
     if (bytes[index] != _pngSignature[index]) return null;
   }
-  if (String.fromCharCodes(bytes.sublist(12, 16)) != 'IHDR') return null;
-  final width = _readUint32(bytes, 16);
-  final height = _readUint32(bytes, 20);
-  const colorTypeIndex = 25;
-  if (width <= 0 || height <= 0 || bytes[colorTypeIndex] != 6) return null;
-  return (width, height);
+
+  var offset = _pngSignature.length;
+  int? width;
+  int? height;
+  final compressed = BytesBuilder(copy: false);
+  var sawHeader = false;
+  var sawEnd = false;
+  while (offset + 12 <= bytes.length) {
+    final length = _readUint32(bytes, offset);
+    final dataOffset = offset + 8;
+    final nextOffset = dataOffset + length + 4;
+    if (nextOffset > bytes.length) return null;
+    final type = String.fromCharCodes(bytes.sublist(offset + 4, dataOffset));
+    final data = bytes.sublist(dataOffset, dataOffset + length);
+    switch (type) {
+      case 'IHDR':
+        if (sawHeader || length != 13) return null;
+        width = _readUint32(data, 0);
+        height = _readUint32(data, 4);
+        if (width <= 0 ||
+            height <= 0 ||
+            data[8] != 8 ||
+            data[9] != 6 ||
+            data[10] != 0 ||
+            data[11] != 0 ||
+            data[12] != 0) {
+          return null;
+        }
+        sawHeader = true;
+      case 'IDAT':
+        if (!sawHeader || sawEnd) return null;
+        compressed.add(data);
+      case 'IEND':
+        if (!sawHeader || length != 0) return null;
+        sawEnd = true;
+    }
+    offset = nextOffset;
+  }
+  if (!sawHeader || !sawEnd || width == null || height == null) return null;
+  const bytesPerPixel = 4;
+  if (width > 32768 || height > 32768 || width * height > 100000000) {
+    return null;
+  }
+  final rowLength = width * bytesPerPixel;
+  Uint8List inflated;
+  try {
+    inflated = Uint8List.fromList(ZLibDecoder().convert(compressed.toBytes()));
+  } on Object {
+    return null;
+  }
+  if (inflated.length != height * (rowLength + 1)) return null;
+
+  var hasTransparentPixel = false;
+  var hasTransparentEdgePixels = false;
+  final cornerAlpha = <int>[];
+  var sourceOffset = 0;
+  var previous = Uint8List(rowLength);
+  for (var y = 0; y < height; y++) {
+    final filter = inflated[sourceOffset++];
+    if (filter > 4) return null;
+    final row = Uint8List(rowLength);
+    for (var x = 0; x < rowLength; x++) {
+      final raw = inflated[sourceOffset++];
+      final left = x >= bytesPerPixel ? row[x - bytesPerPixel] : 0;
+      final up = previous[x];
+      final upLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] : 0;
+      row[x] = switch (filter) {
+        0 => raw,
+        1 => (raw + left) & 0xFF,
+        2 => (raw + up) & 0xFF,
+        3 => (raw + ((left + up) >> 1)) & 0xFF,
+        4 => (raw + _paeth(left, up, upLeft)) & 0xFF,
+        _ => 0,
+      };
+    }
+    for (var x = 0; x < width; x++) {
+      final alpha = row[x * bytesPerPixel + 3];
+      if (alpha < 255) {
+        hasTransparentPixel = true;
+        if (y == 0 || y == height - 1 || x == 0 || x == width - 1) {
+          hasTransparentEdgePixels = true;
+        }
+      }
+    }
+    if (y == 0 || y == height - 1) {
+      cornerAlpha.add(row[3]);
+      cornerAlpha.add(row[rowLength - 1]);
+    }
+    previous = row;
+  }
+  return _DecodedRgbaPng(
+    width: width,
+    height: height,
+    hasTransparentPixel: hasTransparentPixel,
+    hasTransparentCorners:
+        cornerAlpha.length == 4 && cornerAlpha.every((alpha) => alpha < 255),
+    hasTransparentEdgePixels: hasTransparentEdgePixels,
+  );
+}
+
+int _paeth(int left, int up, int upLeft) {
+  final prediction = left + up - upLeft;
+  final leftDistance = (prediction - left).abs();
+  final upDistance = (prediction - up).abs();
+  final upLeftDistance = (prediction - upLeft).abs();
+  if (leftDistance <= upDistance && leftDistance <= upLeftDistance) return left;
+  if (upDistance <= upLeftDistance) return up;
+  return upLeft;
+}
+
+class _DecodedRgbaPng {
+  const _DecodedRgbaPng({
+    required this.width,
+    required this.height,
+    required this.hasTransparentPixel,
+    required this.hasTransparentCorners,
+    required this.hasTransparentEdgePixels,
+  });
+
+  final int width;
+  final int height;
+  final bool hasTransparentPixel;
+  final bool hasTransparentCorners;
+  final bool hasTransparentEdgePixels;
 }
 
 int _readUint32(Uint8List bytes, int offset) =>
