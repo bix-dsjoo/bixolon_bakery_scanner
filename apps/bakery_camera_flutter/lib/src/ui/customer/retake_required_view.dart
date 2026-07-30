@@ -32,10 +32,10 @@ class RetakeRequiredView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const BakeryStatusBanner(
+          BakeryStatusBanner(
             status: BakeryStatus.uncertain,
             title: '빵을 떨어뜨려 다시 놓아주세요',
-            message: '빵이 겹치지 않게 정리한 뒤 다시 촬영해 주세요.',
+            message: _customerGuidance(state.failure?.code),
           ),
           if (manualCartEligible) ...[
             const SizedBox(height: 16),
@@ -50,3 +50,9 @@ class RetakeRequiredView extends StatelessWidget {
     ),
   );
 }
+
+String _customerGuidance(String? code) => switch (code) {
+  'customer_count_mismatch' => '트레이에 담은 빵 개수를 확인한 뒤 다시 촬영해 주세요.',
+  'no_bread_detected' => '빵이 카메라에 잘 보이도록 트레이 가운데에 놓아 주세요.',
+  _ => '빵이 겹치지 않도록 정리한 뒤 다시 촬영해 주세요.',
+};

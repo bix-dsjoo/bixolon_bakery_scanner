@@ -89,7 +89,24 @@ void main() {
       'product-donut',
     );
     expect(controller.productForCandidate('object-2', 12), isNull);
+    expect(
+      controller.state.capturedEvidencePath,
+      'sessions/capture-1.jpg',
+      reason: 'customer review uses the already-retained audit still only',
+    );
+    expect(controller.state.capturedImageWidth, 1920);
+    expect(controller.state.capturedImageHeight, 1080);
   });
+
+  test(
+    'completion behavior is loaded once from the session settings snapshot',
+    () async {
+      await controller.initialize();
+
+      expect(controller.completionPolicy.duration, const Duration(seconds: 4));
+      expect(controller.completionPolicy.autoReset, isTrue);
+    },
+  );
 
   test(
     'all mapped registered detections go directly to editable order review',
@@ -716,6 +733,14 @@ final class _FakeAuditStore implements CheckoutAuditStore {
     if (error != null) throw error;
     return retryLimit;
   }
+
+  @override
+  Future<CustomerCompletionPolicy> completionPolicyForSession(
+    String sessionId,
+  ) async => const CustomerCompletionPolicy(
+    duration: Duration(seconds: 4),
+    autoReset: true,
+  );
 
   @override
   Future<void> enterManualCartMode(String sessionId, DateTime enteredAt) async {

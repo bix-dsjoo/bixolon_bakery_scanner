@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../checkout/checkout_controller.dart';
@@ -97,7 +99,10 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
     }
     final state = widget.controller.state;
     return switch (state.phase) {
-      CheckoutPhase.ready => ReadyView(onScan: () => widget.controller.scan()),
+      CheckoutPhase.ready => ReadyView(
+        onScan: () => widget.controller.scan(),
+        previewController: widget.controller.previewController,
+      ),
       CheckoutPhase.analyzing => const AnalyzingView(),
       CheckoutPhase.retakeRequired => RetakeRequiredView(
         state: state,
@@ -125,9 +130,10 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
             widget.controller.removeProduct(productId),
       ),
       CheckoutPhase.paying => PaymentView(state: state),
-      CheckoutPhase.paymentComplete => _CompletionView(
+      CheckoutPhase.paymentComplete => PaymentCompleteView(
         state: state,
-        onNext: () => widget.controller.startNextCustomer(),
+        policy: widget.controller.completionPolicy,
+        onNext: () => unawaited(widget.controller.startNextCustomer()),
       ),
       CheckoutPhase.recoverableFailure => _FailureView(
         state: state,
@@ -140,18 +146,48 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
   }
 }
 
-class _CompletionView extends StatelessWidget {
-  const _CompletionView({required this.state, required this.onNext});
+class PaymentCompleteView extends StatefulWidget {
+  const PaymentCompleteView({
+    required this.state,
+    required this.policy,
+    required this.onNext,
+    super.key,
+  });
 
   final CheckoutState state;
+  final CustomerCompletionPolicy policy;
   final VoidCallback onNext;
 
   @override
+  State<PaymentCompleteView> createState() => _PaymentCompleteViewState();
+}
+
+class _PaymentCompleteViewState extends State<PaymentCompleteView> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.policy.autoReset) {
+      _timer = Timer(widget.policy.duration, widget.onNext);
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final receipt = state.paymentReceipt;
+    final receipt = widget.state.paymentReceipt;
     return CheckoutScaffold(
       title: '결제 완료',
-      primaryAction: BakeryPrimaryButton(label: '다음 고객 시작', onPressed: onNext),
+      primaryAction: BakeryPrimaryButton(
+        label: '다음 고객 시작',
+        onPressed: widget.onNext,
+      ),
       child: Padding(
         padding: const EdgeInsets.only(top: 24),
         child: Column(

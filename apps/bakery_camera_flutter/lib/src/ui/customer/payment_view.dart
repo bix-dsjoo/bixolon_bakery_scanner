@@ -4,6 +4,8 @@ import '../../checkout/checkout_state.dart';
 import '../components/bakery_status_banner.dart';
 import '../components/checkout_scaffold.dart';
 
+/// Payment is shown only while the controller is waiting for the actual
+/// durable commit. It deliberately avoids an artificial activity spinner.
 class PaymentView extends StatelessWidget {
   const PaymentView({required this.state, super.key});
 
@@ -15,16 +17,10 @@ class PaymentView extends StatelessWidget {
     primaryAction: SizedBox(height: 56),
     child: Padding(
       padding: EdgeInsets.only(top: 24),
-      child: Column(
-        children: [
-          BakeryStatusBanner(
-            status: BakeryStatus.loading,
-            title: '결제를 준비하고 있어요',
-            message: '완료될 때까지 화면을 유지해 주세요.',
-          ),
-          SizedBox(height: 28),
-          CircularProgressIndicator(),
-        ],
+      child: BakeryStatusBanner(
+        status: BakeryStatus.loading,
+        title: '결제를 기록하고 있어요',
+        message: '결제 내역을 안전하게 저장하는 동안 잠시만 기다려 주세요.',
       ),
     ),
   );

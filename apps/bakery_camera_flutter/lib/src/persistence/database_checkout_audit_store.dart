@@ -463,6 +463,27 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
   }
 
   @override
+  Future<CustomerCompletionPolicy> completionPolicyForSession(
+    String sessionId,
+  ) async {
+    final session = await (_database.select(
+      _database.checkoutSessions,
+    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+    if (session == null) {
+      throw StateError('checkout session does not exist');
+    }
+    final settings =
+        await (_database.select(_database.settingsRevisions)..where(
+              (row) => row.revisionId.equals(session.settingsRevisionId),
+            ))
+            .getSingle();
+    return CustomerCompletionPolicy(
+      duration: Duration(seconds: settings.paymentCompleteDurationSeconds),
+      autoReset: settings.customerAutoReset,
+    );
+  }
+
+  @override
   Future<void> enterManualCartMode(String sessionId, DateTime enteredAt) {
     _utcMicros(enteredAt, 'enteredAt');
     return _database.transaction(() async {

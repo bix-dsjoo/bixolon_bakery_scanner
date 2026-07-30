@@ -7,6 +7,9 @@ final class CheckoutState {
     required List<CheckoutLine> lines,
     this.failure,
     this.paymentReceipt,
+    this.capturedEvidencePath,
+    this.capturedImageWidth,
+    this.capturedImageHeight,
   }) : objectDrafts = List.unmodifiable(objectDrafts),
        lines = List.unmodifiable(lines);
 
@@ -15,6 +18,12 @@ final class CheckoutState {
   final List<CheckoutLine> lines;
   final CheckoutFailure? failure;
   final PaymentReceipt? paymentReceipt;
+
+  /// A read-only audit-file location for customer review only. This is never
+  /// used as inference input and does not replace the immutable receipt.
+  final String? capturedEvidencePath;
+  final int? capturedImageWidth;
+  final int? capturedImageHeight;
 
   ObjectDraft? get activeObject {
     for (final draft in objectDrafts) {

@@ -8,6 +8,7 @@ abstract interface class CheckoutAuditStore {
   );
   Future<String> beginSession(SessionSnapshot snapshot);
   Future<int> retryLimitForSession(String sessionId);
+  Future<CustomerCompletionPolicy> completionPolicyForSession(String sessionId);
   Future<void> enterManualCartMode(String sessionId, DateTime enteredAt);
   Future<StagedAttempt> stageAttempt({
     required String sessionId,

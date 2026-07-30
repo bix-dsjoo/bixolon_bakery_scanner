@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 
 import '../catalog/product.dart';
@@ -26,6 +27,7 @@ final class _ScanRecovery {
   InferenceResult? result;
   CapturedImageSize? imageSize;
   ImmutableJsonReceipt? receipt;
+  CapturedAuditFile? retainedCapture;
   bool receiptRetained = false;
   bool attemptCompleted = false;
   InferenceCheckoutMapping? mapping;
@@ -64,6 +66,7 @@ final class CheckoutController extends ChangeNotifier {
   CatalogSnapshot? _catalog;
   String? _sessionId;
   int? _retryLimit;
+  CustomerCompletionPolicy? _completionPolicy;
   int _attemptNumber = 0;
   int _failedAttempts = 0;
   int _scanGeneration = 0;
@@ -87,6 +90,10 @@ final class CheckoutController extends ChangeNotifier {
       _state.phase == CheckoutPhase.retakeRequired &&
       _retryLimit != null &&
       _failedAttempts > _retryLimit!;
+  CustomerCompletionPolicy get completionPolicy =>
+      _completionPolicy ??
+      (throw StateError('checkout completion policy is unavailable'));
+  CameraController? get previewController => _scanner.previewController;
   Map<int, int> get inferenceTotals =>
       Map.unmodifiable(_scanner.state.result?.counts ?? const {});
   int get unknownInferenceTotal => _scanner.state.result?.unknownCount ?? 0;
@@ -564,6 +571,7 @@ final class CheckoutController extends ChangeNotifier {
       throw StateError('session retry limit must be non-negative');
     }
     _retryLimit = retryLimit;
+    _completionPolicy = await _auditStore.completionPolicyForSession(sessionId);
     _attemptNumber = 0;
     _failedAttempts = 0;
     _manualCartMode = false;
@@ -626,6 +634,9 @@ final class CheckoutController extends ChangeNotifier {
             : CheckoutPhase.customerReview,
         objectDrafts: drafts,
         lines: lines,
+        capturedEvidencePath: _state.capturedEvidencePath,
+        capturedImageWidth: _state.capturedImageWidth,
+        capturedImageHeight: _state.capturedImageHeight,
       ),
     );
   }
@@ -638,6 +649,9 @@ final class CheckoutController extends ChangeNotifier {
         phase: CheckoutPhase.orderReview,
         objectDrafts: _state.objectDrafts,
         lines: lines,
+        capturedEvidencePath: _state.capturedEvidencePath,
+        capturedImageWidth: _state.capturedImageWidth,
+        capturedImageHeight: _state.capturedImageHeight,
       ),
     );
   }
@@ -656,6 +670,7 @@ final class CheckoutController extends ChangeNotifier {
       capturedAtUtc: recovery.capturedAt!,
       sourcePath: capture.path,
     );
+    recovery.retainedCapture = retained;
     recovery.stagedAttempt = await _auditStore.stageAttempt(
       sessionId: recovery.sessionId,
       attemptNumber: recovery.attemptNumber,
@@ -716,6 +731,9 @@ final class CheckoutController extends ChangeNotifier {
         objectDrafts: mapping.objectDrafts,
         lines: lines,
         failure: mapping.failure,
+        capturedEvidencePath: recovery.retainedCapture?.path,
+        capturedImageWidth: imageSize.width,
+        capturedImageHeight: imageSize.height,
       ),
     );
   }

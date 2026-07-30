@@ -177,6 +177,18 @@ final class CheckoutFailure {
   final bool recoverable;
 }
 
+/// Session-snapshotted customer completion behavior. The controller reads it
+/// through the audit store's immutable settings revision once per session.
+final class CustomerCompletionPolicy {
+  const CustomerCompletionPolicy({
+    required this.duration,
+    required this.autoReset,
+  });
+
+  final Duration duration;
+  final bool autoReset;
+}
+
 final class SessionSnapshot {
   const SessionSnapshot({
     required this.sessionStartedAt,

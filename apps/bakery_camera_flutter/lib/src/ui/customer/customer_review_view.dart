@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../catalog/product.dart';
@@ -50,6 +52,20 @@ class CustomerReviewView extends StatelessWidget {
               message: '한 개씩 확인하면 주문을 정확히 담을 수 있어요.',
             ),
             const SizedBox(height: 20),
+            if (state.capturedEvidencePath case final imagePath?) ...[
+              CapturedReviewImage(
+                imagePath: imagePath,
+                imageWidth: state.capturedImageWidth ?? 1,
+                imageHeight: state.capturedImageHeight ?? 1,
+                crop: Rect.fromLTRB(
+                  draft.inferenceObject.bboxXyxy[0],
+                  draft.inferenceObject.bboxXyxy[1],
+                  draft.inferenceObject.bboxXyxy[2],
+                  draft.inferenceObject.bboxXyxy[3],
+                ),
+              ),
+              const SizedBox(height: 20),
+            ],
             if (draft.requiresCatalogSelection)
               const Text('목록에서 상품을 찾아 선택해 주세요.')
             else ...[
@@ -76,6 +92,74 @@ class CustomerReviewView extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Presents only the retained audit still and the currently selected bread.
+/// No recognition geometry, score, or model-facing data is rendered here.
+class CapturedReviewImage extends StatelessWidget {
+  const CapturedReviewImage({
+    required this.imagePath,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.crop,
+    super.key,
+  });
+
+  final String imagePath;
+  final int imageWidth;
+  final int imageHeight;
+  final Rect crop;
+
+  @override
+  Widget build(BuildContext context) {
+    final alignment = Alignment(
+      (crop.center.dx / imageWidth * 2 - 1).clamp(-1.0, 1.0).toDouble(),
+      (crop.center.dy / imageHeight * 2 - 1).clamp(-1.0, 1.0).toDouble(),
+    );
+    Widget image(BoxFit fit, AlignmentGeometry alignment) => Image.file(
+      File(imagePath),
+      fit: fit,
+      alignment: alignment,
+      errorBuilder: (_, _, _) => const ColoredBox(
+        color: Color(0xFFE9E7E2),
+        child: Center(child: Icon(Icons.image_outlined)),
+      ),
+    );
+    return Row(
+      children: [
+        Expanded(
+          child: Semantics(
+            label: '촬영한 트레이 사진',
+            image: true,
+            child: ClipRRect(
+              key: const Key('captured-still'),
+              borderRadius: BorderRadius.circular(12),
+              child: AspectRatio(
+                aspectRatio: imageWidth / imageHeight,
+                child: image(BoxFit.cover, Alignment.center),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        SizedBox(
+          width: 112,
+          child: Semantics(
+            label: '선택한 빵 사진',
+            image: true,
+            child: ClipRRect(
+              key: const Key('selected-object-crop'),
+              borderRadius: BorderRadius.circular(12),
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: image(BoxFit.cover, alignment),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
