@@ -77,16 +77,16 @@ fails nonzero with structured diagnostics when a file, checksum, Python
 environment, or required CPU dependency is missing.  It launches one warm
 D-FINE JSONL worker; detector weights are loaded once, not per image.
 
-One unreported warm-up pass is run before the nine measured passes.  The
-report includes per-image final objects (`sku_id` or `null`, visual-frame
-`box_xyxy`, confidence, decision path, and top candidates), aggregate counts
-excluding `Unknown`, annotated PNG outputs, artifact/environment provenance,
-and invocation counts.
+One unreported warm-up pass is run before the nine measured passes.
+`inference.json` retains the required per-image final objects (`sku_id` or
+`null`, visual-frame `box_xyxy`, confidence, decision path, and top
+candidates), aggregate counts excluding `Unknown`, artifact/environment
+provenance, and invocation counts.
 
-It also records detector, MobileNetV4 assurance, component resolution,
-RepViT, DINOv3, and total E2E timings.  The summary supplies mean, median,
-and p95 across the nine measured images; the p95 is labelled as a nine-sample
-statistic and is therefore near the maximum.
+The user-facing `report.json` contains only the mean total E2E milliseconds
+for the three groups `E`, `M`, and `H` (three images per group). It does not
+include p95, medians, stage timings, SKU counts, or per-image rows. Annotated
+PNG outputs remain available beside the two JSON files for visual inspection.
 
 The report must explicitly state that CPU timings are not comparable to RTX
 5080 release timings, ConvNeXt-Tiny recheck is absent, the detector is a

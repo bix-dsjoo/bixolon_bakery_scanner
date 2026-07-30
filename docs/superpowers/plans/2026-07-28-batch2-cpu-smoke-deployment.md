@@ -146,7 +146,7 @@ Instrument `MobileOnlyE2EPipeline.infer` with `time.perf_counter()` around detec
 
 - [ ] **Step 5: Implement the CLI output transaction.**
 
-Load the fixed profile from `samples/batch2_e3_m3_h3`; run one non-reported warm-up inference; run exactly nine measured inferences; render each final box into `overlays/<input-stem>.png`; write `report.json` and `summary.txt` only after all nine succeed. On an exception, remove only the explicitly created temporary output directory and emit structured JSON to stderr with `stage`, exception type, and message.
+Load the fixed profile from `samples/batch2_e3_m3_h3`; run one non-reported warm-up inference; run exactly nine measured inferences; render each final box into `overlays/<input-stem>.png`. Write `inference.json` containing the full required inference contract and write `report.json` containing only `E`, `M`, and `H` mean total E2E milliseconds (three measured inputs per group). Write both files only after all nine succeed. On an exception, remove only the explicitly created temporary output directory and emit structured JSON to stderr with `stage`, exception type, and message.
 
 - [ ] **Step 6: Run focused tests and commit only Task 2 files.**
 
@@ -245,19 +245,20 @@ Expected: ZIP exists, its SHA-256 is printed, and the script reports nine bundle
 
 Extract the ZIP into a new temporary directory. Run its `install_cpu_smoke.ps1`, then `run_batch2_cpu_smoke.ps1`. Do not use the repository Python environment for this final check.
 
-Expected: exit code 0; output has one `report.json`, one `summary.txt`, and exactly nine overlay PNG files.
+Expected: exit code 0; output has one `report.json`, one `inference.json`, and exactly nine overlay PNG files.
 
 - [ ] **Step 4: Validate report invariants and record measured output.**
 
 ```powershell
 $report = Get-Content -Raw <result-directory>\report.json | ConvertFrom-Json
-if ($report.scope -ne 'cpu_functional_smoke_only') { throw 'unexpected report scope' }
-if ($report.input_count -ne 9 -or $report.images.Count -ne 9) { throw 'expected exactly nine results' }
-if ($report.timing_summary_ms.total.count -ne 9) { throw 'expected nine measured timings' }
+$inference = Get-Content -Raw <result-directory>\inference.json | ConvertFrom-Json
+if ($report.PSObject.Properties.Name.Count -ne 3 -or @($report.E, $report.M, $report.H).Count -ne 3) { throw 'expected E/M/H-only performance report' }
+if ($inference.scope -ne 'cpu_functional_smoke_only') { throw 'unexpected inference scope' }
+if ($inference.input_count -ne 9 -or $inference.images.Count -ne 9) { throw 'expected exactly nine results' }
 if ((Get-ChildItem <result-directory>\overlays -Filter *.png).Count -ne 9) { throw 'expected nine overlays' }
 ```
 
-Report the measured mean/median/p95 E2E times, stage means, DINO invocation count, ConvNeXt invocation count (always zero for this package), SKU aggregate, and `Unknown` object count. State that this is CPU smoke evidence only, not an accuracy or release claim.
+Report only the `E`, `M`, and `H` mean E2E times from `report.json`. State that this is CPU smoke evidence only, not an accuracy or release claim.
 
 - [ ] **Step 5: Commit only source/documentation changes, never generated ZIPs or reports.**
 
