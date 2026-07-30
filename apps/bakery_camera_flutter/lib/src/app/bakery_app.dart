@@ -20,7 +20,10 @@ import '../persistence/database_checkout_audit_store.dart';
 import '../persistence/database_factory.dart';
 import '../scanner/scanner_controller.dart';
 import '../ui/app_theme.dart';
+import '../ui/admin/admin_destination.dart';
+import '../ui/admin/admin_shell.dart';
 import '../ui/customer/customer_checkout_screen.dart';
+import 'app_mode_controller.dart';
 
 /// Production composition root. Customer screens never receive the model
 /// transport or artifact details; those remain in the audited persistence path.
@@ -33,11 +36,18 @@ class BakeryApp extends StatefulWidget {
 
 class _BakeryAppState extends State<BakeryApp> {
   Future<CheckoutController>? _bootstrap;
+  AppModeController? _modeController;
 
   @override
   void initState() {
     super.initState();
     _bootstrap = _createCheckout();
+  }
+
+  @override
+  void dispose() {
+    _modeController?.dispose();
+    super.dispose();
   }
 
   @override
@@ -49,7 +59,27 @@ class _BakeryAppState extends State<BakeryApp> {
       future: _bootstrap,
       builder: (context, snapshot) {
         if (snapshot.hasData) {
-          return CustomerCheckoutScreen(controller: snapshot.requireData);
+          final checkout = snapshot.requireData;
+          final modes = _modeController ??= AppModeController(
+            customerLifecycle: _CheckoutCustomerModeLifecycle(checkout),
+          );
+          return AnimatedBuilder(
+            animation: modes,
+            builder: (context, _) => switch (modes.mode) {
+              AppMode.customer => CustomerCheckoutScreen(
+                controller: checkout,
+                requiresAdminEntryConfirmation:
+                    modes.requiresAbandonConfirmation,
+                onEnterAdmin: modes.enterAdmin,
+                onPaymentCompleted: modes.onPaymentCompleted,
+              ),
+              AppMode.admin => AdminShell(
+                controller: modes,
+                onReturnToCustomer: modes.exitAdmin,
+                destinationBuilder: _adminPlaceholder,
+              ),
+            },
+          );
         }
         if (snapshot.hasError) return const _UnavailableBootstrapScreen();
         return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -110,6 +140,37 @@ class _BakeryAppState extends State<BakeryApp> {
       rethrow;
     }
   }
+
+  Widget _adminPlaceholder(
+    BuildContext context,
+    AdminDestination destination,
+  ) => Center(
+    child: Text(
+      '${destination.label} 화면을 준비하고 있어요.',
+      style: Theme.of(context).textTheme.bodyLarge,
+    ),
+  );
+}
+
+final class _CheckoutCustomerModeLifecycle implements CustomerModeLifecycle {
+  const _CheckoutCustomerModeLifecycle(this._checkout);
+
+  final CheckoutController _checkout;
+
+  @override
+  bool get hasActiveCustomerCheckout => _checkout.hasActiveCustomerCheckout;
+
+  @override
+  Future<void> abandonForAdminEntry(String reason) {
+    if (reason != 'admin_mode_entered') {
+      throw ArgumentError.value(reason, 'reason', 'is not an admin entry');
+    }
+    return _checkout.abandonForAdminEntry();
+  }
+
+  @override
+  Future<void> startFreshCustomerSession() =>
+      _checkout.startFreshCustomerSession();
 }
 
 AuditRuntimeSnapshot _lockedRuntimeSnapshot() => AuditRuntimeSnapshot(

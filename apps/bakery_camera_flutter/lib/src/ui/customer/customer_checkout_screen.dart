@@ -18,9 +18,18 @@ import 'ready_view.dart';
 import 'retake_required_view.dart';
 
 class CustomerCheckoutScreen extends StatefulWidget {
-  const CustomerCheckoutScreen({required this.controller, super.key});
+  const CustomerCheckoutScreen({
+    required this.controller,
+    this.requiresAdminEntryConfirmation = false,
+    this.onEnterAdmin,
+    this.onPaymentCompleted,
+    super.key,
+  });
 
   final CheckoutController controller;
+  final bool requiresAdminEntryConfirmation;
+  final Future<bool> Function({required bool abandonConfirmed})? onEnterAdmin;
+  final VoidCallback? onPaymentCompleted;
 
   @override
   State<CustomerCheckoutScreen> createState() => _CustomerCheckoutScreenState();
@@ -84,8 +93,9 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final Widget content;
     if (_catalogObjectId != null || _catalogAddsProduct) {
-      return CheckoutScaffold(
+      content = CheckoutScaffold(
         title: '상품 찾기',
         primaryAction: const SizedBox(height: 56),
         child: Padding(
@@ -97,54 +107,154 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
           ),
         ),
       );
+    } else {
+      final state = widget.controller.state;
+      content = switch (state.phase) {
+        CheckoutPhase.ready => ReadyView(
+          onScan: () => widget.controller.scan(),
+          previewController: widget.controller.previewController,
+        ),
+        CheckoutPhase.analyzing => const AnalyzingView(),
+        CheckoutPhase.retakeRequired => RetakeRequiredView(
+          state: state,
+          manualCartEligible: widget.controller.manualCartEligible,
+          onRetake: () => widget.controller.retake(),
+          onManualEntry: () => widget.controller.enterManualCart(),
+        ),
+        CheckoutPhase.customerReview => CustomerReviewView(
+          state: state,
+          productForCandidate: widget.controller.productForCandidate,
+          onChooseTop3: (objectId, skuId) =>
+              widget.controller.chooseTop3(objectId, skuId),
+          onOpenCatalog: _showCatalogForObject,
+          onContinue: () => widget.controller.continueToOrderReview(),
+        ),
+        CheckoutPhase.orderReview => OrderReviewView(
+          state: state,
+          onSetQuantity: (productId, quantity) =>
+              widget.controller.setQuantity(productId, quantity),
+          onAddProduct: _showAddCatalog,
+          onOverrideObject: _showCatalogForObject,
+          onCountMismatch: () => widget.controller.reportCountMismatch(),
+          onPay: () => widget.controller.pay(),
+          onRemoveProduct: (productId) =>
+              widget.controller.removeProduct(productId),
+        ),
+        CheckoutPhase.paying => PaymentView(state: state),
+        CheckoutPhase.paymentComplete => PaymentCompleteView(
+          state: state,
+          policy: widget.controller.completionPolicy,
+          onNext: () async {
+            await widget.controller.startNextCustomer();
+            widget.onPaymentCompleted?.call();
+          },
+        ),
+        CheckoutPhase.recoverableFailure => _FailureView(
+          state: state,
+          onRetry: () => widget.controller.retryFailure(),
+        ),
+        CheckoutPhase.terminalFailure => _UnavailableView(
+          onNext: () => widget.controller.startNextCustomer(),
+        ),
+      };
     }
-    final state = widget.controller.state;
-    return switch (state.phase) {
-      CheckoutPhase.ready => ReadyView(
-        onScan: () => widget.controller.scan(),
-        previewController: widget.controller.previewController,
-      ),
-      CheckoutPhase.analyzing => const AnalyzingView(),
-      CheckoutPhase.retakeRequired => RetakeRequiredView(
-        state: state,
-        manualCartEligible: widget.controller.manualCartEligible,
-        onRetake: () => widget.controller.retake(),
-        onManualEntry: () => widget.controller.enterManualCart(),
-      ),
-      CheckoutPhase.customerReview => CustomerReviewView(
-        state: state,
-        productForCandidate: widget.controller.productForCandidate,
-        onChooseTop3: (objectId, skuId) =>
-            widget.controller.chooseTop3(objectId, skuId),
-        onOpenCatalog: _showCatalogForObject,
-        onContinue: () => widget.controller.continueToOrderReview(),
-      ),
-      CheckoutPhase.orderReview => OrderReviewView(
-        state: state,
-        onSetQuantity: (productId, quantity) =>
-            widget.controller.setQuantity(productId, quantity),
-        onAddProduct: _showAddCatalog,
-        onOverrideObject: _showCatalogForObject,
-        onCountMismatch: () => widget.controller.reportCountMismatch(),
-        onPay: () => widget.controller.pay(),
-        onRemoveProduct: (productId) =>
-            widget.controller.removeProduct(productId),
-      ),
-      CheckoutPhase.paying => PaymentView(state: state),
-      CheckoutPhase.paymentComplete => PaymentCompleteView(
-        state: state,
-        policy: widget.controller.completionPolicy,
-        onNext: widget.controller.startNextCustomer,
-      ),
-      CheckoutPhase.recoverableFailure => _FailureView(
-        state: state,
-        onRetry: () => widget.controller.retryFailure(),
-      ),
-      CheckoutPhase.terminalFailure => _UnavailableView(
-        onNext: () => widget.controller.startNextCustomer(),
-      ),
-    };
+    if (widget.onEnterAdmin == null) return content;
+    return Stack(
+      children: [
+        content,
+        SafeArea(
+          child: Align(
+            alignment: Alignment.topRight,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8, right: 16),
+              child: CustomerAdminEntryControl(
+                requiresAdminEntryConfirmation:
+                    widget.requiresAdminEntryConfirmation,
+                onEnterAdmin: widget.onEnterAdmin!,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
+}
+
+/// Customer-surface entry point for the prototype administrator console.
+///
+/// It is deliberately independent of camera, inference, and audit runtime so
+/// the mandatory abandonment confirmation remains directly testable.
+class CustomerAdminEntryControl extends StatelessWidget {
+  const CustomerAdminEntryControl({
+    required this.requiresAdminEntryConfirmation,
+    required this.onEnterAdmin,
+    super.key,
+  });
+
+  final bool requiresAdminEntryConfirmation;
+  final Future<bool> Function({required bool abandonConfirmed}) onEnterAdmin;
+
+  Future<void> _requestAdminEntry(BuildContext context) async {
+    var confirmed = true;
+    if (requiresAdminEntryConfirmation) {
+      confirmed =
+          await showModalBottomSheet<bool>(
+            context: context,
+            builder: (context) => AdminEntryConfirmationSheet(
+              onCancel: () => Navigator.of(context).pop(false),
+              onConfirm: () => Navigator.of(context).pop(true),
+            ),
+          ) ??
+          false;
+    }
+    if (!confirmed || !context.mounted) return;
+    await onEnterAdmin(abandonConfirmed: true);
+  }
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+    onPressed: () => _requestAdminEntry(context),
+    icon: const Icon(Icons.admin_panel_settings_outlined),
+    label: const Text('관리자'),
+  );
+}
+
+/// Confirmation shown before the prototype abandons an unfinished checkout.
+///
+/// This remains usable as a standalone sheet so the safety-critical copy and
+/// choice can be tested without booting camera, worker, or audit runtime.
+class AdminEntryConfirmationSheet extends StatelessWidget {
+  const AdminEntryConfirmationSheet({
+    required this.onCancel,
+    required this.onConfirm,
+    super.key,
+  });
+
+  final VoidCallback onCancel;
+  final VoidCallback onConfirm;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('관리자 모드로 이동할까요?', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          const Text('진행 중인 고객 계산은 취소되고 기록으로 남습니다.'),
+          const SizedBox(height: 20),
+          FilledButton(
+            onPressed: onConfirm,
+            child: const Text('계산을 취소하고 관리자 모드로 이동'),
+          ),
+          const SizedBox(height: 8),
+          TextButton(onPressed: onCancel, child: const Text('계속 계산하기')),
+        ],
+      ),
+    ),
+  );
 }
 
 class PaymentCompleteView extends StatefulWidget {

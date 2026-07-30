@@ -113,6 +113,10 @@ final class CheckoutController extends ChangeNotifier {
       Map.unmodifiable(_scanner.state.result?.counts ?? const {});
   int get unknownInferenceTotal => _scanner.state.result?.unknownCount ?? 0;
 
+  /// True only while this controller owns an unfinished, auditable checkout.
+  /// A completed payment clears this flag before its completion screen appears.
+  bool get hasActiveCustomerCheckout => _sessionActive;
+
   Product? productForCandidate(String objectId, int recognitionSkuId) =>
       _candidateProducts[objectId]?[recognitionSkuId];
 
@@ -539,6 +543,51 @@ final class CheckoutController extends ChangeNotifier {
       await _terminalizeSessionStartFailure(
         code: 'checkout_session_start_failure',
         abandonReason: 'checkout_session_start_failure',
+        error: error,
+      );
+    } finally {
+      _finishSessionStart();
+    }
+  }
+
+  /// Durably abandons the current unfinished checkout before the app exposes
+  /// the administrator surface. Paid sessions cannot enter this path.
+  Future<void> abandonForAdminEntry() async {
+    _ensureInitialized();
+    if (!_sessionActive || _state.phase == CheckoutPhase.paymentComplete) {
+      throw StateError(
+        'administrator entry requires an active unfinished session',
+      );
+    }
+    if (_state.phase == CheckoutPhase.paying) {
+      throw StateError(
+        'administrator entry is unavailable while payment commits',
+      );
+    }
+    _scanGeneration += 1;
+    await _abandonActiveSession('admin_mode_entered');
+  }
+
+  /// Creates a brand-new session before customer controls become available
+  /// after the administrator exits. The operator's previous console state is
+  /// owned outside this controller and deliberately does not affect receipts.
+  Future<void> startFreshCustomerSession() async {
+    _ensureInitialized();
+    if (_state.phase == CheckoutPhase.paying) {
+      throw StateError('cannot start a customer session while payment commits');
+    }
+    _reserveSessionStart();
+    try {
+      if (_sessionActive) {
+        await _abandonActiveSession('admin_mode_exit_recovery');
+      }
+      await _scanner.resetCapture();
+      await _beginSession();
+      _replaceState(_emptyState(CheckoutPhase.ready));
+    } catch (error) {
+      await _terminalizeSessionStartFailure(
+        code: 'admin_customer_session_start_failure',
+        abandonReason: 'admin_customer_session_start_failure',
         error: error,
       );
     } finally {

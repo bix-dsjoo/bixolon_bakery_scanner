@@ -115,6 +115,31 @@ void main() {
     },
   );
 
+  test('admin entry abandons only an active unfinished session', () async {
+    await controller.initialize();
+
+    expect(controller.hasActiveCustomerCheckout, isTrue);
+    await controller.abandonForAdminEntry();
+
+    expect(controller.hasActiveCustomerCheckout, isFalse);
+    expect(audit.abandonReasons, ['admin_mode_entered']);
+    await expectLater(controller.abandonForAdminEntry(), throwsStateError);
+  });
+
+  test(
+    'admin exit starts a fresh session after an audited abandonment',
+    () async {
+      await controller.initialize();
+      await controller.abandonForAdminEntry();
+
+      await controller.startFreshCustomerSession();
+
+      expect(controller.hasActiveCustomerCheckout, isTrue);
+      expect(controller.state.phase, CheckoutPhase.ready);
+      expect(audit.begunSessionIds, hasLength(2));
+    },
+  );
+
   test(
     'all mapped registered detections go directly to editable order review',
     () async {
