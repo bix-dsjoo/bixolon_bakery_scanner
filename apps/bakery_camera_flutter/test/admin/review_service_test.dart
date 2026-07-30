@@ -197,6 +197,58 @@ void main() {
     },
   );
 
+  test(
+    'attempt-only review target exposes immutable objects from that exact attempt',
+    () async {
+      await database
+          .into(database.scanAttempts)
+          .insert(
+            ScanAttemptsCompanion.insert(
+              attemptId: 'unknown-attempt-2',
+              sessionId: 'unknown',
+              attemptNumber: 2,
+              capturedAtUs: 3,
+              imageRelativePath: 'unknown-2.jpg',
+              imageByteSize: 1,
+              imageSha256:
+                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              status: 'staged',
+            ),
+          );
+      await database
+          .into(database.inferenceObjects)
+          .insert(
+            InferenceObjectsCompanion.insert(
+              inferenceObjectId: 'unknown-object-2',
+              attemptId: 'unknown-attempt-2',
+              objectId: 'unknown-object-2',
+              skuId: const Value(7),
+              skuName: 'Registered',
+              decisionPath: 'repvit_direct',
+              confidence: .8,
+              bboxJson: '[0,0,1,1]',
+              detectorSource: 'detector',
+              detectorScore: .8,
+              provenanceJson: _provenance,
+              unknownReason: const Value(null),
+            ),
+          );
+
+      final detail = await service.reviewDetail(
+        const ReviewTarget(
+          sessionId: 'unknown',
+          attemptId: 'unknown-attempt-2',
+        ),
+      );
+
+      expect(detail.immutableSession.targetAttemptId, 'unknown-attempt-2');
+      expect(
+        detail.immutableObjects.map((object) => object.inferenceObjectId),
+        ['unknown-object-2'],
+      );
+    },
+  );
+
   test('same annotation id retries idempotently without another row', () async {
     const draft = AdminReviewAnnotationDraft(
       sessionId: 'catalog',

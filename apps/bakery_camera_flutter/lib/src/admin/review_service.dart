@@ -156,9 +156,14 @@ INSERT OR IGNORE INTO admin_review_annotations (
         (await _database.select(_database.inferenceObjects).get())
             .where((row) => attemptIds.contains(row.attemptId))
             .toList();
-    final objects = target.objectId == null
+    final attemptObjects = target.attemptId == null
         ? sessionObjects
         : sessionObjects
+              .where((row) => row.attemptId == target.attemptId)
+              .toList(growable: false);
+    final objects = target.objectId == null
+        ? attemptObjects
+        : attemptObjects
               .where((row) => row.inferenceObjectId == target.objectId)
               .toList(growable: false);
     final objectIds = objects.map((row) => row.inferenceObjectId).toSet();
