@@ -25,6 +25,15 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      expect(
+        find.byKey(const ValueKey('dashboard-summary-ledger')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('dashboard-rate-ledger')),
+        findsOneWidget,
+      );
+
       expect(find.text('결제 완료'), findsOneWidget);
       expect(find.text('21,600원'), findsOneWidget);
       expect(find.text('확인 필요'), findsWidgets);

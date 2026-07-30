@@ -41,6 +41,8 @@ void main() {
     expect(tokens.confirmed, const Color(0xFF0E8A72));
     expect(tokens.uncertainty, const Color(0xFFC76B00));
     expect(tokens.error, const Color(0xFFC43A3A));
+    expect(tokens.controlRadius, 4);
+    expect(tokens.surfaceRadius, 8);
   });
 
   testWidgets('primary action and stepper controls meet kiosk touch targets', (
@@ -92,6 +94,7 @@ void main() {
       contains(const FontFeature.tabularFigures()),
     );
     expect(find.byIcon(Icons.help_outline), findsOneWidget);
+    expect(find.byKey(const ValueKey('status-message')), findsOneWidget);
     expect(find.text('확인이 필요해요'), findsOneWidget);
     expect(find.text('상품을 다시 확인해 주세요.'), findsOneWidget);
   });
@@ -168,6 +171,7 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.byType(OverflowBar), findsNothing);
+    expect(find.byKey(const ValueKey('customer-page-title')), findsOneWidget);
   });
 
   testWidgets('focused primary action has a visible focus outline', (

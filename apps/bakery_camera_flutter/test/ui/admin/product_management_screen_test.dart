@@ -32,6 +32,7 @@ void main() {
       expect(find.text('판매 가능'), findsWidgets);
       expect(find.textContaining('AI 연결됨'), findsWidgets);
       expect(find.text('Model SKU mapping'), findsNothing);
+      expect(find.byKey(const ValueKey('product-list')), findsOneWidget);
       await tester.tap(find.text('상세 정보').first);
       await tester.pumpAndSettle();
       expect(find.text('Model SKU mapping'), findsOneWidget);

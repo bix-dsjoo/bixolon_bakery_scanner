@@ -23,6 +23,8 @@ void main() {
       findsOneWidget,
     );
 
+    expect(find.byKey(const ValueKey('settings-sections')), findsOneWidget);
+
     await _scrollTo(tester, find.byKey(const Key('retention-preview')));
     await tester.tap(find.byKey(const Key('retention-preview')));
     await tester.pumpAndSettle();
