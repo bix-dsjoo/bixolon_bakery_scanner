@@ -13,6 +13,7 @@ void main() {
       productQuery: '식빵',
       modelPolicyQuery: 'rfdetr',
       paymentStatus: TransactionPaymentStatus.completed,
+      terminalState: 'completed',
       resolutionSource: 'customer_catalog',
       requiresUnknown: true,
       requiresRetake: true,
@@ -20,6 +21,7 @@ void main() {
     );
 
     expect(filter.paymentStatus, TransactionPaymentStatus.completed);
+    expect(filter.terminalState, 'completed');
     expect(filter.productQuery, '식빵');
     expect(filter.modelPolicyQuery, 'rfdetr');
     expect(filter.resolutionSource, 'customer_catalog');
@@ -97,6 +99,13 @@ void main() {
           null,
         )).items.single.sessionId,
         'session-a',
+      );
+      expect(
+        (await repository.transactions(
+          const TransactionFilter(terminalState: 'failed'),
+          null,
+        )).items.single.sessionId,
+        'session-b',
       );
       expect(
         (await repository.transactions(
@@ -201,6 +210,42 @@ void main() {
     },
   );
 
+  test('retention expiry binds the exact attempt evidence identity', () async {
+    final database = openInMemoryBakeryDatabase();
+    addTearDown(database.close);
+    await _seed(database);
+    for (final row in const [
+      ('wrong-path', 'a-1', 'other.jpg', _hash, 1),
+      ('wrong-sha', 'a-1', 'a-1.jpg', _otherHash, 1),
+      ('wrong-size', 'a-1', 'a-1.jpg', _hash, 2),
+    ]) {
+      await database
+          .into(database.retentionEvents)
+          .insert(
+            RetentionEventsCompanion.insert(
+              retentionEventId: row.$1,
+              attemptId: row.$2,
+              relativePath: row.$3,
+              originalByteSize: row.$5,
+              originalSha256: row.$4,
+              prunedAtUs: 110,
+              reason: 'expired',
+            ),
+          );
+    }
+    final repository = DatabaseAdminRepository(
+      database,
+      verifyEvidence: (_, _, _) async => AuditEvidenceIntegrity.missing,
+    );
+
+    final detail = await repository.transactionDetail('session-a');
+
+    expect(
+      detail.attempts.single.image.integrity,
+      AuditEvidenceIntegrity.missing,
+    );
+  });
+
   test(
     'evidence permission failures stay available as an audit detail',
     () async {
@@ -224,6 +269,8 @@ void main() {
 
 const _hash =
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const _otherHash =
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 Future<void> _seed(BakeryDatabase db) async {
   await db

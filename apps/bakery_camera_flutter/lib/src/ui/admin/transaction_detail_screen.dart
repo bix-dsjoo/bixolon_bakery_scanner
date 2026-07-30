@@ -15,6 +15,7 @@ class TransactionDetailScreen extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       children: [
         if (detail.hasIntegrityWarning) const _Warning(),
+        if (detail.hasIntegrityWarning) _IntegrityExplanation(detail: detail),
         Text('고객이 무엇을 결제했나요?', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 8),
         if (detail.order == null)
@@ -34,6 +35,12 @@ class TransactionDetailScreen extends StatelessWidget {
               '카탈로그 리비전': detail.catalogRevisionId,
               '설정 리비전': detail.settingsRevisionId,
             },
+          ),
+        ),
+        _Section(
+          title: '구성 스냅샷',
+          child: AuditFactTable(
+            facts: {'구성 스냅샷 JSON': detail.configSnapshotJson},
           ),
         ),
         if (detail.payment != null)
@@ -101,6 +108,10 @@ class TransactionDetailScreen extends StatelessWidget {
                   '화면 상태': attempt.presentationState ?? '기록 없음',
                 },
               ),
+              if (attempt.receipt != null)
+                AuditFactTable(
+                  facts: {'추론 영수증 바이트': attempt.receipt!.byteSize.toString()},
+                ),
               for (final object in attempt.objects)
                 ExpansionTile(
                   title: Text(object.skuId == null ? 'AI 미확정' : object.skuName),
@@ -237,6 +248,10 @@ class _OrderCard extends StatelessWidget {
               '${line.productName} ${line.quantity}개 · ${line.lineAmountKrw}원',
             ),
           const SizedBox(height: 8),
+          for (final line in order.lines) _OrderLineAudit(line: line),
+          AuditFactTable(
+            facts: {'주문 영수증 바이트': order.receipt.byteSize.toString()},
+          ),
           AuditFactTable(
             facts: {
               '주문 ID': order.orderId,
@@ -251,5 +266,55 @@ class _OrderCard extends StatelessWidget {
         ],
       ),
     ),
+  );
+}
+
+class _IntegrityExplanation extends StatelessWidget {
+  const _IntegrityExplanation({required this.detail});
+
+  final AdminTransactionDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final statuses = <AuditEvidenceIntegrity>{
+      for (final attempt in detail.attempts) attempt.image.integrity,
+      for (final attempt in detail.attempts)
+        if (attempt.receipt != null) attempt.receipt!.integrity,
+      if (detail.order != null) detail.order!.receipt.integrity,
+    }..remove(AuditEvidenceIntegrity.retained);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [for (final status in statuses) Text(_message(status))],
+      ),
+    );
+  }
+
+  String _message(AuditEvidenceIntegrity integrity) => switch (integrity) {
+    AuditEvidenceIntegrity.retentionExpired =>
+      '보관 기간 만료: 일치하는 보존 기록에 따라 정상 삭제된 증거입니다.',
+    AuditEvidenceIntegrity.unverified => '검증 대기: 증거 검증이 아직 실행되지 않았습니다.',
+    AuditEvidenceIntegrity.unavailable => '검증 불가: 검증기를 사용할 수 없어 현재 확인할 수 없습니다.',
+    AuditEvidenceIntegrity.missing => '파일 없음: 이 증거 파일의 보존 기록 없이 파일을 찾을 수 없습니다.',
+    AuditEvidenceIntegrity.hashMismatch =>
+      '해시 불일치: 파일이 기록된 SHA-256과 일치하지 않습니다.',
+    AuditEvidenceIntegrity.retained => '',
+  };
+}
+
+class _OrderLineAudit extends StatelessWidget {
+  const _OrderLineAudit({required this.line});
+
+  final AdminOrderLine line;
+
+  @override
+  Widget build(BuildContext context) => AuditFactTable(
+    facts: {
+      '상품 ID': line.productId,
+      '추론 SKU': line.recognitionSkuId?.toString() ?? '연결 없음',
+      '단가': '${line.unitPriceKrw}원',
+      '확정 방식': line.resolutionSource,
+    },
   );
 }

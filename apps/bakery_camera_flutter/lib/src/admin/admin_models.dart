@@ -107,6 +107,7 @@ final class TransactionFilter {
     this.productQuery,
     this.modelPolicyQuery,
     this.paymentStatus = TransactionPaymentStatus.any,
+    this.terminalState,
     this.resolutionSource,
     this.requiresUnknown,
     this.requiresRetake,
@@ -118,6 +119,7 @@ final class TransactionFilter {
   final String? productQuery;
   final String? modelPolicyQuery;
   final TransactionPaymentStatus paymentStatus;
+  final String? terminalState;
   final String? resolutionSource;
   final bool? requiresUnknown;
   final bool? requiresRetake;
@@ -381,6 +383,7 @@ final class AdminTransactionDetail {
     required this.terminalReason,
     required this.catalogRevisionId,
     required this.settingsRevisionId,
+    required this.configSnapshotJson,
     required this.artifacts,
     required List<AdminScanAttempt> attempts,
     required List<AdminObjectResolution> resolutions,
@@ -397,6 +400,7 @@ final class AdminTransactionDetail {
   final String? terminalReason;
   final String catalogRevisionId;
   final String settingsRevisionId;
+  final String configSnapshotJson;
   final AdminArtifactSnapshot artifacts;
   final List<AdminScanAttempt> attempts;
   final List<AdminObjectResolution> resolutions;

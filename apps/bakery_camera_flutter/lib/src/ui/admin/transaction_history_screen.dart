@@ -20,6 +20,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   PageCursor? _nextCursor;
   bool _isLoading = true;
   bool _isLoadingMore = false;
+  int _requestGeneration = 0;
 
   @override
   void initState() {
@@ -28,9 +29,18 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   }
 
   Future<void> _reload() async {
-    setState(() => _isLoading = true);
-    final page = await widget.repository.transactions(_filter, null);
-    if (!mounted) return;
+    final generation = ++_requestGeneration;
+    final filter = _filter;
+    setState(() {
+      _isLoading = true;
+      _isLoadingMore = false;
+    });
+    final page = await widget.repository.transactions(filter, null);
+    if (!mounted ||
+        generation != _requestGeneration ||
+        !identical(filter, _filter)) {
+      return;
+    }
     setState(() {
       _items
         ..clear()
@@ -43,9 +53,16 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   Future<void> _loadMore() async {
     final cursor = _nextCursor;
     if (cursor == null || _isLoadingMore) return;
+    final generation = _requestGeneration;
+    final filter = _filter;
     setState(() => _isLoadingMore = true);
-    final page = await widget.repository.transactions(_filter, cursor);
-    if (!mounted) return;
+    final page = await widget.repository.transactions(filter, cursor);
+    if (!mounted ||
+        generation != _requestGeneration ||
+        !identical(filter, _filter) ||
+        !identical(cursor, _nextCursor)) {
+      return;
+    }
     setState(() {
       _items.addAll(page.items);
       _nextCursor = page.nextCursor;
@@ -78,6 +95,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                           if (index == _items.length) {
                             return Center(
                               child: FilledButton.tonal(
+                                key: const Key('transaction-load-more'),
                                 onPressed: _isLoadingMore ? null : _loadMore,
                                 child: _isLoadingMore
                                     ? const SizedBox(
@@ -126,6 +144,7 @@ class _Filters extends StatelessWidget {
     Object? productQuery = _keep,
     Object? modelPolicyQuery = _keep,
     TransactionPaymentStatus? paymentStatus,
+    Object? terminalState = _keep,
     String? resolutionSource,
     bool? requiresUnknown,
     bool? requiresRetake,
@@ -142,6 +161,9 @@ class _Filters extends StatelessWidget {
         ? filter.modelPolicyQuery
         : modelPolicyQuery as String?,
     paymentStatus: paymentStatus ?? filter.paymentStatus,
+    terminalState: identical(terminalState, _keep)
+        ? filter.terminalState
+        : terminalState as String?,
     resolutionSource: resolutionSource ?? filter.resolutionSource,
     requiresUnknown: requiresUnknown ?? filter.requiresUnknown,
     requiresRetake: requiresRetake ?? filter.requiresRetake,
@@ -156,6 +178,7 @@ class _Filters extends StatelessWidget {
       SizedBox(
         width: 180,
         child: TextFormField(
+          key: const Key('transaction-filter-session'),
           initialValue: filter.sessionQuery,
           decoration: const InputDecoration(labelText: '세션 ID'),
           onFieldSubmitted: (value) => onChanged(
@@ -232,6 +255,20 @@ class _Filters extends StatelessWidget {
         ],
       ),
       DropdownButton<String>(
+        value: filter.terminalState ?? '',
+        onChanged: (value) => onChanged(
+          _copy(terminalState: value == null || value.isEmpty ? null : value),
+        ),
+        items: const [
+          DropdownMenuItem(value: '', child: Text('전체 진행 상태')),
+          DropdownMenuItem(value: 'active', child: Text('진행 중')),
+          DropdownMenuItem(value: 'completed', child: Text('결제 완료')),
+          DropdownMenuItem(value: 'failed', child: Text('진행 실패')),
+          DropdownMenuItem(value: 'abandoned', child: Text('고객 취소')),
+          DropdownMenuItem(value: 'interrupted', child: Text('중단됨')),
+        ],
+      ),
+      DropdownButton<String>(
         value: filter.resolutionSource ?? '',
         onChanged: (value) => onChanged(
           TransactionFilter(
@@ -240,6 +277,7 @@ class _Filters extends StatelessWidget {
             productQuery: filter.productQuery,
             modelPolicyQuery: filter.modelPolicyQuery,
             paymentStatus: filter.paymentStatus,
+            terminalState: filter.terminalState,
             resolutionSource: value == null || value.isEmpty ? null : value,
             requiresUnknown: filter.requiresUnknown,
             requiresRetake: filter.requiresRetake,
@@ -271,6 +309,7 @@ class _Filters extends StatelessWidget {
             productQuery: filter.productQuery,
             modelPolicyQuery: filter.modelPolicyQuery,
             paymentStatus: filter.paymentStatus,
+            terminalState: filter.terminalState,
             resolutionSource: filter.resolutionSource,
             requiresUnknown: value ? true : null,
             requiresRetake: filter.requiresRetake,
@@ -288,6 +327,7 @@ class _Filters extends StatelessWidget {
             productQuery: filter.productQuery,
             modelPolicyQuery: filter.modelPolicyQuery,
             paymentStatus: filter.paymentStatus,
+            terminalState: filter.terminalState,
             resolutionSource: filter.resolutionSource,
             requiresUnknown: filter.requiresUnknown,
             requiresRetake: value ? true : null,
@@ -305,6 +345,7 @@ class _Filters extends StatelessWidget {
             productQuery: filter.productQuery,
             modelPolicyQuery: filter.modelPolicyQuery,
             paymentStatus: filter.paymentStatus,
+            terminalState: filter.terminalState,
             resolutionSource: filter.resolutionSource,
             requiresUnknown: filter.requiresUnknown,
             requiresRetake: filter.requiresRetake,

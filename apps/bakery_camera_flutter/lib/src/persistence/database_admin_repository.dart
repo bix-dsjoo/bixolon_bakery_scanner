@@ -274,6 +274,8 @@ final class DatabaseAdminRepository
                       session.state == 'completed') ||
                   (filter.paymentStatus == TransactionPaymentStatus.unpaid &&
                       payment == null)) &&
+              (filter.terminalState == null ||
+                  session.state == filter.terminalState) &&
               (filter.resolutionSource == null ||
                   sessionResolutions.any(
                     (row) => row.source == filter.resolutionSource,
@@ -335,54 +337,67 @@ final class DatabaseAdminRepository
 
   @override
   Future<AdminTransactionDetail> transactionDetail(String sessionId) async {
-    final session = await (_database.select(
-      _database.checkoutSessions,
-    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
-    if (session == null) {
-      throw StateError('unknown checkout session: $sessionId');
-    }
-    final attempts =
-        await (_database.select(
-            _database.scanAttempts,
-          )..where((row) => row.sessionId.equals(sessionId))).get()
-          ..sort((a, b) => a.attemptNumber.compareTo(b.attemptNumber));
-    final attemptIds = attempts.map((row) => row.attemptId).toSet();
-    final allObjects = await _database.select(_database.inferenceObjects).get();
-    final objects = allObjects
-        .where((row) => attemptIds.contains(row.attemptId))
-        .toList(growable: false);
-    final objectIds = objects.map((row) => row.inferenceObjectId).toSet();
-    final allCandidates = await _database
-        .select(_database.inferenceCandidates)
-        .get();
-    final retentionEvents = await _database
-        .select(_database.retentionEvents)
-        .get();
-    final retentionPathsByAttempt = <String, Set<String>>{};
-    for (final event in retentionEvents) {
-      retentionPathsByAttempt
-          .putIfAbsent(event.attemptId, () => <String>{})
-          .add(event.relativePath);
-    }
-    final candidates = allCandidates
-        .where((row) => objectIds.contains(row.inferenceObjectId))
-        .toList(growable: false);
-    final resolutions =
-        await (_database.select(
-            _database.objectResolutions,
-          )..where((row) => row.sessionId.equals(sessionId))).get()
-          ..sort((a, b) => a.resolvedAtUs.compareTo(b.resolvedAtUs));
-    final order = await (_database.select(
-      _database.finalOrders,
-    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
-    final payment = await (_database.select(
-      _database.simulatedPayments,
-    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
-    final lines = order == null
-        ? const <FinalOrderLineRow>[]
-        : await (_database.select(
-            _database.finalOrderLines,
-          )..where((row) => row.orderId.equals(order.orderId))).get();
+    final rows = await _database.transaction(() async {
+      final session = await (_database.select(
+        _database.checkoutSessions,
+      )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+      if (session == null) {
+        throw StateError('unknown checkout session: $sessionId');
+      }
+      final attempts =
+          await (_database.select(
+              _database.scanAttempts,
+            )..where((row) => row.sessionId.equals(sessionId))).get()
+            ..sort((a, b) => a.attemptNumber.compareTo(b.attemptNumber));
+      final attemptIds = attempts.map((row) => row.attemptId).toSet();
+      final objects = (await _database.select(_database.inferenceObjects).get())
+          .where((row) => attemptIds.contains(row.attemptId))
+          .toList(growable: false);
+      final objectIds = objects.map((row) => row.inferenceObjectId).toSet();
+      final candidates =
+          (await _database.select(_database.inferenceCandidates).get())
+              .where((row) => objectIds.contains(row.inferenceObjectId))
+              .toList(growable: false);
+      final resolutions =
+          await (_database.select(
+              _database.objectResolutions,
+            )..where((row) => row.sessionId.equals(sessionId))).get()
+            ..sort((a, b) => a.resolvedAtUs.compareTo(b.resolvedAtUs));
+      final order = await (_database.select(
+        _database.finalOrders,
+      )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+      final payment = await (_database.select(
+        _database.simulatedPayments,
+      )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+      final lines = order == null
+          ? const <FinalOrderLineRow>[]
+          : await (_database.select(
+              _database.finalOrderLines,
+            )..where((row) => row.orderId.equals(order.orderId))).get();
+      final retentionEvents = await _database
+          .select(_database.retentionEvents)
+          .get();
+      return _TransactionDetailRows(
+        session: session,
+        attempts: attempts,
+        objects: objects,
+        candidates: candidates,
+        resolutions: resolutions,
+        order: order,
+        payment: payment,
+        lines: lines,
+        retentionEvents: retentionEvents,
+      );
+    });
+    final session = rows.session;
+    final attempts = rows.attempts;
+    final objects = rows.objects;
+    final candidates = rows.candidates;
+    final resolutions = rows.resolutions;
+    final order = rows.order;
+    final payment = rows.payment;
+    final lines = rows.lines;
+    final retentionEvents = rows.retentionEvents;
     final candidatesByObject = _groupBy(
       candidates,
       (row) => row.inferenceObjectId,
@@ -394,11 +409,13 @@ final class DatabaseAdminRepository
         attempt.imageRelativePath,
         attempt.imageSha256,
         attempt.imageByteSize,
-        retentionExpired:
-            retentionPathsByAttempt[attempt.attemptId]?.contains(
-              attempt.imageRelativePath,
-            ) ??
-            false,
+        retentionExpired: _retentionMatches(
+          retentionEvents,
+          attempt.attemptId,
+          attempt.imageRelativePath,
+          attempt.imageSha256,
+          attempt.imageByteSize,
+        ),
       );
       final receipt = attempt.receiptRelativePath == null
           ? null
@@ -406,11 +423,13 @@ final class DatabaseAdminRepository
               attempt.receiptRelativePath!,
               attempt.receiptSha256!,
               attempt.receiptByteSize!,
-              retentionExpired:
-                  retentionPathsByAttempt[attempt.attemptId]?.contains(
-                    attempt.receiptRelativePath!,
-                  ) ??
-                  false,
+              retentionExpired: _retentionMatches(
+                retentionEvents,
+                attempt.attemptId,
+                attempt.receiptRelativePath!,
+                attempt.receiptSha256!,
+                attempt.receiptByteSize!,
+              ),
             );
       final attemptObjects =
           (objectsByAttempt[attempt.attemptId] ?? const <InferenceObjectRow>[])
@@ -523,6 +542,7 @@ final class DatabaseAdminRepository
       terminalReason: session.terminalReason,
       catalogRevisionId: session.catalogRevisionId,
       settingsRevisionId: session.settingsRevisionId,
+      configSnapshotJson: session.configSnapshotJson,
       artifacts: AdminArtifactSnapshot(
         detectorId: session.detectorId,
         detectorSha256: session.detectorSha256,
@@ -591,6 +611,20 @@ final class DatabaseAdminRepository
         (timestamp == 0 && row.sessionId.compareTo(cursor.sessionId) < 0);
   }
 
+  bool _retentionMatches(
+    Iterable<RetentionEventRow> events,
+    String attemptId,
+    String path,
+    String sha256,
+    int byteSize,
+  ) => events.any(
+    (event) =>
+        event.attemptId == attemptId &&
+        event.relativePath == path &&
+        event.originalSha256 == sha256 &&
+        event.originalByteSize == byteSize,
+  );
+
   Map<K, List<T>> _groupBy<T, K>(Iterable<T> rows, K Function(T row) key) {
     final grouped = <K, List<T>>{};
     for (final row in rows) {
@@ -598,4 +632,30 @@ final class DatabaseAdminRepository
     }
     return grouped;
   }
+}
+
+/// Immutable database rows captured together before evidence verification
+/// performs external file-system I/O.
+final class _TransactionDetailRows {
+  const _TransactionDetailRows({
+    required this.session,
+    required this.attempts,
+    required this.objects,
+    required this.candidates,
+    required this.resolutions,
+    required this.order,
+    required this.payment,
+    required this.lines,
+    required this.retentionEvents,
+  });
+
+  final CheckoutSessionRow session;
+  final List<ScanAttemptRow> attempts;
+  final List<InferenceObjectRow> objects;
+  final List<InferenceCandidateRow> candidates;
+  final List<ObjectResolutionRow> resolutions;
+  final FinalOrderRow? order;
+  final SimulatedPaymentRow? payment;
+  final List<FinalOrderLineRow> lines;
+  final List<RetentionEventRow> retentionEvents;
 }
