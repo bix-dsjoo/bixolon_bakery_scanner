@@ -11,12 +11,20 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 final Future<void> _pretendardFontsLoaded = _loadPretendardFonts();
+final Future<void> _materialIconsFontLoaded = _loadMaterialIconsFont();
 
 void main() {
-  setUpAll(() => _pretendardFontsLoaded);
+  setUpAll(() async {
+    await _pretendardFontsLoaded;
+    await _materialIconsFontLoaded;
+  });
 
   test('bundled Pretendard fonts load in the visual test renderer', () async {
     await _pretendardFontsLoaded;
+  });
+
+  test('Material Icons font loads in the visual test renderer', () async {
+    await _materialIconsFontLoaded;
   });
 
   test('theme exposes the approved Material 3 BIXOLON token contract', () {
@@ -246,6 +254,12 @@ Future<void> _loadPretendardFonts() async {
     ..addFont(rootBundle.load('assets/fonts/Pretendard-Medium.otf'))
     ..addFont(rootBundle.load('assets/fonts/Pretendard-SemiBold.otf'))
     ..addFont(rootBundle.load('assets/fonts/Pretendard-Bold.otf'));
+  await fontLoader.load();
+}
+
+Future<void> _loadMaterialIconsFont() async {
+  final fontLoader = FontLoader('MaterialIcons')
+    ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
   await fontLoader.load();
 }
 
