@@ -1,7 +1,7 @@
 /// A sellable catalog item whose identity is intentionally distinct from an
 /// optional recognition-model SKU identity.
 final class Product {
-  const Product({
+  Product({
     required this.productId,
     required this.displayName,
     required this.unitPrice,
@@ -12,11 +12,14 @@ final class Product {
     required this.sortOrder,
   }) : assert(productId != ''),
        assert(displayName != ''),
-       assert(unitPrice >= 0),
        assert(recognitionSkuId == null || recognitionSkuId > 0),
        assert(categoryId != ''),
        assert(photoAssetPath == null || photoAssetPath != ''),
-       assert(sortOrder >= 0);
+       assert(sortOrder >= 0) {
+    if (unitPrice < 0) {
+      throw ArgumentError.value(unitPrice, 'unitPrice', 'must be non-negative');
+    }
+  }
 
   final String productId;
   final String displayName;

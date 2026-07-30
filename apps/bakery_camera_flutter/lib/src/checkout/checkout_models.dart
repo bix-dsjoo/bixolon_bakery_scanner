@@ -33,8 +33,11 @@ enum CustomerResolutionSource {
 }
 
 final class CheckoutLine {
-  const CheckoutLine({required this.product, required this.quantity})
-    : assert(quantity > 0);
+  CheckoutLine({required this.product, required this.quantity}) {
+    if (quantity <= 0) {
+      throw ArgumentError.value(quantity, 'quantity', 'must be positive');
+    }
+  }
 
   final Product product;
   final int quantity;
@@ -125,14 +128,17 @@ final class FinalOrderDraft {
 }
 
 final class PaymentReceipt {
-  const PaymentReceipt({
+  PaymentReceipt({
     required this.paymentId,
     required this.sessionId,
     required this.amount,
     required this.paidAt,
   }) : assert(paymentId != ''),
-       assert(sessionId != ''),
-       assert(amount >= 0);
+       assert(sessionId != '') {
+    if (amount < 0) {
+      throw ArgumentError.value(amount, 'amount', 'must be non-negative');
+    }
+  }
 
   final String paymentId;
   final String sessionId;

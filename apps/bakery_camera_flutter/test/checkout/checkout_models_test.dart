@@ -6,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('product identity is independent from recognition SKU identity', () {
-    const product = Product(
+    final product = Product(
       productId: 'product-cream-bun',
       displayName: 'Cream bun',
       unitPrice: 2800,
@@ -63,7 +63,7 @@ void main() {
   test(
     'checkout state can pay only for a reviewed resolved nonempty order',
     () {
-      const product = Product(
+      final product = Product(
         productId: 'product-croissant',
         displayName: 'Croissant',
         unitPrice: 2800,
@@ -73,7 +73,7 @@ void main() {
         active: true,
         sortOrder: 1,
       );
-      const line = CheckoutLine(product: product, quantity: 1);
+      final line = CheckoutLine(product: product, quantity: 1);
       final unresolved = ObjectDraft.unresolved(
         buildUiInferenceResult().objects.last,
       );
@@ -82,7 +82,7 @@ void main() {
         CheckoutState(
           phase: CheckoutPhase.orderReview,
           objectDrafts: [unresolved],
-          lines: const [line],
+          lines: [line],
         ).canPay,
         isFalse,
       );
@@ -105,7 +105,7 @@ void main() {
     },
   );
 
-  test('domain contracts reject negative money and nonpositive quantities', () {
+  test('domain contracts reject invalid money and quantities at runtime', () {
     expect(
       () => Product(
         productId: 'product-invalid',
@@ -117,23 +117,34 @@ void main() {
         active: true,
         sortOrder: 0,
       ),
-      throwsAssertionError,
+      throwsA(isA<ArgumentError>()),
     );
-    expect(
-      () => CheckoutLine(
-        product: Product(
-          productId: 'product-croissant',
-          displayName: 'Croissant',
-          unitPrice: 2800,
-          recognitionSkuId: 6,
-          categoryId: 'pastry',
-          photoAssetPath: null,
-          active: true,
-          sortOrder: 1,
+    for (final quantity in [0, -1]) {
+      expect(
+        () => CheckoutLine(
+          product: Product(
+            productId: 'product-croissant',
+            displayName: 'Croissant',
+            unitPrice: 2800,
+            recognitionSkuId: 6,
+            categoryId: 'pastry',
+            photoAssetPath: null,
+            active: true,
+            sortOrder: 1,
+          ),
+          quantity: quantity,
         ),
-        quantity: 0,
+        throwsA(isA<ArgumentError>()),
+      );
+    }
+    expect(
+      () => PaymentReceipt(
+        paymentId: 'payment-invalid',
+        sessionId: 'session-1',
+        amount: -1,
+        paidAt: DateTime.utc(2026, 7, 30),
       ),
-      throwsAssertionError,
+      throwsA(isA<ArgumentError>()),
     );
   });
 }
