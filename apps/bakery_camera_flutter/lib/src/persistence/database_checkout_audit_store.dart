@@ -5,6 +5,8 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
 
+import '../audit/audit_file_store.dart';
+import '../audit/canonical_json_encoder.dart';
 import '../catalog/product.dart';
 import '../checkout/checkout_models.dart';
 import '../checkout/checkout_ports.dart';
@@ -34,10 +36,80 @@ final class VerifiedAuditFileReference {
 
 abstract interface class AuditReferenceVerifier {
   Future<VerifiedAuditFileReference> capturedImage(CapturedAuditFile image);
-  Future<VerifiedAuditFileReference> inferenceReceipt(
-    ImmutableJsonReceipt receipt,
-  );
+  Future<VerifiedAuditFileReference> inferenceReceipt({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required ImmutableJsonReceipt receipt,
+  });
   Future<VerifiedAuditFileReference> finalOrderReceipt(FinalOrderDraft order);
+}
+
+/// Optional extension for preserving retained evidence when a database write
+/// fails after its corresponding metadata has been produced.
+abstract interface class AuditRecoveryMarkerWriter {
+  Future<void> recordDatabaseFailure({
+    required String operation,
+    required VerifiedAuditFileReference file,
+    required Object error,
+  });
+}
+
+/// Concrete bridge from the storage-neutral database port to audit files.
+final class AuditFileStoreReferenceVerifier
+    implements AuditReferenceVerifier, AuditRecoveryMarkerWriter {
+  AuditFileStoreReferenceVerifier(this._files);
+
+  final AuditFileStore _files;
+
+  @override
+  Future<VerifiedAuditFileReference> capturedImage(
+    CapturedAuditFile image,
+  ) async => _reference(
+    await _files.verifyExisting(relativePath: image.path, sha256: image.sha256),
+  );
+
+  @override
+  Future<VerifiedAuditFileReference> inferenceReceipt({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required ImmutableJsonReceipt receipt,
+  }) async => _reference(
+    await _files.retainInferenceReceipt(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+      capturedAtUtc: capturedAtUtc,
+      receipt: receipt,
+    ),
+  );
+
+  @override
+  Future<VerifiedAuditFileReference> finalOrderReceipt(
+    FinalOrderDraft order,
+  ) async => _reference(await _files.retainFinalOrderReceipt(order));
+
+  @override
+  Future<void> recordDatabaseFailure({
+    required String operation,
+    required VerifiedAuditFileReference file,
+    required Object error,
+  }) => _files.recordDatabaseFailure(
+    operation: operation,
+    file: StoredAuditFile(
+      relativePath: file.relativePath,
+      byteSize: file.byteSize,
+      sha256: file.sha256,
+    ),
+    error: error,
+  );
+
+  VerifiedAuditFileReference _reference(StoredAuditFile file) =>
+      VerifiedAuditFileReference(
+        relativePath: file.relativePath,
+        byteSize: file.byteSize,
+        sha256: file.sha256,
+      );
 }
 
 /// Runtime facts already verified by the artifact loader before checkout starts.
@@ -216,7 +288,7 @@ String canonicalInferenceReceiptJson({
       },
     },
   };
-  return jsonEncode(_canonicalizeJson(receipt));
+  return canonicalJsonEncode(receipt);
 }
 
 final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
@@ -354,30 +426,34 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
       throw StateError('captured image reference does not match staged image');
     }
     final capturedAt = _now().toUtc();
-    return _database.transaction(() async {
-      await _activeSession(sessionId);
-      final attemptId = _newId('attempt');
-      await _database
-          .into(_database.scanAttempts)
-          .insert(
-            ScanAttemptsCompanion.insert(
-              attemptId: attemptId,
-              sessionId: sessionId,
-              attemptNumber: attemptNumber,
-              capturedAtUs: capturedAt.microsecondsSinceEpoch,
-              imageRelativePath: reference.relativePath,
-              imageByteSize: reference.byteSize,
-              imageSha256: reference.sha256,
-              status: 'staged',
-            ),
-          );
-      await _appendEvent(sessionId, 'attempt_staged', capturedAt);
-      return StagedAttempt(
-        attemptId: attemptId,
-        sessionId: sessionId,
-        attemptNumber: attemptNumber,
-      );
-    });
+    return _withRecoveryMarker(
+      operation: 'stage_attempt',
+      file: reference,
+      action: () => _database.transaction(() async {
+        await _activeSession(sessionId);
+        final attemptId = _newId('attempt');
+        await _database
+            .into(_database.scanAttempts)
+            .insert(
+              ScanAttemptsCompanion.insert(
+                attemptId: attemptId,
+                sessionId: sessionId,
+                attemptNumber: attemptNumber,
+                capturedAtUs: capturedAt.microsecondsSinceEpoch,
+                imageRelativePath: reference.relativePath,
+                imageByteSize: reference.byteSize,
+                imageSha256: reference.sha256,
+                status: 'staged',
+              ),
+            );
+        await _appendEvent(sessionId, 'attempt_staged', capturedAt);
+        return StagedAttempt(
+          attemptId: attemptId,
+          sessionId: sessionId,
+          attemptNumber: attemptNumber,
+        );
+      }),
+    );
   }
 
   @override
@@ -401,7 +477,18 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
     if (calculatedReceiptHash != receipt.sha256) {
       throw StateError('inference receipt SHA-256 does not match its contents');
     }
-    final reference = await _references.inferenceReceipt(receipt);
+    final reference = await _references.inferenceReceipt(
+      sessionId: attempt.sessionId,
+      attemptNumber: attempt.attemptNumber,
+      capturedAtUtc: DateTime.fromMicrosecondsSinceEpoch(
+        (await (_database.select(_database.scanAttempts)
+                  ..where((row) => row.attemptId.equals(attempt.attemptId)))
+                .getSingle())
+            .capturedAtUs,
+        isUtc: true,
+      ),
+      receipt: receipt,
+    );
     if (reference.sha256 != receipt.sha256) {
       throw StateError('inference receipt reference has a different SHA-256');
     }
@@ -409,92 +496,101 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
     final height = _canonicalDimension(result.imageHeight, 'imageHeight');
     _validateInferenceObjects(result.objects);
 
-    return _database.transaction(() async {
-      final row =
-          await (_database.select(_database.scanAttempts)..where(
-                (candidate) => candidate.attemptId.equals(attempt.attemptId),
-              ))
-              .getSingleOrNull();
-      if (row == null ||
-          row.sessionId != attempt.sessionId ||
-          row.attemptNumber != attempt.attemptNumber ||
-          row.status != 'staged') {
-        throw StateError('attempt is not the matching staged attempt');
-      }
-      final session = await _activeSession(attempt.sessionId);
-      _verifyRuntimeSnapshot(session);
-      _verifyResultProvenance(result.objects, session);
-      for (final object in result.objects) {
-        final inferenceObjectId = '${attempt.attemptId}/${object.objectId}';
-        await _database
-            .into(_database.inferenceObjects)
-            .insert(
-              InferenceObjectsCompanion.insert(
-                inferenceObjectId: inferenceObjectId,
-                attemptId: attempt.attemptId,
-                objectId: object.objectId,
-                skuId: Value(object.skuId),
-                skuName: object.skuName,
-                decisionPath: object.decisionPath,
-                confidence: object.confidence,
-                bboxJson: jsonEncode(object.bboxXyxy),
-                detectorSource: object.detectorSource,
-                detectorScore: object.detectorScore,
-                provenanceJson: jsonEncode(object.provenance),
-                unknownReason: Value(object.unknownReason),
-              ),
-            );
-        for (final candidate in object.candidates) {
+    return _withRecoveryMarker(
+      operation: 'complete_attempt',
+      file: reference,
+      action: () => _database.transaction(() async {
+        final row =
+            await (_database.select(_database.scanAttempts)..where(
+                  (candidate) => candidate.attemptId.equals(attempt.attemptId),
+                ))
+                .getSingleOrNull();
+        if (row == null ||
+            row.sessionId != attempt.sessionId ||
+            row.attemptNumber != attempt.attemptNumber ||
+            row.status != 'staged') {
+          throw StateError('attempt is not the matching staged attempt');
+        }
+        final session = await _activeSession(attempt.sessionId);
+        _verifyRuntimeSnapshot(session);
+        _verifyResultProvenance(result.objects, session);
+        for (final object in result.objects) {
+          final inferenceObjectId = '${attempt.attemptId}/${object.objectId}';
           await _database
-              .into(_database.inferenceCandidates)
+              .into(_database.inferenceObjects)
               .insert(
-                InferenceCandidatesCompanion.insert(
-                  inferenceCandidateId: '$inferenceObjectId/${candidate.rank}',
+                InferenceObjectsCompanion.insert(
                   inferenceObjectId: inferenceObjectId,
-                  rank: candidate.rank,
-                  skuId: candidate.skuId,
-                  skuName: candidate.skuName,
-                  score: candidate.score,
+                  attemptId: attempt.attemptId,
+                  objectId: object.objectId,
+                  skuId: Value(object.skuId),
+                  skuName: object.skuName,
+                  decisionPath: object.decisionPath,
+                  confidence: object.confidence,
+                  bboxJson: jsonEncode(object.bboxXyxy),
+                  detectorSource: object.detectorSource,
+                  detectorScore: object.detectorScore,
+                  provenanceJson: jsonEncode(object.provenance),
+                  unknownReason: Value(object.unknownReason),
                 ),
               );
+          for (final candidate in object.candidates) {
+            await _database
+                .into(_database.inferenceCandidates)
+                .insert(
+                  InferenceCandidatesCompanion.insert(
+                    inferenceCandidateId:
+                        '$inferenceObjectId/${candidate.rank}',
+                    inferenceObjectId: inferenceObjectId,
+                    rank: candidate.rank,
+                    skuId: candidate.skuId,
+                    skuName: candidate.skuName,
+                    score: candidate.score,
+                  ),
+                );
+          }
         }
-      }
-      await (_database.update(_database.scanAttempts)..where(
-            (candidate) => candidate.attemptId.equals(attempt.attemptId),
-          ))
-          .write(
-            ScanAttemptsCompanion(
-              status: const Value('completed'),
-              canonicalWidth: Value(width),
-              canonicalHeight: Value(height),
-              receiptRelativePath: Value(reference.relativePath),
-              receiptByteSize: Value(reference.byteSize),
-              receiptSha256: Value(reference.sha256),
-              presentationState: Value(
-                _presentationState(result.presentation.state),
+        await (_database.update(_database.scanAttempts)..where(
+              (candidate) => candidate.attemptId.equals(attempt.attemptId),
+            ))
+            .write(
+              ScanAttemptsCompanion(
+                status: const Value('completed'),
+                canonicalWidth: Value(width),
+                canonicalHeight: Value(height),
+                receiptRelativePath: Value(reference.relativePath),
+                receiptByteSize: Value(reference.byteSize),
+                receiptSha256: Value(reference.sha256),
+                presentationState: Value(
+                  _presentationState(result.presentation.state),
+                ),
+                finalCountUsable: Value(result.presentation.finalCountUsable),
+                retakeScope: Value(
+                  _retakeScope(result.presentation.retakeScope),
+                ),
+                retakeReason: Value(
+                  _retakeReason(result.presentation.instruction),
+                ),
+                presentationPolicyId: Value(result.presentation.policyId),
+                presentationPolicySha256: Value(
+                  result.presentation.policySha256,
+                ),
+                decodePreprocessMs: Value(result.timings.decodePreprocessMs),
+                detectorMs: Value(result.timings.detectorMs),
+                repvitMs: Value(result.timings.repvitMs),
+                dinov3Ms: Value(result.timings.dinov3Ms),
+                postprocessMs: Value(result.timings.postprocessMs),
+                totalMs: Value(result.timings.totalMs),
+                startupDevice: Value(_runtime.startupDevice),
+                startupLoadMs: Value(_runtime.startupLoadMs),
+                startupWarmupMs: Value(_runtime.startupWarmupMs),
+                startupFallbackReason: Value(_runtime.startupFallbackReason),
               ),
-              finalCountUsable: Value(result.presentation.finalCountUsable),
-              retakeScope: Value(_retakeScope(result.presentation.retakeScope)),
-              retakeReason: Value(
-                _retakeReason(result.presentation.instruction),
-              ),
-              presentationPolicyId: Value(result.presentation.policyId),
-              presentationPolicySha256: Value(result.presentation.policySha256),
-              decodePreprocessMs: Value(result.timings.decodePreprocessMs),
-              detectorMs: Value(result.timings.detectorMs),
-              repvitMs: Value(result.timings.repvitMs),
-              dinov3Ms: Value(result.timings.dinov3Ms),
-              postprocessMs: Value(result.timings.postprocessMs),
-              totalMs: Value(result.timings.totalMs),
-              startupDevice: Value(_runtime.startupDevice),
-              startupLoadMs: Value(_runtime.startupLoadMs),
-              startupWarmupMs: Value(_runtime.startupWarmupMs),
-              startupFallbackReason: Value(_runtime.startupFallbackReason),
-            ),
-          );
-      await _appendEvent(attempt.sessionId, 'attempt_completed', _now());
-      return PersistedAttempt(attemptId: attempt.attemptId);
-    });
+            );
+        await _appendEvent(attempt.sessionId, 'attempt_completed', _now());
+        return PersistedAttempt(attemptId: attempt.attemptId);
+      }),
+    );
   }
 
   @override
@@ -591,172 +687,186 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
   }
 
   @override
-  Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order) {
-    return _database.transaction(() async {
-      final existing =
-          await (_database.select(_database.simulatedPayments)
-                ..where((row) => row.sessionId.equals(order.sessionId)))
-              .getSingleOrNull();
-      if (existing != null) return _receipt(existing);
+  Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order) async {
+    VerifiedAuditFileReference? retainedReceipt;
+    try {
+      return await _database.transaction(() async {
+        final existing =
+            await (_database.select(_database.simulatedPayments)
+                  ..where((row) => row.sessionId.equals(order.sessionId)))
+                .getSingleOrNull();
+        if (existing != null) return _receipt(existing);
 
-      final session = await _activeSession(order.sessionId);
-      await _verifyOrderCatalog(order, session);
-      for (final line in order.lines) {
-        await _sessionProduct(session, line.product);
-      }
-      final latestAttempt = await _latestCompletedAttempt(order.sessionId);
-      final objects = latestAttempt == null
-          ? const <InferenceObjectRow>[]
-          : await (_database.select(_database.inferenceObjects)..where(
-                  (row) => row.attemptId.equals(latestAttempt.attemptId),
-                ))
-                .get();
-      final resolutions = objects.isEmpty
-          ? const <ObjectResolutionRow>[]
-          : await (_database.select(_database.objectResolutions)..where(
-                  (row) =>
-                      row.isCurrent.equals(true) &
-                      row.sessionId.equals(order.sessionId) &
-                      row.inferenceObjectId.isIn(
-                        objects
-                            .map((object) => object.inferenceObjectId)
-                            .toList(growable: false),
-                      ),
-                ))
-                .get();
-      if (resolutions.length != objects.length) {
-        throw StateError('every current inference object must be resolved');
-      }
+        final session = await _activeSession(order.sessionId);
+        await _verifyOrderCatalog(order, session);
+        for (final line in order.lines) {
+          await _sessionProduct(session, line.product);
+        }
+        final latestAttempt = await _latestCompletedAttempt(order.sessionId);
+        final objects = latestAttempt == null
+            ? const <InferenceObjectRow>[]
+            : await (_database.select(_database.inferenceObjects)..where(
+                    (row) => row.attemptId.equals(latestAttempt.attemptId),
+                  ))
+                  .get();
+        final resolutions = objects.isEmpty
+            ? const <ObjectResolutionRow>[]
+            : await (_database.select(_database.objectResolutions)..where(
+                    (row) =>
+                        row.isCurrent.equals(true) &
+                        row.sessionId.equals(order.sessionId) &
+                        row.inferenceObjectId.isIn(
+                          objects
+                              .map((object) => object.inferenceObjectId)
+                              .toList(growable: false),
+                        ),
+                  ))
+                  .get();
+        if (resolutions.length != objects.length) {
+          throw StateError('every current inference object must be resolved');
+        }
 
-      final draftLines = await (_database.select(
-        _database.draftOrderLines,
-      )..where((row) => row.sessionId.equals(order.sessionId))).get();
-      _verifyDraftMatchesOrder(order, draftLines);
-      final draftByProduct = {
-        for (final line in draftLines) line.productId: line,
-      };
-      for (final resolution in resolutions) {
-        final object = objects.singleWhere(
-          (candidate) =>
-              candidate.inferenceObjectId == resolution.inferenceObjectId,
-        );
-        final draft = draftByProduct[resolution.productId];
-        if (draft == null) {
-          throw StateError(
-            'resolved product is missing from the persisted draft: '
-            '${resolution.productId}',
+        final draftLines = await (_database.select(
+          _database.draftOrderLines,
+        )..where((row) => row.sessionId.equals(order.sessionId))).get();
+        _verifyDraftMatchesOrder(order, draftLines);
+        final draftByProduct = {
+          for (final line in draftLines) line.productId: line,
+        };
+        for (final resolution in resolutions) {
+          final object = objects.singleWhere(
+            (candidate) =>
+                candidate.inferenceObjectId == resolution.inferenceObjectId,
+          );
+          final draft = draftByProduct[resolution.productId];
+          if (draft == null) {
+            throw StateError(
+              'resolved product is missing from the persisted draft: '
+              '${resolution.productId}',
+            );
+          }
+          await _verifyPersistedResolution(
+            session: session,
+            object: object,
+            resolution: resolution,
+            draft: draft,
           );
         }
-        await _verifyPersistedResolution(
-          session: session,
-          object: object,
-          resolution: resolution,
-          draft: draft,
-        );
-      }
-      for (final line in draftLines) {
-        final resolvedCount = resolutions
-            .where((resolution) => resolution.productId == line.productId)
-            .length;
-        if (resolvedCount > line.quantity) {
-          throw StateError(
-            'draft quantity is lower than resolved object count for '
-            '${line.productId}',
-          );
+        for (final line in draftLines) {
+          final resolvedCount = resolutions
+              .where((resolution) => resolution.productId == line.productId)
+              .length;
+          if (resolvedCount > line.quantity) {
+            throw StateError(
+              'draft quantity is lower than resolved object count for '
+              '${line.productId}',
+            );
+          }
         }
-      }
 
-      final receiptReference = await _references.finalOrderReceipt(order);
-      final orderId = _newId('order');
-      final paymentId = _newId('payment');
-      final paidAt = _now().toUtc();
-      await _database
-          .into(_database.finalOrders)
-          .insert(
-            FinalOrdersCompanion.insert(
+        final receiptReference = await _references.finalOrderReceipt(order);
+        retainedReceipt = receiptReference;
+        final orderId = _newId('order');
+        final paymentId = _newId('payment');
+        final paidAt = _now().toUtc();
+        await _database
+            .into(_database.finalOrders)
+            .insert(
+              FinalOrdersCompanion.insert(
+                orderId: orderId,
+                sessionId: order.sessionId,
+                catalogRevisionId: session.catalogRevisionId,
+                createdAtUs: order.createdAt.toUtc().microsecondsSinceEpoch,
+                totalQuantity: draftLines.fold(
+                  0,
+                  (total, line) => total + line.quantity,
+                ),
+                totalAmountKrw: draftLines.fold(
+                  0,
+                  (total, line) => total + (line.unitPriceKrw * line.quantity),
+                ),
+                receiptRelativePath: receiptReference.relativePath,
+                receiptByteSize: receiptReference.byteSize,
+                receiptSha256: receiptReference.sha256,
+              ),
+            );
+        for (final line in draftLines) {
+          final countsBySource = <String, int>{};
+          for (final resolution in resolutions.where(
+            (resolution) => resolution.productId == line.productId,
+          )) {
+            countsBySource[resolution.source] =
+                (countsBySource[resolution.source] ?? 0) + 1;
+          }
+          for (final entry in countsBySource.entries) {
+            await _insertFinalLine(
               orderId: orderId,
-              sessionId: order.sessionId,
-              catalogRevisionId: session.catalogRevisionId,
-              createdAtUs: order.createdAt.toUtc().microsecondsSinceEpoch,
-              totalQuantity: draftLines.fold(
-                0,
-                (total, line) => total + line.quantity,
-              ),
-              totalAmountKrw: draftLines.fold(
-                0,
-                (total, line) => total + (line.unitPriceKrw * line.quantity),
-              ),
-              receiptRelativePath: receiptReference.relativePath,
-              receiptByteSize: receiptReference.byteSize,
-              receiptSha256: receiptReference.sha256,
-            ),
+              draft: line,
+              quantity: entry.value,
+              source: entry.key,
+            );
+          }
+          final resolvedQuantity = countsBySource.values.fold(
+            0,
+            (total, quantity) => total + quantity,
           );
-      for (final line in draftLines) {
-        final countsBySource = <String, int>{};
-        for (final resolution in resolutions.where(
-          (resolution) => resolution.productId == line.productId,
-        )) {
-          countsBySource[resolution.source] =
-              (countsBySource[resolution.source] ?? 0) + 1;
+          final manualQuantity = line.quantity - resolvedQuantity;
+          if (manualQuantity > 0) {
+            await _insertFinalLine(
+              orderId: orderId,
+              draft: line,
+              quantity: manualQuantity,
+              source: CustomerResolutionSource.customerManualCart.storageValue,
+            );
+          }
         }
-        for (final entry in countsBySource.entries) {
-          await _insertFinalLine(
-            orderId: orderId,
-            draft: line,
-            quantity: entry.value,
-            source: entry.key,
-          );
-        }
-        final resolvedQuantity = countsBySource.values.fold(
+        final amount = draftLines.fold(
           0,
-          (total, quantity) => total + quantity,
+          (total, line) => total + (line.unitPriceKrw * line.quantity),
         );
-        final manualQuantity = line.quantity - resolvedQuantity;
-        if (manualQuantity > 0) {
-          await _insertFinalLine(
-            orderId: orderId,
-            draft: line,
-            quantity: manualQuantity,
-            source: CustomerResolutionSource.customerManualCart.storageValue,
-          );
-        }
+        await _database
+            .into(_database.simulatedPayments)
+            .insert(
+              SimulatedPaymentsCompanion.insert(
+                paymentId: paymentId,
+                orderId: orderId,
+                sessionId: order.sessionId,
+                amountKrw: amount,
+                currency: 'KRW',
+                provider: 'simulated',
+                status: 'approved',
+                finalOrderSha256: receiptReference.sha256,
+                paidAtUs: paidAt.microsecondsSinceEpoch,
+              ),
+            );
+        await (_database.update(
+          _database.checkoutSessions,
+        )..where((row) => row.sessionId.equals(order.sessionId))).write(
+          CheckoutSessionsCompanion(
+            state: const Value('completed'),
+            terminalAtUs: Value(paidAt.microsecondsSinceEpoch),
+            terminalReason: const Value('payment_committed'),
+          ),
+        );
+        await _appendEvent(order.sessionId, 'payment_committed', paidAt);
+        return PaymentReceipt(
+          paymentId: paymentId,
+          sessionId: order.sessionId,
+          amount: amount,
+          paidAt: paidAt,
+        );
+      });
+    } catch (error) {
+      final receipt = retainedReceipt;
+      if (receipt != null) {
+        await _recordDatabaseFailure(
+          operation: 'commit_payment',
+          file: receipt,
+          error: error,
+        );
       }
-      final amount = draftLines.fold(
-        0,
-        (total, line) => total + (line.unitPriceKrw * line.quantity),
-      );
-      await _database
-          .into(_database.simulatedPayments)
-          .insert(
-            SimulatedPaymentsCompanion.insert(
-              paymentId: paymentId,
-              orderId: orderId,
-              sessionId: order.sessionId,
-              amountKrw: amount,
-              currency: 'KRW',
-              provider: 'simulated',
-              status: 'approved',
-              finalOrderSha256: receiptReference.sha256,
-              paidAtUs: paidAt.microsecondsSinceEpoch,
-            ),
-          );
-      await (_database.update(
-        _database.checkoutSessions,
-      )..where((row) => row.sessionId.equals(order.sessionId))).write(
-        CheckoutSessionsCompanion(
-          state: const Value('completed'),
-          terminalAtUs: Value(paidAt.microsecondsSinceEpoch),
-          terminalReason: const Value('payment_committed'),
-        ),
-      );
-      await _appendEvent(order.sessionId, 'payment_committed', paidAt);
-      return PaymentReceipt(
-        paymentId: paymentId,
-        sessionId: order.sessionId,
-        amount: amount,
-        paidAt: paidAt,
-      );
-    });
+      rethrow;
+    }
   }
 
   @override
@@ -1105,6 +1215,41 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
     paidAt: DateTime.fromMicrosecondsSinceEpoch(payment.paidAtUs, isUtc: true),
   );
 
+  Future<T> _withRecoveryMarker<T>({
+    required String operation,
+    required VerifiedAuditFileReference file,
+    required Future<T> Function() action,
+  }) async {
+    try {
+      return await action();
+    } catch (error) {
+      await _recordDatabaseFailure(
+        operation: operation,
+        file: file,
+        error: error,
+      );
+      rethrow;
+    }
+  }
+
+  Future<void> _recordDatabaseFailure({
+    required String operation,
+    required VerifiedAuditFileReference file,
+    required Object error,
+  }) async {
+    if (_references case final AuditRecoveryMarkerWriter writer) {
+      try {
+        await writer.recordDatabaseFailure(
+          operation: operation,
+          file: file,
+          error: error,
+        );
+      } catch (_) {
+        // A failed marker must not hide the original database failure.
+      }
+    }
+  }
+
   Future<void> _appendEvent(
     String sessionId,
     String eventType,
@@ -1221,17 +1366,4 @@ void _requireRelativePath(String value) {
       'must be a safe relative path',
     );
   }
-}
-
-Object? _canonicalizeJson(Object? value) {
-  if (value is Map) {
-    final keys = value.keys.cast<String>().toList()..sort();
-    return <String, Object?>{
-      for (final key in keys) key: _canonicalizeJson(value[key]),
-    };
-  }
-  if (value is List) {
-    return [for (final item in value) _canonicalizeJson(item)];
-  }
-  return value;
 }

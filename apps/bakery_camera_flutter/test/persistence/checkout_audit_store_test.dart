@@ -191,6 +191,34 @@ void main() {
   });
 
   test(
+    'database failure marks retained capture evidence for recovery',
+    () async {
+      final sessionId = await _beginSession(store, revision);
+      final image = CapturedAuditFile(
+        fileId: 'image-1',
+        path: 'sessions/$sessionId/attempt-001.jpg',
+        sha256: _hash('4'),
+      );
+      await store.stageAttempt(
+        sessionId: sessionId,
+        attemptNumber: 1,
+        image: image,
+      );
+
+      await expectLater(
+        store.stageAttempt(
+          sessionId: sessionId,
+          attemptNumber: 1,
+          image: image,
+        ),
+        throwsA(isA<Exception>()),
+      );
+
+      expect(references.failedOperations, ['stage_attempt']);
+    },
+  );
+
+  test(
     'complete attempt rejects model provenance outside session snapshot',
     () async {
       var mismatchId = 0;
@@ -710,6 +738,7 @@ END
         ),
         isEmpty,
       );
+      expect(references.failedOperations, ['commit_payment']);
     },
   );
 
@@ -879,8 +908,10 @@ Future<void> _seedProduct(
       );
 }
 
-final class _References implements AuditReferenceVerifier {
+final class _References
+    implements AuditReferenceVerifier, AuditRecoveryMarkerWriter {
   bool failFinalOrder = false;
+  final List<String> failedOperations = [];
 
   @override
   Future<VerifiedAuditFileReference> capturedImage(
@@ -894,9 +925,12 @@ final class _References implements AuditReferenceVerifier {
   }
 
   @override
-  Future<VerifiedAuditFileReference> inferenceReceipt(
-    ImmutableJsonReceipt receipt,
-  ) async {
+  Future<VerifiedAuditFileReference> inferenceReceipt({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required ImmutableJsonReceipt receipt,
+  }) async {
     return VerifiedAuditFileReference(
       relativePath: 'sessions/session-1/attempt-001.inference.json',
       byteSize: receipt.canonicalJson.length,
@@ -916,6 +950,15 @@ final class _References implements AuditReferenceVerifier {
       byteSize: 128,
       sha256: _hash('6'),
     );
+  }
+
+  @override
+  Future<void> recordDatabaseFailure({
+    required String operation,
+    required VerifiedAuditFileReference file,
+    required Object error,
+  }) async {
+    failedOperations.add(operation);
   }
 }
 
