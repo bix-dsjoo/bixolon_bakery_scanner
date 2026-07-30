@@ -21,9 +21,8 @@ import '../persistence/database_factory.dart';
 import '../scanner/scanner_controller.dart';
 import '../ui/app_theme.dart';
 import '../ui/admin/admin_destination.dart';
-import '../ui/admin/admin_shell.dart';
-import '../ui/customer/customer_checkout_screen.dart';
 import 'app_mode_controller.dart';
+import 'app_mode_surface.dart';
 
 /// Production composition root. Customer screens never receive the model
 /// transport or artifact details; those remain in the audited persistence path.
@@ -36,18 +35,11 @@ class BakeryApp extends StatefulWidget {
 
 class _BakeryAppState extends State<BakeryApp> {
   Future<CheckoutController>? _bootstrap;
-  AppModeController? _modeController;
 
   @override
   void initState() {
     super.initState();
     _bootstrap = _createCheckout();
-  }
-
-  @override
-  void dispose() {
-    _modeController?.dispose();
-    super.dispose();
   }
 
   @override
@@ -60,25 +52,10 @@ class _BakeryAppState extends State<BakeryApp> {
       builder: (context, snapshot) {
         if (snapshot.hasData) {
           final checkout = snapshot.requireData;
-          final modes = _modeController ??= AppModeController(
+          return BakeryAppSurface(
+            checkout: checkout,
             customerLifecycle: _CheckoutCustomerModeLifecycle(checkout),
-          );
-          return AnimatedBuilder(
-            animation: modes,
-            builder: (context, _) => switch (modes.mode) {
-              AppMode.customer => CustomerCheckoutScreen(
-                controller: checkout,
-                requiresAdminEntryConfirmation:
-                    modes.requiresAbandonConfirmation,
-                onEnterAdmin: modes.enterAdmin,
-                onPaymentCompleted: modes.onPaymentCompleted,
-              ),
-              AppMode.admin => AdminShell(
-                controller: modes,
-                onReturnToCustomer: modes.exitAdmin,
-                destinationBuilder: _adminPlaceholder,
-              ),
-            },
+            adminDestinationBuilder: _adminPlaceholder,
           );
         }
         if (snapshot.hasError) return const _UnavailableBootstrapScreen();

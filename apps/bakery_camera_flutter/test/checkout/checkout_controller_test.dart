@@ -429,6 +429,29 @@ void main() {
     await scan;
   });
 
+  test(
+    'failed admin abandonment during analysis leaves the active scan able to finish',
+    () async {
+      worker.nextResult = _registeredResult();
+      worker.analysisGate = Completer<void>();
+      await controller.initialize();
+      final scan = controller.scan();
+      await worker.analysisStarted.future;
+      audit.abandonFailuresRemaining = 1;
+
+      await expectLater(controller.abandonForAdminEntry(), throwsStateError);
+
+      expect(controller.hasActiveCustomerCheckout, isTrue);
+      expect(controller.state.phase, CheckoutPhase.analyzing);
+
+      worker.analysisGate!.complete();
+      await scan;
+
+      expect(controller.state.phase, CheckoutPhase.orderReview);
+      expect(audit.completedAttempts, hasLength(1));
+    },
+  );
+
   test('camera and worker startup failures are terminal', () async {
     camera.initializeResult = false;
 

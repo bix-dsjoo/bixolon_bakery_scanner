@@ -564,8 +564,8 @@ final class CheckoutController extends ChangeNotifier {
         'administrator entry is unavailable while payment commits',
       );
     }
-    _scanGeneration += 1;
     await _abandonActiveSession('admin_mode_entered');
+    _scanGeneration += 1;
   }
 
   /// Creates a brand-new session before customer controls become available
