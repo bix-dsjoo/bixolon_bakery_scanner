@@ -2,6 +2,8 @@ import 'package:bakery_camera_prototype/src/admin/admin_models.dart';
 import 'package:bakery_camera_prototype/src/persistence/app_database.dart';
 import 'package:bakery_camera_prototype/src/persistence/database_admin_repository.dart';
 import 'package:bakery_camera_prototype/src/persistence/database_factory.dart';
+import 'package:bakery_camera_prototype/src/admin/settings_models.dart';
+import 'package:bakery_camera_prototype/src/admin/settings_service.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -88,7 +90,9 @@ void main() {
       expect(summary.unknownObjects, 2);
       expect(summary.customerResolvedUnknownObjects, 0);
       expect(summary.customerOverrides, 0);
-      expect(summary.manualCartLines, 0);
+      // Manual-cart facts have no object-resolution row. Their committed
+      // final-order source is dated by the simulated payment instead.
+      expect(summary.manualCartLines, 1);
       expect(summary.failedSessions, 1);
     },
   );
@@ -157,31 +161,21 @@ Future<void> _seedDashboard(
           sortOrder: 0,
         ),
       );
-  await db
-      .into(db.settingsRevisions)
-      .insert(
-        SettingsRevisionsCompanion.insert(
-          revisionId: 'settings',
-          createdAtUs: _at,
-          retryLimit: 2,
-          paymentCompleteDurationSeconds: 5,
-          customerAutoReset: true,
-          evidenceRetentionDays: 30,
-          locale: 'ko-KR',
-          kioskDisplayName: 'BIXOLON',
-          adminAuthorLabel: 'admin',
-        ),
-      );
-  await db
-      .into(db.appSettings)
-      .insertOnConflictUpdate(
-        AppSettingsCompanion.insert(
-          settingsId: 'operational',
-          activeSettingsRevisionId: 'settings',
-          applicationVersionValue: '1.1.0',
-          lastMigrationResult: 'ok',
-        ),
-      );
+  await SettingsService(
+    database: db,
+    createId: () => 'settings',
+    now: () => DateTime.fromMicrosecondsSinceEpoch(_at, isUtc: true),
+  ).save(
+    const KioskSettingsDraft(
+      kioskDisplayName: 'BIXOLON',
+      retryLimit: 2,
+      paymentCompleteDurationSeconds: 5,
+      customerAutoReset: true,
+      evidenceRetentionDays: 30,
+      locale: 'ko-KR',
+      adminAuthorLabel: 'admin',
+    ),
+  );
   for (final session in const ['paid-1', 'paid-2', 'paid-3', 'failed']) {
     await _insertSession(
       db,
@@ -227,14 +221,6 @@ Future<void> _seedDashboard(
     'customer_overrode_auto',
     resolvedAtUs: resolutionAtUs,
   );
-  await _resolution(
-    db,
-    'manual',
-    'paid-1',
-    null,
-    'customer_manual_cart',
-    resolvedAtUs: resolutionAtUs,
-  );
   for (final session in const ['paid-1', 'paid-2', 'paid-3']) {
     final order = 'order-$session';
     await db
@@ -252,6 +238,24 @@ Future<void> _seedDashboard(
             receiptSha256: _hash,
           ),
         );
+    if (session == 'paid-1') {
+      await db
+          .into(db.finalOrderLines)
+          .insert(
+            FinalOrderLinesCompanion.insert(
+              finalLineId: 'manual-line-$session',
+              orderId: order,
+              productRevisionId: 'catalog/product',
+              productId: 'product',
+              recognitionSkuId: const Value(null),
+              productName: '?щ（?꾩긽',
+              unitPriceKrw: 2400,
+              quantity: 1,
+              lineAmountKrw: 2400,
+              resolutionSource: 'customer_manual_cart',
+            ),
+          );
+    }
     await db
         .into(db.simulatedPayments)
         .insert(

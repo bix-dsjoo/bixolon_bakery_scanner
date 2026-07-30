@@ -26,6 +26,7 @@ final class DatabaseAdminRepository
         .select(_database.objectResolutions)
         .get();
     final orders = await _database.select(_database.finalOrders).get();
+    final orderLines = await _database.select(_database.finalOrderLines).get();
     final payments = await _database.select(_database.simulatedPayments).get();
 
     final sessionById = {
@@ -54,6 +55,9 @@ final class DatabaseAdminRepository
     final committedOrders = orders
         .where((order) => committedOrderIds.contains(order.orderId))
         .toList(growable: false);
+    final committedOrderIdsSet = committedOrders
+        .map((order) => order.orderId)
+        .toSet();
 
     final currentResolutions = resolutions
         .where((row) => row.isCurrent && range.includes(_utc(row.resolvedAtUs)))
@@ -92,8 +96,14 @@ final class DatabaseAdminRepository
       customerOverrides: currentResolutions
           .where((row) => row.source == 'customer_overrode_auto')
           .length,
-      manualCartLines: currentResolutions
-          .where((row) => row.source == 'customer_manual_cart')
+      // Manual-cart choices deliberately have no inference-object resolution.
+      // Their immutable source exists only on the committed final-order line.
+      manualCartLines: orderLines
+          .where(
+            (row) =>
+                committedOrderIdsSet.contains(row.orderId) &&
+                row.resolutionSource == 'customer_manual_cart',
+          )
           .length,
       failedSessions: sessions
           .where(
