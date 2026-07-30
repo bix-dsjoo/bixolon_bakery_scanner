@@ -105,6 +105,7 @@ void main() {
         actions,
         containsAll(<String>['quantity:2', 'remove', 'mismatch', 'pay']),
       );
+      expect(find.bySemanticsLabel('직접 담기 안내 그림'), findsOneWidget);
     },
   );
 
@@ -125,6 +126,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 50));
     expect(automatic, 1);
+    expect(find.bySemanticsLabel('결제 완료 안내 그림'), findsOneWidget);
 
     var manual = 0;
     await _pump(

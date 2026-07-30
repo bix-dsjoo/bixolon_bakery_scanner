@@ -25,3 +25,22 @@ class PaymentView extends StatelessWidget {
     ),
   );
 }
+
+/// A supplemental completion cue. The copy and next-customer action remain
+/// available when the generated bitmap cannot be decoded.
+class PaymentCompleteIllustration extends StatelessWidget {
+  const PaymentCompleteIllustration({super.key});
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: '결제 완료 안내 그림',
+    image: true,
+    child: Image.asset(
+      'assets/illustrations/payment_complete.png',
+      height: 144,
+      fit: BoxFit.contain,
+      excludeFromSemantics: true,
+      errorBuilder: (_, _, _) => const SizedBox.shrink(),
+    ),
+  );
+}

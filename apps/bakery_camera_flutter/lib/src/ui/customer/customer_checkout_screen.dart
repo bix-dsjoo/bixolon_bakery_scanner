@@ -210,6 +210,8 @@ class _PaymentCompleteViewState extends State<PaymentCompleteView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const PaymentCompleteIllustration(),
+            const SizedBox(height: 12),
             const BakeryStatusBanner(
               status: BakeryStatus.ready,
               title: '결제가 완료됐어요',

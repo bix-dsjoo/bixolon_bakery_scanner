@@ -42,6 +42,20 @@ class OrderReviewView extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (state.objectDrafts.isEmpty) ...[
+              Semantics(
+                label: '직접 담기 안내 그림',
+                image: true,
+                child: Image.asset(
+                  'assets/illustrations/manual_cart_entry.png',
+                  height: 132,
+                  fit: BoxFit.contain,
+                  excludeFromSemantics: true,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             for (final line in state.lines)
               _OrderLine(
                 line: line,

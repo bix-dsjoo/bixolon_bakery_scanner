@@ -1,1 +1,49 @@
-{"generated_ui_illustrations":[]}
+{
+  "schema_version": 1,
+  "generated_ui_illustrations": [
+    {
+      "kind": "generated_ui_illustration",
+      "allowed_use": "manual_cart_entry",
+      "path": "assets/illustrations/manual_cart_entry.png",
+      "format": "png",
+      "transparent_background": true,
+      "width": 1254,
+      "height": 1254,
+      "byte_size": 1768496,
+      "sha256": "15b544c994a581d355408a84b25054203fd27e8a89324de522e5e40d391bb563",
+      "prompt": "Transparent-background, warm editorial receipt-stamp illustration for a Korean self-checkout bakery kiosk. A customer hand gently places one bread item into a simple paper tray, paired with a small catalog/list cue. Flat shapes, restrained BIXOLON orange accent, charcoal ink, cream paper tone, subtle imperfect print texture, no text, no logo, no product-identifying photorealism, no UI chrome, friendly and functional, centered composition, legible at 240 px.",
+      "generation_prompt_addendum": "Rendered on flat #00ff00 chroma-key background; local alpha extraction used remove_chroma_key.py with auto border sampling, soft matte, thresholds 12/220, and despill.",
+      "generated_at_utc": "2026-07-30T11:53:10.0373066Z",
+      "tool_provenance": "built-in image_gen output exec-bf5ecdb8-ee87-4fcf-970d-a8434881f7c3.png; local remove_chroma_key.py chroma-key extraction",
+      "prohibited_uses": [
+        "product_photo",
+        "camera_evidence",
+        "model_input",
+        "training_data",
+        "evaluation_data"
+      ]
+    },
+    {
+      "kind": "generated_ui_illustration",
+      "allowed_use": "payment_complete",
+      "path": "assets/illustrations/payment_complete.png",
+      "format": "png",
+      "transparent_background": true,
+      "width": 1254,
+      "height": 1254,
+      "byte_size": 1191063,
+      "sha256": "e4a10dddc35b354fbf0cfdc8858c7ba24b579b03622059f811a49bcffc989ac8",
+      "prompt": "Transparent-background, warm editorial receipt-stamp illustration for a Korean self-checkout bakery kiosk. A simple paper receipt with a clear check mark and a small bread silhouette, conveying completed simulated payment and readiness for the next customer. Flat shapes, restrained BIXOLON orange accent, confirmed teal used only for the check, charcoal ink, cream paper tone, subtle imperfect print texture, no text, no logo, no currency symbol, no UI chrome, friendly and calm, centered composition, legible at 240 px.",
+      "generation_prompt_addendum": "Rendered on flat #00ff00 chroma-key background; local alpha extraction used remove_chroma_key.py with auto border sampling, soft matte, thresholds 12/220, and despill.",
+      "generated_at_utc": "2026-07-30T11:53:10.0373066Z",
+      "tool_provenance": "built-in image_gen output exec-f927fda1-5770-442a-97c2-8beb6fc1f8d5.png; local remove_chroma_key.py chroma-key extraction",
+      "prohibited_uses": [
+        "product_photo",
+        "camera_evidence",
+        "model_input",
+        "training_data",
+        "evaluation_data"
+      ]
+    }
+  ]
+}
