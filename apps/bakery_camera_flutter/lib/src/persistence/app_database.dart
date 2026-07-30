@@ -105,6 +105,37 @@ class AppSettings extends Table {
   Set<Column<Object>> get primaryKey => {settingsId};
 }
 
+/// Per-setting revision metadata complements the typed settings snapshot.
+/// It is append-only so an operator can establish who changed which supported
+/// setting without ever accepting arbitrary key/value configuration.
+@DataClassName('SettingsRevisionEntryRow')
+class SettingsRevisionEntries extends Table {
+  TextColumn get revisionId =>
+      text().references(SettingsRevisions, #revisionId)();
+  TextColumn get settingKey => text().withLength(min: 1)();
+  TextColumn get valueType => text().withLength(min: 1)();
+  TextColumn get valueJson => text().withLength(min: 1)();
+  IntColumn get updatedAtUs => integer()();
+  TextColumn get authorLabel => text().withLength(min: 1)();
+
+  @override
+  Set<Column<Object>> get primaryKey => {revisionId, settingKey};
+
+  @override
+  List<String> get customConstraints => const [
+    'CHECK (json_valid(value_json))',
+    '''CHECK (
+      (setting_key = 'kiosk_display_name' AND value_type = 'string') OR
+      (setting_key = 'retry_limit' AND value_type = 'integer') OR
+      (setting_key = 'payment_complete_duration_seconds' AND value_type = 'integer') OR
+      (setting_key = 'customer_auto_reset' AND value_type = 'boolean') OR
+      (setting_key = 'evidence_retention_days' AND value_type = 'integer') OR
+      (setting_key = 'locale' AND value_type = 'string') OR
+      (setting_key = 'admin_author_label' AND value_type = 'string')
+    )''',
+  ];
+}
+
 @DataClassName('CheckoutSessionRow')
 class CheckoutSessions extends Table {
   TextColumn get sessionId => text().withLength(min: 1)();
@@ -603,6 +634,7 @@ class AdminReviewAnnotations extends Table {
     AppSettings,
     RetentionEvents,
     AdminReviewAnnotations,
+    SettingsRevisionEntries,
   ],
 )
 class BakeryDatabase extends _$BakeryDatabase {
@@ -619,15 +651,17 @@ class BakeryDatabase extends _$BakeryDatabase {
   String _lastMigrationResult = 'not_opened';
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (migrator) async {
       await migrator.createAll();
       await _installIntegrityGuards();
-      _lastMigrationResult = 'created_schema_v3';
+      _lastMigrationResult = 'created_schema_v4';
       await _installSettings();
+      await _installSettingsRevisionEntries();
+      await _installSettingsIntegrityGuards();
     },
     onUpgrade: (migrator, from, to) async {
       if (from > to) {
@@ -635,9 +669,29 @@ class BakeryDatabase extends _$BakeryDatabase {
           'database schema $from is newer than supported schema $to',
         );
       }
-      if (from == 1 && to == 2) {
-        await migrator.createTable(adminReviewAnnotations);
+      if (from == 3 && to == 4) {
+        await migrator.createTable(settingsRevisionEntries);
+        await _backfillSettingsRevisionEntries();
+        await _installSettingsIntegrityGuards();
+        return;
+      }
+      if (from == 2 && to == 4) {
+        await migrator.addColumn(
+          adminReviewAnnotations,
+          adminReviewAnnotations.conclusionCode,
+        );
+        await migrator.createTable(settingsRevisionEntries);
+        await _backfillSettingsRevisionEntries();
         await _installReviewIntegrityGuards();
+        await _installSettingsIntegrityGuards();
+        return;
+      }
+      if (from == 1 && to == 4) {
+        await migrator.createTable(adminReviewAnnotations);
+        await migrator.createTable(settingsRevisionEntries);
+        await _backfillSettingsRevisionEntries();
+        await _installReviewIntegrityGuards();
+        await _installSettingsIntegrityGuards();
         return;
       }
       if (from == 2 && to == 3) {
@@ -705,6 +759,142 @@ class BakeryDatabase extends _$BakeryDatabase {
         lastMigrationResult: _lastMigrationResult,
       ),
     );
+  }
+
+  Future<void> _installSettingsRevisionEntries() async {
+    const revisionId = 'settings-v1';
+    const author = 'prototype-admin';
+    await batch((batch) {
+      batch.insertAll(settingsRevisionEntries, [
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'kiosk_display_name',
+          valueType: 'string',
+          valueJson: '"BIXOLON Bakery"',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'retry_limit',
+          valueType: 'integer',
+          valueJson: '2',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'payment_complete_duration_seconds',
+          valueType: 'integer',
+          valueJson: '4',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'customer_auto_reset',
+          valueType: 'boolean',
+          valueJson: 'true',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'evidence_retention_days',
+          valueType: 'integer',
+          valueJson: '90',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'locale',
+          valueType: 'string',
+          valueJson: '"ko-KR"',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+        SettingsRevisionEntriesCompanion.insert(
+          revisionId: revisionId,
+          settingKey: 'admin_author_label',
+          valueType: 'string',
+          valueJson: '"prototype-admin"',
+          updatedAtUs: 0,
+          authorLabel: author,
+        ),
+      ]);
+    });
+  }
+
+  Future<void> _backfillSettingsRevisionEntries() async {
+    // Existing v1-v3 settings rows are immutable checkout evidence. The
+    // migration adds provenance rows from their recorded revision timestamp
+    // and author without altering those snapshots.
+    const entries = [
+      ('kiosk_display_name', 'string', 'json_quote(kiosk_display_name)'),
+      ('retry_limit', 'integer', 'json(retry_limit)'),
+      (
+        'payment_complete_duration_seconds',
+        'integer',
+        'json(payment_complete_duration_seconds)',
+      ),
+      ('customer_auto_reset', 'boolean', 'json(customer_auto_reset)'),
+      ('evidence_retention_days', 'integer', 'json(evidence_retention_days)'),
+      ('locale', 'string', 'json_quote(locale)'),
+      ('admin_author_label', 'string', 'json_quote(admin_author_label)'),
+    ];
+    for (final entry in entries) {
+      await customStatement('''
+INSERT OR IGNORE INTO settings_revision_entries (
+  revision_id, setting_key, value_type, value_json, updated_at_us, author_label
+)
+SELECT revision_id, '${entry.$1}', '${entry.$2}', ${entry.$3},
+  created_at_us, admin_author_label
+FROM settings_revisions
+''');
+    }
+  }
+
+  Future<void> _installSettingsIntegrityGuards() async {
+    await customStatement('''
+CREATE TRIGGER IF NOT EXISTS settings_revision_no_update
+BEFORE UPDATE ON settings_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'settings revisions are copy-on-write');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER IF NOT EXISTS settings_revision_no_delete
+BEFORE DELETE ON settings_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'settings revisions are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER IF NOT EXISTS settings_revision_entry_no_update
+BEFORE UPDATE ON settings_revision_entries
+BEGIN
+  SELECT RAISE(ABORT, 'settings revision entries are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER IF NOT EXISTS settings_revision_entry_no_delete
+BEFORE DELETE ON settings_revision_entries
+BEGIN
+  SELECT RAISE(ABORT, 'settings revision entries are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER IF NOT EXISTS app_settings_active_revision_guard
+BEFORE UPDATE OF active_settings_revision_id ON app_settings
+WHEN NEW.settings_id <> 'operational' OR (
+  SELECT COUNT(*) FROM settings_revision_entries
+  WHERE revision_id = NEW.active_settings_revision_id
+) <> 7
+BEGIN
+  SELECT RAISE(ABORT, 'active settings revision must have typed entries');
+END
+''');
   }
 
   Future<void> _installIntegrityGuards() async {

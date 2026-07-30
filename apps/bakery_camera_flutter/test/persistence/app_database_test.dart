@@ -19,25 +19,31 @@ void main() {
     await db.close();
   });
 
-  test('schema version 3 installs immutable operational settings', () async {
-    final settings = await db.select(db.settingsRevisions).getSingle();
-    final pointer = await db.select(db.appSettings).getSingle();
-    final diagnostics = await db.diagnostics();
+  test(
+    'schema version 4 installs typed immutable operational settings',
+    () async {
+      final settings = await db.select(db.settingsRevisions).getSingle();
+      final pointer = await db.select(db.appSettings).getSingle();
+      final entries = await db.select(db.settingsRevisionEntries).get();
+      final diagnostics = await db.diagnostics();
 
-    expect(db.schemaVersion, 3);
-    expect(settings.revisionId, 'settings-v1');
-    expect(settings.retryLimit, 2);
-    expect(settings.paymentCompleteDurationSeconds, 4);
-    expect(settings.customerAutoReset, isTrue);
-    expect(settings.evidenceRetentionDays, 90);
-    expect(settings.locale, 'ko-KR');
-    expect(settings.kioskDisplayName, 'BIXOLON Bakery');
-    expect(settings.adminAuthorLabel, 'prototype-admin');
-    expect(pointer.activeSettingsRevisionId, 'settings-v1');
-    expect(diagnostics.schemaVersion, 3);
-    expect(diagnostics.applicationVersion, '1.1.0+4');
-    expect(diagnostics.lastMigrationResult, 'created_schema_v3');
-  });
+      expect(db.schemaVersion, 4);
+      expect(settings.revisionId, 'settings-v1');
+      expect(settings.retryLimit, 2);
+      expect(settings.paymentCompleteDurationSeconds, 4);
+      expect(settings.customerAutoReset, isTrue);
+      expect(settings.evidenceRetentionDays, 90);
+      expect(settings.locale, 'ko-KR');
+      expect(settings.kioskDisplayName, 'BIXOLON Bakery');
+      expect(settings.adminAuthorLabel, 'prototype-admin');
+      expect(pointer.activeSettingsRevisionId, 'settings-v1');
+      expect(entries, hasLength(7));
+      expect(entries.map((entry) => entry.settingKey), contains('retry_limit'));
+      expect(diagnostics.schemaVersion, 4);
+      expect(diagnostics.applicationVersion, '1.1.0+4');
+      expect(diagnostics.lastMigrationResult, 'created_schema_v4');
+    },
+  );
 
   test(
     'schema version 1 upgrades checkout history without rewriting it',
@@ -111,7 +117,7 @@ void main() {
       );
       expect(
         (await upgraded.diagnostics()).lastMigrationResult,
-        'migrated_1_to_3',
+        'migrated_1_to_4',
       );
     },
   );
@@ -267,7 +273,7 @@ INSERT INTO admin_review_annotations (
       );
       expect(
         (await upgraded.diagnostics()).lastMigrationResult,
-        'migrated_2_to_3',
+        'migrated_2_to_4',
       );
     },
   );
@@ -393,7 +399,7 @@ INSERT INTO admin_review_annotations (
     });
     final original = BakeryDatabase(NativeDatabase(file));
     await original.select(original.appSettings).getSingle();
-    await original.customStatement('PRAGMA user_version = 4');
+    await original.customStatement('PRAGMA user_version = 5');
     await original.close();
     final newer = BakeryDatabase(NativeDatabase(file));
     addTearDown(newer.close);

@@ -11412,6 +11412,455 @@ class AdminReviewAnnotationsCompanion
   }
 }
 
+class $SettingsRevisionEntriesTable extends SettingsRevisionEntries
+    with TableInfo<$SettingsRevisionEntriesTable, SettingsRevisionEntryRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $SettingsRevisionEntriesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _revisionIdMeta = const VerificationMeta(
+    'revisionId',
+  );
+  @override
+  late final GeneratedColumn<String> revisionId = GeneratedColumn<String>(
+    'revision_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES settings_revisions (revision_id)',
+    ),
+  );
+  static const VerificationMeta _settingKeyMeta = const VerificationMeta(
+    'settingKey',
+  );
+  @override
+  late final GeneratedColumn<String> settingKey = GeneratedColumn<String>(
+    'setting_key',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _valueTypeMeta = const VerificationMeta(
+    'valueType',
+  );
+  @override
+  late final GeneratedColumn<String> valueType = GeneratedColumn<String>(
+    'value_type',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _valueJsonMeta = const VerificationMeta(
+    'valueJson',
+  );
+  @override
+  late final GeneratedColumn<String> valueJson = GeneratedColumn<String>(
+    'value_json',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtUsMeta = const VerificationMeta(
+    'updatedAtUs',
+  );
+  @override
+  late final GeneratedColumn<int> updatedAtUs = GeneratedColumn<int>(
+    'updated_at_us',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _authorLabelMeta = const VerificationMeta(
+    'authorLabel',
+  );
+  @override
+  late final GeneratedColumn<String> authorLabel = GeneratedColumn<String>(
+    'author_label',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(minTextLength: 1),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    revisionId,
+    settingKey,
+    valueType,
+    valueJson,
+    updatedAtUs,
+    authorLabel,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'settings_revision_entries';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<SettingsRevisionEntryRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('revision_id')) {
+      context.handle(
+        _revisionIdMeta,
+        revisionId.isAcceptableOrUnknown(data['revision_id']!, _revisionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_revisionIdMeta);
+    }
+    if (data.containsKey('setting_key')) {
+      context.handle(
+        _settingKeyMeta,
+        settingKey.isAcceptableOrUnknown(data['setting_key']!, _settingKeyMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_settingKeyMeta);
+    }
+    if (data.containsKey('value_type')) {
+      context.handle(
+        _valueTypeMeta,
+        valueType.isAcceptableOrUnknown(data['value_type']!, _valueTypeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_valueTypeMeta);
+    }
+    if (data.containsKey('value_json')) {
+      context.handle(
+        _valueJsonMeta,
+        valueJson.isAcceptableOrUnknown(data['value_json']!, _valueJsonMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_valueJsonMeta);
+    }
+    if (data.containsKey('updated_at_us')) {
+      context.handle(
+        _updatedAtUsMeta,
+        updatedAtUs.isAcceptableOrUnknown(
+          data['updated_at_us']!,
+          _updatedAtUsMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtUsMeta);
+    }
+    if (data.containsKey('author_label')) {
+      context.handle(
+        _authorLabelMeta,
+        authorLabel.isAcceptableOrUnknown(
+          data['author_label']!,
+          _authorLabelMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_authorLabelMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {revisionId, settingKey};
+  @override
+  SettingsRevisionEntryRow map(
+    Map<String, dynamic> data, {
+    String? tablePrefix,
+  }) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return SettingsRevisionEntryRow(
+      revisionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}revision_id'],
+      )!,
+      settingKey: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}setting_key'],
+      )!,
+      valueType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}value_type'],
+      )!,
+      valueJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}value_json'],
+      )!,
+      updatedAtUs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}updated_at_us'],
+      )!,
+      authorLabel: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}author_label'],
+      )!,
+    );
+  }
+
+  @override
+  $SettingsRevisionEntriesTable createAlias(String alias) {
+    return $SettingsRevisionEntriesTable(attachedDatabase, alias);
+  }
+}
+
+class SettingsRevisionEntryRow extends DataClass
+    implements Insertable<SettingsRevisionEntryRow> {
+  final String revisionId;
+  final String settingKey;
+  final String valueType;
+  final String valueJson;
+  final int updatedAtUs;
+  final String authorLabel;
+  const SettingsRevisionEntryRow({
+    required this.revisionId,
+    required this.settingKey,
+    required this.valueType,
+    required this.valueJson,
+    required this.updatedAtUs,
+    required this.authorLabel,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['revision_id'] = Variable<String>(revisionId);
+    map['setting_key'] = Variable<String>(settingKey);
+    map['value_type'] = Variable<String>(valueType);
+    map['value_json'] = Variable<String>(valueJson);
+    map['updated_at_us'] = Variable<int>(updatedAtUs);
+    map['author_label'] = Variable<String>(authorLabel);
+    return map;
+  }
+
+  SettingsRevisionEntriesCompanion toCompanion(bool nullToAbsent) {
+    return SettingsRevisionEntriesCompanion(
+      revisionId: Value(revisionId),
+      settingKey: Value(settingKey),
+      valueType: Value(valueType),
+      valueJson: Value(valueJson),
+      updatedAtUs: Value(updatedAtUs),
+      authorLabel: Value(authorLabel),
+    );
+  }
+
+  factory SettingsRevisionEntryRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return SettingsRevisionEntryRow(
+      revisionId: serializer.fromJson<String>(json['revisionId']),
+      settingKey: serializer.fromJson<String>(json['settingKey']),
+      valueType: serializer.fromJson<String>(json['valueType']),
+      valueJson: serializer.fromJson<String>(json['valueJson']),
+      updatedAtUs: serializer.fromJson<int>(json['updatedAtUs']),
+      authorLabel: serializer.fromJson<String>(json['authorLabel']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'revisionId': serializer.toJson<String>(revisionId),
+      'settingKey': serializer.toJson<String>(settingKey),
+      'valueType': serializer.toJson<String>(valueType),
+      'valueJson': serializer.toJson<String>(valueJson),
+      'updatedAtUs': serializer.toJson<int>(updatedAtUs),
+      'authorLabel': serializer.toJson<String>(authorLabel),
+    };
+  }
+
+  SettingsRevisionEntryRow copyWith({
+    String? revisionId,
+    String? settingKey,
+    String? valueType,
+    String? valueJson,
+    int? updatedAtUs,
+    String? authorLabel,
+  }) => SettingsRevisionEntryRow(
+    revisionId: revisionId ?? this.revisionId,
+    settingKey: settingKey ?? this.settingKey,
+    valueType: valueType ?? this.valueType,
+    valueJson: valueJson ?? this.valueJson,
+    updatedAtUs: updatedAtUs ?? this.updatedAtUs,
+    authorLabel: authorLabel ?? this.authorLabel,
+  );
+  SettingsRevisionEntryRow copyWithCompanion(
+    SettingsRevisionEntriesCompanion data,
+  ) {
+    return SettingsRevisionEntryRow(
+      revisionId: data.revisionId.present
+          ? data.revisionId.value
+          : this.revisionId,
+      settingKey: data.settingKey.present
+          ? data.settingKey.value
+          : this.settingKey,
+      valueType: data.valueType.present ? data.valueType.value : this.valueType,
+      valueJson: data.valueJson.present ? data.valueJson.value : this.valueJson,
+      updatedAtUs: data.updatedAtUs.present
+          ? data.updatedAtUs.value
+          : this.updatedAtUs,
+      authorLabel: data.authorLabel.present
+          ? data.authorLabel.value
+          : this.authorLabel,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SettingsRevisionEntryRow(')
+          ..write('revisionId: $revisionId, ')
+          ..write('settingKey: $settingKey, ')
+          ..write('valueType: $valueType, ')
+          ..write('valueJson: $valueJson, ')
+          ..write('updatedAtUs: $updatedAtUs, ')
+          ..write('authorLabel: $authorLabel')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    revisionId,
+    settingKey,
+    valueType,
+    valueJson,
+    updatedAtUs,
+    authorLabel,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is SettingsRevisionEntryRow &&
+          other.revisionId == this.revisionId &&
+          other.settingKey == this.settingKey &&
+          other.valueType == this.valueType &&
+          other.valueJson == this.valueJson &&
+          other.updatedAtUs == this.updatedAtUs &&
+          other.authorLabel == this.authorLabel);
+}
+
+class SettingsRevisionEntriesCompanion
+    extends UpdateCompanion<SettingsRevisionEntryRow> {
+  final Value<String> revisionId;
+  final Value<String> settingKey;
+  final Value<String> valueType;
+  final Value<String> valueJson;
+  final Value<int> updatedAtUs;
+  final Value<String> authorLabel;
+  final Value<int> rowid;
+  const SettingsRevisionEntriesCompanion({
+    this.revisionId = const Value.absent(),
+    this.settingKey = const Value.absent(),
+    this.valueType = const Value.absent(),
+    this.valueJson = const Value.absent(),
+    this.updatedAtUs = const Value.absent(),
+    this.authorLabel = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  SettingsRevisionEntriesCompanion.insert({
+    required String revisionId,
+    required String settingKey,
+    required String valueType,
+    required String valueJson,
+    required int updatedAtUs,
+    required String authorLabel,
+    this.rowid = const Value.absent(),
+  }) : revisionId = Value(revisionId),
+       settingKey = Value(settingKey),
+       valueType = Value(valueType),
+       valueJson = Value(valueJson),
+       updatedAtUs = Value(updatedAtUs),
+       authorLabel = Value(authorLabel);
+  static Insertable<SettingsRevisionEntryRow> custom({
+    Expression<String>? revisionId,
+    Expression<String>? settingKey,
+    Expression<String>? valueType,
+    Expression<String>? valueJson,
+    Expression<int>? updatedAtUs,
+    Expression<String>? authorLabel,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (revisionId != null) 'revision_id': revisionId,
+      if (settingKey != null) 'setting_key': settingKey,
+      if (valueType != null) 'value_type': valueType,
+      if (valueJson != null) 'value_json': valueJson,
+      if (updatedAtUs != null) 'updated_at_us': updatedAtUs,
+      if (authorLabel != null) 'author_label': authorLabel,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  SettingsRevisionEntriesCompanion copyWith({
+    Value<String>? revisionId,
+    Value<String>? settingKey,
+    Value<String>? valueType,
+    Value<String>? valueJson,
+    Value<int>? updatedAtUs,
+    Value<String>? authorLabel,
+    Value<int>? rowid,
+  }) {
+    return SettingsRevisionEntriesCompanion(
+      revisionId: revisionId ?? this.revisionId,
+      settingKey: settingKey ?? this.settingKey,
+      valueType: valueType ?? this.valueType,
+      valueJson: valueJson ?? this.valueJson,
+      updatedAtUs: updatedAtUs ?? this.updatedAtUs,
+      authorLabel: authorLabel ?? this.authorLabel,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (revisionId.present) {
+      map['revision_id'] = Variable<String>(revisionId.value);
+    }
+    if (settingKey.present) {
+      map['setting_key'] = Variable<String>(settingKey.value);
+    }
+    if (valueType.present) {
+      map['value_type'] = Variable<String>(valueType.value);
+    }
+    if (valueJson.present) {
+      map['value_json'] = Variable<String>(valueJson.value);
+    }
+    if (updatedAtUs.present) {
+      map['updated_at_us'] = Variable<int>(updatedAtUs.value);
+    }
+    if (authorLabel.present) {
+      map['author_label'] = Variable<String>(authorLabel.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SettingsRevisionEntriesCompanion(')
+          ..write('revisionId: $revisionId, ')
+          ..write('settingKey: $settingKey, ')
+          ..write('valueType: $valueType, ')
+          ..write('valueJson: $valueJson, ')
+          ..write('updatedAtUs: $updatedAtUs, ')
+          ..write('authorLabel: $authorLabel, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$BakeryDatabase extends GeneratedDatabase {
   _$BakeryDatabase(QueryExecutor e) : super(e);
   $BakeryDatabaseManager get managers => $BakeryDatabaseManager(this);
@@ -11448,6 +11897,8 @@ abstract class _$BakeryDatabase extends GeneratedDatabase {
   );
   late final $AdminReviewAnnotationsTable adminReviewAnnotations =
       $AdminReviewAnnotationsTable(this);
+  late final $SettingsRevisionEntriesTable settingsRevisionEntries =
+      $SettingsRevisionEntriesTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -11469,6 +11920,7 @@ abstract class _$BakeryDatabase extends GeneratedDatabase {
     appSettings,
     retentionEvents,
     adminReviewAnnotations,
+    settingsRevisionEntries,
   ];
 }
 
@@ -12891,6 +13343,38 @@ final class $$SettingsRevisionsTableReferences
       manager.$state.copyWith(prefetchedData: cache),
     );
   }
+
+  static MultiTypedResultKey<
+    $SettingsRevisionEntriesTable,
+    List<SettingsRevisionEntryRow>
+  >
+  _settingsRevisionEntriesRefsTable(
+    _$BakeryDatabase db,
+  ) => MultiTypedResultKey.fromTable(
+    db.settingsRevisionEntries,
+    aliasName:
+        'settings_revisions__revision_id__settings_revision_entries__revision_id',
+  );
+
+  $$SettingsRevisionEntriesTableProcessedTableManager
+  get settingsRevisionEntriesRefs {
+    final manager =
+        $$SettingsRevisionEntriesTableTableManager(
+          $_db,
+          $_db.settingsRevisionEntries,
+        ).filter(
+          (f) => f.revisionId.revisionId.sqlEquals(
+            $_itemColumn<String>('revision_id')!,
+          ),
+        );
+
+    final cache = $_typedResult.readTableOrNull(
+      _settingsRevisionEntriesRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
 }
 
 class $$SettingsRevisionsTableFilterComposer
@@ -12994,6 +13478,32 @@ class $$SettingsRevisionsTableFilterComposer
                 $removeJoinBuilderFromRootComposer,
           ),
     );
+    return f(composer);
+  }
+
+  Expression<bool> settingsRevisionEntriesRefs(
+    Expression<bool> Function($$SettingsRevisionEntriesTableFilterComposer f) f,
+  ) {
+    final $$SettingsRevisionEntriesTableFilterComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.revisionId,
+          referencedTable: $db.settingsRevisionEntries,
+          getReferencedColumn: (t) => t.revisionId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$SettingsRevisionEntriesTableFilterComposer(
+                $db: $db,
+                $table: $db.settingsRevisionEntries,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
     return f(composer);
   }
 }
@@ -13154,6 +13664,33 @@ class $$SettingsRevisionsTableAnnotationComposer
     );
     return f(composer);
   }
+
+  Expression<T> settingsRevisionEntriesRefs<T extends Object>(
+    Expression<T> Function($$SettingsRevisionEntriesTableAnnotationComposer a)
+    f,
+  ) {
+    final $$SettingsRevisionEntriesTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.revisionId,
+          referencedTable: $db.settingsRevisionEntries,
+          getReferencedColumn: (t) => t.revisionId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$SettingsRevisionEntriesTableAnnotationComposer(
+                $db: $db,
+                $table: $db.settingsRevisionEntries,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
 }
 
 class $$SettingsRevisionsTableTableManager
@@ -13172,6 +13709,7 @@ class $$SettingsRevisionsTableTableManager
           PrefetchHooks Function({
             bool checkoutSessionsRefs,
             bool appSettingsRefs,
+            bool settingsRevisionEntriesRefs,
           })
         > {
   $$SettingsRevisionsTableTableManager(
@@ -13248,12 +13786,17 @@ class $$SettingsRevisionsTableTableManager
               )
               .toList(),
           prefetchHooksCallback:
-              ({checkoutSessionsRefs = false, appSettingsRefs = false}) {
+              ({
+                checkoutSessionsRefs = false,
+                appSettingsRefs = false,
+                settingsRevisionEntriesRefs = false,
+              }) {
                 return PrefetchHooks(
                   db: db,
                   explicitlyWatchedTables: [
                     if (checkoutSessionsRefs) db.checkoutSessions,
                     if (appSettingsRefs) db.appSettings,
+                    if (settingsRevisionEntriesRefs) db.settingsRevisionEntries,
                   ],
                   addJoins: null,
                   getPrefetchedDataCallback: (items) async {
@@ -13302,6 +13845,27 @@ class $$SettingsRevisionsTableTableManager
                               ),
                           typedResults: items,
                         ),
+                      if (settingsRevisionEntriesRefs)
+                        await $_getPrefetchedData<
+                          SettingsRevisionRow,
+                          $SettingsRevisionsTable,
+                          SettingsRevisionEntryRow
+                        >(
+                          currentTable: table,
+                          referencedTable: $$SettingsRevisionsTableReferences
+                              ._settingsRevisionEntriesRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$SettingsRevisionsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).settingsRevisionEntriesRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.revisionId == item.revisionId,
+                              ),
+                          typedResults: items,
+                        ),
                     ];
                   },
                 );
@@ -13322,7 +13886,11 @@ typedef $$SettingsRevisionsTableProcessedTableManager =
       $$SettingsRevisionsTableUpdateCompanionBuilder,
       (SettingsRevisionRow, $$SettingsRevisionsTableReferences),
       SettingsRevisionRow,
-      PrefetchHooks Function({bool checkoutSessionsRefs, bool appSettingsRefs})
+      PrefetchHooks Function({
+        bool checkoutSessionsRefs,
+        bool appSettingsRefs,
+        bool settingsRevisionEntriesRefs,
+      })
     >;
 typedef $$CheckoutSessionsTableCreateCompanionBuilder =
     CheckoutSessionsCompanion Function({
@@ -21710,6 +22278,374 @@ typedef $$AdminReviewAnnotationsTableProcessedTableManager =
       AdminReviewAnnotationRow,
       PrefetchHooks Function({bool sessionId, bool attemptId, bool objectId})
     >;
+typedef $$SettingsRevisionEntriesTableCreateCompanionBuilder =
+    SettingsRevisionEntriesCompanion Function({
+      required String revisionId,
+      required String settingKey,
+      required String valueType,
+      required String valueJson,
+      required int updatedAtUs,
+      required String authorLabel,
+      Value<int> rowid,
+    });
+typedef $$SettingsRevisionEntriesTableUpdateCompanionBuilder =
+    SettingsRevisionEntriesCompanion Function({
+      Value<String> revisionId,
+      Value<String> settingKey,
+      Value<String> valueType,
+      Value<String> valueJson,
+      Value<int> updatedAtUs,
+      Value<String> authorLabel,
+      Value<int> rowid,
+    });
+
+final class $$SettingsRevisionEntriesTableReferences
+    extends
+        BaseReferences<
+          _$BakeryDatabase,
+          $SettingsRevisionEntriesTable,
+          SettingsRevisionEntryRow
+        > {
+  $$SettingsRevisionEntriesTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static $SettingsRevisionsTable _revisionIdTable(
+    _$BakeryDatabase db,
+  ) => db.settingsRevisions.createAlias(
+    'settings_revision_entries__revision_id__settings_revisions__revision_id',
+  );
+
+  $$SettingsRevisionsTableProcessedTableManager get revisionId {
+    final $_column = $_itemColumn<String>('revision_id')!;
+
+    final manager = $$SettingsRevisionsTableTableManager(
+      $_db,
+      $_db.settingsRevisions,
+    ).filter((f) => f.revisionId.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_revisionIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$SettingsRevisionEntriesTableFilterComposer
+    extends Composer<_$BakeryDatabase, $SettingsRevisionEntriesTable> {
+  $$SettingsRevisionEntriesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get settingKey => $composableBuilder(
+    column: $table.settingKey,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get valueType => $composableBuilder(
+    column: $table.valueType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get valueJson => $composableBuilder(
+    column: $table.valueJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get updatedAtUs => $composableBuilder(
+    column: $table.updatedAtUs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get authorLabel => $composableBuilder(
+    column: $table.authorLabel,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$SettingsRevisionsTableFilterComposer get revisionId {
+    final $$SettingsRevisionsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.revisionId,
+      referencedTable: $db.settingsRevisions,
+      getReferencedColumn: (t) => t.revisionId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SettingsRevisionsTableFilterComposer(
+            $db: $db,
+            $table: $db.settingsRevisions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$SettingsRevisionEntriesTableOrderingComposer
+    extends Composer<_$BakeryDatabase, $SettingsRevisionEntriesTable> {
+  $$SettingsRevisionEntriesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get settingKey => $composableBuilder(
+    column: $table.settingKey,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get valueType => $composableBuilder(
+    column: $table.valueType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get valueJson => $composableBuilder(
+    column: $table.valueJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get updatedAtUs => $composableBuilder(
+    column: $table.updatedAtUs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get authorLabel => $composableBuilder(
+    column: $table.authorLabel,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$SettingsRevisionsTableOrderingComposer get revisionId {
+    final $$SettingsRevisionsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.revisionId,
+      referencedTable: $db.settingsRevisions,
+      getReferencedColumn: (t) => t.revisionId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SettingsRevisionsTableOrderingComposer(
+            $db: $db,
+            $table: $db.settingsRevisions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$SettingsRevisionEntriesTableAnnotationComposer
+    extends Composer<_$BakeryDatabase, $SettingsRevisionEntriesTable> {
+  $$SettingsRevisionEntriesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get settingKey => $composableBuilder(
+    column: $table.settingKey,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get valueType =>
+      $composableBuilder(column: $table.valueType, builder: (column) => column);
+
+  GeneratedColumn<String> get valueJson =>
+      $composableBuilder(column: $table.valueJson, builder: (column) => column);
+
+  GeneratedColumn<int> get updatedAtUs => $composableBuilder(
+    column: $table.updatedAtUs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get authorLabel => $composableBuilder(
+    column: $table.authorLabel,
+    builder: (column) => column,
+  );
+
+  $$SettingsRevisionsTableAnnotationComposer get revisionId {
+    final $$SettingsRevisionsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.revisionId,
+          referencedTable: $db.settingsRevisions,
+          getReferencedColumn: (t) => t.revisionId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$SettingsRevisionsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.settingsRevisions,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return composer;
+  }
+}
+
+class $$SettingsRevisionEntriesTableTableManager
+    extends
+        RootTableManager<
+          _$BakeryDatabase,
+          $SettingsRevisionEntriesTable,
+          SettingsRevisionEntryRow,
+          $$SettingsRevisionEntriesTableFilterComposer,
+          $$SettingsRevisionEntriesTableOrderingComposer,
+          $$SettingsRevisionEntriesTableAnnotationComposer,
+          $$SettingsRevisionEntriesTableCreateCompanionBuilder,
+          $$SettingsRevisionEntriesTableUpdateCompanionBuilder,
+          (SettingsRevisionEntryRow, $$SettingsRevisionEntriesTableReferences),
+          SettingsRevisionEntryRow,
+          PrefetchHooks Function({bool revisionId})
+        > {
+  $$SettingsRevisionEntriesTableTableManager(
+    _$BakeryDatabase db,
+    $SettingsRevisionEntriesTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$SettingsRevisionEntriesTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$SettingsRevisionEntriesTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$SettingsRevisionEntriesTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> revisionId = const Value.absent(),
+                Value<String> settingKey = const Value.absent(),
+                Value<String> valueType = const Value.absent(),
+                Value<String> valueJson = const Value.absent(),
+                Value<int> updatedAtUs = const Value.absent(),
+                Value<String> authorLabel = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => SettingsRevisionEntriesCompanion(
+                revisionId: revisionId,
+                settingKey: settingKey,
+                valueType: valueType,
+                valueJson: valueJson,
+                updatedAtUs: updatedAtUs,
+                authorLabel: authorLabel,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String revisionId,
+                required String settingKey,
+                required String valueType,
+                required String valueJson,
+                required int updatedAtUs,
+                required String authorLabel,
+                Value<int> rowid = const Value.absent(),
+              }) => SettingsRevisionEntriesCompanion.insert(
+                revisionId: revisionId,
+                settingKey: settingKey,
+                valueType: valueType,
+                valueJson: valueJson,
+                updatedAtUs: updatedAtUs,
+                authorLabel: authorLabel,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$SettingsRevisionEntriesTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({revisionId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (revisionId) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.revisionId,
+                                referencedTable:
+                                    $$SettingsRevisionEntriesTableReferences
+                                        ._revisionIdTable(db),
+                                referencedColumn:
+                                    $$SettingsRevisionEntriesTableReferences
+                                        ._revisionIdTable(db)
+                                        .revisionId,
+                              )
+                              as T;
+                    }
+
+                    return state;
+                  },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$SettingsRevisionEntriesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$BakeryDatabase,
+      $SettingsRevisionEntriesTable,
+      SettingsRevisionEntryRow,
+      $$SettingsRevisionEntriesTableFilterComposer,
+      $$SettingsRevisionEntriesTableOrderingComposer,
+      $$SettingsRevisionEntriesTableAnnotationComposer,
+      $$SettingsRevisionEntriesTableCreateCompanionBuilder,
+      $$SettingsRevisionEntriesTableUpdateCompanionBuilder,
+      (SettingsRevisionEntryRow, $$SettingsRevisionEntriesTableReferences),
+      SettingsRevisionEntryRow,
+      PrefetchHooks Function({bool revisionId})
+    >;
 
 class $BakeryDatabaseManager {
   final _$BakeryDatabase _db;
@@ -21748,5 +22684,10 @@ class $BakeryDatabaseManager {
       $$AdminReviewAnnotationsTableTableManager(
         _db,
         _db.adminReviewAnnotations,
+      );
+  $$SettingsRevisionEntriesTableTableManager get settingsRevisionEntries =>
+      $$SettingsRevisionEntriesTableTableManager(
+        _db,
+        _db.settingsRevisionEntries,
       );
 }

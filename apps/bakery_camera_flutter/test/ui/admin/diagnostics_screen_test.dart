@@ -118,8 +118,8 @@ const _snapshot = DiagnosticsSnapshot(
     ),
   ),
   storage: DiagnosticsStorageStatus(
-    schemaVersion: 3,
-    migrationStatus: 'schema 3 ready',
+    schemaVersion: 4,
+    migrationStatus: 'schema 4 ready',
     auditRoot: 'C:/audit',
     persistenceReady: true,
     activeCatalogRevisionId: 'catalog-v2',

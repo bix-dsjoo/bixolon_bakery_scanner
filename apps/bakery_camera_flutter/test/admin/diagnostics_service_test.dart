@@ -52,7 +52,7 @@ void main() {
       expect(snapshot.timing.configSha256, 'config-current');
       expect(snapshot.timing.conditionalDinoRate, 0.5);
       expect(snapshot.timing.total.p50Ms, 180);
-      expect(snapshot.storage.schemaVersion, 3);
+      expect(snapshot.storage.schemaVersion, 4);
       expect(snapshot.storage.activeCatalogRevisionId, 'catalog-v2');
     },
   );
@@ -338,8 +338,8 @@ final class _FakeDiagnosticsAuditReader implements DiagnosticsAuditReader {
   @override
   Future<DiagnosticsStorageStatus> storageStatus() async =>
       const DiagnosticsStorageStatus(
-        schemaVersion: 3,
-        migrationStatus: 'schema 3 ready',
+        schemaVersion: 4,
+        migrationStatus: 'schema 4 ready',
         auditRoot: 'C:/audit',
         persistenceReady: true,
         activeCatalogRevisionId: 'catalog-v2',
@@ -377,8 +377,8 @@ final class _EmptyDiagnosticsAuditReader implements DiagnosticsAuditReader {
   @override
   Future<DiagnosticsStorageStatus> storageStatus() async =>
       const DiagnosticsStorageStatus(
-        schemaVersion: 3,
-        migrationStatus: 'schema 3 ready',
+        schemaVersion: 4,
+        migrationStatus: 'schema 4 ready',
         auditRoot: 'C:/audit',
         persistenceReady: true,
         activeCatalogRevisionId: 'catalog-v2',

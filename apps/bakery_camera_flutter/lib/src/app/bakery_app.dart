@@ -11,8 +11,10 @@ import 'package:uuid/uuid.dart';
 import '../admin/admin_models.dart';
 import '../admin/diagnostics_models.dart';
 import '../admin/diagnostics_service.dart';
+import '../admin/retention_service.dart';
 import '../admin/review_service.dart';
 import '../admin/product_management_service.dart';
+import '../admin/settings_service.dart';
 import '../audit/audit_file_store.dart';
 import '../camera/camera_service.dart';
 import '../catalog/catalog_seed.dart';
@@ -35,6 +37,7 @@ import '../ui/admin/diagnostics_screen.dart';
 import '../ui/admin/transaction_history_screen.dart';
 import '../ui/admin/review_inbox_screen.dart';
 import '../ui/admin/product_management_screen.dart';
+import '../ui/admin/settings_screen.dart';
 import 'app_mode_controller.dart';
 import 'app_mode_surface.dart';
 
@@ -79,6 +82,8 @@ class _BakeryAppState extends State<BakeryApp> {
                   services.reviews,
                   services.products,
                   services.diagnostics,
+                  services.settings,
+                  services.retention,
                   onAttention,
                 ),
           );
@@ -182,6 +187,18 @@ class _BakeryAppState extends State<BakeryApp> {
           ),
         ),
         diagnostics: diagnostics,
+        settings: SettingsService(
+          database: database,
+          createId: () => const Uuid().v4(),
+          now: DateTime.now,
+        ),
+        retention: RetentionService(
+          database: database,
+          evidenceRoot: Directory(auditFiles.rootPath),
+          createId: () => const Uuid().v4(),
+          now: DateTime.now,
+          isSafeToRun: () => !controller.hasActiveCustomerCheckout,
+        ),
       );
     } catch (_) {
       await database.close();
@@ -196,6 +213,8 @@ class _BakeryAppState extends State<BakeryApp> {
     DatabaseReviewService reviews,
     ProductManagementService products,
     DiagnosticsService diagnostics,
+    SettingsService settings,
+    RetentionService retention,
     ValueChanged<AttentionItem> onAttentionSelected,
   ) {
     if (destination == AdminDestination.dashboard) {
@@ -216,6 +235,9 @@ class _BakeryAppState extends State<BakeryApp> {
     }
     if (destination == AdminDestination.diagnostics) {
       return DiagnosticsScreen(load: diagnostics.refresh);
+    }
+    if (destination == AdminDestination.settings) {
+      return SettingsScreen(settings: settings, retention: retention);
     }
     return Center(
       child: Text(
@@ -259,6 +281,8 @@ final class _AppServices {
     required this.reviews,
     required this.products,
     required this.diagnostics,
+    required this.settings,
+    required this.retention,
   });
 
   final CheckoutController checkout;
@@ -266,6 +290,8 @@ final class _AppServices {
   final DatabaseReviewService reviews;
   final ProductManagementService products;
   final DiagnosticsService diagnostics;
+  final SettingsService settings;
+  final RetentionService retention;
 }
 
 DiagnosticsLiveState _diagnosticsLiveState(
