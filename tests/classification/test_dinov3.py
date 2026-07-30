@@ -443,6 +443,20 @@ def test_load_canonicalizes_default_cuda_device(monkeypatch, tmp_path):
         lambda **kwargs: encoder,
     )
 
+    def record_initialization(
+        self,
+        loaded_encoder,
+        _prototypes,
+        _sku_ids,
+        _transform,
+        _model_id,
+        device,
+    ):
+        self.encoder = loaded_encoder
+        self.device = device
+
+    monkeypatch.setattr(DinoV3Rechecker, "__init__", record_initialization)
+
     runner = DinoV3Rechecker.load(config)
 
     assert runner.device == torch.device("cuda:0")

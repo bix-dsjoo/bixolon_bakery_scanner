@@ -24,6 +24,7 @@ jobs:
       - run: python -m pip install --no-deps -e ./dino
       - run: python -m bakery_scanner.artifacts.cli --manifest-only
       - run: python -m pytest
+        shell: powershell
 
   flutter:
     runs-on: windows-latest

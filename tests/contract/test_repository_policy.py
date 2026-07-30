@@ -141,3 +141,4 @@ def test_ci_installs_the_vendored_dinov3_package_before_pytest():
     pytest = "python -m pytest"
     assert install in workflow
     assert workflow.index(install) < workflow.index(pytest)
+    assert "- run: python -m pytest\n        shell: powershell" in workflow
