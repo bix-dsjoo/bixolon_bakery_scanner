@@ -24,6 +24,7 @@ import '../scanner/scanner_controller.dart';
 import '../ui/app_theme.dart';
 import '../ui/admin/admin_destination.dart';
 import '../ui/admin/dashboard_screen.dart';
+import '../ui/admin/transaction_history_screen.dart';
 import 'app_mode_controller.dart';
 import 'app_mode_surface.dart';
 
@@ -124,7 +125,23 @@ class _BakeryAppState extends State<BakeryApp> {
       await controller.initialize();
       return _AppServices(
         checkout: controller,
-        admin: DatabaseAdminRepository(database),
+        admin: DatabaseAdminRepository(
+          database,
+          verifyEvidence: (relativePath, sha256, byteSize) async {
+            try {
+              await auditFiles.verifyExisting(
+                relativePath: relativePath,
+                sha256: sha256,
+                byteSize: byteSize,
+              );
+              return AuditEvidenceIntegrity.retained;
+            } on StateError catch (error) {
+              return error.toString().contains('does not exist')
+                  ? AuditEvidenceIntegrity.missing
+                  : AuditEvidenceIntegrity.hashMismatch;
+            }
+          },
+        ),
       );
     } catch (_) {
       await database.close();
@@ -144,6 +161,9 @@ class _BakeryAppState extends State<BakeryApp> {
         range: _seoulTodayRange(),
         onAttentionSelected: onAttentionSelected,
       );
+    }
+    if (destination == AdminDestination.transactions) {
+      return TransactionHistoryScreen(repository: admin);
     }
     return Center(
       child: Text(

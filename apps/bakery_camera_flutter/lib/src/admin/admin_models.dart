@@ -95,3 +95,301 @@ final class AttentionItem {
   final DateTime occurredAt;
   final String label;
 }
+
+enum TransactionPaymentStatus { any, completed, unpaid }
+
+/// Explicit search constraints over immutable checkout records. A null boolean
+/// does not constrain the corresponding audited condition.
+final class TransactionFilter {
+  const TransactionFilter({
+    this.dateRange,
+    this.sessionQuery,
+    this.paymentStatus = TransactionPaymentStatus.any,
+    this.resolutionSource,
+    this.requiresUnknown,
+    this.requiresRetake,
+    this.requiresFailure,
+  });
+
+  final DateRange? dateRange;
+  final String? sessionQuery;
+  final TransactionPaymentStatus paymentStatus;
+  final String? resolutionSource;
+  final bool? requiresUnknown;
+  final bool? requiresRetake;
+  final bool? requiresFailure;
+}
+
+/// A compound cursor prevents duplicate or skipped records sharing a timestamp.
+final class PageCursor {
+  const PageCursor({required this.startedAt, required this.sessionId});
+
+  final DateTime startedAt;
+  final String sessionId;
+}
+
+final class TransactionPage {
+  TransactionPage({required List<TransactionListItem> items, this.nextCursor})
+    : items = List.unmodifiable(items);
+
+  final List<TransactionListItem> items;
+  final PageCursor? nextCursor;
+}
+
+final class TransactionListItem {
+  TransactionListItem({
+    required this.sessionId,
+    required this.startedAt,
+    required this.terminalState,
+    required this.breadCount,
+    required this.finalAmountKrw,
+    required this.scanAttemptCount,
+    required List<String> resolutionSources,
+    required this.hasUnknown,
+    required this.hasRetake,
+    required this.hasFailure,
+  }) : resolutionSources = List.unmodifiable(resolutionSources);
+
+  final String sessionId;
+  final DateTime startedAt;
+  final String terminalState;
+  final int breadCount;
+  final int? finalAmountKrw;
+  final int scanAttemptCount;
+  final List<String> resolutionSources;
+  final bool hasUnknown;
+  final bool hasRetake;
+  final bool hasFailure;
+}
+
+enum AuditEvidenceIntegrity { unverified, retained, missing, hashMismatch }
+
+final class AdminEvidenceReference {
+  const AdminEvidenceReference({
+    required this.relativePath,
+    required this.sha256,
+    required this.byteSize,
+    required this.integrity,
+  });
+
+  final String relativePath;
+  final String sha256;
+  final int byteSize;
+  final AuditEvidenceIntegrity integrity;
+}
+
+final class AdminInferenceCandidate {
+  const AdminInferenceCandidate({
+    required this.rank,
+    required this.skuId,
+    required this.skuName,
+    required this.score,
+  });
+
+  final int rank;
+  final int skuId;
+  final String skuName;
+  final double score;
+}
+
+final class AdminInferenceObject {
+  AdminInferenceObject({
+    required this.objectId,
+    required this.skuId,
+    required this.skuName,
+    required this.boxJson,
+    required this.confidence,
+    required this.decisionPath,
+    required this.detectorSource,
+    required this.detectorScore,
+    required List<AdminInferenceCandidate> candidates,
+    required this.unknownReason,
+  }) : candidates = List.unmodifiable(candidates);
+
+  final String objectId;
+  final int? skuId;
+  final String skuName;
+  final String boxJson;
+  final double confidence;
+  final String decisionPath;
+  final String detectorSource;
+  final double detectorScore;
+  final List<AdminInferenceCandidate> candidates;
+  final String? unknownReason;
+}
+
+final class AdminObjectResolution {
+  const AdminObjectResolution({
+    required this.resolutionId,
+    required this.inferenceObjectId,
+    required this.productId,
+    required this.productName,
+    required this.recognitionSkuId,
+    required this.unitPriceKrw,
+    required this.source,
+    required this.resolvedAt,
+    required this.candidateRank,
+    required this.canonicalBoxJson,
+    required this.isCurrent,
+  });
+
+  final String resolutionId;
+  final String? inferenceObjectId;
+  final String productId;
+  final String productName;
+  final int? recognitionSkuId;
+  final int unitPriceKrw;
+  final String source;
+  final DateTime resolvedAt;
+  final int? candidateRank;
+  final String? canonicalBoxJson;
+  final bool isCurrent;
+}
+
+final class AdminScanAttempt {
+  AdminScanAttempt({
+    required this.attemptNumber,
+    required this.capturedAt,
+    required this.status,
+    required this.image,
+    required this.receipt,
+    required this.presentationState,
+    required this.retakeReason,
+    required Map<String, double?> timingsMs,
+    required List<AdminInferenceObject> objects,
+  }) : timingsMs = Map.unmodifiable(timingsMs),
+       objects = List.unmodifiable(objects);
+
+  final int attemptNumber;
+  final DateTime capturedAt;
+  final String status;
+  final AdminEvidenceReference image;
+  final AdminEvidenceReference? receipt;
+  final String? presentationState;
+  final String? retakeReason;
+  final Map<String, double?> timingsMs;
+  final List<AdminInferenceObject> objects;
+}
+
+final class AdminOrderLine {
+  const AdminOrderLine({
+    required this.productName,
+    required this.productId,
+    required this.recognitionSkuId,
+    required this.unitPriceKrw,
+    required this.quantity,
+    required this.lineAmountKrw,
+    required this.resolutionSource,
+  });
+
+  final String productName;
+  final String productId;
+  final int? recognitionSkuId;
+  final int unitPriceKrw;
+  final int quantity;
+  final int lineAmountKrw;
+  final String resolutionSource;
+}
+
+final class AdminFinalOrder {
+  AdminFinalOrder({
+    required this.orderId,
+    required this.createdAt,
+    required this.totalQuantity,
+    required this.totalAmountKrw,
+    required this.receipt,
+    required List<AdminOrderLine> lines,
+  }) : lines = List.unmodifiable(lines);
+
+  final String orderId;
+  final DateTime createdAt;
+  final int totalQuantity;
+  final int totalAmountKrw;
+  final AdminEvidenceReference receipt;
+  final List<AdminOrderLine> lines;
+}
+
+final class AdminPaymentSnapshot {
+  const AdminPaymentSnapshot({
+    required this.paymentId,
+    required this.amountKrw,
+    required this.provider,
+    required this.status,
+    required this.finalOrderSha256,
+    required this.paidAt,
+  });
+
+  final String paymentId;
+  final int amountKrw;
+  final String provider;
+  final String status;
+  final String finalOrderSha256;
+  final DateTime paidAt;
+}
+
+final class AdminArtifactSnapshot {
+  const AdminArtifactSnapshot({
+    required this.detectorId,
+    required this.detectorSha256,
+    required this.repvitArtifactId,
+    required this.repvitSha256,
+    required this.repvitManifestSha256,
+    required this.repvitPrototypeSha256,
+    required this.dinov3ArtifactId,
+    required this.dinov3Sha256,
+    required this.dinov3SupportSha256,
+    required this.calibrationId,
+    required this.calibrationSha256,
+    required this.preprocessSha256,
+    required this.fusionPolicyId,
+    required this.fusionPolicySha256,
+  });
+
+  final String detectorId;
+  final String detectorSha256;
+  final String repvitArtifactId;
+  final String repvitSha256;
+  final String repvitManifestSha256;
+  final String repvitPrototypeSha256;
+  final String dinov3ArtifactId;
+  final String dinov3Sha256;
+  final String dinov3SupportSha256;
+  final String calibrationId;
+  final String calibrationSha256;
+  final String preprocessSha256;
+  final String fusionPolicyId;
+  final String fusionPolicySha256;
+}
+
+final class AdminTransactionDetail {
+  AdminTransactionDetail({
+    required this.sessionId,
+    required this.startedAt,
+    required this.terminalAt,
+    required this.terminalState,
+    required this.terminalReason,
+    required this.catalogRevisionId,
+    required this.settingsRevisionId,
+    required this.artifacts,
+    required List<AdminScanAttempt> attempts,
+    required List<AdminObjectResolution> resolutions,
+    required this.order,
+    required this.payment,
+    required this.hasIntegrityWarning,
+  }) : attempts = List.unmodifiable(attempts),
+       resolutions = List.unmodifiable(resolutions);
+
+  final String sessionId;
+  final DateTime startedAt;
+  final DateTime? terminalAt;
+  final String terminalState;
+  final String? terminalReason;
+  final String catalogRevisionId;
+  final String settingsRevisionId;
+  final AdminArtifactSnapshot artifacts;
+  final List<AdminScanAttempt> attempts;
+  final List<AdminObjectResolution> resolutions;
+  final AdminFinalOrder? order;
+  final AdminPaymentSnapshot? payment;
+  final bool hasIntegrityWarning;
+}

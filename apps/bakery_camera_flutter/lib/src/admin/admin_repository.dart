@@ -7,3 +7,13 @@ abstract interface class AdminRepository {
 
   Future<List<AttentionItem>> recentAttentionItems({required int limit});
 }
+
+abstract interface class TransactionAuditRepository {
+  Future<TransactionPage> transactions(
+    TransactionFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  });
+
+  Future<AdminTransactionDetail> transactionDetail(String sessionId);
+}
