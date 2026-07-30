@@ -4,7 +4,7 @@ repvit:
   checkpoint: ../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt
   checkpoint_sha256: 0369c148c3b208ea41140cc220a6871367eaa8ed52b0cedfa97d39f4b2d76cfc
   manifest: ../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.manifest.json
-  manifest_sha256: f2bb1787295a76ee8b2bb049223557a87a88309038c963ea1617a3c7aacf1e56
+  manifest_sha256: cb0c8594c723461e11b7e8db8fffffe2d7249b0d5f3d07f3e5503ae040798d18
   prototype_bank: ../artifacts/e2e_current_source/classification/repvit_m1_15plus5_prototypes.pt
   prototype_bank_sha256: 2a970f99bda1ba1623a650b47a549de251680573c722a921ed3d999d5bbfdc77
 dinov3:
@@ -23,3 +23,5 @@ runtime:
   precision: FP32
 calibration:
   artifact: ../artifacts/e2e_current_source/classification/policy_fail_closed.json
+  fusion_policy: ../artifacts/e2e_current_source/classification/fusion_local_or_global_consensus_margin_v1_reference_rebound.json
+  fusion_policy_sha256: 06c692d5b35583bfd99498805da474b7e9dfa7c8c36eeed04307695f7e885dcc

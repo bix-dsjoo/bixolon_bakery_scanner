@@ -1,4 +1,6 @@
+import hashlib
 from dataclasses import replace
+from pathlib import Path
 
 from bakery_scanner.classification.full_evidence import FullEvidenceRow
 import pytest
@@ -6,6 +8,7 @@ import pytest
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact, validate_evidence_hashes
 from bakery_scanner.classification.fusion_ranker import FusionRanker
 from bakery_scanner.classification.risk_calibrator import RiskCalibrator
+from bakery_scanner.classification.config import ClassifierConfig
 
 
 def _artifact(
@@ -194,3 +197,17 @@ def test_fusion_policy_rejects_evidence_built_with_different_model_artifacts():
 
     with pytest.raises(ValueError, match="artifact hash"):
         validate_evidence_hashes((row,), expected)
+
+
+def test_checked_in_classifier_config_binds_the_schema_v3_fusion_policy():
+    root = Path(__file__).resolve().parents[2]
+    config = ClassifierConfig.load(root / "configs" / "classifier_policy.yaml")
+
+    assert config.calibration.fusion_policy is not None
+    assert config.calibration.fusion_policy_sha256 == hashlib.sha256(
+        config.calibration.fusion_policy.read_bytes()
+    ).hexdigest()
+    artifact = FusionPolicyArtifact.from_json_bytes(config.calibration.fusion_policy.read_bytes())
+    assert artifact.schema_version == 3
+    assert artifact.decision_rule == "fusion_local_or_global_consensus_margin_v1"
+    assert artifact.consensus_margin_floor == pytest.approx(0.85)

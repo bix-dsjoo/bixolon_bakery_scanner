@@ -118,8 +118,8 @@ def test_rebound_cpu_smoke_policy_changes_only_manifest_metadata(monkeypatch):
         if key not in {"calibration_id", "repvit_manifest_sha256"}
     }
 
-    with pytest.raises(ValueError, match="RepViT manifest SHA-256 mismatch"):
-        ClassifierPipeline.load(root / "configs" / "classifier_policy.yaml")
+    pipeline = ClassifierPipeline.load(root / "configs" / "classifier_policy.yaml")
+    assert pipeline.policy.calibration.repvit_manifest_sha256 == rebound["repvit_manifest_sha256"]
 
     monkeypatch.setattr(cpu_factory, "_validate_dfine_worker_imports", lambda assets: None)
     provenance = preflight_cpu_assets(CpuSmokeAssets.from_root(root))
