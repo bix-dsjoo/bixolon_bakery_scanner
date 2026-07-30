@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -9,6 +11,7 @@ import pytest
 from bakery_scanner.e2e.cpu_benchmark_coordinator import (
     BenchmarkCoordinationError,
     BenchmarkCoordinator,
+    _SpawnWorkerEndpoint,
 )
 from bakery_scanner.e2e.cpu_benchmark_protocol import (
     BenchmarkImageRow,
@@ -32,6 +35,7 @@ _DETECTOR_METADATA = (
     ("artifact_id", "rfdetr_large_bakery_v1"),
     ("score_threshold", 0.5),
     ("calibration_score_threshold", 0.5),
+    ("checkpoint_file", "checkpoint.pth"),
     ("manifest_sha256", "b" * 64),
     ("checkpoint_sha256", "c" * 64),
     ("calibration_sha256", "d" * 64),
@@ -115,6 +119,31 @@ def _metadata(spec: WorkerSpec) -> WorkerMetadata:
     )
 
 
+def _write_detector_manifest(root: Path, *, threshold: float) -> str:
+    manifest = {
+        "schema_version": 1,
+        "source_label": "rfdetr_large_bakery_v1",
+        "score_threshold": threshold,
+        "checkpoint": {
+            "file": "checkpoint.pth",
+            "sha256": "c" * 64,
+        },
+        "calibration": {
+            "file": "calibration.json",
+            "sha256": "d" * 64,
+        },
+    }
+    encoded = json.dumps(
+        manifest,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    directory = root / "models" / "rfdetr_large_bakery_v1"
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_bytes(encoded)
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _row(key: str) -> BenchmarkImageRow:
     return BenchmarkImageRow(
         key=key,
@@ -145,6 +174,7 @@ class FakeEndpoint:
         tracker=None,
         failure: str | None = None,
         survive_shutdown: bool = False,
+        actual_pid: int | None = None,
     ) -> None:
         self.spec = spec
         self.log = log
@@ -152,8 +182,10 @@ class FakeEndpoint:
         self.tracker = tracker
         self.failure = failure
         self.survive_shutdown = survive_shutdown
+        self._pid = actual_pid or self.metadata.pid
         self._alive = True
         self._exit_code = None
+        self.finalize_calls = 0
 
     def prepare(self, timeout_s: float) -> WorkerMetadata:
         self.log.append(("prepare", self.spec.role, timeout_s))
@@ -213,6 +245,14 @@ class FakeEndpoint:
         self._alive = False
         self._exit_code = -15
 
+    def finalize(self) -> None:
+        self.log.append(("finalize", self.spec.role))
+        self.finalize_calls += 1
+
+    @property
+    def pid(self) -> int:
+        return self._pid
+
     @property
     def is_alive(self) -> bool:
         return self._alive
@@ -246,6 +286,49 @@ class ConcurrencyTracker:
         self.active -= 1
 
 
+class RecordingHandle:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class DeadRecordingProcess:
+    def __init__(self) -> None:
+        self.pid = 707
+        self.exitcode = 9
+        self.start_calls = 0
+        self.join_calls = []
+        self.close_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def is_alive(self) -> bool:
+        return False
+
+    def join(self, timeout=None) -> None:
+        self.join_calls.append(timeout)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class DeadRecordingContext:
+    def __init__(self) -> None:
+        self.parent_connection = RecordingHandle()
+        self.child_connection = RecordingHandle()
+        self.process = DeadRecordingProcess()
+
+    def Pipe(self, *, duplex: bool):
+        assert duplex is True
+        return self.parent_connection, self.child_connection
+
+    def Process(self, **kwargs):
+        return self.process
+
+
 class TrackingFactory(FakeEndpointFactory):
     def __init__(self, tracker: ConcurrencyTracker) -> None:
         super().__init__([])
@@ -268,6 +351,15 @@ class FailingFactory(FakeEndpointFactory):
         return endpoint
 
 
+def _coordinator(**kwargs) -> BenchmarkCoordinator:
+    return BenchmarkCoordinator(
+        trusted_detector_metadata_loader=lambda spec: dict(
+            _DETECTOR_METADATA
+        ),
+        **kwargs,
+    )
+
+
 def _run(
     coordinator: BenchmarkCoordinator,
     *,
@@ -287,7 +379,7 @@ def _run(
 
 def test_coordinator_prepares_once_and_dispatches_three_alternating_passes():
     log: list[tuple] = []
-    coordinator = BenchmarkCoordinator(
+    coordinator = _coordinator(
         endpoint_factory=FakeEndpointFactory(log),
         ready_timeout_s=900.0,
         pass_timeout_s=7200.0,
@@ -313,7 +405,7 @@ def test_coordinator_prepares_once_and_dispatches_three_alternating_passes():
 
 def test_coordinator_never_has_two_measured_requests_in_flight():
     tracker = ConcurrencyTracker()
-    coordinator = BenchmarkCoordinator(endpoint_factory=TrackingFactory(tracker))
+    coordinator = _coordinator(endpoint_factory=TrackingFactory(tracker))
 
     _run(coordinator)
 
@@ -330,7 +422,21 @@ def test_coordinator_rejects_reusing_one_process_for_both_worker_roles():
             metadata=replace(_metadata(spec), pid=303),
         )
 
-    coordinator = BenchmarkCoordinator(endpoint_factory=factory)
+    coordinator = _coordinator(endpoint_factory=factory)
+
+    with pytest.raises(BenchmarkCoordinationError):
+        _run(coordinator)
+
+    assert not [entry for entry in log if entry[0] == "run"]
+
+
+def test_coordinator_binds_each_ready_pid_to_its_actual_endpoint_process():
+    log: list[tuple] = []
+
+    def factory(spec: WorkerSpec) -> FakeEndpoint:
+        return FakeEndpoint(spec, log, actual_pid=303)
+
+    coordinator = _coordinator(endpoint_factory=factory)
 
     with pytest.raises(BenchmarkCoordinationError):
         _run(coordinator)
@@ -343,7 +449,7 @@ def test_coordinator_rejects_reusing_one_process_for_both_worker_roles():
     ["ready_timeout", "pass_timeout", "worker_error", "broken_pipe", "bad_exit"],
 )
 def test_coordinator_converts_worker_failure_to_structured_failure(failure):
-    coordinator = BenchmarkCoordinator(endpoint_factory=FailingFactory(failure))
+    coordinator = _coordinator(endpoint_factory=FailingFactory(failure))
 
     with pytest.raises(BenchmarkCoordinationError) as raised:
         _run(coordinator)
@@ -409,7 +515,7 @@ def test_coordinator_rejects_ready_mismatch_before_pass_zero(target, mutation):
             metadata = mutation(metadata)
         return FakeEndpoint(spec, log, metadata=metadata)
 
-    coordinator = BenchmarkCoordinator(endpoint_factory=factory)
+    coordinator = _coordinator(endpoint_factory=factory)
 
     with pytest.raises(BenchmarkCoordinationError):
         _run(coordinator)
@@ -434,7 +540,7 @@ def test_coordinator_rejects_role_pass_or_key_mismatch(mutation):
                 return replace(result, pass_index=1)
             return replace(result, rows=tuple(reversed(result.rows)))
 
-    coordinator = BenchmarkCoordinator(
+    coordinator = _coordinator(
         endpoint_factory=lambda spec: MismatchingEndpoint(spec, log)
     )
 
@@ -446,7 +552,7 @@ def test_coordinator_sends_identical_ordered_keys_and_gracefully_stops_both():
     log: list[tuple] = []
     factory = FakeEndpointFactory(log)
 
-    execution = _run(BenchmarkCoordinator(endpoint_factory=factory))
+    execution = _run(_coordinator(endpoint_factory=factory))
 
     assert {
         entry[3] for entry in log if entry[0] == "run"
@@ -456,6 +562,11 @@ def test_coordinator_sends_identical_ordered_keys_and_gracefully_stops_both():
         ("shutdown", "candidate"),
     ]
     assert not [entry for entry in log if entry[0] == "terminate"]
+    assert [entry for entry in log if entry[0] == "finalize"] == [
+        ("finalize", "reference"),
+        ("finalize", "candidate"),
+    ]
+    assert all(endpoint.finalize_calls == 1 for endpoint in factory.endpoints)
     assert execution.reference_worker.role == "reference"
     assert execution.candidate_worker.role == "candidate"
 
@@ -472,7 +583,7 @@ def test_failure_stops_both_and_terminates_only_surviving_endpoint():
         )
 
     with pytest.raises(BenchmarkCoordinationError):
-        _run(BenchmarkCoordinator(endpoint_factory=factory))
+        _run(_coordinator(endpoint_factory=factory))
 
     assert [entry[:2] for entry in log if entry[0] == "shutdown"] == [
         ("shutdown", "reference"),
@@ -483,9 +594,113 @@ def test_failure_stops_both_and_terminates_only_surviving_endpoint():
     ]
 
 
+def test_dead_worker_and_peer_are_each_finalized_once_after_shutdown_attempts():
+    factory = FailingFactory("bad_exit")
+
+    with pytest.raises(BenchmarkCoordinationError):
+        _run(_coordinator(endpoint_factory=factory))
+
+    assert [entry[:2] for entry in factory.log if entry[0] == "shutdown"] == [
+        ("shutdown", "reference"),
+        ("shutdown", "candidate"),
+    ]
+    assert [entry for entry in factory.log if entry[0] == "finalize"] == [
+        ("finalize", "reference"),
+        ("finalize", "candidate"),
+    ]
+    assert all(endpoint.finalize_calls == 1 for endpoint in factory.endpoints)
+
+
+def test_spawn_endpoint_finalizes_dead_pipe_and_process_handles_idempotently():
+    context = DeadRecordingContext()
+    endpoint = _SpawnWorkerEndpoint(
+        _worker_spec("reference", "serial_reference"),
+        context,
+    )
+
+    with pytest.raises(BenchmarkCoordinationError):
+        endpoint.shutdown(1.0)
+    endpoint.finalize()
+    endpoint.finalize()
+
+    assert endpoint.pid == 707
+    assert endpoint.exit_code == 9
+    assert context.parent_connection.close_calls == 1
+    assert context.child_connection.close_calls == 1
+    assert context.process.join_calls == [0]
+    assert context.process.close_calls == 1
+
+
+def test_coordinator_rejects_shared_wrong_threshold_against_parent_manifest(
+    tmp_path,
+):
+    log: list[tuple] = []
+    manifest_sha256 = _write_detector_manifest(tmp_path, threshold=0.5)
+    reference_spec = replace(
+        _worker_spec("reference", "serial_reference"),
+        package_root=tmp_path,
+    )
+    candidate_spec = replace(
+        _worker_spec("candidate", "batch_pytorch"),
+        package_root=tmp_path,
+    )
+
+    def factory(spec: WorkerSpec) -> FakeEndpoint:
+        wrong = replace(
+            _metadata(spec),
+            detector_metadata=tuple(
+                (
+                    key,
+                    0.4
+                    if key in {"score_threshold", "calibration_score_threshold"}
+                    else manifest_sha256
+                    if key == "manifest_sha256"
+                    else value,
+                )
+                for key, value in _DETECTOR_METADATA
+            ),
+        )
+        return FakeEndpoint(spec, log, metadata=wrong)
+
+    with pytest.raises(BenchmarkCoordinationError):
+        _run(
+            BenchmarkCoordinator(endpoint_factory=factory),
+            reference_spec=reference_spec,
+            candidate_spec=candidate_spec,
+        )
+
+    assert not [entry for entry in log if entry[0] == "run"]
+
+
+def test_coordinator_rejects_ready_hash_not_computed_from_parent_manifest(
+    tmp_path,
+):
+    log: list[tuple] = []
+    _write_detector_manifest(tmp_path, threshold=0.5)
+    reference_spec = replace(
+        _worker_spec("reference", "serial_reference"),
+        package_root=tmp_path,
+    )
+    candidate_spec = replace(
+        _worker_spec("candidate", "batch_pytorch"),
+        package_root=tmp_path,
+    )
+
+    with pytest.raises(BenchmarkCoordinationError):
+        _run(
+            BenchmarkCoordinator(
+                endpoint_factory=lambda spec: FakeEndpoint(spec, log)
+            ),
+            reference_spec=reference_spec,
+            candidate_spec=candidate_spec,
+        )
+
+    assert not [entry for entry in log if entry[0] == "run"]
+
+
 def test_coordinator_rejects_fewer_than_three_passes_before_spawning():
     calls: list[WorkerSpec] = []
-    coordinator = BenchmarkCoordinator(
+    coordinator = _coordinator(
         endpoint_factory=lambda spec: calls.append(spec)  # type: ignore[arg-type,return-value]
     )
 
