@@ -15,6 +15,7 @@ typedef AdminDestinationBuilder =
       BuildContext context,
       AdminDestination destination,
       ValueChanged<AttentionItem> onAttentionSelected,
+      String? initialTransactionSessionId,
     );
 
 /// The live customer/admin surface used after checkout bootstrap succeeds.
@@ -46,6 +47,7 @@ class _BakeryAppSurfaceState extends State<BakeryAppSurface> {
         widget.customerLifecycle ??
             CheckoutCustomerModeLifecycle(widget.checkout),
       );
+  String? _initialTransactionSessionId;
 
   @override
   void dispose() {
@@ -71,17 +73,23 @@ class _BakeryAppSurfaceState extends State<BakeryAppSurface> {
               context,
               destination,
               _onAttentionSelected,
+              _initialTransactionSessionId,
             ),
       ),
     },
   );
 
   void _onAttentionSelected(AttentionItem item) {
-    _modes.selectDestination(
-      item.kind == AttentionKind.unresolvedUnknown
-          ? AdminDestination.reviewInbox
-          : AdminDestination.transactions,
-    );
+    setState(() => _initialTransactionSessionId = item.sessionId);
+    _modes.selectDestination(AdminDestination.transactions);
+    // The destination receives this as an initial-value contract and owns the
+    // pushed detail route. Clear the parent intent on the next frame so a
+    // later visit to history cannot reopen a stale attention item.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _initialTransactionSessionId == item.sessionId) {
+        setState(() => _initialTransactionSessionId = null);
+      }
+    });
   }
 }
 
@@ -89,6 +97,7 @@ Widget _adminPlaceholder(
   BuildContext context,
   AdminDestination destination,
   ValueChanged<AttentionItem> _,
+  String? _,
 ) => Center(
   child: Text(
     '${destination.label} 화면을 준비하고 있어요.',

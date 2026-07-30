@@ -269,6 +269,49 @@ void main() {
     expect(find.byType(TransactionDetailScreen), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'initial session deep link filters then pushes that exact transaction detail',
+    (tester) async {
+      final repository = _DeepLinkRepository();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildBakeryTheme(),
+          home: TransactionHistoryScreen(
+            repository: repository,
+            initialSessionId: 'session-attention',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(repository.filters.single.sessionQuery, 'session-attention');
+      expect(repository.detailRequests, ['session-attention']);
+      expect(find.byType(TransactionDetailScreen), findsOneWidget);
+      expect(find.text('session-attention'), findsWidgets);
+    },
+  );
+}
+
+final class _DeepLinkRepository extends _Repository {
+  final filters = <TransactionFilter>[];
+  final detailRequests = <String>[];
+
+  @override
+  Future<TransactionPage> transactions(
+    TransactionFilter filter,
+    PageCursor? after, {
+    int limit = 50,
+  }) async {
+    filters.add(filter);
+    return TransactionPage(items: [_item('session-attention')]);
+  }
+
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) async {
+    detailRequests.add(sessionId);
+    return _detail(sessionId);
+  }
 }
 
 final class _DetailErrorRepository extends _Repository {

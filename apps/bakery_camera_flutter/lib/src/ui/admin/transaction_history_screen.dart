@@ -5,9 +5,18 @@ import '../../admin/admin_repository.dart';
 import 'transaction_detail_screen.dart';
 
 class TransactionHistoryScreen extends StatefulWidget {
-  const TransactionHistoryScreen({required this.repository, super.key});
+  const TransactionHistoryScreen({
+    required this.repository,
+    this.initialSessionId,
+    super.key,
+  });
 
   final TransactionAuditRepository repository;
+
+  /// A one-shot dashboard deep link. The list is constrained first so the
+  /// browser's surrounding history stays truthful before the immutable detail
+  /// is pushed.
+  final String? initialSessionId;
 
   @override
   State<TransactionHistoryScreen> createState() =>
@@ -26,10 +35,16 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   String? _detailErrorSessionId;
   bool _isOpeningDetail = false;
   int _requestGeneration = 0;
+  String? _initialDetailSessionId;
 
   @override
   void initState() {
     super.initState();
+    final initialSessionId = widget.initialSessionId?.trim();
+    if (initialSessionId != null && initialSessionId.isNotEmpty) {
+      _filter = TransactionFilter(sessionQuery: initialSessionId);
+      _initialDetailSessionId = initialSessionId;
+    }
     _reload();
   }
 
@@ -57,6 +72,11 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
         _reloadError = null;
         _loadMoreError = null;
       });
+      final initialSessionId = _initialDetailSessionId;
+      if (initialSessionId != null) {
+        _initialDetailSessionId = null;
+        await _openDetail(initialSessionId);
+      }
     } catch (error) {
       if (!_isCurrentReload(generation, filter)) return;
       setState(() {

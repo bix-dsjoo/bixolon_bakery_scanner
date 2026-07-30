@@ -74,18 +74,21 @@ class _BakeryAppState extends State<BakeryApp> {
             customerLifecycle: _CheckoutCustomerModeLifecycle(
               services.checkout,
             ),
-            adminDestinationBuilder: (context, destination, onAttention) =>
-                _adminDestination(
-                  context,
-                  destination,
-                  services.admin,
-                  services.reviews,
-                  services.products,
-                  services.diagnostics,
-                  services.settings,
-                  services.retention,
-                  onAttention,
-                ),
+            adminDestinationBuilder:
+                (context, destination, onAttention, initialSessionId) =>
+                    _adminDestination(
+                      context,
+                      destination,
+                      services.admin,
+                      services.reviews,
+                      services.products,
+                      services.diagnostics,
+                      services.settings,
+                      services.retention,
+                      services.dashboardReadiness,
+                      onAttention,
+                      initialSessionId,
+                    ),
           );
         }
         if (snapshot.hasError) return const _UnavailableBootstrapScreen();
@@ -153,6 +156,15 @@ class _BakeryAppState extends State<BakeryApp> {
           auditRoot: auditFiles.rootPath,
         ),
       );
+      final dashboardReadiness = DashboardReadinessController.watch(
+        liveChanges: scanner,
+        load: () async =>
+            switch ((await diagnostics.refresh()).customerImpact) {
+              DiagnosticsCustomerImpact.ready => DashboardAvailability.ready,
+              DiagnosticsCustomerImpact.actionRequired =>
+                DashboardAvailability.unavailable,
+            },
+      );
       return _AppServices(
         checkout: controller,
         admin: DatabaseAdminRepository(
@@ -187,6 +199,7 @@ class _BakeryAppState extends State<BakeryApp> {
           ),
         ),
         diagnostics: diagnostics,
+        dashboardReadiness: dashboardReadiness,
         settings: SettingsService(
           database: database,
           createId: () => const Uuid().v4(),
@@ -215,17 +228,23 @@ class _BakeryAppState extends State<BakeryApp> {
     DiagnosticsService diagnostics,
     SettingsService settings,
     RetentionService retention,
+    DashboardReadinessController dashboardReadiness,
     ValueChanged<AttentionItem> onAttentionSelected,
+    String? initialSessionId,
   ) {
     if (destination == AdminDestination.dashboard) {
       return DashboardScreen(
         repository: admin,
         range: _seoulTodayRange(),
         onAttentionSelected: onAttentionSelected,
+        readiness: dashboardReadiness,
       );
     }
     if (destination == AdminDestination.transactions) {
-      return TransactionHistoryScreen(repository: admin);
+      return TransactionHistoryScreen(
+        repository: admin,
+        initialSessionId: initialSessionId,
+      );
     }
     if (destination == AdminDestination.reviewInbox) {
       return ReviewInboxScreen(
@@ -285,6 +304,7 @@ final class _AppServices {
     required this.reviews,
     required this.products,
     required this.diagnostics,
+    required this.dashboardReadiness,
     required this.settings,
     required this.retention,
   });
@@ -294,6 +314,7 @@ final class _AppServices {
   final DatabaseReviewService reviews;
   final ProductManagementService products;
   final DiagnosticsService diagnostics;
+  final DashboardReadinessController dashboardReadiness;
   final SettingsService settings;
   final RetentionService retention;
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -109,6 +111,50 @@ class DashboardScreen extends StatelessWidget {
 }
 
 enum _Tone { normal, ok, attention }
+
+/// Bridges immutable diagnostics refreshes into the dashboard's live status.
+/// The controller only renders readiness; it exposes no model or policy
+/// mutation surface. A scanner/worker transition triggers a new read so the
+/// administrator never mistakes the default placeholder for live state.
+final class DashboardReadinessController
+    extends ValueNotifier<DashboardAvailability> {
+  factory DashboardReadinessController.watch({
+    required Future<DashboardAvailability> Function() load,
+    required Listenable liveChanges,
+  }) => DashboardReadinessController._(load, liveChanges);
+
+  DashboardReadinessController._(this._load, this._liveChanges)
+    : super(DashboardAvailability.unknown) {
+    _liveChanges.addListener(_onLiveChange);
+    unawaited(refresh());
+  }
+
+  final Future<DashboardAvailability> Function() _load;
+  final Listenable _liveChanges;
+  var _disposed = false;
+  var _refreshGeneration = 0;
+
+  Future<void> refresh() async {
+    final generation = ++_refreshGeneration;
+    try {
+      final next = await _load();
+      if (_disposed || generation != _refreshGeneration) return;
+      value = next;
+    } on Object {
+      if (_disposed || generation != _refreshGeneration) return;
+      value = DashboardAvailability.unavailable;
+    }
+  }
+
+  void _onLiveChange() => unawaited(refresh());
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _liveChanges.removeListener(_onLiveChange);
+    super.dispose();
+  }
+}
 
 final ValueNotifier<DashboardAvailability> _unknownReadiness = ValueNotifier(
   DashboardAvailability.unknown,
