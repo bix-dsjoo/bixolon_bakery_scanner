@@ -7,11 +7,13 @@ class ReviewDetailScreen extends StatefulWidget {
   const ReviewDetailScreen({
     required this.repository,
     required this.target,
+    this.currentAdminAuthor,
     super.key,
   });
 
   final ReviewRepository repository;
   final ReviewTarget target;
+  final Future<String> Function()? currentAdminAuthor;
 
   @override
   State<ReviewDetailScreen> createState() => _ReviewDetailScreenState();
@@ -58,6 +60,10 @@ class _ReviewDetailScreenState extends State<ReviewDetailScreen> {
       _saveError = null;
     });
     try {
+      final author =
+          (await (widget.currentAdminAuthor?.call() ??
+                  Future.value('prototype-admin')))
+              .trim();
       await widget.repository.annotate(
         AdminReviewAnnotationDraft(
           sessionId: widget.target.sessionId,
@@ -70,7 +76,7 @@ class _ReviewDetailScreenState extends State<ReviewDetailScreen> {
           correctProductId: _productId,
           reasonCode: _issueTag.storageValue,
           note: _noteController.text,
-          authorLabel: 'prototype-admin',
+          authorLabel: author,
         ),
       );
       if (mounted) Navigator.of(context).pop();

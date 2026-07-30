@@ -57,24 +57,31 @@ final class RetentionExecutionResult {
   final bool quarantineCleanupPending;
 }
 
+abstract interface class RetentionRepository {
+  Future<RetentionPreview> preview(DateTime cutoff);
+  Future<RetentionExecutionResult> execute(String previewId);
+}
+
 /// A two-phase, image-only retention boundary.
 ///
 /// Immutable database receipts, payments, orders, hashes, and annotations are
 /// deliberately outside this service. It removes only verified capture files
 /// after a preview is shown and the exact same evidence is revalidated.
-final class RetentionService {
+final class RetentionService implements RetentionRepository {
   factory RetentionService({
     required BakeryDatabase database,
     required Directory evidenceRoot,
     String Function()? createId,
     DateTime Function()? now,
     bool Function()? isSafeToRun,
+    Future<void> Function()? beforeMetadataCommit,
   }) => RetentionService._(
     database,
     evidenceRoot,
     createId ?? const Uuid().v4,
     now ?? DateTime.now,
     isSafeToRun ?? (() => true),
+    beforeMetadataCommit,
   );
 
   RetentionService._(
@@ -83,6 +90,7 @@ final class RetentionService {
     this._createId,
     this._now,
     this._isSafeToRun,
+    this._beforeMetadataCommit,
   );
 
   final BakeryDatabase _database;
@@ -90,11 +98,14 @@ final class RetentionService {
   final String Function() _createId;
   final DateTime Function() _now;
   final bool Function() _isSafeToRun;
+  final Future<void> Function()? _beforeMetadataCommit;
   final Map<String, RetentionPreview> _previews = {};
 
+  @override
   Future<RetentionPreview> preview(DateTime cutoff) async {
     _requireSafeBoundary();
-    await _verifiedRoot();
+    final root = await _verifiedRoot();
+    await _recoverQuarantines(root);
     final previewId = _safeId(_createId());
     if (_previews.containsKey(previewId)) {
       throw StateError('retention preview ID must be unique');
@@ -112,6 +123,7 @@ final class RetentionService {
     return result;
   }
 
+  @override
   Future<RetentionExecutionResult> execute(String previewId) async {
     _requireSafeBoundary();
     final preview = _previews[previewId];
@@ -119,6 +131,7 @@ final class RetentionService {
       throw StateError('retention preview is unavailable or already executed');
     }
     final root = await _verifiedRoot();
+    await _recoverQuarantines(root);
     final actual = await _eligibleFiles(preview.cutoff);
     if (!_sameEvidence(preview.files, actual)) {
       throw StateError('retention preview changed; create a new preview');
@@ -136,7 +149,7 @@ final class RetentionService {
     }
 
     final now = _now().toUtc();
-    await _appendAudit(
+    await _appendAuditOnce(
       eventId: '$previewId/retention-pending',
       eventType: 'retention_pending',
       occurredAt: now,
@@ -153,6 +166,7 @@ final class RetentionService {
         await source.rename(destination.path);
         moved.add(file);
       }
+      await _beforeMetadataCommit?.call();
       await _database.transaction(() async {
         await _database.batch((batch) {
           batch.insertAll(
@@ -184,6 +198,22 @@ final class RetentionService {
             );
       });
     } catch (error) {
+      try {
+        await _restoreQuarantine(
+          root: root,
+          quarantine: quarantine,
+          previewId: preview.previewId,
+          expectedByPath: {for (final file in actual) file.relativePath: file},
+        );
+      } catch (restoreError) {
+        await _appendPartialFailure(
+          preview,
+          moved,
+          error,
+          restoreError: restoreError,
+        );
+        rethrow;
+      }
       await _appendPartialFailure(preview, moved, error);
       rethrow;
     }
@@ -211,6 +241,16 @@ final class RetentionService {
       bytesRemoved: actual.fold(0, (sum, file) => sum + file.byteSize),
       quarantineCleanupPending: cleanupPending,
     );
+  }
+
+  /// Recovers uncommitted evidence stranded in the service-owned quarantine.
+  ///
+  /// A successful retention commit has immutable metadata, so its leftover
+  /// quarantine is cleanup-only. Every other quarantine is restored exactly to
+  /// its audited source path before another preview or execution may run.
+  Future<void> recoverInterruptedRetention() async {
+    _requireSafeBoundary();
+    await _recoverQuarantines(await _verifiedRoot());
   }
 
   void _requireSafeBoundary() {
@@ -269,6 +309,128 @@ final class RetentionService {
     return List.unmodifiable(result);
   }
 
+  Future<void> _recoverQuarantines(String root) async {
+    final quarantineRoot = Directory(
+      path.normalize(path.join(root, 'retention-quarantine')),
+    );
+    if (!path.isWithin(root, quarantineRoot.path)) {
+      throw StateError('retention quarantine escapes configured root');
+    }
+    if (!await quarantineRoot.exists()) return;
+    final expectedByPath = {
+      for (final file in await _allUnprunedFiles()) file.relativePath: file,
+    };
+    await for (final entry in quarantineRoot.list(followLinks: false)) {
+      if (entry is! Directory || entry is Link) {
+        throw StateError('retention quarantine contains an unsafe entry');
+      }
+      final previewId = _safeId(path.basename(entry.path));
+      if (await _hasCommittedExecution(previewId)) {
+        await entry.delete(recursive: true);
+        continue;
+      }
+      await _restoreQuarantine(
+        root: root,
+        quarantine: entry,
+        previewId: previewId,
+        expectedByPath: expectedByPath,
+      );
+    }
+    if (await quarantineRoot.exists() &&
+        await quarantineRoot.list(followLinks: false).isEmpty) {
+      await quarantineRoot.delete();
+    }
+  }
+
+  Future<List<RetentionEvidenceFile>> _allUnprunedFiles() async {
+    final attempts = await (_database.select(
+      _database.scanAttempts,
+    )..orderBy([(row) => OrderingTerm.asc(row.attemptId)])).get();
+    final sessions = {
+      for (final row
+          in await _database.select(_database.checkoutSessions).get())
+        row.sessionId: row,
+    };
+    final pruned = <String>{
+      for (final row in await _database.select(_database.retentionEvents).get())
+        '${row.attemptId}\u0000${row.relativePath}\u0000${row.originalByteSize}\u0000${row.originalSha256}',
+    };
+    return [
+      for (final attempt in attempts)
+        if (sessions.containsKey(attempt.sessionId))
+          () {
+            final file = RetentionEvidenceFile(
+              attemptId: attempt.attemptId,
+              sessionId: attempt.sessionId,
+              relativePath: attempt.imageRelativePath,
+              byteSize: attempt.imageByteSize,
+              sha256: attempt.imageSha256,
+            );
+            return pruned.contains(file.identity) ? null : file;
+          }(),
+    ].whereType<RetentionEvidenceFile>().toList(growable: false);
+  }
+
+  Future<bool> _hasCommittedExecution(String previewId) async {
+    final event =
+        await (_database.select(_database.auditEvents)..where(
+              (row) => row.eventId.equals('$previewId/retention-executed'),
+            ))
+            .getSingleOrNull();
+    return event?.eventType == 'retention_executed';
+  }
+
+  Future<void> _restoreQuarantine({
+    required String root,
+    required Directory quarantine,
+    required String previewId,
+    required Map<String, RetentionEvidenceFile> expectedByPath,
+  }) async {
+    if (!await quarantine.exists()) return;
+    final files = <File>[];
+    await for (final entry in quarantine.list(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (entry is Link) {
+        throw StateError('retention quarantine contains an unsafe entry');
+      }
+      if (entry is File) files.add(entry);
+    }
+    if (files.isEmpty) {
+      await quarantine.delete(recursive: true);
+      return;
+    }
+    for (final quarantined in files) {
+      final relativePath = path
+          .relative(quarantined.path, from: quarantine.path)
+          .replaceAll('\\', '/');
+      final expected = expectedByPath[relativePath];
+      if (expected == null) {
+        throw StateError('retention quarantine file has no audit evidence');
+      }
+      await _verifyFileContents(quarantined, expected);
+      final source = await _resolveContained(root, relativePath);
+      if (await source.exists()) {
+        await _verifyFileContents(source, expected);
+        await quarantined.delete();
+      } else {
+        await source.parent.create(recursive: true);
+        await quarantined.rename(source.path);
+      }
+    }
+    await quarantine.delete(recursive: true);
+    await _appendAudit(
+      eventId: '$previewId/retention-recovered',
+      eventType: 'retention_recovered',
+      occurredAt: _now().toUtc(),
+      detail: jsonEncode({
+        'preview_id': previewId,
+        'restored_file_count': files.length,
+      }),
+    );
+  }
+
   Future<File> _verifyExactFile(
     RetentionEvidenceFile file, {
     String? root,
@@ -283,11 +445,23 @@ final class RetentionService {
       throw StateError('retention evidence escapes configured root');
     }
     final bytes = await candidate.readAsBytes();
-    if (bytes.length != file.byteSize ||
-        sha256.convert(bytes).toString() != file.sha256) {
+    _requireExactContents(bytes, file);
+    return candidate;
+  }
+
+  Future<void> _verifyFileContents(
+    File candidate,
+    RetentionEvidenceFile expected,
+  ) async => _requireExactContents(await candidate.readAsBytes(), expected);
+
+  static void _requireExactContents(
+    List<int> bytes,
+    RetentionEvidenceFile expected,
+  ) {
+    if (bytes.length != expected.byteSize ||
+        sha256.convert(bytes).toString() != expected.sha256) {
       throw StateError('retention evidence hash or size changed');
     }
-    return candidate;
   }
 
   Future<File> _resolveContained(String root, String relativePath) async {
@@ -384,13 +558,32 @@ final class RetentionService {
         ),
       );
 
+  Future<void> _appendAuditOnce({
+    required String eventId,
+    required String eventType,
+    required DateTime occurredAt,
+    required String detail,
+  }) async {
+    final existing = await (_database.select(
+      _database.auditEvents,
+    )..where((row) => row.eventId.equals(eventId))).getSingleOrNull();
+    if (existing != null) return;
+    await _appendAudit(
+      eventId: eventId,
+      eventType: eventType,
+      occurredAt: occurredAt,
+      detail: detail,
+    );
+  }
+
   Future<void> _appendPartialFailure(
     RetentionPreview preview,
     List<RetentionEvidenceFile> moved,
-    Object error,
-  ) async {
+    Object error, {
+    Object? restoreError,
+  }) async {
     try {
-      await _appendAudit(
+      await _appendAuditOnce(
         eventId: '${preview.previewId}/retention-partial-failure',
         eventType: 'retention_partial_failure',
         occurredAt: _now().toUtc(),
@@ -398,6 +591,7 @@ final class RetentionService {
           'error': error.toString(),
           'moved_attempt_ids': moved.map((file) => file.attemptId).toList(),
           'preview_id': preview.previewId,
+          if (restoreError != null) 'restore_error': restoreError.toString(),
           'stage': 'move_or_metadata_commit',
         }),
       );

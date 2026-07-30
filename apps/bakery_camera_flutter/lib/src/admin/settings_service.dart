@@ -6,11 +6,16 @@ import 'package:uuid/uuid.dart';
 import '../persistence/app_database.dart';
 import 'settings_models.dart';
 
+abstract interface class KioskSettingsRepository {
+  Future<KioskSettings> current();
+  Future<KioskSettings> save(KioskSettingsDraft draft);
+}
+
 /// Writes only the explicit 1.1.0 kiosk settings as immutable revisions.
 ///
 /// Checkout sessions retain the revision ID captured at their own start, so a
 /// save can only affect the next customer session.
-final class SettingsService {
+final class SettingsService implements KioskSettingsRepository {
   factory SettingsService({
     required BakeryDatabase database,
     String Function()? createId,
@@ -35,6 +40,7 @@ final class SettingsService {
   final String Function() _createId;
   final DateTime Function() _now;
 
+  @override
   Future<KioskSettings> current() async {
     final app = await (_database.select(
       _database.appSettings,
@@ -49,6 +55,7 @@ final class SettingsService {
     return _settings(row);
   }
 
+  @override
   Future<KioskSettings> save(KioskSettingsDraft draft) async {
     _validate(draft);
     return _database.transaction(() async {

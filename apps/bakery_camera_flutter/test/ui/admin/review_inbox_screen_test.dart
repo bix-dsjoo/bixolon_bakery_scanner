@@ -1,6 +1,9 @@
 import 'package:bakery_camera_prototype/src/admin/admin_models.dart';
 import 'package:bakery_camera_prototype/src/admin/review_models.dart';
 import 'package:bakery_camera_prototype/src/admin/review_service.dart';
+import 'package:bakery_camera_prototype/src/admin/settings_models.dart';
+import 'package:bakery_camera_prototype/src/admin/settings_service.dart';
+import 'package:bakery_camera_prototype/src/persistence/database_factory.dart';
 import 'package:bakery_camera_prototype/src/ui/admin/review_inbox_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +25,63 @@ void main() {
     expect(repository.saved, hasLength(1));
     expect(repository.saved.single.reviewStatus, ReviewStatus.reviewed);
   });
+
+  testWidgets('review annotation uses the current saved administrator author', (
+    tester,
+  ) async {
+    final repository = _ReviewRepository();
+    await tester.pumpWidget(
+      _app(repository, currentAdminAuthor: () async => '성수점 관리자'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('review-inbox-session-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('review-save')));
+    await tester.pumpAndSettle();
+
+    expect(repository.saved.single.authorLabel, '성수점 관리자');
+  });
+
+  testWidgets(
+    'review annotation resolves the persisted current settings author',
+    (tester) async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      final settings = SettingsService(
+        database: database,
+        createId: () => 'settings-review-author',
+        now: () => DateTime.utc(2026, 7, 31),
+      );
+      await settings.save(
+        const KioskSettingsDraft(
+          kioskDisplayName: 'BIXOLON Seongsu',
+          retryLimit: 2,
+          paymentCompleteDurationSeconds: 4,
+          customerAutoReset: true,
+          evidenceRetentionDays: 90,
+          locale: SettingsService.koreanLocale,
+          adminAuthorLabel: 'saved-ops-admin',
+        ),
+      );
+      final repository = _ReviewRepository();
+      await tester.pumpWidget(
+        _app(
+          repository,
+          currentAdminAuthor: () async =>
+              (await settings.current()).adminAuthorLabel,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('review-inbox-session-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('review-save')));
+      await tester.pumpAndSettle();
+
+      expect(repository.saved.single.authorLabel, 'saved-ops-admin');
+    },
+  );
 
   testWidgets(
     'review detail records four conclusions, tag and note, requiring a product only for both incorrect',
@@ -122,9 +182,15 @@ void main() {
   );
 }
 
-Widget _app(ReviewRepository repository) => MaterialApp(
+Widget _app(
+  ReviewRepository repository, {
+  Future<String> Function()? currentAdminAuthor,
+}) => MaterialApp(
   theme: buildBakeryTheme(),
-  home: ReviewInboxScreen(repository: repository),
+  home: ReviewInboxScreen(
+    repository: repository,
+    currentAdminAuthor: currentAdminAuthor,
+  ),
 );
 
 class _ReviewRepository implements ReviewRepository {

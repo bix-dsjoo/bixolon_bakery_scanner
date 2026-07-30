@@ -12,7 +12,7 @@ final class RetentionPreviewDialog extends StatefulWidget {
     super.key,
   });
 
-  final RetentionService retention;
+  final RetentionRepository retention;
   final DateTime cutoff;
 
   @override

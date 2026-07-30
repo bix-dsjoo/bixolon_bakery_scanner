@@ -29,6 +29,13 @@ abstract interface class CheckoutAuditStore {
   Future<void> abandonSession(String sessionId, String reason);
 }
 
+/// Reads customer-visible wording from the immutable settings revision already
+/// bound to a checkout session. It is intentionally separate from the mutable
+/// current-settings pointer.
+abstract interface class CustomerKioskPresentationSource {
+  Future<String> kioskDisplayNameForSession(String sessionId);
+}
+
 /// Startup recovery runs before a new customer session. The returned data is
 /// audit-only and must never be used to resume or charge a prior session.
 abstract interface class CheckoutRecoveryPort {

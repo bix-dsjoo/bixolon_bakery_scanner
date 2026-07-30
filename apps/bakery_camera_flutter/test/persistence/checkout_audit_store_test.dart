@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:bakery_camera_prototype/src/audit/audit_file_store.dart';
+import 'package:bakery_camera_prototype/src/admin/settings_models.dart';
+import 'package:bakery_camera_prototype/src/admin/settings_service.dart';
 import 'package:bakery_camera_prototype/src/catalog/product.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
@@ -75,34 +77,21 @@ void main() {
       expect(session.dinov3ArtifactId, 'dinov3_vits16_15plus5_v1');
       expect(session.fusionPolicySha256, _hash('3'));
 
-      await db
-          .into(db.settingsRevisions)
-          .insert(
-            SettingsRevisionsCompanion.insert(
-              revisionId: 'settings-v2',
-              createdAtUs: DateTime.utc(
-                2026,
-                7,
-                30,
-                7,
-                40,
-              ).microsecondsSinceEpoch,
-              retryLimit: 3,
-              paymentCompleteDurationSeconds: 5,
-              customerAutoReset: true,
-              evidenceRetentionDays: 60,
-              locale: 'ko-KR',
-              kioskDisplayName: 'BIXOLON Bakery',
-              adminAuthorLabel: 'prototype-admin',
-            ),
-          );
-      await db
-          .update(db.appSettings)
-          .write(
-            const AppSettingsCompanion(
-              activeSettingsRevisionId: Value('settings-v2'),
-            ),
-          );
+      await SettingsService(
+        database: db,
+        createId: () => 'settings-v2',
+        now: () => DateTime.utc(2026, 7, 30, 7, 40),
+      ).save(
+        const KioskSettingsDraft(
+          kioskDisplayName: 'BIXOLON Seongsu',
+          retryLimit: 3,
+          paymentCompleteDurationSeconds: 5,
+          customerAutoReset: true,
+          evidenceRetentionDays: 60,
+          locale: SettingsService.koreanLocale,
+          adminAuthorLabel: 'prototype-admin',
+        ),
+      );
       final nextSessionId = await _beginSession(store, revision);
       final firstSession = await (db.select(
         db.checkoutSessions,
@@ -115,6 +104,14 @@ void main() {
       expect(nextSession.settingsRevisionId, 'settings-v2');
       expect(await store.retryLimitForSession(sessionId), 2);
       expect(await store.retryLimitForSession(nextSessionId), 3);
+      expect(
+        await store.kioskDisplayNameForSession(sessionId),
+        'BIXOLON Bakery',
+      );
+      expect(
+        await store.kioskDisplayNameForSession(nextSessionId),
+        'BIXOLON Seongsu',
+      );
     },
   );
 

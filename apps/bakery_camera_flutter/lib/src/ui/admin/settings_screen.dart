@@ -14,8 +14,8 @@ final class SettingsScreen extends StatefulWidget {
     super.key,
   });
 
-  final SettingsService settings;
-  final RetentionService retention;
+  final KioskSettingsRepository settings;
+  final RetentionRepository retention;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -101,6 +101,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: '\uACE0\uAC1D \uD654\uBA74',
             children: [
               _field(
+                fieldKey: const Key('settings-kiosk-display-name'),
                 controller: _name,
                 label: '\uD0A4\uC624\uC2A4\uD06C \uD45C\uC2DC \uC774\uB984',
                 keyboardType: TextInputType.text,
@@ -129,12 +130,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: '\uACC4\uC0B0 \uC644\uB8CC',
             children: [
               _field(
+                fieldKey: const Key('settings-retry-limit'),
                 controller: _retryLimit,
                 label: '\uC7AC\uCD2C\uC601 \uD69F\uC218 (1~5)',
                 keyboardType: TextInputType.number,
               ),
               const SizedBox(height: 12),
               _field(
+                fieldKey: const Key('settings-complete-duration'),
                 controller: _completeDuration,
                 label:
                     '\uACB0\uC81C \uC644\uB8CC \uD654\uBA74 \uC2DC\uAC04 (2~10\uCD08)',
@@ -146,6 +149,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: '\uAE30\uB85D \uBCF4\uC874',
             children: [
               _field(
+                fieldKey: const Key('settings-retention-days'),
                 controller: _retentionDays,
                 label:
                     '\uC774\uBBF8\uC9C0 \uBCF4\uC874 \uAE30\uAC04 (7~3650\uC77C)',
@@ -166,6 +170,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: '\uAD00\uB9AC\uC790 \uD45C\uC2DC',
             children: [
               _field(
+                fieldKey: const Key('settings-admin-author'),
                 controller: _author,
                 label: '\uAC10\uC0AC \uAE30\uB85D \uC791\uC131\uC790',
                 keyboardType: TextInputType.text,
@@ -186,10 +191,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _field({
+    required Key fieldKey,
     required TextEditingController controller,
     required String label,
     required TextInputType keyboardType,
   }) => TextFormField(
+    key: fieldKey,
     controller: controller,
     enabled: !_saving,
     keyboardType: keyboardType,

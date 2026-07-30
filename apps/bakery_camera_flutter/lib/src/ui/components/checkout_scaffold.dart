@@ -3,6 +3,26 @@ import 'package:flutter/material.dart';
 import '../bixolon_brand.dart';
 import '../bixolon_theme_extension.dart';
 
+/// Carries the kiosk label from the session-bound settings revision through
+/// every customer view without consulting mutable operational settings.
+class KioskDisplayNameScope extends InheritedWidget {
+  const KioskDisplayNameScope({
+    required this.displayName,
+    required super.child,
+    super.key,
+  });
+
+  final String displayName;
+
+  static String? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<KioskDisplayNameScope>()
+      ?.displayName;
+
+  @override
+  bool updateShouldNotify(KioskDisplayNameScope oldWidget) =>
+      displayName != oldWidget.displayName;
+}
+
 /// A customer shell with one fixed next action and receipt-style structure.
 class CheckoutScaffold extends StatelessWidget {
   const CheckoutScaffold({
@@ -43,6 +63,15 @@ class CheckoutScaffold extends StatelessWidget {
                         children: [
                           const BixolonWordmark(),
                           const SizedBox(height: 8),
+                          if (KioskDisplayNameScope.maybeOf(context)
+                              case final displayName?) ...[
+                            Text(
+                              displayName,
+                              key: const Key('kiosk-display-name'),
+                              style: Theme.of(context).textTheme.labelLarge,
+                            ),
+                            const SizedBox(height: 4),
+                          ],
                           Text(
                             title,
                             style: Theme.of(context).textTheme.headlineSmall,

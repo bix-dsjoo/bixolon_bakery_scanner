@@ -80,6 +80,85 @@ void main() {
     expect(await file.exists(), isTrue);
     expect(await database.select(database.retentionEvents).get(), isEmpty);
   });
+
+  test(
+    'restart recovery restores an uncommitted quarantine before a new preview',
+    () async {
+      final source = File(
+        '${root.path}${Platform.pathSeparator}sessions${Platform.pathSeparator}retention-session${Platform.pathSeparator}attempt-001.jpg',
+      );
+      final quarantine = File(
+        '${root.path}${Platform.pathSeparator}retention-quarantine${Platform.pathSeparator}interrupted-preview${Platform.pathSeparator}sessions${Platform.pathSeparator}retention-session${Platform.pathSeparator}attempt-001.jpg',
+      );
+      await quarantine.parent.create(recursive: true);
+      await source.rename(quarantine.path);
+
+      final restarted = RetentionService(
+        database: database,
+        evidenceRoot: root,
+        createId: () => 'retention-restarted',
+        now: () => DateTime.utc(2026, 7, 31, 10),
+      );
+      final preview = await restarted.preview(DateTime.utc(2026, 7, 1));
+
+      expect(preview.files, hasLength(1));
+      expect(await source.exists(), isTrue);
+      expect(await quarantine.exists(), isFalse);
+      final result = await restarted.execute(preview.previewId);
+      expect(result.filesRemoved, 1);
+      expect(await source.exists(), isFalse);
+      expect(
+        (await database.select(database.auditEvents).get()).map(
+          (event) => event.eventType,
+        ),
+        containsAll(['retention_recovered', 'retention_executed']),
+      );
+    },
+  );
+
+  test(
+    'the same preview retries after a metadata failure without losing evidence',
+    () async {
+      var failMetadataOnce = true;
+      service = RetentionService(
+        database: database,
+        evidenceRoot: root,
+        createId: () => 'retention-v1',
+        now: () => DateTime.utc(2026, 7, 31, 9),
+        beforeMetadataCommit: () async {
+          if (!failMetadataOnce) return;
+          failMetadataOnce = false;
+          throw StateError('injected metadata failure');
+        },
+      );
+      final preview = await service.preview(DateTime.utc(2026, 7, 1));
+      final source = File(
+        '${root.path}${Platform.pathSeparator}sessions${Platform.pathSeparator}retention-session${Platform.pathSeparator}attempt-001.jpg',
+      );
+
+      await expectLater(
+        () => service.execute(preview.previewId),
+        throwsStateError,
+      );
+      expect(await source.exists(), isTrue);
+      expect(await database.select(database.retentionEvents).get(), isEmpty);
+
+      final result = await service.execute(preview.previewId);
+      expect(result.filesRemoved, 1);
+      expect(await source.exists(), isFalse);
+      expect(
+        (await database.select(database.auditEvents).get()).map(
+          (event) => event.eventType,
+        ),
+        containsAll([
+          'retention_pending',
+          'retention_partial_failure',
+          'retention_recovered',
+          'retention_executed',
+        ]),
+      );
+    },
+  );
 }
 
 Future<void> _seedEvidence(BakeryDatabase database, Directory root) async {

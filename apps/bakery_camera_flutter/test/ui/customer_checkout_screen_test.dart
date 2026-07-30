@@ -11,6 +11,7 @@ import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen
 import 'package:bakery_camera_prototype/src/ui/customer/payment_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/ready_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/retake_required_view.dart';
+import 'package:bakery_camera_prototype/src/ui/components/checkout_scaffold.dart';
 import 'package:flutter/foundation.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:flutter/material.dart';
@@ -129,6 +130,25 @@ void main() {
     expect(find.text('빵 확인하기'), findsOneWidget);
     expect(find.byType(FilledButton), findsOneWidget);
     expect(find.byKey(const Key('live-tray-placement-guide')), findsOneWidget);
+  });
+
+  testWidgets('customer header renders the session-snapshotted kiosk name', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      KioskDisplayNameScope(
+        displayName: 'BIXOLON Seongsu',
+        child: CheckoutScaffold(
+          title: 'Self checkout',
+          primaryAction: const SizedBox(height: 56),
+          child: const SizedBox(),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const Key('kiosk-display-name')), findsOneWidget);
+    expect(find.text('BIXOLON Seongsu'), findsOneWidget);
   });
 
   testWidgets('analyzing is factual and does not expose navigation', (

@@ -366,7 +366,10 @@ String canonicalInferenceReceiptJson({
 }
 
 final class DatabaseCheckoutAuditStore
-    implements CheckoutAuditStore, CheckoutRecoveryPort {
+    implements
+        CheckoutAuditStore,
+        CheckoutRecoveryPort,
+        CustomerKioskPresentationSource {
   DatabaseCheckoutAuditStore({
     required BakeryDatabase database,
     required AuditRuntimeSnapshot runtimeSnapshot,
@@ -635,6 +638,22 @@ final class DatabaseCheckoutAuditStore
       duration: Duration(seconds: settings.paymentCompleteDurationSeconds),
       autoReset: settings.customerAutoReset,
     );
+  }
+
+  @override
+  Future<String> kioskDisplayNameForSession(String sessionId) async {
+    final session = await (_database.select(
+      _database.checkoutSessions,
+    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+    if (session == null) {
+      throw StateError('checkout session does not exist');
+    }
+    final settings =
+        await (_database.select(_database.settingsRevisions)..where(
+              (row) => row.revisionId.equals(session.settingsRevisionId),
+            ))
+            .getSingle();
+    return settings.kioskDisplayName;
   }
 
   @override

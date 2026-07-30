@@ -228,7 +228,11 @@ class _BakeryAppState extends State<BakeryApp> {
       return TransactionHistoryScreen(repository: admin);
     }
     if (destination == AdminDestination.reviewInbox) {
-      return ReviewInboxScreen(repository: reviews);
+      return ReviewInboxScreen(
+        repository: reviews,
+        currentAdminAuthor: () async =>
+            (await settings.current()).adminAuthorLabel,
+      );
     }
     if (destination == AdminDestination.products) {
       return ProductManagementScreen(service: products);

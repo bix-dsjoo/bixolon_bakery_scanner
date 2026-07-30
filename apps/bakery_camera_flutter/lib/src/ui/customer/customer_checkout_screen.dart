@@ -158,24 +158,31 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
         ),
       };
     }
-    if (widget.onEnterAdmin == null) return content;
-    return Stack(
-      children: [
-        content,
-        SafeArea(
-          child: Align(
-            alignment: Alignment.topRight,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 8, right: 16),
-              child: CustomerAdminEntryControl(
-                requiresAdminEntryConfirmation:
-                    widget.requiresAdminEntryConfirmation,
-                onEnterAdmin: widget.onEnterAdmin!,
+    final scopedContent = KioskDisplayNameScope(
+      displayName: widget.controller.kioskDisplayName,
+      child: content,
+    );
+    if (widget.onEnterAdmin == null) return scopedContent;
+    return KioskDisplayNameScope(
+      displayName: widget.controller.kioskDisplayName,
+      child: Stack(
+        children: [
+          content,
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8, right: 16),
+                child: CustomerAdminEntryControl(
+                  requiresAdminEntryConfirmation:
+                      widget.requiresAdminEntryConfirmation,
+                  onEnterAdmin: widget.onEnterAdmin!,
+                ),
               ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

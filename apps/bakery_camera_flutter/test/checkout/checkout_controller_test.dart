@@ -115,6 +115,15 @@ void main() {
     },
   );
 
+  test('kiosk display name changes only when a fresh session starts', () async {
+    audit.kioskDisplayNames = ['BIXOLON Current', 'BIXOLON Next'];
+    await controller.initialize();
+
+    expect(controller.kioskDisplayName, 'BIXOLON Current');
+    await controller.startFreshCustomerSession();
+    expect(controller.kioskDisplayName, 'BIXOLON Next');
+  });
+
   test('admin entry abandons only an active unfinished session', () async {
     await controller.initialize();
 
@@ -764,12 +773,14 @@ void main() {
   });
 }
 
-final class _FakeAuditStore implements CheckoutAuditStore {
+final class _FakeAuditStore
+    implements CheckoutAuditStore, CustomerKioskPresentationSource {
   _FakeAuditStore(this.events);
 
   final List<String> events;
   List<InterruptedCheckout> interrupted = [];
   int retryLimit = 2;
+  List<String> kioskDisplayNames = const ['BIXOLON Bakery'];
   Object? retryError;
   Completer<void>? retryLimitGate;
   Completer<void>? retryLimitBlocked;
@@ -838,6 +849,16 @@ final class _FakeAuditStore implements CheckoutAuditStore {
     duration: Duration(seconds: 4),
     autoReset: true,
   );
+
+  @override
+  Future<String> kioskDisplayNameForSession(String sessionId) async {
+    final index = begunSessionIds.indexOf(sessionId);
+    if (index < 0) throw StateError('unknown fake session');
+    final boundedIndex = index < kioskDisplayNames.length
+        ? index
+        : kioskDisplayNames.length - 1;
+    return kioskDisplayNames[boundedIndex];
+  }
 
   @override
   Future<void> enterManualCartMode(String sessionId, DateTime enteredAt) async {

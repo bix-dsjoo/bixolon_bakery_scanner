@@ -82,6 +82,7 @@ final class CheckoutController extends ChangeNotifier {
   String? _sessionId;
   int? _retryLimit;
   CustomerCompletionPolicy? _completionPolicy;
+  String _kioskDisplayName = 'BIXOLON Bakery';
   int _attemptNumber = 0;
   int _failedAttempts = 0;
   int _scanGeneration = 0;
@@ -108,6 +109,7 @@ final class CheckoutController extends ChangeNotifier {
   CustomerCompletionPolicy get completionPolicy =>
       _completionPolicy ??
       (throw StateError('checkout completion policy is unavailable'));
+  String get kioskDisplayName => _kioskDisplayName;
   CameraController? get previewController => _scanner.previewController;
   Map<int, int> get inferenceTotals =>
       Map.unmodifiable(_scanner.state.result?.counts ?? const {});
@@ -641,6 +643,16 @@ final class CheckoutController extends ChangeNotifier {
     }
     _retryLimit = retryLimit;
     _completionPolicy = await _auditStore.completionPolicyForSession(sessionId);
+    final presentationSource = _auditStore;
+    if (presentationSource is CustomerKioskPresentationSource) {
+      final displayName =
+          await (presentationSource as CustomerKioskPresentationSource)
+              .kioskDisplayNameForSession(sessionId);
+      if (displayName.trim().isEmpty) {
+        throw StateError('session kiosk display name must not be empty');
+      }
+      _kioskDisplayName = displayName.trim();
+    }
     _attemptNumber = 0;
     _failedAttempts = 0;
     _manualCartMode = false;

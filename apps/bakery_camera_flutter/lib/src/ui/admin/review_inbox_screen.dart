@@ -6,9 +6,14 @@ import '../../admin/review_service.dart';
 import 'review_detail_screen.dart';
 
 class ReviewInboxScreen extends StatefulWidget {
-  const ReviewInboxScreen({required this.repository, super.key});
+  const ReviewInboxScreen({
+    required this.repository,
+    this.currentAdminAuthor,
+    super.key,
+  });
 
   final ReviewRepository repository;
+  final Future<String> Function()? currentAdminAuthor;
 
   @override
   State<ReviewInboxScreen> createState() => _ReviewInboxScreenState();
@@ -148,6 +153,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
                   builder: (_) => ReviewDetailScreen(
                     repository: widget.repository,
                     target: item.target,
+                    currentAdminAuthor: widget.currentAdminAuthor,
                   ),
                 ),
               );
