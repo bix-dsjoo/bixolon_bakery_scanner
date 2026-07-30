@@ -36,14 +36,14 @@ _DETECTOR_ID = "rfdetr_large_bakery_v1"
 _REPVIT_ID = "repvit_m1_15plus5_v1"
 _DINOV3_ID = "dinov3_vits16_15plus5_v1"
 _FUSION_POLICY_ID = "fusion_local_or_global_consensus_margin_v1"
-_MANIFEST_KEYS = {
+_MANIFEST_COMMON_KEYS = {
     "schema_version",
     "source_label",
-    "source_path",
     "checkpoint",
     "calibration",
     "score_threshold",
 }
+_MANIFEST_SOURCE_KEYS = {"source_path", "source_uri"}
 _ARTIFACT_KEYS = {"file", "sha256"}
 _SHA256_LENGTH = 64
 
@@ -414,14 +414,21 @@ def _load_detector_manifest(root: Path) -> _DetectorManifest:
         raise
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"detector manifest is invalid: {manifest_path}") from exc
-    if not isinstance(payload, dict) or set(payload) != _MANIFEST_KEYS:
+    if not isinstance(payload, dict):
+        raise ValueError("detector manifest schema is invalid")
+    source_keys = set(payload) - _MANIFEST_COMMON_KEYS
+    if (
+        not _MANIFEST_COMMON_KEYS.issubset(payload)
+        or source_keys not in ({"source_path"}, {"source_uri"})
+    ):
         raise ValueError("detector manifest schema is invalid")
     if payload["schema_version"] != 1:
         raise ValueError("detector manifest schema_version is invalid")
     if payload["source_label"] != _DETECTOR_ID:
         raise ValueError("detector manifest source label is invalid")
-    if not isinstance(payload["source_path"], str) or not payload["source_path"]:
-        raise ValueError("detector manifest source path is invalid")
+    source_key = next(iter(source_keys & _MANIFEST_SOURCE_KEYS))
+    if not isinstance(payload[source_key], str) or not payload[source_key]:
+        raise ValueError("detector manifest source reference is invalid")
     checkpoint = _manifest_artifact(model_dir, payload["checkpoint"], "checkpoint")
     calibration = _manifest_artifact(
         model_dir, payload["calibration"], "calibration"
