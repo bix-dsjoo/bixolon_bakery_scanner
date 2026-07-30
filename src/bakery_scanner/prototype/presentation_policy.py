@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -96,16 +97,12 @@ class PresentationPolicy:
     ) -> PresentationDecision:
         """Route presentation state without changing final inference objects."""
         normalized_proposals = tuple(_proposal(item) for item in proposals)
-        normalized_decisions = tuple(_decision(item) for item in decisions)
         if not normalized_proposals:
             return self._scan_retake("no_bread_detected")
-
-        decision_ids = {item.object_id for item in normalized_decisions}
-        final_proposals = tuple(
-            item for item in normalized_proposals if item.object_id in decision_ids
-        )
+        normalized_decisions = tuple(_decision(item) for item in decisions)
+        _require_unique_bijection(normalized_proposals, normalized_decisions)
         if object_ids := _overlapping_object_ids(
-            final_proposals, self.box_overlap_iou
+            normalized_proposals, self.box_overlap_iou
         ):
             return self._object_retake("separate_breads", object_ids)
         if object_ids := _weak_unknown_ids(
@@ -274,6 +271,19 @@ def _overlapping_object_ids(
     return tuple(sorted(overlapping))
 
 
+def _require_unique_bijection(
+    proposals: tuple[_Proposal, ...], decisions: tuple[_Decision, ...]
+) -> None:
+    proposal_ids = tuple(item.object_id for item in proposals)
+    decision_ids = tuple(item.object_id for item in decisions)
+    if len(set(proposal_ids)) != len(proposal_ids):
+        raise ValueError("proposal object IDs must be unique")
+    if len(set(decision_ids)) != len(decision_ids):
+        raise ValueError("decision object IDs must be unique")
+    if set(proposal_ids) != set(decision_ids):
+        raise ValueError("proposal and decision object IDs must form a bijection")
+
+
 def _iou(
     left: tuple[float, float, float, float],
     right: tuple[float, float, float, float],
@@ -299,7 +309,8 @@ def _weak_unknown_ids(
                 if item.is_unknown
                 and (
                     _strictly_less(item.top3[0], top1_min)
-                    or _strictly_less(item.top3[0] - item.top3[1], top12_margin)
+                    or _decimal(item.top3[0]) - _decimal(item.top3[1])
+                    < _decimal(top12_margin)
                 )
             }
         )
@@ -311,7 +322,9 @@ def _unknown_ids(decisions: tuple[_Decision, ...]) -> tuple[str, ...]:
 
 
 def _strictly_less(value: float, threshold: float) -> bool:
-    """Apply an exact policy boundary despite binary floating arithmetic."""
-    return value < threshold and not math.isclose(
-        value, threshold, rel_tol=0.0, abs_tol=1e-12
-    )
+    """Compare input decimal values without widening policy boundaries."""
+    return _decimal(value) < _decimal(threshold)
+
+
+def _decimal(value: float) -> Decimal:
+    return Decimal(str(value))

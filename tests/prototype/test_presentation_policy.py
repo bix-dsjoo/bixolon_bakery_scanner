@@ -214,3 +214,86 @@ def test_input_order_does_not_change_the_presentation_decision(tmp_path):
 
     assert first == second
     assert first["retake_object_ids"] == ["object-1"]
+
+
+def test_unmatched_proposal_ids_fail_closed_before_overlap_routing(tmp_path):
+    policy, _ = _load_policy(tmp_path)
+    proposals = [
+        _proposal("object-1", [0.0, 0.0, 17.0, 17.0]),
+        _proposal("object-2", [3.0, 0.0, 20.0, 17.0]),
+    ]
+    decisions = [_decision("object-1", sku_id=1)]
+
+    with pytest.raises(ValueError, match="bijection"):
+        policy.evaluate(proposals=proposals, decisions=decisions)
+
+
+def test_unmatched_decision_ids_fail_closed_before_unknown_routing(tmp_path):
+    policy, _ = _load_policy(tmp_path)
+    proposals = [_proposal("object-1", [0.0, 0.0, 10.0, 10.0])]
+    decisions = [
+        _decision("object-1", sku_id=1),
+        _decision("object-2", sku_id=None, top3=[(2, 0.90), (1, 0.80), (3, 0.1)]),
+    ]
+
+    with pytest.raises(ValueError, match="bijection"):
+        policy.evaluate(proposals=proposals, decisions=decisions)
+
+
+@pytest.mark.parametrize(
+    ("proposals", "decisions"),
+    [
+        (
+            [
+                _proposal("object-1", [0.0, 0.0, 10.0, 10.0]),
+                _proposal("object-1", [20.0, 0.0, 30.0, 10.0]),
+            ],
+            [_decision("object-1", sku_id=1)],
+        ),
+        (
+            [_proposal("object-1", [0.0, 0.0, 10.0, 10.0])],
+            [_decision("object-1", sku_id=1), _decision("object-1", sku_id=1)],
+        ),
+    ],
+)
+def test_duplicate_final_object_ids_fail_closed(tmp_path, proposals, decisions):
+    policy, _ = _load_policy(tmp_path)
+
+    with pytest.raises(ValueError, match="unique"):
+        policy.evaluate(proposals=proposals, decisions=decisions)
+
+
+def test_unknown_score_just_below_threshold_requests_object_retake(tmp_path):
+    policy, _ = _load_policy(tmp_path)
+    proposals = [_proposal("object-3", [0.0, 0.0, 10.0, 10.0])]
+    decisions = [
+        _decision(
+            "object-3",
+            sku_id=None,
+            top3=[(1, 0.2999999999995), (2, 0.10), (3, 0.01)],
+        )
+    ]
+
+    payload = policy.evaluate(proposals=proposals, decisions=decisions).to_payload()
+
+    assert payload["state"] == "needs_retake"
+    assert payload["retake_object_ids"] == ["object-3"]
+    assert payload["instruction_code"] == "candidate_evidence_weak"
+
+
+def test_unknown_margin_just_below_threshold_requests_object_retake(tmp_path):
+    policy, _ = _load_policy(tmp_path)
+    proposals = [_proposal("object-3", [0.0, 0.0, 10.0, 10.0])]
+    decisions = [
+        _decision(
+            "object-3",
+            sku_id=None,
+            top3=[(1, 0.80), (2, 0.7500000000005), (3, 0.01)],
+        )
+    ]
+
+    payload = policy.evaluate(proposals=proposals, decisions=decisions).to_payload()
+
+    assert payload["state"] == "needs_retake"
+    assert payload["retake_object_ids"] == ["object-3"]
+    assert payload["instruction_code"] == "candidate_evidence_weak"
