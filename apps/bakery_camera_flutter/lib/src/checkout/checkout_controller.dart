@@ -1,5 +1,7 @@
 // ignore_for_file: prefer_initializing_formals
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../catalog/product.dart';
@@ -69,6 +71,8 @@ final class CheckoutController extends ChangeNotifier {
   bool _closed = false;
   bool _sessionActive = false;
   bool _sessionStartInFlight = false;
+  Completer<void>? _sessionStartCompletion;
+  Future<void>? _closeFuture;
   bool _manualCartMode = false;
   Map<String, Map<int, Product?>> _candidateProducts = const {};
   final Set<String> _explicitlyResolvedObjectIds = {};
@@ -124,7 +128,7 @@ final class CheckoutController extends ChangeNotifier {
         error: error,
       );
     } finally {
-      _sessionStartInFlight = false;
+      _finishSessionStart();
     }
   }
 
@@ -493,13 +497,24 @@ final class CheckoutController extends ChangeNotifier {
         error: error,
       );
     } finally {
-      _sessionStartInFlight = false;
+      _finishSessionStart();
     }
   }
 
-  Future<void> close() async {
-    if (_closed) return;
+  Future<void> close() {
+    final existing = _closeFuture;
+    if (existing != null) return existing;
+    final closing = _closeOnce();
+    _closeFuture = closing;
+    return closing;
+  }
+
+  Future<void> _closeOnce() async {
     _closed = true;
+    final sessionStart = _sessionStartCompletion;
+    if (sessionStart != null) {
+      await sessionStart.future;
+    }
     await _abandonActiveSession('controller_closed');
     await _scanner.close();
   }
@@ -511,7 +526,9 @@ final class CheckoutController extends ChangeNotifier {
     if (_sessionActive) {
       throw StateError('cannot overwrite an active checkout session');
     }
+    _ensureOpen();
     final catalog = await _catalogRepository.activeCatalog();
+    _ensureOpen();
     final sessionId = await _auditStore.beginSession(
       SessionSnapshot(
         sessionStartedAt: _utcNow(),
@@ -538,10 +555,21 @@ final class CheckoutController extends ChangeNotifier {
   }
 
   void _reserveSessionStart() {
+    _ensureOpen();
     if (_sessionStartInFlight) {
       throw StateError('checkout session startup is already in progress');
     }
     _sessionStartInFlight = true;
+    _sessionStartCompletion = Completer<void>();
+  }
+
+  void _finishSessionStart() {
+    _sessionStartInFlight = false;
+    final completion = _sessionStartCompletion;
+    _sessionStartCompletion = null;
+    if (completion != null && !completion.isCompleted) {
+      completion.complete();
+    }
   }
 
   Future<void> _resolve({

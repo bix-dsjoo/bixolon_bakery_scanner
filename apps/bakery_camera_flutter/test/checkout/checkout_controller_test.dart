@@ -429,6 +429,66 @@ void main() {
     },
   );
 
+  test(
+    'close waits for a session blocked before durable begin and abandons it',
+    () async {
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+      await controller.scan();
+      await controller.pay();
+      final publishedPhases = <CheckoutPhase>[];
+      controller.addListener(() => publishedPhases.add(controller.state.phase));
+      audit.beginSessionGate = Completer<void>();
+      audit.beginSessionBlocked = Completer<void>();
+
+      final startup = controller.startNextCustomer();
+      await audit.beginSessionBlocked!.future;
+      var closeReturned = false;
+      final closing = controller.close().then((_) => closeReturned = true);
+      await Future<void>.delayed(Duration.zero);
+      final closeWaitedForStartup = !closeReturned;
+      audit.beginSessionGate!.complete();
+
+      await startup;
+      await closing;
+
+      expect(closeWaitedForStartup, isTrue);
+      expect(publishedPhases, isNot(contains(CheckoutPhase.ready)));
+      expect(audit.begunSessionIds, hasLength(2));
+      expect(audit.abandonedSessionIds, [audit.begunSessionIds.last]);
+    },
+  );
+
+  test(
+    'close waits after durable begin and before retry lookup completes',
+    () async {
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+      await controller.scan();
+      await controller.pay();
+      final publishedPhases = <CheckoutPhase>[];
+      controller.addListener(() => publishedPhases.add(controller.state.phase));
+      audit.retryLimitGate = Completer<void>();
+      audit.retryLimitBlocked = Completer<void>();
+
+      final startup = controller.startNextCustomer();
+      await audit.retryLimitBlocked!.future;
+      final startedSessionId = audit.begunSessionIds.last;
+      var closeReturned = false;
+      final closing = controller.close().then((_) => closeReturned = true);
+      await Future<void>.delayed(Duration.zero);
+      final closeWaitedForStartup = !closeReturned;
+      audit.retryLimitGate!.complete();
+
+      await startup;
+      await closing;
+
+      expect(closeWaitedForStartup, isTrue);
+      expect(publishedPhases, isNot(contains(CheckoutPhase.ready)));
+      expect(audit.abandonedSessionIds, [startedSessionId]);
+    },
+  );
+
   test('storage failure can retry the same retained capture', () async {
     evidence.captureError = StateError('temporary storage failure');
     worker.nextResult = _registeredResult();
@@ -597,6 +657,8 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   List<InterruptedCheckout> interrupted = [];
   int retryLimit = 2;
   Object? retryError;
+  Completer<void>? retryLimitGate;
+  Completer<void>? retryLimitBlocked;
   final List<String> begunSessionIds = [];
   int beginCalls = 0;
   Completer<void>? beginSessionGate;
@@ -645,6 +707,11 @@ final class _FakeAuditStore implements CheckoutAuditStore {
 
   @override
   Future<int> retryLimitForSession(String sessionId) async {
+    final blocked = retryLimitBlocked;
+    if (blocked != null && !blocked.isCompleted) {
+      blocked.complete();
+    }
+    await retryLimitGate?.future;
     final error = retryError;
     if (error != null) throw error;
     return retryLimit;
