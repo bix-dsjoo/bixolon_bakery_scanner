@@ -94,6 +94,8 @@ final class CheckoutController extends ChangeNotifier {
   Product? productForCandidate(String objectId, int recognitionSkuId) =>
       _candidateProducts[objectId]?[recognitionSkuId];
 
+  CatalogRepository get catalogRepository => _catalogRepository;
+
   Future<void> initialize() async {
     _ensureOpen();
     if (_initialized) {
@@ -308,6 +310,25 @@ final class CheckoutController extends ChangeNotifier {
       draft: draft,
       product: product,
       source: CustomerResolutionSource.aiAutoCustomerAccepted,
+    );
+  }
+
+  /// Replaces a previously accepted registered result with a customer-selected
+  /// catalog product. The immutable inference receipt is intentionally left
+  /// untouched; only the audited customer resolution changes.
+  Future<void> overrideResolvedProduct(
+    String objectId,
+    String productId,
+  ) async {
+    _ensurePhase(CheckoutPhase.orderReview, 'product override');
+    final draft = _draft(objectId);
+    if (draft.inferenceObject.isUnknown || !draft.isResolved) {
+      throw StateError('only an accepted registered result can be overridden');
+    }
+    await _resolve(
+      draft: draft,
+      product: _product(productId),
+      source: CustomerResolutionSource.customerOverrodeAuto,
     );
   }
 
@@ -600,7 +621,9 @@ final class CheckoutController extends ChangeNotifier {
     await _auditStore.replaceDraftOrder(_requireSession(), lines);
     _replaceState(
       CheckoutState(
-        phase: CheckoutPhase.customerReview,
+        phase: _state.phase == CheckoutPhase.orderReview
+            ? CheckoutPhase.orderReview
+            : CheckoutPhase.customerReview,
         objectDrafts: drafts,
         lines: lines,
       ),
