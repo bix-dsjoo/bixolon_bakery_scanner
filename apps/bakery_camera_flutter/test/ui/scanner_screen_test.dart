@@ -363,6 +363,49 @@ void main() {
     },
   );
 
+  testWidgets(
+    'retake result exposes action status and recapture returns to live camera',
+    (tester) async {
+      final fixture = ScannerFixture();
+      addTearDown(fixture.close);
+      await _pumpScreen(tester, fixture.controller);
+
+      await tester.tap(find.text('분석하기'));
+      await tester.pump();
+      fixture.worker.complete(
+        buildUiInferenceResult(
+          presentation: buildPresentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'object',
+            retakeObjectIds: const ['object-2'],
+            instructionCode: 'candidate_evidence_weak',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('이 사진만으로 판단하기 어려워요'), findsOneWidget);
+      expect(find.byType(OutlinedButton), findsOneWidget);
+      final overlay = tester
+          .widgetList<CustomPaint>(find.byType(CustomPaint))
+          .where((widget) => widget.painter is ResultOverlayPainter)
+          .single;
+      final retakeItem = (overlay.painter! as ResultOverlayPainter).items
+          .singleWhere((item) => item.objectId == 'object-2');
+      expect(retakeItem.isRetake, isTrue);
+      expect(retakeItem.statusLabel, '다시 촬영 필요');
+      expect(overlayLabel(retakeItem), isNot(contains('%')));
+
+      await tester.tap(find.text('다시 촬영'));
+      await tester.pumpAndSettle();
+
+      expect(fixture.controller.state.result, isNull);
+      expect(find.byType(FilledButton), findsOneWidget);
+      expect(find.text('분석하기'), findsOneWidget);
+    },
+  );
+
   testWidgets('tapping an overlay box selects the matching evaluation row', (
     tester,
   ) async {

@@ -31,7 +31,7 @@ void main() {
     );
   });
 
-  test('builds every overlay label from number and display name only', () {
+  test('builds every overlay label from number and status label only', () {
     const confirmed = ResultOverlayItem(
       objectId: 'object-1',
       displayNumber: 1,
@@ -51,8 +51,23 @@ void main() {
     expect(overlayLabel(unknown), '08  알 수 없음');
   });
 
+  test('retake overlay label uses the action status without a percentage', () {
+    const retake = ResultOverlayItem(
+      objectId: 'object-2',
+      displayNumber: 2,
+      imageBox: Rect.fromLTRB(0, 0, 10, 10),
+      displayName: 'Unknown',
+      isUnknown: true,
+      isRetake: true,
+      statusLabel: '다시 촬영 필요',
+    );
+
+    expect(overlayLabel(retake), '02  다시 촬영 필요');
+    expect(overlayLabel(retake), isNot(contains('%')));
+  });
+
   testWidgets(
-    'paints confirmed teal, Unknown amber, and only selected box thicker',
+    'paints confirmed teal, retake amber, and only selected box thicker',
     (tester) async {
       const viewportSize = Size(120, 100);
       final transform = ContainedImageTransform(
@@ -73,8 +88,10 @@ void main() {
             objectId: 'object-2',
             displayNumber: 2,
             imageBox: Rect.fromLTRB(70, 30, 100, 70),
-            displayName: '알 수 없음',
-            isUnknown: true,
+            displayName: 'Croissant',
+            isUnknown: false,
+            isRetake: true,
+            statusLabel: '다시 촬영 필요',
           ),
         ],
         selectedObjectId: 'object-1',
@@ -94,7 +111,7 @@ void main() {
         xEnd: 25,
         color: teal,
       );
-      final unknownAmberWidth = _coloredRunWidth(
+      final retakeAmberWidth = _coloredRunWidth(
         rgba,
         imageWidth: viewportSize.width.toInt(),
         y: 50,
@@ -104,8 +121,8 @@ void main() {
       );
 
       expect(selectedTealWidth, greaterThan(0));
-      expect(unknownAmberWidth, greaterThan(0));
-      expect(selectedTealWidth, greaterThan(unknownAmberWidth));
+      expect(retakeAmberWidth, greaterThan(0));
+      expect(selectedTealWidth, greaterThan(retakeAmberWidth));
     },
   );
 

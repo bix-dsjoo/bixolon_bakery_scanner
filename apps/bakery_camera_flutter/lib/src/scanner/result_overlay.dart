@@ -7,7 +7,7 @@ const confirmedTeal = Color(0xFF0E8A72);
 const unknownAmber = Color(0xFFC76B00);
 
 String overlayLabel(ResultOverlayItem item) =>
-    '${item.displayNumber.toString().padLeft(2, '0')}  ${item.displayName}';
+    '${item.displayNumber.toString().padLeft(2, '0')}  ${item.statusLabel}';
 
 @immutable
 final class ContainedImageTransform {
@@ -87,13 +87,17 @@ final class ResultOverlayItem {
     required this.imageBox,
     required this.displayName,
     required this.isUnknown,
-  });
+    this.isRetake = false,
+    String? statusLabel,
+  }) : statusLabel = statusLabel ?? displayName;
 
   final String objectId;
   final int displayNumber;
   final Rect imageBox;
   final String displayName;
   final bool isUnknown;
+  final bool isRetake;
+  final String statusLabel;
 
   @override
   bool operator ==(Object other) =>
@@ -102,11 +106,20 @@ final class ResultOverlayItem {
       displayNumber == other.displayNumber &&
       imageBox == other.imageBox &&
       displayName == other.displayName &&
-      isUnknown == other.isUnknown;
+      isUnknown == other.isUnknown &&
+      isRetake == other.isRetake &&
+      statusLabel == other.statusLabel;
 
   @override
-  int get hashCode =>
-      Object.hash(objectId, displayNumber, imageBox, displayName, isUnknown);
+  int get hashCode => Object.hash(
+    objectId,
+    displayNumber,
+    imageBox,
+    displayName,
+    isUnknown,
+    isRetake,
+    statusLabel,
+  );
 }
 
 final class ResultOverlayHitTester {
@@ -176,7 +189,9 @@ final class ResultOverlayPainter extends CustomPainter {
       if (box.isEmpty) {
         continue;
       }
-      final color = item.isUnknown ? unknownAmber : confirmedTeal;
+      final color = item.isRetake || item.isUnknown
+          ? unknownAmber
+          : confirmedTeal;
       final selected = item.objectId == selectedObjectId;
       canvas.drawRect(
         box,

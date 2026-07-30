@@ -11,11 +11,13 @@ final class EvaluationObjectList extends StatelessWidget {
     required this.rows,
     required this.selectedObjectId,
     required this.onSelectObject,
+    required this.retakeObjectIds,
   });
 
   final List<EvaluationObjectRow> rows;
   final String? selectedObjectId;
   final ValueChanged<String> onSelectObject;
+  final Set<String> retakeObjectIds;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -25,6 +27,7 @@ final class EvaluationObjectList extends StatelessWidget {
         _EvaluationObjectRow(
           row: row,
           selected: row.object.objectId == selectedObjectId,
+          isRetake: retakeObjectIds.contains(row.object.objectId),
           onTap: () => onSelectObject(row.object.objectId),
         ),
     ],
@@ -35,11 +38,13 @@ final class _EvaluationObjectRow extends StatefulWidget {
   const _EvaluationObjectRow({
     required this.row,
     required this.selected,
+    required this.isRetake,
     required this.onTap,
   });
 
   final EvaluationObjectRow row;
   final bool selected;
+  final bool isRetake;
   final VoidCallback onTap;
 
   @override
@@ -53,7 +58,14 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
   Widget build(BuildContext context) {
     final row = widget.row;
     final object = row.object;
-    final semanticColor = object.isUnknown ? unknownAmber : confirmedTeal;
+    final statusLabel = widget.isRetake
+        ? '다시 촬영 필요'
+        : object.isUnknown
+        ? '알 수 없음'
+        : object.skuName;
+    final semanticColor = widget.isRetake || object.isUnknown
+        ? unknownAmber
+        : confirmedTeal;
     final border = _focused
         ? Border.all(color: actionBlue, width: 2)
         : widget.selected
@@ -68,7 +80,7 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
           button: true,
           label:
               '${row.displayNumber}번 '
-              '${object.isUnknown ? '알 수 없음' : object.skuName}, '
+              '$statusLabel, '
               '${row.decisionLabel}, 판정 점수 '
               '${evaluationPercent(row.decisionScore)}',
           child: Material(
@@ -115,7 +127,7 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            object.isUnknown ? '알 수 없음' : object.skuName,
+                            statusLabel,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.bodyMedium
@@ -142,7 +154,7 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
             ),
           ),
         ),
-        if (widget.selected && object.isUnknown)
+        if (widget.selected && widget.row.showCandidates)
           CandidateEvidenceTable(object: object),
       ],
     );

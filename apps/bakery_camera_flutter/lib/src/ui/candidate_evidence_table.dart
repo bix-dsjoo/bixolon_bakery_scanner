@@ -19,11 +19,19 @@ final class CandidateEvidenceTable extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'AI가 이 빵의 제품을 알 수 없다고 판단했어요. '
-            '가능성이 높은 제품 3개를 참고용으로 보여드려요.',
+            '가능성이 높은 제품 3개',
             style: Theme.of(
               context,
-            ).textTheme.bodySmall?.copyWith(color: bixolonMutedInk, height: 1.45),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'AI가 이 빵의 제품을 알 수 없다고 판단했어요. '
+            '가능성이 높은 제품 3개를 참고용으로 보여드려요.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: bixolonMutedInk,
+              height: 1.45,
+            ),
           ),
           const SizedBox(height: 10),
           const _CandidateHeader(),

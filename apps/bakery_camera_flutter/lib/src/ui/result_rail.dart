@@ -7,6 +7,7 @@ import 'bixolon_brand.dart';
 import 'evaluation_object_list.dart';
 import 'evaluation_summary.dart';
 import 'evaluation_view_data.dart';
+import 'retake_guidance.dart';
 import 'result_disclosures.dart';
 
 final class ResultRail extends StatelessWidget {
@@ -56,36 +57,75 @@ final class _ResultContent extends StatelessWidget {
     }
 
     final data = EvaluationPanelData.fromState(state);
+    final diagnostics = _EvaluationDetails(
+      data: data,
+      selectedObjectId: state.selectedObjectId,
+      onSelectObject: onSelectObject,
+      showQuantity: data.presentation.finalCountUsable,
+      retakeObjectIds: data.presentation.retakeObjectIds.toSet(),
+    );
+    if (data.presentation.state == InferencePresentationState.needsRetake) {
+      return RetakeGuidance(
+        primaryInstruction: data.presentation.primaryInstruction!,
+        diagnostics: diagnostics,
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         EvaluationSummary(data: data),
         const SizedBox(height: 18),
-        if (data.rows.isEmpty)
-          const _EmptyDetection()
-        else ...[
-          Text('대상별 결과', style: Theme.of(context).textTheme.labelMedium),
-          const SizedBox(height: 6),
-          EvaluationObjectList(
-            rows: data.rows,
-            selectedObjectId: state.selectedObjectId,
-            onSelectObject: onSelectObject,
-          ),
-        ],
-        const SizedBox(height: 10),
-        QuantityDisclosure(data: data),
-        StageTimingDisclosure(data: data),
-        if (data.startupMetrics case final metrics?)
-          ModelInfoDisclosure(
-            metrics: metrics,
-            selectedObject: data.rows
-                .where((row) => row.object.objectId == state.selectedObjectId)
-                .map((row) => row.object)
-                .firstOrNull,
-          ),
+        diagnostics,
       ],
     );
   }
+}
+
+final class _EvaluationDetails extends StatelessWidget {
+  const _EvaluationDetails({
+    required this.data,
+    required this.selectedObjectId,
+    required this.onSelectObject,
+    required this.showQuantity,
+    required this.retakeObjectIds,
+  });
+
+  final EvaluationPanelData data;
+  final String? selectedObjectId;
+  final ValueChanged<String?> onSelectObject;
+  final bool showQuantity;
+  final Set<String> retakeObjectIds;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      if (data.rows.isEmpty)
+        const _EmptyDetection()
+      else ...[
+        Text('대상별 결과', style: Theme.of(context).textTheme.labelMedium),
+        const SizedBox(height: 6),
+        EvaluationObjectList(
+          rows: data.rows,
+          selectedObjectId: selectedObjectId,
+          onSelectObject: onSelectObject,
+          retakeObjectIds: retakeObjectIds,
+        ),
+      ],
+      const SizedBox(height: 10),
+      if (showQuantity) QuantityDisclosure(data: data),
+      StageTimingDisclosure(data: data),
+      if (data.startupMetrics case final metrics?)
+        ModelInfoDisclosure(
+          metrics: metrics,
+          selectedObject: data.rows
+              .where((row) => row.object.objectId == selectedObjectId)
+              .map((row) => row.object)
+              .firstOrNull,
+        ),
+    ],
+  );
 }
 
 final class _NonResultState extends StatelessWidget {
@@ -97,10 +137,7 @@ final class _NonResultState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (state.workerStatus == WorkerStatus.fatal) {
-      return _FailureState(
-        title: '모델을 준비하지 못했어요.',
-        action: '앱을 다시 시작해 주세요.',
-      );
+      return _FailureState(title: '모델을 준비하지 못했어요.', action: '앱을 다시 시작해 주세요.');
     }
     if (state.analysisError != null) {
       return _FailureState(

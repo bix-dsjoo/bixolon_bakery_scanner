@@ -9,6 +9,7 @@ import '../scanner/scanner_controller.dart';
 import 'app_theme.dart';
 import 'bixolon_brand.dart';
 import 'canonical_camera_preview.dart';
+import 'evaluation_view_data.dart';
 import 'result_rail.dart';
 import 'status_strip.dart';
 
@@ -260,6 +261,9 @@ final class _CameraViewport extends StatelessWidget {
       final result = state.result;
       final capturedPath = state.capturedImagePath;
       if (capturedPath != null) {
+        final presentation = result == null
+            ? null
+            : EvaluationPanelData.fromState(state).presentation;
         final transform = result == null
             ? null
             : ContainedImageTransform(
@@ -268,23 +272,36 @@ final class _CameraViewport extends StatelessWidget {
               );
         final overlayItems = result == null
             ? const <ResultOverlayItem>[]
-            : [
-                for (final entry in result.objects.asMap().entries)
-                  ResultOverlayItem(
-                    objectId: entry.value.objectId,
-                    displayNumber: entry.key + 1,
-                    imageBox: Rect.fromLTRB(
-                      entry.value.bboxXyxy[0],
-                      entry.value.bboxXyxy[1],
-                      entry.value.bboxXyxy[2],
-                      entry.value.bboxXyxy[3],
-                    ),
-                    displayName: entry.value.isUnknown
+            : result.objects
+                  .asMap()
+                  .entries
+                  .map((entry) {
+                    final isRetake = presentation!.retakeObjectIds.contains(
+                      entry.value.objectId,
+                    );
+                    final statusLabel = isRetake
+                        ? '다시 촬영 필요'
+                        : entry.value.isUnknown
                         ? '알 수 없음'
-                        : entry.value.skuName,
-                    isUnknown: entry.value.isUnknown,
-                  ),
-              ];
+                        : entry.value.skuName;
+                    return ResultOverlayItem(
+                      objectId: entry.value.objectId,
+                      displayNumber: entry.key + 1,
+                      imageBox: Rect.fromLTRB(
+                        entry.value.bboxXyxy[0],
+                        entry.value.bboxXyxy[1],
+                        entry.value.bboxXyxy[2],
+                        entry.value.bboxXyxy[3],
+                      ),
+                      displayName: entry.value.isUnknown
+                          ? '알 수 없음'
+                          : entry.value.skuName,
+                      isUnknown: entry.value.isUnknown,
+                      isRetake: isRetake,
+                      statusLabel: statusLabel,
+                    );
+                  })
+                  .toList(growable: false);
         return Stack(
           fit: StackFit.expand,
           children: [
