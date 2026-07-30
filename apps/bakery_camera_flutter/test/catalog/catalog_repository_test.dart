@@ -79,6 +79,69 @@ void main() {
   );
 
   test(
+    'customer discovery orders equal completed counts by customer sort and excludes open orders',
+    () async {
+      final initialCatalog = await repository.activeCatalog();
+      await (database.update(database.products)
+            ..where(
+              (row) =>
+                  row.productId.equals(initialCatalog.products[1].productId),
+            ))
+          .write(
+            ProductsCompanion(
+              sortOrder: Value(initialCatalog.products.first.sortOrder),
+            ),
+          );
+      final snapshot = await repository.activeCatalog();
+      final firstTiedProduct = snapshot.products[0];
+      final secondTiedProduct = snapshot.products[1];
+      final openOrderProduct = snapshot.products[2];
+      expect(firstTiedProduct.sortOrder, secondTiedProduct.sortOrder);
+      expect(firstTiedProduct.productId, isNot(secondTiedProduct.productId));
+
+      await _insertOrder(
+        database,
+        sessionId: 'session-tied-first',
+        orderId: 'order-tied-first',
+        product: firstTiedProduct,
+        quantity: 4,
+        completed: true,
+      );
+      await _insertOrder(
+        database,
+        sessionId: 'session-tied-second',
+        orderId: 'order-tied-second',
+        product: secondTiedProduct,
+        quantity: 4,
+        completed: true,
+      );
+      await _insertOrder(
+        database,
+        sessionId: 'session-open-high-count',
+        orderId: 'order-open-high-count',
+        product: openOrderProduct,
+        quantity: 99,
+        completed: false,
+      );
+
+      final discovery = await repository.customerDiscoveryFor(snapshot);
+      final expectedTiedOrder = [firstTiedProduct, secondTiedProduct]
+        ..sort(Product.customerSort);
+
+      expect(
+        discovery.featuredProducts.take(2).map((product) => product.productId),
+        orderedEquals(expectedTiedOrder.map((product) => product.productId)),
+      );
+      expect(
+        discovery.featuredProducts.indexWhere(
+          (product) => product.productId == openOrderProduct.productId,
+        ),
+        greaterThanOrEqualTo(2),
+      );
+    },
+  );
+
+  test(
     'customer product ordering resolves exact sort-order ties by product ID',
     () {
       final laterId = _product('product-z', sortOrder: 7);
