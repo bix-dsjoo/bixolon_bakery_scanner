@@ -27,6 +27,24 @@ final class WorkerRequestException implements Exception {
   String toString() => 'WorkerRequestException($code): $message';
 }
 
+/// Immutable observation of events the strict client has already accepted.
+/// It adds no worker commands and cannot be used to change runtime policy.
+final class WorkerDiagnosticSnapshot {
+  WorkerDiagnosticSnapshot._({
+    required this.status,
+    required this.startupMetrics,
+    required this.fatalEvent,
+    required this.lastWorkerError,
+    required List<String> diagnostics,
+  }) : diagnostics = List.unmodifiable(diagnostics);
+
+  final WorkerStatus status;
+  final StartupMetrics? startupMetrics;
+  final FatalWorkerEvent? fatalEvent;
+  final WorkerErrorEvent? lastWorkerError;
+  final List<String> diagnostics;
+}
+
 final class InferenceWorkerClient {
   InferenceWorkerClient({
     required this.config,
@@ -54,10 +72,20 @@ final class InferenceWorkerClient {
   int _requestSequence = 0;
   String? _shutdownRequestId;
   bool _shuttingDown = false;
+  StartupMetrics? _startupMetrics;
+  FatalWorkerEvent? _fatalEvent;
+  WorkerErrorEvent? _lastWorkerError;
 
   WorkerStatus get status => _status;
   Stream<WorkerEvent> get events => _events.stream;
   List<String> get diagnostics => List.unmodifiable(_diagnostics);
+  WorkerDiagnosticSnapshot get diagnosticSnapshot => WorkerDiagnosticSnapshot._(
+    status: _status,
+    startupMetrics: _startupMetrics,
+    fatalEvent: _fatalEvent,
+    lastWorkerError: _lastWorkerError,
+    diagnostics: _diagnostics,
+  );
 
   Future<void> start() {
     if (_status != WorkerStatus.notStarted) {
@@ -304,6 +332,7 @@ final class InferenceWorkerClient {
           throw const FormatException('ready event arrived out of order');
         }
         _status = WorkerStatus.ready;
+        _startupMetrics = event.metrics;
         final start = _startCompleter;
         if (start == null || start.isCompleted) {
           throw const FormatException('ready event was emitted more than once');
@@ -379,6 +408,7 @@ final class InferenceWorkerClient {
   }
 
   void _handleWorkerError(WorkerErrorEvent event) {
+    _lastWorkerError = event;
     final requestId = event.requestId;
     if (requestId == null) {
       throw FormatException(
@@ -433,10 +463,11 @@ final class InferenceWorkerClient {
       return;
     }
     _status = WorkerStatus.fatal;
-    _events.add(
-      observableEvent ??
-          FatalWorkerEvent(code: 'client_fatal', message: error.toString()),
-    );
+    final fatal =
+        observableEvent ??
+        FatalWorkerEvent(code: 'client_fatal', message: error.toString());
+    _fatalEvent = fatal;
+    _events.add(fatal);
     final start = _startCompleter;
     if (start != null && !start.isCompleted) {
       start.completeError(error, stackTrace);
@@ -477,15 +508,20 @@ final class InferenceWorkerClient {
   static Future<WorkerProcessAdapter> _startOwnedProcess(
     InferenceLaunchConfig config,
   ) async {
-    final process = await Process.start(config.pythonExecutable, [
-      config.workerScript,
-      '--repo-root',
-      config.repoRoot,
-      '--device',
-      'auto',
-      '--warmup-image',
-      config.warmupImage,
-    ], runInShell: false, environment: const {'PYTHONDONTWRITEBYTECODE': '1'});
+    final process = await Process.start(
+      config.pythonExecutable,
+      [
+        config.workerScript,
+        '--repo-root',
+        config.repoRoot,
+        '--device',
+        'auto',
+        '--warmup-image',
+        config.warmupImage,
+      ],
+      runInShell: false,
+      environment: const {'PYTHONDONTWRITEBYTECODE': '1'},
+    );
     return _IoWorkerProcessAdapter(process);
   }
 }

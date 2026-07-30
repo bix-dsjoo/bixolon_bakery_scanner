@@ -40,6 +40,8 @@ final class AuditFileStore implements AuditDisplayPathResolver {
   final Sha256FileHasher _hasher;
   String? _canonicalRoot;
 
+  String get rootPath => _root.path;
+
   Future<StoredAuditFile> retainCapture({
     required String sessionId,
     required int attemptNumber,

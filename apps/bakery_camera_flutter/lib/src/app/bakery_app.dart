@@ -9,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../admin/admin_models.dart';
+import '../admin/diagnostics_models.dart';
+import '../admin/diagnostics_service.dart';
 import '../admin/review_service.dart';
 import '../admin/product_management_service.dart';
 import '../audit/audit_file_store.dart';
@@ -19,6 +21,7 @@ import '../checkout/checkout_controller.dart';
 import '../checkout/checkout_models.dart';
 import '../checkout/simulated_payment_service.dart';
 import '../inference/inference_launch_config.dart';
+import '../inference/inference_models.dart';
 import '../inference/inference_worker_client.dart';
 import '../persistence/database_catalog_repository.dart';
 import '../persistence/database_admin_repository.dart';
@@ -28,6 +31,7 @@ import '../scanner/scanner_controller.dart';
 import '../ui/app_theme.dart';
 import '../ui/admin/admin_destination.dart';
 import '../ui/admin/dashboard_screen.dart';
+import '../ui/admin/diagnostics_screen.dart';
 import '../ui/admin/transaction_history_screen.dart';
 import '../ui/admin/review_inbox_screen.dart';
 import '../ui/admin/product_management_screen.dart';
@@ -74,6 +78,7 @@ class _BakeryAppState extends State<BakeryApp> {
                   services.admin,
                   services.reviews,
                   services.products,
+                  services.diagnostics,
                   onAttention,
                 ),
           );
@@ -96,9 +101,10 @@ class _BakeryAppState extends State<BakeryApp> {
         environment: Platform.environment,
         executablePath: Platform.resolvedExecutable,
       );
+      final workerClient = InferenceWorkerClient(config: config);
       final scanner = ScannerController(
         camera: CameraService(),
-        worker: InferenceWorkerSession(InferenceWorkerClient(config: config)),
+        worker: InferenceWorkerSession(workerClient),
       );
       final runtime = _lockedRuntimeSnapshot();
       final store = DatabaseCheckoutAuditStore(
@@ -131,6 +137,17 @@ class _BakeryAppState extends State<BakeryApp> {
         ),
       );
       await controller.initialize();
+      final diagnostics = DiagnosticsService.live(
+        liveState: () => _diagnosticsLiveState(
+          scanner.state,
+          workerClient.diagnosticSnapshot,
+        ),
+        expectedArtifacts: _diagnosticsExpectedArtifacts(runtime),
+        audit: DatabaseDiagnosticsAuditReader(
+          database: database,
+          auditRoot: auditFiles.rootPath,
+        ),
+      );
       return _AppServices(
         checkout: controller,
         admin: DatabaseAdminRepository(
@@ -164,6 +181,7 @@ class _BakeryAppState extends State<BakeryApp> {
             forbiddenArtifactHashes: await _generatedUiIllustrationHashes(),
           ),
         ),
+        diagnostics: diagnostics,
       );
     } catch (_) {
       await database.close();
@@ -177,6 +195,7 @@ class _BakeryAppState extends State<BakeryApp> {
     DatabaseAdminRepository admin,
     DatabaseReviewService reviews,
     ProductManagementService products,
+    DiagnosticsService diagnostics,
     ValueChanged<AttentionItem> onAttentionSelected,
   ) {
     if (destination == AdminDestination.dashboard) {
@@ -194,6 +213,9 @@ class _BakeryAppState extends State<BakeryApp> {
     }
     if (destination == AdminDestination.products) {
       return ProductManagementScreen(service: products);
+    }
+    if (destination == AdminDestination.diagnostics) {
+      return DiagnosticsScreen(load: diagnostics.refresh);
     }
     return Center(
       child: Text(
@@ -236,13 +258,67 @@ final class _AppServices {
     required this.admin,
     required this.reviews,
     required this.products,
+    required this.diagnostics,
   });
 
   final CheckoutController checkout;
   final DatabaseAdminRepository admin;
   final DatabaseReviewService reviews;
   final ProductManagementService products;
+  final DiagnosticsService diagnostics;
 }
+
+DiagnosticsLiveState _diagnosticsLiveState(
+  ScannerState scanner,
+  WorkerDiagnosticSnapshot worker,
+) {
+  final metrics = worker.startupMetrics;
+  final error =
+      worker.fatalEvent?.message ??
+      worker.lastWorkerError?.message ??
+      scanner.workerError ??
+      scanner.analysisError;
+  final workerState =
+      worker.status == WorkerStatus.fatal && worker.fatalEvent != null
+      ? WorkerDiagnosticsState.fatal(
+          code: worker.fatalEvent!.code,
+          message: worker.fatalEvent!.message,
+          diagnostics: worker.diagnostics,
+        )
+      : worker.status == WorkerStatus.ready && metrics != null
+      ? WorkerDiagnosticsState.ready(
+          device: metrics.device,
+          loadMs: metrics.loadMs,
+          warmupMs: metrics.warmupMs,
+          detectorThreshold: metrics.detectorThreshold,
+          lastError: error,
+          diagnostics: worker.diagnostics,
+        )
+      : WorkerDiagnosticsState.status(
+          status: WorkerDiagnosticsStatus.values.byName(worker.status.name),
+          device: metrics?.device ?? scanner.device,
+          lastError: error,
+          diagnostics: worker.diagnostics,
+        );
+  return DiagnosticsLiveState(
+    cameraReady: scanner.cameraReady,
+    cameraLastError: scanner.cameraError,
+    worker: workerState,
+  );
+}
+
+DiagnosticsExpectedArtifacts _diagnosticsExpectedArtifacts(
+  AuditRuntimeSnapshot runtime,
+) => DiagnosticsExpectedArtifacts(
+  detectorId: runtime.detectorId,
+  detectorSha256: runtime.detectorSha256,
+  repvitId: runtime.repvitArtifactId,
+  repvitSha256: runtime.repvitSha256,
+  dinov3Id: runtime.dinov3ArtifactId,
+  dinov3Sha256: runtime.dinov3Sha256,
+  fusionPolicyId: runtime.fusionPolicyId,
+  fusionPolicySha256: runtime.fusionPolicySha256,
+);
 
 DateRange _seoulTodayRange() {
   const seoulOffset = Duration(hours: 9);
