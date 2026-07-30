@@ -68,6 +68,7 @@ final class CheckoutController extends ChangeNotifier {
   bool _initialized = false;
   bool _closed = false;
   bool _sessionActive = false;
+  bool _sessionStartInFlight = false;
   bool _manualCartMode = false;
   Map<String, Map<int, Product?>> _candidateProducts = const {};
   final Set<String> _explicitlyResolvedObjectIds = {};
@@ -95,6 +96,7 @@ final class CheckoutController extends ChangeNotifier {
       throw StateError('checkout controller can only be initialized once');
     }
     _initialized = true;
+    _reserveSessionStart();
     try {
       _interruptedCheckouts = List.unmodifiable(
         await _auditStore.interruptNonterminalSessions(_utcNow()),
@@ -121,6 +123,8 @@ final class CheckoutController extends ChangeNotifier {
         abandonReason: 'checkout_initialization_failure',
         error: error,
       );
+    } finally {
+      _sessionStartInFlight = false;
     }
   }
 
@@ -474,6 +478,7 @@ final class CheckoutController extends ChangeNotifier {
         _state.phase != CheckoutPhase.terminalFailure) {
       throw StateError('next customer requires a terminal checkout');
     }
+    _reserveSessionStart();
     try {
       if (_sessionActive) {
         await _abandonActiveSession('next_customer_recovery');
@@ -487,6 +492,8 @@ final class CheckoutController extends ChangeNotifier {
         abandonReason: 'checkout_session_start_failure',
         error: error,
       );
+    } finally {
+      _sessionStartInFlight = false;
     }
   }
 
@@ -498,6 +505,9 @@ final class CheckoutController extends ChangeNotifier {
   }
 
   Future<void> _beginSession() async {
+    if (!_sessionStartInFlight) {
+      throw StateError('checkout session startup must be reserved');
+    }
     if (_sessionActive) {
       throw StateError('cannot overwrite an active checkout session');
     }
@@ -525,6 +535,13 @@ final class CheckoutController extends ChangeNotifier {
     _candidateProducts = const {};
     _explicitlyResolvedObjectIds.clear();
     _manualQuantities.clear();
+  }
+
+  void _reserveSessionStart() {
+    if (_sessionStartInFlight) {
+      throw StateError('checkout session startup is already in progress');
+    }
+    _sessionStartInFlight = true;
   }
 
   Future<void> _resolve({

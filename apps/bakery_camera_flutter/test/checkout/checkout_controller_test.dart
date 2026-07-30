@@ -400,6 +400,35 @@ void main() {
     },
   );
 
+  test(
+    'next customer startup is single flight before a durable session begins',
+    () async {
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+      await controller.scan();
+      await controller.pay();
+      audit.beginSessionGate = Completer<void>();
+      audit.beginSessionBlocked = Completer<void>();
+
+      final first = controller.startNextCustomer();
+      await audit.beginSessionBlocked!.future;
+      final second = controller.startNextCustomer();
+      final secondResult = expectLater(second, throwsStateError);
+      await Future<void>.delayed(Duration.zero);
+      audit.retryError = StateError('settings snapshot unavailable');
+      audit.beginSessionGate!.complete();
+
+      await first;
+      await secondResult;
+
+      expect(audit.beginCalls, 2);
+      expect(audit.begunSessionIds, hasLength(2));
+      final failedSessionId = audit.begunSessionIds.last;
+      expect(audit.abandonedSessionIds, [failedSessionId]);
+      expect(controller.state.phase, CheckoutPhase.terminalFailure);
+    },
+  );
+
   test('storage failure can retry the same retained capture', () async {
     evidence.captureError = StateError('temporary storage failure');
     worker.nextResult = _registeredResult();
@@ -569,6 +598,9 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   int retryLimit = 2;
   Object? retryError;
   final List<String> begunSessionIds = [];
+  int beginCalls = 0;
+  Completer<void>? beginSessionGate;
+  Completer<void>? beginSessionBlocked;
   int manualCartEntries = 0;
   final List<ObjectResolutionDraft> resolutions = [];
   int resolutionAttempts = 0;
@@ -599,6 +631,12 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   @override
   Future<String> beginSession(SessionSnapshot snapshot) async {
     events.add('begin');
+    beginCalls += 1;
+    final blocked = beginSessionBlocked;
+    if (blocked != null && !blocked.isCompleted) {
+      blocked.complete();
+    }
+    await beginSessionGate?.future;
     final sessionId =
         '00000000-0000-4000-8000-${(begunSessionIds.length + 1).toString().padLeft(12, '0')}';
     begunSessionIds.add(sessionId);
