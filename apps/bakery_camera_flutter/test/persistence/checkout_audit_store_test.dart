@@ -113,6 +113,8 @@ void main() {
 
       expect(firstSession.settingsRevisionId, 'settings-v1');
       expect(nextSession.settingsRevisionId, 'settings-v2');
+      expect(await store.retryLimitForSession(sessionId), 2);
+      expect(await store.retryLimitForSession(nextSessionId), 3);
     },
   );
 
@@ -912,6 +914,44 @@ END
       expect(await db.select(db.simulatedPayments).get(), isEmpty);
     },
   );
+
+  test('manual-cart mode requires exhausted retries and pays without object '
+      'resolutions', () async {
+    final sessionId = await _beginSession(store, revision);
+    await _completeAttempt(store, sessionId, attemptNumber: 1);
+    await _completeAttempt(store, sessionId, attemptNumber: 2);
+
+    await expectLater(
+      store.enterManualCartMode(sessionId, DateTime.utc(2026, 7, 30, 8, 1)),
+      throwsA(isA<StateError>()),
+    );
+
+    await _completeAttempt(store, sessionId, attemptNumber: 3);
+    await store.enterManualCartMode(sessionId, DateTime.utc(2026, 7, 30, 8, 2));
+    final order = FinalOrderDraft(
+      sessionId: sessionId,
+      catalogRevision: revision,
+      lines: [CheckoutLine(product: product, quantity: 1)],
+      createdAt: DateTime.utc(2026, 7, 30, 8, 3),
+    );
+    await store.replaceDraftOrder(sessionId, order.lines);
+
+    final receipt = await store.commitSimulatedPayment(order);
+
+    expect(receipt.amount, product.unitPrice);
+    final finalLine = await db.select(db.finalOrderLines).getSingle();
+    expect(
+      finalLine.resolutionSource,
+      CustomerResolutionSource.customerManualCart.storageValue,
+    );
+    expect(await db.select(db.objectResolutions).get(), isEmpty);
+    expect(
+      (await db.select(db.auditEvents).get()).where(
+        (event) => event.eventType == 'manual_cart_entered',
+      ),
+      hasLength(1),
+    );
+  });
 }
 
 Future<String> _beginSession(
@@ -926,14 +966,19 @@ Future<String> _beginSession(
 
 Future<StagedAttempt> _completeAttempt(
   DatabaseCheckoutAuditStore store,
-  String sessionId,
-) async {
+  String sessionId, {
+  int attemptNumber = 1,
+}) async {
   final attempt = await store.stageAttempt(
     sessionId: sessionId,
-    attemptNumber: 1,
+    attemptNumber: attemptNumber,
     image: CapturedAuditFile(
-      fileId: 'image-1',
-      path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
+      fileId: 'image-$attemptNumber',
+      path: _capturePath(
+        sessionId,
+        DateTime.utc(2026, 7, 30, 8),
+        attemptNumber,
+      ),
       sha256: _hash('4'),
     ),
   );

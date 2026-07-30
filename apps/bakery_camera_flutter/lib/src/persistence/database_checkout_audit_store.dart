@@ -447,6 +447,56 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
   }
 
   @override
+  Future<int> retryLimitForSession(String sessionId) async {
+    final session = await (_database.select(
+      _database.checkoutSessions,
+    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+    if (session == null) {
+      throw StateError('checkout session does not exist');
+    }
+    final settings =
+        await (_database.select(_database.settingsRevisions)..where(
+              (row) => row.revisionId.equals(session.settingsRevisionId),
+            ))
+            .getSingle();
+    return settings.retryLimit;
+  }
+
+  @override
+  Future<void> enterManualCartMode(String sessionId, DateTime enteredAt) {
+    _utcMicros(enteredAt, 'enteredAt');
+    return _database.transaction(() async {
+      final session = await _activeSession(sessionId);
+      final settings =
+          await (_database.select(_database.settingsRevisions)..where(
+                (row) => row.revisionId.equals(session.settingsRevisionId),
+              ))
+              .getSingle();
+      final completedAttempts =
+          await (_database.select(_database.scanAttempts)..where(
+                (row) =>
+                    row.sessionId.equals(sessionId) &
+                    row.status.equals('completed'),
+              ))
+              .get();
+      if (completedAttempts.length <= settings.retryLimit) {
+        throw StateError('manual cart requires exhausted scan retries');
+      }
+      final existing =
+          await (_database.select(_database.auditEvents)..where(
+                (row) =>
+                    row.sessionId.equals(sessionId) &
+                    row.eventType.equals('manual_cart_entered'),
+              ))
+              .getSingleOrNull();
+      if (existing != null) {
+        throw StateError('manual cart mode is already active');
+      }
+      await _appendEvent(sessionId, 'manual_cart_entered', enteredAt);
+    });
+  }
+
+  @override
   Future<StagedAttempt> stageAttempt({
     required String sessionId,
     required int attemptNumber,
@@ -764,7 +814,15 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
                     (row) => row.attemptId.equals(latestAttempt.attemptId),
                   ))
                   .get();
-        final resolutions = objects.isEmpty
+        final manualCartMode =
+            await (_database.select(_database.auditEvents)..where(
+                  (row) =>
+                      row.sessionId.equals(order.sessionId) &
+                      row.eventType.equals('manual_cart_entered'),
+                ))
+                .getSingleOrNull() !=
+            null;
+        final resolutions = manualCartMode || objects.isEmpty
             ? const <ObjectResolutionRow>[]
             : await (_database.select(_database.objectResolutions)..where(
                     (row) =>
@@ -777,7 +835,7 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
                         ),
                   ))
                   .get();
-        if (resolutions.length != objects.length) {
+        if (!manualCartMode && resolutions.length != objects.length) {
           throw StateError('every current inference object must be resolved');
         }
 

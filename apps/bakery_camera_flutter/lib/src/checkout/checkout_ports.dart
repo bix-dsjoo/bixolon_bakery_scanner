@@ -7,6 +7,8 @@ abstract interface class CheckoutAuditStore {
     DateTime detectedAt,
   );
   Future<String> beginSession(SessionSnapshot snapshot);
+  Future<int> retryLimitForSession(String sessionId);
+  Future<void> enterManualCartMode(String sessionId, DateTime enteredAt);
   Future<StagedAttempt> stageAttempt({
     required String sessionId,
     required int attemptNumber,
@@ -28,4 +30,19 @@ abstract interface class CatalogRepository {
   Future<Product?> productForRecognitionSku(int recognitionSkuId);
   Future<CustomerCatalogDiscovery> customerDiscovery();
   Future<List<Product>> search(String query);
+}
+
+abstract interface class CheckoutEvidenceStore {
+  Future<CapturedAuditFile> retainCapture({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required String sourcePath,
+  });
+  Future<void> retainInferenceReceipt({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required ImmutableJsonReceipt receipt,
+  });
 }

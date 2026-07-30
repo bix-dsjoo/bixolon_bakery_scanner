@@ -69,6 +69,21 @@ final class ObjectDraft {
     );
   }
 
+  factory ObjectDraft.unresolvedCatalog(InferenceObject inferenceObject) {
+    if (inferenceObject.isUnknown || inferenceObject.candidates.isNotEmpty) {
+      throw ArgumentError.value(
+        inferenceObject,
+        'inferenceObject',
+        'only registered inference objects can require catalog selection',
+      );
+    }
+    return ObjectDraft._(
+      inferenceObject: inferenceObject,
+      acceptedProduct: null,
+      candidates: const [],
+    );
+  }
+
   factory ObjectDraft.accepted({
     required InferenceObject inferenceObject,
     required Product product,
@@ -83,6 +98,9 @@ final class ObjectDraft {
   final List<InferenceCandidate> candidates;
 
   bool get isResolved => acceptedProduct != null;
+  bool get requiresCatalogSelection =>
+      acceptedProduct == null && candidates.isEmpty;
+  Product? get product => acceptedProduct;
 }
 
 /// An audited customer action, distinct from the model inference evidence.

@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
 
 import '../checkout/checkout_models.dart';
+import '../checkout/checkout_ports.dart';
 import 'canonical_json_encoder.dart';
 import 'sha256_file_hasher.dart';
 
@@ -482,5 +483,46 @@ final class AuditFileStore {
         'must be a safe POSIX relative path',
       );
     }
+  }
+}
+
+final class AuditFileCheckoutEvidenceStore implements CheckoutEvidenceStore {
+  const AuditFileCheckoutEvidenceStore(this._files);
+
+  final AuditFileStore _files;
+
+  @override
+  Future<CapturedAuditFile> retainCapture({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required String sourcePath,
+  }) async {
+    final stored = await _files.retainCapture(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+      capturedAtUtc: capturedAtUtc,
+      sourcePath: sourcePath,
+    );
+    return CapturedAuditFile(
+      fileId: stored.relativePath,
+      path: stored.relativePath,
+      sha256: stored.sha256,
+    );
+  }
+
+  @override
+  Future<void> retainInferenceReceipt({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required ImmutableJsonReceipt receipt,
+  }) async {
+    await _files.retainInferenceReceipt(
+      sessionId: sessionId,
+      attemptNumber: attemptNumber,
+      capturedAtUtc: capturedAtUtc,
+      receipt: receipt,
+    );
   }
 }

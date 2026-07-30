@@ -16,6 +16,13 @@ final class CheckoutState {
   final CheckoutFailure? failure;
   final PaymentReceipt? paymentReceipt;
 
+  ObjectDraft? get activeObject {
+    for (final draft in objectDrafts) {
+      if (!draft.isResolved) return draft;
+    }
+    return null;
+  }
+
   bool get canPay =>
       phase == CheckoutPhase.orderReview &&
       objectDrafts.every((draft) => draft.isResolved) &&

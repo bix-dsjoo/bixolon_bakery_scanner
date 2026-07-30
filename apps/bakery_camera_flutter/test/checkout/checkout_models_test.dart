@@ -61,6 +61,20 @@ void main() {
   });
 
   test(
+    'registered object without an active product remains catalog selectable',
+    () {
+      final inferenceObject = buildUiInferenceResult().objects.first;
+      final draft = ObjectDraft.unresolvedCatalog(inferenceObject);
+
+      expect(draft.inferenceObject, same(inferenceObject));
+      expect(draft.acceptedProduct, isNull);
+      expect(draft.candidates, isEmpty);
+      expect(draft.requiresCatalogSelection, isTrue);
+      expect(draft.isResolved, isFalse);
+    },
+  );
+
+  test(
     'checkout state can pay only for a reviewed resolved nonempty order',
     () {
       final product = Product(
