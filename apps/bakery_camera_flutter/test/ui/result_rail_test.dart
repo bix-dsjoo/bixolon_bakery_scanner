@@ -1,6 +1,7 @@
 import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
 import 'package:bakery_camera_prototype/src/scanner/scanner_controller.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
+import 'package:bakery_camera_prototype/src/ui/bixolon_brand.dart';
 import 'package:bakery_camera_prototype/src/ui/result_rail.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -33,13 +34,13 @@ void main() {
     expect(find.byKey(const Key('candidate-row')), findsNWidgets(3));
     expect(
       find.text(
-        'AI가 이 빵의 품목을 알 수 없다고 판단했어요. '
-        '가능성이 높은 품목 3개를 참고용으로 보여드려요.',
+        'AI가 이 빵의 제품을 알 수 없다고 판단했어요. '
+        '가능성이 높은 제품 3개를 참고용으로 보여드려요.',
       ),
       findsOneWidget,
     );
     expect(find.text('순위'), findsOneWidget);
-    expect(find.text('예상 품목'), findsOneWidget);
+    expect(find.text('예상 제품'), findsOneWidget);
     expect(find.text('판정 점수'), findsOneWidget);
     expect(find.byType(Checkbox), findsNothing);
     expect(find.byType(Radio<int>), findsNothing);
@@ -60,6 +61,26 @@ void main() {
     await tester.pump();
 
     expect(selected, 'object-2');
+  });
+
+  testWidgets('selected row uses neutral selection without replacing status', (
+    tester,
+  ) async {
+    await _pumpRail(tester, selectedObjectId: 'object-3');
+
+    final rowSurface = tester.widget<Container>(
+      find.byKey(const Key('object-row-surface-object-3')),
+    );
+    final rowDecoration = rowSurface.decoration! as BoxDecoration;
+    expect(rowDecoration.color, bixolonCanvas);
+    expect(rowDecoration.border!.top.color, bixolonInk);
+    expect(rowDecoration.border!.top.width, 1);
+
+    final statusDot = tester.widget<Container>(
+      find.byKey(const Key('object-semantic-dot-object-3')),
+    );
+    final statusDecoration = statusDot.decoration! as BoxDecoration;
+    expect(statusDecoration.color, unknownAmber);
   });
 
   testWidgets('secondary disclosures separate quantities timing and evidence', (

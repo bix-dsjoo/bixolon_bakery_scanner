@@ -177,9 +177,9 @@ final class EvaluationStageTiming {
 }
 
 String decisionPathLabel(String path) => switch (path) {
-  'repvit_direct' => 'RepViT 직접 확정',
-  'dinov3_confirmed' => 'DINOv3 재확인',
-  'fusion_ranked' => 'Fusion 확정',
+  'repvit_direct' => '첫 분석에서 확정',
+  'dinov3_confirmed' => '추가 확인 후 확정',
+  'fusion_ranked' => '추가 확인 후 확정',
   'unknown_top3' => '알 수 없음',
   _ => throw ArgumentError.value(path, 'path', '지원하지 않는 판정 경로'),
 };

@@ -28,9 +28,9 @@ void main() {
   });
 
   test('decision paths use evaluator language and reject unknown contracts', () {
-    expect(decisionPathLabel('repvit_direct'), 'RepViT 직접 확정');
-    expect(decisionPathLabel('dinov3_confirmed'), 'DINOv3 재확인');
-    expect(decisionPathLabel('fusion_ranked'), 'Fusion 확정');
+    expect(decisionPathLabel('repvit_direct'), '첫 분석에서 확정');
+    expect(decisionPathLabel('dinov3_confirmed'), '추가 확인 후 확정');
+    expect(decisionPathLabel('fusion_ranked'), '추가 확인 후 확정');
     expect(decisionPathLabel('unknown_top3'), '알 수 없음');
     expect(() => decisionPathLabel('silent_guess'), throwsArgumentError);
   });

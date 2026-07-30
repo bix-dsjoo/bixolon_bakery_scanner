@@ -56,13 +56,9 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
     final semanticColor = object.isUnknown ? unknownAmber : confirmedTeal;
     final border = _focused
         ? Border.all(color: actionBlue, width: 2)
-        : Border(
-            left: BorderSide(
-              color: widget.selected ? bixolonOrange : semanticColor,
-              width: widget.selected ? 3 : 2,
-            ),
-            bottom: const BorderSide(color: bixolonDivider),
-          );
+        : widget.selected
+        ? Border.all(color: bixolonInk)
+        : const Border(bottom: BorderSide(color: bixolonDivider));
     return Column(
       key: const Key('evaluation-object-row'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -86,7 +82,10 @@ final class _EvaluationObjectRowState extends State<_EvaluationObjectRow> {
                 key: Key('object-row-surface-${object.objectId}'),
                 constraints: const BoxConstraints(minHeight: 52),
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                decoration: BoxDecoration(border: border),
+                decoration: BoxDecoration(
+                  color: widget.selected ? bixolonCanvas : Colors.transparent,
+                  border: border,
+                ),
                 child: Row(
                   children: [
                     SizedBox(

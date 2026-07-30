@@ -309,7 +309,7 @@ void main() {
       expect(find.text('GPU'), findsWidgets);
       expect(find.text('Croissant'), findsWidgets);
       expect(find.text('92.0%'), findsOneWidget);
-      expect(find.text('RepViT 직접 확정'), findsOneWidget);
+      expect(find.text('첫 분석에서 확정'), findsOneWidget);
       expect(find.text('알 수 없음'), findsWidgets);
       await tester.tap(find.byKey(const Key('evaluation-object-row-object-2')));
       await tester.pump();

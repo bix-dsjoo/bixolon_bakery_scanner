@@ -31,6 +31,26 @@ void main() {
     );
   });
 
+  test('builds every overlay label from number and display name only', () {
+    const confirmed = ResultOverlayItem(
+      objectId: 'object-1',
+      displayNumber: 1,
+      imageBox: Rect.fromLTRB(0, 0, 10, 10),
+      displayName: 'Pastry Bread',
+      isUnknown: false,
+    );
+    const unknown = ResultOverlayItem(
+      objectId: 'object-2',
+      displayNumber: 8,
+      imageBox: Rect.fromLTRB(0, 0, 10, 10),
+      displayName: '알 수 없음',
+      isUnknown: true,
+    );
+
+    expect(overlayLabel(confirmed), '01  Pastry Bread');
+    expect(overlayLabel(unknown), '08  알 수 없음');
+  });
+
   testWidgets(
     'paints confirmed teal, Unknown amber, and only selected box thicker',
     (tester) async {
@@ -89,10 +109,48 @@ void main() {
     },
   );
 
-  testWidgets('keeps the compact number visible inside a shallow image', (
+  testWidgets('paints the selected box last when boxes overlap', (
     tester,
   ) async {
-    const viewportSize = Size(120, 20);
+    const viewportSize = Size(100, 100);
+    final painter = ResultOverlayPainter(
+      transform: ContainedImageTransform(
+        imageSize: viewportSize,
+        viewportSize: viewportSize,
+      ),
+      items: const [
+        ResultOverlayItem(
+          objectId: 'selected',
+          displayNumber: 1,
+          imageBox: Rect.fromLTRB(20, 20, 80, 80),
+          displayName: 'Pastry Bread',
+          isUnknown: false,
+        ),
+        ResultOverlayItem(
+          objectId: 'later-source-item',
+          displayNumber: 2,
+          imageBox: Rect.fromLTRB(20, 20, 80, 80),
+          displayName: '알 수 없음',
+          isUnknown: true,
+        ),
+      ],
+      selectedObjectId: 'selected',
+    );
+
+    final rgba = (await tester.runAsync(
+      () => _paintRgba(painter, viewportSize),
+    ))!;
+
+    expect(
+      _pixelColor(rgba, imageWidth: 100, x: 20, y: 50),
+      const Color(0xFF0E8A72),
+    );
+  });
+
+  testWidgets('keeps the full label visible inside a compact image', (
+    tester,
+  ) async {
+    const viewportSize = Size(120, 40);
     final painter = ResultOverlayPainter(
       transform: ContainedImageTransform(
         imageSize: viewportSize,
@@ -102,7 +160,7 @@ void main() {
         ResultOverlayItem(
           objectId: 'object-1',
           displayNumber: 1,
-          imageBox: Rect.fromLTRB(20, 2, 80, 18),
+          imageBox: Rect.fromLTRB(20, 12, 80, 36),
           displayName: 'Croissant',
           isUnknown: false,
         ),
@@ -117,7 +175,7 @@ void main() {
       _coloredRunWidth(
         rgba,
         imageWidth: viewportSize.width.toInt(),
-        y: 10,
+        y: 18,
         xStart: 15,
         xEnd: 25,
         color: const Color(0xFF0E8A72),
@@ -125,7 +183,7 @@ void main() {
       greaterThan(0),
     );
     expect(
-      rgba.getUint8((10 * viewportSize.width.toInt() + 30) * 4 + 3),
+      rgba.getUint8((18 * viewportSize.width.toInt() + 30) * 4 + 3),
       greaterThan(0),
     );
   });
@@ -229,4 +287,19 @@ int _coloredRunWidth(
     }
   }
   return count;
+}
+
+Color _pixelColor(
+  ByteData rgba, {
+  required int imageWidth,
+  required int x,
+  required int y,
+}) {
+  final offset = (y * imageWidth + x) * 4;
+  return Color.fromARGB(
+    rgba.getUint8(offset + 3),
+    rgba.getUint8(offset),
+    rgba.getUint8(offset + 1),
+    rgba.getUint8(offset + 2),
+  );
 }

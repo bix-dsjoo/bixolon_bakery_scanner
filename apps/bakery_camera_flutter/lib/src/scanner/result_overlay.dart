@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 const confirmedTeal = Color(0xFF0E8A72);
 const unknownAmber = Color(0xFFC76B00);
 
+String overlayLabel(ResultOverlayItem item) =>
+    '${item.displayNumber.toString().padLeft(2, '0')}  ${item.displayName}';
+
 @immutable
 final class ContainedImageTransform {
   ContainedImageTransform({required this.imageSize, required this.viewportSize})
@@ -164,7 +167,11 @@ final class ResultOverlayPainter extends CustomPainter {
 
     canvas.save();
     canvas.clipRect(visibleImageBounds);
-    for (final item in items) {
+    final paintItems = [
+      ...items.where((item) => item.objectId != selectedObjectId),
+      ...items.where((item) => item.objectId == selectedObjectId),
+    ];
+    for (final item in paintItems) {
       final box = transform.mapBox(item.imageBox).intersect(visibleImageBounds);
       if (box.isEmpty) {
         continue;
@@ -179,24 +186,13 @@ final class ResultOverlayPainter extends CustomPainter {
           ..isAntiAlias = false
           ..strokeWidth = selected ? 3 : 1.5,
       );
-      _paintNumberChip(
+      _paintLabel(
         canvas,
         visibleImageBounds: visibleImageBounds,
         box: box,
-        label: item.displayNumber.toString().padLeft(2, '0'),
+        label: overlayLabel(item),
         color: color,
       );
-      if (selected) {
-        _paintLabel(
-          canvas,
-          visibleImageBounds: visibleImageBounds,
-          box: box,
-          label:
-              '${item.displayNumber.toString().padLeft(2, '0')}  '
-              '${item.displayName}',
-          color: color,
-        );
-      }
     }
     canvas.restore();
   }
@@ -265,46 +261,6 @@ final class ResultOverlayPainter extends CustomPainter {
       canvas,
       labelRect.topLeft + const Offset(horizontalPadding, verticalPadding),
     );
-  }
-
-  static void _paintNumberChip(
-    Canvas canvas, {
-    required Rect visibleImageBounds,
-    required Rect box,
-    required String label,
-    required Color color,
-  }) {
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final chipSize = Size(textPainter.width + 8, textPainter.height + 4);
-    if (chipSize.width > visibleImageBounds.width ||
-        chipSize.height > visibleImageBounds.height) {
-      return;
-    }
-    final left = box.left
-        .clamp(
-          visibleImageBounds.left,
-          visibleImageBounds.right - chipSize.width,
-        )
-        .toDouble();
-    final top = box.top
-        .clamp(
-          visibleImageBounds.top,
-          visibleImageBounds.bottom - chipSize.height,
-        )
-        .toDouble();
-    final chip = Offset(left, top) & chipSize;
-    canvas.drawRect(chip, Paint()..color = color);
-    textPainter.paint(canvas, chip.topLeft + const Offset(4, 2));
   }
 
   @override

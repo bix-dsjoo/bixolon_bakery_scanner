@@ -8,6 +8,7 @@ import '../scanner/result_overlay.dart' hide confirmedTeal, unknownAmber;
 import '../scanner/scanner_controller.dart';
 import 'app_theme.dart';
 import 'bixolon_brand.dart';
+import 'canonical_camera_preview.dart';
 import 'result_rail.dart';
 import 'status_strip.dart';
 
@@ -319,7 +320,7 @@ final class _CameraViewport extends StatelessWidget {
       }
       final preview = controller.previewController;
       if (state.cameraReady && preview != null) {
-        return CameraPreview(preview);
+        return CanonicalCameraPreview(child: CameraPreview(preview));
       }
       return Center(
         child: Text(
