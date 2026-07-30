@@ -270,6 +270,7 @@ class BenchmarkImageRow:
     object_count: int
     total_ms: float
     records: tuple[ObjectRecord, ...]
+    false_positive_proposal_indices: tuple[int, ...]
     canonical_ms: float
     detector_ms: float
     crop_ms: float
@@ -293,13 +294,29 @@ class BenchmarkImageRow:
         object.__setattr__(self, "records", records)
         for field in ("total_ms", "canonical_ms", "detector_ms", "crop_ms", "repvit_ms", "dinov3_ms", "fusion_ms"):
             _require_finite_non_negative(getattr(self, field), field)
-        _require_exact_int(self.dino_object_count, "dino_object_count")
-        if self.dino_object_count > len(records):
-            raise ValueError("DINO object count must not exceed records")
         _require_exact_int(self.registered_count, "registered_count")
         _require_exact_int(self.unknown_count, "unknown_count")
-        if self.registered_count + self.unknown_count != len(records):
-            raise ValueError("decision counts must equal the number of records")
+        decision_count = self.registered_count + self.unknown_count
+        _require_exact_int(self.dino_object_count, "dino_object_count")
+        if self.dino_object_count > decision_count:
+            raise ValueError("DINO object count must not exceed the decision count")
+        false_positives = tuple(self.false_positive_proposal_indices)
+        for index in false_positives:
+            _require_exact_int(index, "false_positive_proposal_indices")
+        if (
+            false_positives != tuple(sorted(false_positives))
+            or len(set(false_positives)) != len(false_positives)
+        ):
+            raise ValueError(
+                "false_positive_proposal_indices must be sorted and unique"
+            )
+        if any(index >= decision_count for index in false_positives):
+            raise ValueError(
+                "false_positive_proposal_indices must be within the decision count"
+            )
+        object.__setattr__(
+            self, "false_positive_proposal_indices", false_positives
+        )
 
 
 @dataclass(frozen=True, slots=True)

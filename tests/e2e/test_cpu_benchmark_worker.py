@@ -37,6 +37,7 @@ from bakery_scanner.e2e.cpu_regression import (
     ImageRegressionRecord,
     ObjectOutcome,
     ObjectRecord,
+    build_image_regression_record,
 )
 
 
@@ -45,12 +46,13 @@ _HASH = "a" * 64
 
 
 class StepClock:
-    def __init__(self) -> None:
+    def __init__(self, *, step: float = 0.02) -> None:
         self.value = 0.0
+        self.step = step
 
     def __call__(self) -> float:
         value = self.value
-        self.value += 0.001
+        self.value += self.step
         return value
 
 
@@ -413,6 +415,32 @@ def test_prepare_rejects_manifest_threshold_mismatch():
         worker.prepare()
 
 
+def test_prepare_rejects_functioning_detector_without_applied_threshold():
+    recorder = RecordingWorkerDependencies()
+    dependencies = recorder.dependencies()
+
+    class DetectorWithoutThreshold:
+        def __init__(self) -> None:
+            self.delegate = RecordingDetector(
+                recorder.all_samples,
+                score_threshold=0.5,
+            )
+
+        def predict(self, image_id: int, image: Image.Image):
+            return self.delegate.predict(image_id, image)
+
+    worker = BenchmarkWorker(
+        _worker_spec(),
+        dependencies=replace(
+            dependencies,
+            load_detector=lambda checkpoint, threshold: DetectorWithoutThreshold(),
+        ),
+    )
+
+    with pytest.raises(BenchmarkWorkerFailure, match="threshold"):
+        worker.prepare()
+
+
 def test_prepare_rejects_artifact_hash_mismatch():
     recorder = RecordingWorkerDependencies(artifact_hash="b" * 64)
     worker = BenchmarkWorker(_worker_spec(), dependencies=recorder.dependencies())
@@ -465,4 +493,128 @@ def test_run_pass_rejects_regression_record_with_changed_expected_sku():
     keys = tuple(sample.key for sample in recorder.measured_samples)
 
     with pytest.raises(BenchmarkWorkerFailure, match="regression record"):
+        worker.run_pass(RunPassCommand(pass_index=0, image_keys=keys))
+
+
+def test_run_pass_preserves_one_missed_gt_and_one_false_positive_proposal():
+    recorder = RecordingWorkerDependencies()
+    dependencies = recorder.dependencies()
+    measured_image_id = recorder.measured_samples[0].source_image_id
+
+    class MissAndExtraDetector(RecordingDetector):
+        def predict(
+            self, image_id: int, image: Image.Image
+        ) -> tuple[BreadProposal, ...]:
+            proposals = list(super().predict(image_id, image))
+            if image_id == measured_image_id:
+                proposals.pop()
+                proposals.append(
+                    BreadProposal(
+                        image_id=image_id,
+                        source="rfdetr_large_bakery_v1",
+                        score=0.8,
+                        box=Box(80.0, 80.0, 8.0, 8.0),
+                        image_width=image.width,
+                        image_height=image.height,
+                    )
+                )
+            return tuple(proposals)
+
+    detector = MissAndExtraDetector(
+        recorder.all_samples,
+        score_threshold=0.5,
+    )
+    worker = BenchmarkWorker(
+        _worker_spec(),
+        dependencies=replace(
+            dependencies,
+            load_detector=lambda checkpoint, threshold: detector,
+            build_regression_record=build_image_regression_record,
+        ),
+    )
+    worker.prepare()
+    keys = tuple(sample.key for sample in recorder.measured_samples)
+
+    result = worker.run_pass(RunPassCommand(pass_index=0, image_keys=keys))
+
+    row = result.rows[0]
+    assert row.object_count == 5
+    assert len(row.records) == 5
+    assert sum(
+        record.outcome is ObjectOutcome.MISSED for record in row.records
+    ) == 1
+    assert row.false_positive_proposal_indices == (4,)
+    assert row.registered_count + row.unknown_count == 5
+
+
+def test_run_pass_rejects_total_that_cannot_cover_sequential_stage_timings():
+    recorder = RecordingWorkerDependencies()
+    recorder.clock = StepClock(step=0.001)
+    worker = BenchmarkWorker(
+        _worker_spec(),
+        dependencies=recorder.dependencies(),
+    )
+    worker.prepare()
+    keys = tuple(sample.key for sample in recorder.measured_samples)
+
+    with pytest.raises(BenchmarkWorkerFailure, match="total timing"):
+        worker.run_pass(RunPassCommand(pass_index=0, image_keys=keys))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "top_level_key",
+        "false_positive_overlap",
+        "wrong_iou",
+        "swapped_indexes",
+        "below_threshold_indexes",
+    ],
+)
+def test_run_pass_rejects_malformed_regression_record_mutations(mutation):
+    recorder = RecordingWorkerDependencies()
+    dependencies = recorder.dependencies()
+
+    def malformed_record(sample, proposals, decisions):
+        record = build_image_regression_record(sample, proposals, decisions)
+        if mutation == "top_level_key":
+            object.__setattr__(record, "sample_key", "other/image.jpg")
+            return record
+        if mutation == "false_positive_overlap":
+            return replace(record, false_positive_proposal_indices=(0,))
+        objects = list(record.objects)
+        if mutation == "wrong_iou":
+            objects[0] = replace(objects[0], iou=0.5)
+        else:
+            first, second = objects[:2]
+            objects[0] = replace(
+                first,
+                outcome=ObjectOutcome.MISCLASSIFIED,
+                predicted_sku=decisions[1].sku_id,
+                matched_proposal_index=1,
+                iou=0.5,
+            )
+            objects[1] = replace(
+                second,
+                outcome=ObjectOutcome.MISCLASSIFIED,
+                predicted_sku=decisions[0].sku_id,
+                matched_proposal_index=0,
+                iou=0.5,
+            )
+            if mutation == "below_threshold_indexes":
+                object.__setattr__(objects[0], "iou", 0.0)
+                object.__setattr__(objects[1], "iou", 0.0)
+        return replace(record, objects=tuple(objects))
+
+    worker = BenchmarkWorker(
+        _worker_spec(),
+        dependencies=replace(
+            dependencies,
+            build_regression_record=malformed_record,
+        ),
+    )
+    worker.prepare()
+    keys = tuple(sample.key for sample in recorder.measured_samples)
+
+    with pytest.raises(BenchmarkWorkerFailure, match="regression"):
         worker.run_pass(RunPassCommand(pass_index=0, image_keys=keys))

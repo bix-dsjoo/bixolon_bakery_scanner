@@ -11,7 +11,7 @@ import os
 import platform
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -46,8 +46,6 @@ from .cpu_dataset import CpuEvaluationSample, load_cpu_evaluation_samples
 from .cpu_profile import resolve_batch2_e3_m3_h3
 from .cpu_regression import (
     ImageRegressionRecord,
-    ObjectOutcome,
-    ObjectRecord,
     build_image_regression_record,
 )
 
@@ -333,7 +331,7 @@ class BenchmarkWorker:
             detector_ms=detector_ms,
             classifier_timings=classifier_timings,
             dino_object_count=dino_count,
-            records=record.objects,
+            regression_record=record,
         )
 
     def _run_serial(
@@ -414,7 +412,7 @@ class BenchmarkWorker:
         detector_ms: float,
         classifier_timings: _ClassifierTimings,
         dino_object_count: int,
-        records: Sequence[ObjectRecord],
+        regression_record: ImageRegressionRecord,
     ) -> BenchmarkImageRow:
         for name, value in (
             ("total_ms", total_ms),
@@ -426,14 +424,28 @@ class BenchmarkWorker:
             ("fusion_ms", classifier_timings.fusion_ms),
         ):
             _require_finite_non_negative(value, name)
-        if total_ms + 1e-9 < canonical_ms + detector_ms:
+        sequential_ms = (
+            canonical_ms
+            + detector_ms
+            + classifier_timings.crop_ms
+            + classifier_timings.repvit_ms
+            + classifier_timings.dinov3_ms
+            + classifier_timings.fusion_ms
+        )
+        if total_ms + 1e-9 < sequential_ms:
             raise BenchmarkWorkerFailure(
-                "total timing must include canonicalization and detector timing"
+                "total timing must include every sequential stage timing"
             )
 
-        ordered_records = tuple(records)
-        _validate_regression_records(
-            sample, proposals, decisions, ordered_records
+        ordered_records = tuple(regression_record.objects)
+        false_positive_proposal_indices = tuple(
+            regression_record.false_positive_proposal_indices
+        )
+        _validate_regression_record(
+            sample,
+            proposals,
+            decisions,
+            regression_record,
         )
         registered_count = sum(
             decision.decision == "sku" for decision in decisions
@@ -445,16 +457,13 @@ class BenchmarkWorker:
             raise BenchmarkWorkerFailure(
                 "every classifier decision must be registered or Unknown"
             )
-        if registered_count + unknown_count != len(ordered_records):
-            raise BenchmarkWorkerFailure(
-                "decision counts must equal the regression record count"
-            )
         return BenchmarkImageRow(
             key=sample.key,
             profile=sample.profile,
             object_count=len(sample.targets),
             total_ms=total_ms,
             records=ordered_records,
+            false_positive_proposal_indices=false_positive_proposal_indices,
             canonical_ms=canonical_ms,
             detector_ms=detector_ms,
             crop_ms=classifier_timings.crop_ms,
@@ -725,12 +734,15 @@ def _finite_threshold(value: object, field: str) -> float:
 
 
 def _require_loaded_detector_threshold(detector: object, expected: float) -> None:
-    applied = getattr(
-        detector,
-        "_score_threshold",
-        getattr(detector, "score_threshold", None),
-    )
-    if applied is not None and (
+    missing = object()
+    applied = getattr(detector, "_score_threshold", missing)
+    if applied is missing:
+        applied = getattr(detector, "score_threshold", missing)
+    if applied is missing:
+        raise BenchmarkWorkerFailure(
+            "loaded detector must expose its applied threshold"
+        )
+    if (
         isinstance(applied, bool)
         or not isinstance(applied, (int, float))
         or float(applied) != expected
@@ -935,71 +947,24 @@ def _validate_dino_count(
         )
 
 
-def _validate_regression_records(
+def _validate_regression_record(
     sample: CpuEvaluationSample,
     proposals: tuple[BreadProposal, ...],
     decisions: tuple[ClassificationDecision, ...],
-    records: tuple[ObjectRecord, ...],
+    regression_record: ImageRegressionRecord,
 ) -> None:
-    ordered_targets = tuple(
-        sorted(sample.targets, key=lambda target: target.annotation_id)
-    )
-    expected_ids = tuple(target.annotation_id for target in ordered_targets)
-    if (
-        len(records) != len(sample.targets)
-        or tuple(record.annotation_id for record in records) != expected_ids
-        or any(record.sample_key != sample.key for record in records)
-    ):
-        raise BenchmarkWorkerFailure(
-            "regression records must agree with the sample key and object order"
+    try:
+        expected = build_image_regression_record(
+            sample, proposals, decisions
         )
-    matched: set[int] = set()
-    for target, record in zip(ordered_targets, records, strict=True):
-        if record.expected_sku != target.sku_id:
-            raise BenchmarkWorkerFailure(
-                "regression record expected SKU changed from the fixed target"
-            )
-        index = record.matched_proposal_index
-        if index is None:
-            continue
-        if index in matched or not 0 <= index < len(proposals):
-            raise BenchmarkWorkerFailure(
-                "regression records must retain unique detector indexes"
-            )
-        matched.add(index)
-        decision = decisions[index]
-        if decision.decision == "sku":
-            expected_outcome = (
-                ObjectOutcome.CORRECT
-                if decision.sku_id == target.sku_id
-                else ObjectOutcome.MISCLASSIFIED
-            )
-            if (
-                record.predicted_sku != decision.sku_id
-                or record.top3_sku_ids
-                or record.outcome is not expected_outcome
-            ):
-                raise BenchmarkWorkerFailure(
-                    "regression record does not agree with its SKU decision"
-                )
-        else:
-            top3 = tuple(candidate.sku_id for candidate in decision.top3)
-            expected_outcome = (
-                ObjectOutcome.TOP3_CANDIDATE
-                if target.sku_id in top3
-                else ObjectOutcome.CANDIDATE_OUT_UNKNOWN
-            )
-            if (
-                record.predicted_sku is not None
-                or record.top3_sku_ids != top3
-                or record.outcome is not expected_outcome
-            ):
-                raise BenchmarkWorkerFailure(
-                    "regression record does not agree with its Unknown decision"
-                )
-    if matched != set(range(len(decisions))):
+    except (TypeError, ValueError) as exc:
         raise BenchmarkWorkerFailure(
-            "regression records must retain every detector and decision index"
+            "regression record inputs are invalid"
+        ) from exc
+    if regression_record != expected:
+        raise BenchmarkWorkerFailure(
+            "regression record must preserve deterministic matching, "
+            "misses, decisions, and false-positive proposal indexes"
         )
 
 

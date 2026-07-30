@@ -64,6 +64,7 @@ def _image_row() -> BenchmarkImageRow:
         object_count=1,
         total_ms=10.0,
         records=(_record(),),
+        false_positive_proposal_indices=(),
         canonical_ms=1.0,
         detector_ms=2.0,
         crop_ms=1.0,
@@ -144,12 +145,61 @@ def test_resolved_runtime_rejects_null_and_non_cpu_values():
         ({"total_ms": float("nan")}, "finite"),
         ({"detector_ms": -1.0}, "non-negative"),
         ({"dino_object_count": 3}, "DINO"),
-        ({"registered_count": 2, "unknown_count": 2}, "decision counts"),
+        ({"registered_count": -1}, "non-negative"),
     ],
 )
 def test_image_row_rejects_invalid_measurement(changes, message):
     with pytest.raises(ValueError, match=message):
         replace(_image_row(), **changes)
+
+
+def test_image_row_deeply_freezes_false_positive_proposal_indices():
+    mutable_indices = [0]
+    row = replace(
+        _image_row(),
+        false_positive_proposal_indices=mutable_indices,
+    )
+
+    mutable_indices.append(1)
+
+    assert row.false_positive_proposal_indices == (0,)
+
+
+def test_image_row_preserves_missed_gt_record_without_a_decision():
+    missed = replace(
+        _record(),
+        outcome=ObjectOutcome.MISSED,
+        predicted_sku=None,
+        matched_proposal_index=None,
+        iou=None,
+    )
+
+    row = replace(
+        _image_row(),
+        records=(missed,),
+        registered_count=0,
+        unknown_count=0,
+    )
+
+    assert row.object_count == 1
+    assert row.records == (missed,)
+    assert row.registered_count + row.unknown_count == 0
+
+
+@pytest.mark.parametrize(
+    "indices, message",
+    [
+        ((0, 0), "unique"),
+        ((1,), "decision count"),
+        ((-1,), "non-negative"),
+        ((False,), "non-negative"),
+    ],
+)
+def test_image_row_rejects_invalid_false_positive_proposal_indices(
+    indices, message
+):
+    with pytest.raises(ValueError, match=message):
+        replace(_image_row(), false_positive_proposal_indices=indices)
 
 
 def test_run_pass_command_rejects_missing_duplicate_or_empty_keys():
