@@ -368,6 +368,104 @@ END
   );
 
   test(
+    'startup recovery flags a missing referenced capture and retains its audit row',
+    () async {
+      final fixture = await _fileBackedPaidOrder(
+        database: db,
+        revision: revision,
+        product: product,
+      );
+      addTearDown(() => fixture.temporaryDirectory.delete(recursive: true));
+
+      await File(fixture.files.resolve(fixture.capturePath)).delete();
+
+      final report = await fixture.store.recoverInterruptedCheckout(
+        DateTime.utc(2026, 7, 30, 9),
+      );
+
+      expect(report.evidenceIssuePaths, contains(fixture.capturePath));
+      expect(
+        (await db.select(db.auditEvents).get()).where(
+          (event) =>
+              event.sessionId == fixture.sessionId &&
+              event.eventType == 'evidence_recovery_required',
+        ),
+        hasLength(1),
+      );
+      expect(
+        await (db.select(
+          db.scanAttempts,
+        )..where((row) => row.sessionId.equals(fixture.sessionId))).get(),
+        hasLength(1),
+      );
+
+      final secondReport = await fixture.store.recoverInterruptedCheckout(
+        DateTime.utc(2026, 7, 30, 10),
+      );
+      expect(secondReport.evidenceIssuePaths, contains(fixture.capturePath));
+      expect(
+        (await db.select(db.auditEvents).get()).where(
+          (event) =>
+              event.sessionId == fixture.sessionId &&
+              event.eventType == 'evidence_recovery_required',
+        ),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'startup recovery flags tampered inference and final-order receipts by metadata',
+    () async {
+      final fixture = await _fileBackedPaidOrder(
+        database: db,
+        revision: revision,
+        product: product,
+      );
+      addTearDown(() => fixture.temporaryDirectory.delete(recursive: true));
+
+      await File(
+        fixture.files.resolve(fixture.inferenceReceiptPath),
+      ).writeAsString('{"tampered":true}', flush: true);
+      await File(
+        fixture.files.resolve(fixture.finalOrderReceiptPath),
+      ).writeAsString('{"tampered":true}', flush: true);
+
+      final report = await fixture.store.recoverInterruptedCheckout(
+        DateTime.utc(2026, 7, 30, 9),
+      );
+
+      expect(
+        report.evidenceIssuePaths,
+        containsAll([
+          fixture.inferenceReceiptPath,
+          fixture.finalOrderReceiptPath,
+        ]),
+      );
+      expect(
+        (await db.select(db.auditEvents).get()).where(
+          (event) =>
+              event.sessionId == fixture.sessionId &&
+              event.eventType == 'evidence_recovery_required',
+        ),
+        hasLength(2),
+      );
+      expect(
+        await File(
+          fixture.files.resolve(fixture.inferenceReceiptPath),
+        ).readAsString(),
+        '{"tampered":true}',
+      );
+      expect(
+        await File(
+          fixture.files.resolve(fixture.finalOrderReceiptPath),
+        ).readAsString(),
+        '{"tampered":true}',
+      );
+    },
+  );
+
+  test(
     'complete attempt rejects model provenance outside session snapshot',
     () async {
       var mismatchId = 0;
@@ -1245,3 +1343,105 @@ final _receiptSha = _receiptHash(_receiptJson);
 
 String _receiptHash(String json) =>
     sha256.convert(utf8.encode(json)).toString();
+
+final class _FileBackedPaidOrder {
+  const _FileBackedPaidOrder({
+    required this.temporaryDirectory,
+    required this.files,
+    required this.store,
+    required this.sessionId,
+    required this.capturePath,
+    required this.inferenceReceiptPath,
+    required this.finalOrderReceiptPath,
+  });
+
+  final Directory temporaryDirectory;
+  final AuditFileStore files;
+  final DatabaseCheckoutAuditStore store;
+  final String sessionId;
+  final String capturePath;
+  final String inferenceReceiptPath;
+  final String finalOrderReceiptPath;
+}
+
+Future<_FileBackedPaidOrder> _fileBackedPaidOrder({
+  required BakeryDatabase database,
+  required CatalogRevision revision,
+  required Product product,
+}) async {
+  final temporaryDirectory = await Directory.systemTemp.createTemp(
+    'audit-recovery-reference-',
+  );
+  final files = AuditFileStore(Directory('${temporaryDirectory.path}/audit'));
+  var id = 900;
+  final store = DatabaseCheckoutAuditStore(
+    database: database,
+    runtimeSnapshot: _runtimeSnapshot(),
+    references: AuditFileStoreReferenceVerifier(files),
+    createId: (_) => _uuidFor(++id),
+    now: () => DateTime.utc(2026, 7, 30, 8),
+  );
+  final sessionId = await _beginSession(store, revision);
+  final capturedAt = DateTime.utc(2026, 7, 30, 8);
+  final source = File('${temporaryDirectory.path}/capture.jpg');
+  await source.writeAsBytes(const [1, 2, 3, 4], flush: true);
+  final capture = await files.retainCapture(
+    sessionId: sessionId,
+    attemptNumber: 1,
+    capturedAtUtc: capturedAt,
+    sourcePath: source.path,
+  );
+  final attempt = await store.stageAttempt(
+    sessionId: sessionId,
+    attemptNumber: 1,
+    image: CapturedAuditFile(
+      fileId: 'capture-1',
+      path: capture.relativePath,
+      sha256: capture.sha256,
+    ),
+  );
+  await store.completeAttempt(
+    attempt: attempt,
+    result: buildUiInferenceResult(),
+    receipt: ImmutableJsonReceipt(
+      canonicalJson: _receiptJson,
+      sha256: _receiptSha,
+    ),
+  );
+  for (final inferenceObject in buildUiInferenceResult().objects) {
+    await store.recordResolution(
+      ObjectResolutionDraft(
+        sessionId: sessionId,
+        inferenceObject: inferenceObject,
+        product: product,
+        source: inferenceObject.isUnknown
+            ? CustomerResolutionSource.customerCatalog
+            : CustomerResolutionSource.aiAutoCustomerAccepted,
+        resolvedAt: DateTime.utc(2026, 7, 30, 8, 1),
+      ),
+    );
+  }
+  final order = FinalOrderDraft(
+    sessionId: sessionId,
+    catalogRevision: revision,
+    lines: [CheckoutLine(product: product, quantity: 2)],
+    createdAt: DateTime.utc(2026, 7, 30, 8, 2),
+  );
+  await store.replaceDraftOrder(sessionId, order.lines);
+  await store.commitSimulatedPayment(order);
+  final savedAttempt = await (database.select(
+    database.scanAttempts,
+  )..where((row) => row.attemptId.equals(attempt.attemptId))).getSingle();
+  final savedOrder = await (database.select(
+    database.finalOrders,
+  )..where((row) => row.sessionId.equals(sessionId))).getSingle();
+  return _FileBackedPaidOrder(
+    temporaryDirectory: temporaryDirectory,
+    files: files,
+    store: store,
+    sessionId: sessionId,
+    capturePath: savedAttempt.imageRelativePath,
+    inferenceReceiptPath: savedAttempt.receiptRelativePath!,
+    finalOrderReceiptPath: savedOrder.receiptRelativePath,
+  );
+}

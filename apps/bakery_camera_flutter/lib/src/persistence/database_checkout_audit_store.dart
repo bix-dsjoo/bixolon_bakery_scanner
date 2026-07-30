@@ -1,6 +1,7 @@
 // ignore_for_file: prefer_initializing_formals
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
@@ -152,6 +153,30 @@ final class AuditFileStoreReferenceVerifier
   ) => _files.findRecoveryCandidates(
     referencedRelativePaths: referencedRelativePaths,
   );
+
+  /// Verifies every durable database reference at startup. Missing and changed
+  /// evidence are reported, never removed or rewritten.
+  Future<List<String>> findInvalidRecoveryReferences(
+    Iterable<StoredAuditFile> references,
+  ) async {
+    final issues = <String>{};
+    for (final reference in references) {
+      try {
+        await _files.verifyExisting(
+          relativePath: reference.relativePath,
+          byteSize: reference.byteSize,
+          sha256: reference.sha256,
+        );
+      } on FileSystemException {
+        issues.add(reference.relativePath);
+      } on StateError {
+        issues.add(reference.relativePath);
+      } on ArgumentError {
+        issues.add(reference.relativePath);
+      }
+    }
+    return List.unmodifiable(issues.toList()..sort());
+  }
 
   VerifiedAuditFileReference _reference(StoredAuditFile file) =>
       VerifiedAuditFileReference(
@@ -425,26 +450,56 @@ final class DatabaseCheckoutAuditStore
     if (references is! AuditFileStoreReferenceVerifier) return const [];
     final attempts = await _database.select(_database.scanAttempts).get();
     final orders = await _database.select(_database.finalOrders).get();
-    final paths = [
-      for (final attempt in attempts) attempt.imageRelativePath,
+    final evidence = [
       for (final attempt in attempts)
-        if (attempt.receiptRelativePath != null) attempt.receiptRelativePath!,
-      for (final order in orders) order.receiptRelativePath,
+        _RecoveryEvidenceReference(
+          sessionId: attempt.sessionId,
+          file: StoredAuditFile(
+            relativePath: attempt.imageRelativePath,
+            byteSize: attempt.imageByteSize,
+            sha256: attempt.imageSha256,
+          ),
+        ),
+      for (final attempt in attempts)
+        if (attempt.receiptRelativePath != null)
+          _RecoveryEvidenceReference(
+            sessionId: attempt.sessionId,
+            file: StoredAuditFile(
+              relativePath: attempt.receiptRelativePath!,
+              byteSize: attempt.receiptByteSize!,
+              sha256: attempt.receiptSha256!,
+            ),
+          ),
+      for (final order in orders)
+        _RecoveryEvidenceReference(
+          sessionId: order.sessionId,
+          file: StoredAuditFile(
+            relativePath: order.receiptRelativePath,
+            byteSize: order.receiptByteSize,
+            sha256: order.receiptSha256,
+          ),
+        ),
     ];
-    final issues = await references.findRecoveryCandidates(paths);
+    final byPath = <String, _RecoveryEvidenceReference>{
+      for (final reference in evidence) reference.file.relativePath: reference,
+    };
+    final orphanIssues = await references.findRecoveryCandidates(
+      evidence.map((reference) => reference.file.relativePath),
+    );
+    final invalidIssues = await references.findInvalidRecoveryReferences(
+      evidence.map((reference) => reference.file),
+    );
+    final issues = {...orphanIssues, ...invalidIssues}.toList()..sort();
     if (issues.isEmpty) return const [];
     for (final issue in issues) {
-      final segments = issue.split('/');
-      final index = segments.indexOf('sessions');
-      final sessionId = index >= 0 && segments.length > index + 4
-          ? segments[index + 4]
-          : null;
+      final sessionId =
+          byPath[issue]?.sessionId ?? _sessionIdFromRecoveryPath(issue);
       if (sessionId == null) continue;
       final session = await (_database.select(
         _database.checkoutSessions,
       )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
       if (session == null) continue;
-      await _appendEvent(sessionId, 'evidence_recovery_required', detectedAt);
+      await _appendEvidenceRecoveryEvent(sessionId, issue, detectedAt);
     }
     return List.unmodifiable(issues);
   }
@@ -1505,11 +1560,34 @@ final class DatabaseCheckoutAuditStore
     }
   }
 
+  Future<void> _appendEvidenceRecoveryEvent(
+    String sessionId,
+    String relativePath,
+    DateTime occurredAt,
+  ) async {
+    final existing =
+        await (_database.select(_database.auditEvents)..where(
+              (row) =>
+                  row.sessionId.equals(sessionId) &
+                  row.eventType.equals('evidence_recovery_required') &
+                  row.detail.equals(relativePath),
+            ))
+            .getSingleOrNull();
+    if (existing != null) return;
+    await _appendEvent(
+      sessionId,
+      'evidence_recovery_required',
+      occurredAt,
+      detail: relativePath,
+    );
+  }
+
   Future<void> _appendEvent(
     String sessionId,
     String eventType,
-    DateTime occurredAt,
-  ) {
+    DateTime occurredAt, {
+    String? detail,
+  }) {
     return _database
         .into(_database.auditEvents)
         .insert(
@@ -1518,6 +1596,7 @@ final class DatabaseCheckoutAuditStore
             sessionId: Value(sessionId),
             eventType: eventType,
             occurredAtUs: occurredAt.toUtc().microsecondsSinceEpoch,
+            detail: Value(detail),
           ),
         );
   }
@@ -1529,6 +1608,22 @@ final class DatabaseCheckoutAuditStore
     }
     return value;
   }
+}
+
+final class _RecoveryEvidenceReference {
+  const _RecoveryEvidenceReference({
+    required this.sessionId,
+    required this.file,
+  });
+
+  final String sessionId;
+  final StoredAuditFile file;
+}
+
+String? _sessionIdFromRecoveryPath(String relativePath) {
+  final segments = relativePath.split('/');
+  final index = segments.indexOf('sessions');
+  return index >= 0 && segments.length > index + 4 ? segments[index + 4] : null;
 }
 
 void _validateInferenceObjects(List<InferenceObject> objects) {
