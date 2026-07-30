@@ -47,3 +47,9 @@ abstract interface class CheckoutEvidenceStore {
     required ImmutableJsonReceipt receipt,
   });
 }
+
+/// Resolves a persisted audit-relative location for a customer-only local
+/// preview. Implementations must reject paths outside their owned audit root.
+abstract interface class AuditDisplayPathResolver {
+  Future<String> resolveForDisplay(String relativePath);
+}

@@ -23,7 +23,7 @@ final class StoredAuditFile {
 }
 
 /// Retains audit evidence only beneath the application-owned audit root.
-final class AuditFileStore {
+final class AuditFileStore implements AuditDisplayPathResolver {
   AuditFileStore(Directory root, {Sha256FileHasher? hasher})
     : _root = Directory(path.normalize(path.absolute(root.path))),
       _hasher = hasher ?? Sha256FileHasher();
@@ -187,6 +187,16 @@ final class AuditFileStore {
       );
     }
     return resolved;
+  }
+
+  @override
+  Future<String> resolveForDisplay(String relativePath) async {
+    final file = File(resolve(relativePath));
+    if (!await file.exists()) {
+      throw StateError('audit display file does not exist: $relativePath');
+    }
+    await _assertExistingFileInsideRoot(file);
+    return file.path;
   }
 
   /// Reports audit evidence requiring admin review; it never deletes evidence.

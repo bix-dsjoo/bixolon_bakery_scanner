@@ -133,7 +133,7 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
       CheckoutPhase.paymentComplete => PaymentCompleteView(
         state: state,
         policy: widget.controller.completionPolicy,
-        onNext: () => unawaited(widget.controller.startNextCustomer()),
+        onNext: widget.controller.startNextCustomer,
       ),
       CheckoutPhase.recoverableFailure => _FailureView(
         state: state,
@@ -156,7 +156,7 @@ class PaymentCompleteView extends StatefulWidget {
 
   final CheckoutState state;
   final CustomerCompletionPolicy policy;
-  final VoidCallback onNext;
+  final Future<void> Function() onNext;
 
   @override
   State<PaymentCompleteView> createState() => _PaymentCompleteViewState();
@@ -164,12 +164,15 @@ class PaymentCompleteView extends StatefulWidget {
 
 class _PaymentCompleteViewState extends State<PaymentCompleteView> {
   Timer? _timer;
+  bool _startingNextCustomer = false;
 
   @override
   void initState() {
     super.initState();
     if (widget.policy.autoReset) {
-      _timer = Timer(widget.policy.duration, widget.onNext);
+      _timer = Timer(widget.policy.duration, () {
+        unawaited(_startNextCustomer());
+      });
     }
   }
 
@@ -179,6 +182,20 @@ class _PaymentCompleteViewState extends State<PaymentCompleteView> {
     super.dispose();
   }
 
+  Future<void> _startNextCustomer() async {
+    if (_startingNextCustomer) return;
+    _timer?.cancel();
+    setState(() => _startingNextCustomer = true);
+    try {
+      await widget.onNext();
+    } on StateError {
+      // The competing terminal reset owns the transition; never surface a
+      // technical state race to the customer.
+    } finally {
+      if (mounted) setState(() => _startingNextCustomer = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final receipt = widget.state.paymentReceipt;
@@ -186,7 +203,7 @@ class _PaymentCompleteViewState extends State<PaymentCompleteView> {
       title: '결제 완료',
       primaryAction: BakeryPrimaryButton(
         label: '다음 고객 시작',
-        onPressed: widget.onNext,
+        onPressed: _startingNextCustomer ? null : _startNextCustomer,
       ),
       child: Padding(
         padding: const EdgeInsets.only(top: 24),

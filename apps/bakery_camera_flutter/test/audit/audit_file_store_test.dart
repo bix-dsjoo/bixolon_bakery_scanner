@@ -109,6 +109,27 @@ void main() {
         throwsArgumentError,
       );
       expect(() => store.resolve('../outside.jpg'), throwsArgumentError);
+      await expectLater(
+        store.resolveForDisplay('../outside.jpg'),
+        throwsArgumentError,
+      );
+    },
+  );
+
+  test(
+    'resolves a retained relative path for trusted customer display',
+    () async {
+      final stored = await store.retainCapture(
+        sessionId: '00000000-0000-4000-8000-000000000001',
+        attemptNumber: 1,
+        capturedAtUtc: DateTime.utc(2026, 7, 30),
+        sourcePath: source.path,
+      );
+
+      expect(
+        await store.resolveForDisplay(stored.relativePath),
+        store.resolve(stored.relativePath),
+      );
     },
   );
 

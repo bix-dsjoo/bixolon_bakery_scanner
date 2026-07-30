@@ -8,6 +8,7 @@ final class CheckoutState {
     this.failure,
     this.paymentReceipt,
     this.capturedEvidencePath,
+    this.capturedEvidenceDisplayPath,
     this.capturedImageWidth,
     this.capturedImageHeight,
   }) : objectDrafts = List.unmodifiable(objectDrafts),
@@ -22,6 +23,10 @@ final class CheckoutState {
   /// A read-only audit-file location for customer review only. This is never
   /// used as inference input and does not replace the immutable receipt.
   final String? capturedEvidencePath;
+
+  /// Runtime-only, containment-checked local path for customer image display.
+  /// Audit storage always retains [capturedEvidencePath] as a relative path.
+  final String? capturedEvidenceDisplayPath;
   final int? capturedImageWidth;
   final int? capturedImageHeight;
 

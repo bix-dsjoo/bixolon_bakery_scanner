@@ -120,7 +120,7 @@ void main() {
           duration: Duration(milliseconds: 50),
           autoReset: true,
         ),
-        onNext: () => automatic += 1,
+        onNext: () async => automatic += 1,
       ),
     );
     await tester.pump(const Duration(milliseconds: 50));
@@ -135,7 +135,7 @@ void main() {
           duration: Duration(milliseconds: 50),
           autoReset: false,
         ),
-        onNext: () => manual += 1,
+        onNext: () async => manual += 1,
       ),
     );
     await tester.pump(const Duration(milliseconds: 60));

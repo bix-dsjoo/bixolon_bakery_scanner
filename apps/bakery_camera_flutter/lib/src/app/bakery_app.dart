@@ -84,6 +84,7 @@ class _BakeryAppState extends State<BakeryApp> {
         scanner: scanner,
         auditStore: store,
         evidenceStore: AuditFileCheckoutEvidenceStore(auditFiles),
+        displayPathResolver: auditFiles,
         catalogRepository: DatabaseCatalogRepository(database),
         createInferenceReceipt: (result) {
           final canonicalJson = canonicalInferenceReceiptJson(

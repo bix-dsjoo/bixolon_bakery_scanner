@@ -39,6 +39,7 @@ void main() {
       scanner: scanner,
       auditStore: audit,
       evidenceStore: evidence,
+      displayPathResolver: const _DisplayPathResolver(),
       catalogRepository: catalog,
       createInferenceReceipt: (_) => const ImmutableJsonReceipt(
         canonicalJson: '{"receipt":"strict"}',
@@ -93,6 +94,12 @@ void main() {
       controller.state.capturedEvidencePath,
       'sessions/capture-1.jpg',
       reason: 'customer review uses the already-retained audit still only',
+    );
+    expect(
+      controller.state.capturedEvidenceDisplayPath,
+      r'C:\audit-root\sessions\capture-1.jpg',
+      reason:
+          'the persisted reference remains relative while the UI receives a safe local path',
     );
     expect(controller.state.capturedImageWidth, 1920);
     expect(controller.state.capturedImageHeight, 1080);
@@ -863,6 +870,14 @@ final class _FakeEvidenceStore implements CheckoutEvidenceStore {
     final error = receiptError;
     if (error != null) throw error;
   }
+}
+
+final class _DisplayPathResolver implements AuditDisplayPathResolver {
+  const _DisplayPathResolver();
+
+  @override
+  Future<String> resolveForDisplay(String relativePath) async =>
+      r'C:\audit-root\' + relativePath.replaceAll('/', r'\');
 }
 
 final class _FakeCatalog implements CatalogRepository {

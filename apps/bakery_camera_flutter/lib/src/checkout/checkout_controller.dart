@@ -38,12 +38,14 @@ final class CheckoutController extends ChangeNotifier {
     required ScannerController scanner,
     required CheckoutAuditStore auditStore,
     required CheckoutEvidenceStore evidenceStore,
+    required AuditDisplayPathResolver displayPathResolver,
     required CatalogRepository catalogRepository,
     required InferenceReceiptFactory createInferenceReceipt,
     CheckoutClock? now,
   }) : _scanner = scanner,
        _auditStore = auditStore,
        _evidenceStore = evidenceStore,
+       _displayPathResolver = displayPathResolver,
        _catalogRepository = catalogRepository,
        _mapper = const InferenceCheckoutMapper(),
        _createInferenceReceipt = createInferenceReceipt,
@@ -52,6 +54,7 @@ final class CheckoutController extends ChangeNotifier {
   final ScannerController _scanner;
   final CheckoutAuditStore _auditStore;
   final CheckoutEvidenceStore _evidenceStore;
+  final AuditDisplayPathResolver _displayPathResolver;
   final CatalogRepository _catalogRepository;
   final InferenceCheckoutMapper _mapper;
   final InferenceReceiptFactory _createInferenceReceipt;
@@ -635,6 +638,7 @@ final class CheckoutController extends ChangeNotifier {
         objectDrafts: drafts,
         lines: lines,
         capturedEvidencePath: _state.capturedEvidencePath,
+        capturedEvidenceDisplayPath: _state.capturedEvidenceDisplayPath,
         capturedImageWidth: _state.capturedImageWidth,
         capturedImageHeight: _state.capturedImageHeight,
       ),
@@ -650,6 +654,7 @@ final class CheckoutController extends ChangeNotifier {
         objectDrafts: _state.objectDrafts,
         lines: lines,
         capturedEvidencePath: _state.capturedEvidencePath,
+        capturedEvidenceDisplayPath: _state.capturedEvidenceDisplayPath,
         capturedImageWidth: _state.capturedImageWidth,
         capturedImageHeight: _state.capturedImageHeight,
       ),
@@ -720,6 +725,10 @@ final class CheckoutController extends ChangeNotifier {
     _manualQuantities.clear();
     final lines = _linesFor(mapping.objectDrafts);
     await _auditStore.replaceDraftOrder(recovery.sessionId, lines);
+    final retainedPath = recovery.retainedCapture?.path;
+    final displayPath = retainedPath == null
+        ? null
+        : await _displayPathResolver.resolveForDisplay(retainedPath);
     await _scanner.releaseCurrentCapture();
     if (mapping.phase == CheckoutPhase.retakeRequired) {
       _failedAttempts += 1;
@@ -731,7 +740,8 @@ final class CheckoutController extends ChangeNotifier {
         objectDrafts: mapping.objectDrafts,
         lines: lines,
         failure: mapping.failure,
-        capturedEvidencePath: recovery.retainedCapture?.path,
+        capturedEvidencePath: retainedPath,
+        capturedEvidenceDisplayPath: displayPath,
         capturedImageWidth: imageSize.width,
         capturedImageHeight: imageSize.height,
       ),

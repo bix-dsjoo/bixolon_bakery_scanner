@@ -52,7 +52,7 @@ class CustomerReviewView extends StatelessWidget {
               message: '한 개씩 확인하면 주문을 정확히 담을 수 있어요.',
             ),
             const SizedBox(height: 20),
-            if (state.capturedEvidencePath case final imagePath?) ...[
+            if (state.capturedEvidenceDisplayPath case final imagePath?) ...[
               CapturedReviewImage(
                 imagePath: imagePath,
                 imageWidth: state.capturedImageWidth ?? 1,
@@ -98,12 +98,19 @@ class CustomerReviewView extends StatelessWidget {
 
 /// Presents only the retained audit still and the currently selected bread.
 /// No recognition geometry, score, or model-facing data is rendered here.
+typedef CustomerReviewImageProviderFactory =
+    ImageProvider<Object> Function(File file);
+
+ImageProvider<Object> customerReviewFileImageProvider(File file) =>
+    FileImage(file);
+
 class CapturedReviewImage extends StatelessWidget {
   const CapturedReviewImage({
     required this.imagePath,
     required this.imageWidth,
     required this.imageHeight,
     required this.crop,
+    this.imageProviderFactory = customerReviewFileImageProvider,
     super.key,
   });
 
@@ -111,15 +118,20 @@ class CapturedReviewImage extends StatelessWidget {
   final int imageWidth;
   final int imageHeight;
   final Rect crop;
+  final CustomerReviewImageProviderFactory imageProviderFactory;
+
+  ImageProvider<Object> imageProviderForDisplayPath() =>
+      imageProviderFactory(File(imagePath));
 
   @override
   Widget build(BuildContext context) {
-    final alignment = Alignment(
-      (crop.center.dx / imageWidth * 2 - 1).clamp(-1.0, 1.0).toDouble(),
-      (crop.center.dy / imageHeight * 2 - 1).clamp(-1.0, 1.0).toDouble(),
+    final objectCrop = SelectedObjectCropGeometry.forImage(
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      crop: crop,
     );
-    Widget image(BoxFit fit, AlignmentGeometry alignment) => Image.file(
-      File(imagePath),
+    Widget image(BoxFit fit, AlignmentGeometry alignment) => Image(
+      image: imageProviderForDisplayPath(),
       fit: fit,
       alignment: alignment,
       errorBuilder: (_, _, _) => const ColoredBox(
@@ -154,12 +166,52 @@ class CapturedReviewImage extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
               child: AspectRatio(
                 aspectRatio: 1,
-                child: image(BoxFit.cover, alignment),
+                child: Transform.scale(
+                  key: const Key('selected-object-zoom'),
+                  scale: objectCrop.zoom,
+                  alignment: objectCrop.alignment,
+                  child: image(BoxFit.cover, objectCrop.alignment),
+                ),
               ),
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Customer-safe crop presentation geometry. The object box changes both the
+/// framing and zoom, but recognition geometry is never shown to the customer.
+final class SelectedObjectCropGeometry {
+  const SelectedObjectCropGeometry({
+    required this.alignment,
+    required this.zoom,
+  });
+
+  final Alignment alignment;
+  final double zoom;
+
+  factory SelectedObjectCropGeometry.forImage({
+    required int imageWidth,
+    required int imageHeight,
+    required Rect crop,
+  }) {
+    final safeWidth = imageWidth > 0 ? imageWidth.toDouble() : 1.0;
+    final safeHeight = imageHeight > 0 ? imageHeight.toDouble() : 1.0;
+    final alignment = Alignment(
+      (crop.center.dx / safeWidth * 2 - 1).clamp(-1.0, 1.0).toDouble(),
+      (crop.center.dy / safeHeight * 2 - 1).clamp(-1.0, 1.0).toDouble(),
+    );
+    final relativeObjectSize = [
+      (crop.width / safeWidth).abs(),
+      (crop.height / safeHeight).abs(),
+    ].reduce((left, right) => left > right ? left : right);
+    return SelectedObjectCropGeometry(
+      alignment: alignment,
+      zoom: (0.72 / relativeObjectSize.clamp(0.01, 1.0))
+          .clamp(1.0, 6.0)
+          .toDouble(),
     );
   }
 }
