@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
+from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import cast
 
@@ -32,13 +33,21 @@ from bakery_scanner.detectors.rfdetr import RFDetrRunner
 
 from .cpu_benchmark_protocol import (
     BenchmarkImageRow,
+    ErrorMessage,
     PassResult,
+    PassResultMessage,
+    PrepareCommand,
+    ProtocolState,
+    ReadyMessage,
     ResolvedRuntime,
     RunPassCommand,
+    ShutdownCommand,
+    StoppedMessage,
     WarmupEvidence,
     WarmupImageEvidence,
     WarmupStageCounts,
     WorkerEnvironment,
+    WorkerError,
     WorkerMetadata,
     WorkerSpec,
 )
@@ -73,6 +82,79 @@ class WorkerDependencies:
 
 class BenchmarkWorkerFailure(RuntimeError):
     """Fail-closed worker preparation or measured-pass error."""
+
+
+def worker_process_main(connection: Connection) -> None:
+    """Run one persistent worker protocol inside a spawn-created child."""
+    state = ProtocolState.CREATED
+    worker: BenchmarkWorker | None = None
+    spec: WorkerSpec | None = None
+    active_pass: int | None = None
+    try:
+        command = connection.recv()
+        if not isinstance(command, PrepareCommand):
+            raise BenchmarkWorkerFailure("first command must be PREPARE")
+        state = ProtocolState.PREPARING
+        spec = command.spec
+        worker = BenchmarkWorker(spec)
+        metadata = worker.prepare()
+        connection.send(ReadyMessage(metadata))
+        state = ProtocolState.READY
+
+        while True:
+            command = connection.recv()
+            if isinstance(command, RunPassCommand):
+                state = ProtocolState.RUNNING_PASS
+                active_pass = command.pass_index
+                connection.send(PassResultMessage(worker.run_pass(command)))
+                active_pass = None
+                state = ProtocolState.READY
+            elif isinstance(command, ShutdownCommand):
+                state = ProtocolState.STOPPING
+                connection.send(StoppedMessage(spec.role, os.getpid()))
+                state = ProtocolState.STOPPED
+                return
+            else:
+                raise BenchmarkWorkerFailure("unexpected worker command")
+    except BaseException as exc:
+        try:
+            connection.send(
+                ErrorMessage(_safe_worker_error(exc, state, spec, active_pass))
+            )
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+        raise
+    finally:
+        connection.close()
+
+
+def _safe_worker_error(
+    exc: BaseException,
+    state: ProtocolState,
+    spec: WorkerSpec | None,
+    active_pass: int | None,
+) -> WorkerError:
+    """Return protocol diagnostics without exception text, locals, or env values."""
+    exception_type = type(exc).__name__
+    if not exception_type.isidentifier():
+        exception_type = "WorkerException"
+    pid = os.getpid()
+    return WorkerError(
+        exception_type=exception_type,
+        message=f"worker failed in protocol state {state.value}",
+        role=None if spec is None else spec.role,
+        pid=pid,
+        protocol_state=state,
+        pass_index=active_pass,
+        stderr_path=(
+            None
+            if spec is None
+            else (
+                spec.package_root
+                / f".cpu-benchmark-{spec.role}-{pid}.stderr.log"
+            ).resolve()
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)

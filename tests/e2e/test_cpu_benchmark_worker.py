@@ -22,7 +22,14 @@ from bakery_scanner.classification.runtime import (
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage
 from bakery_scanner.e2e.cpu_benchmark_protocol import (
+    ErrorMessage,
+    PassResult,
+    PassResultMessage,
+    PrepareCommand,
+    ReadyMessage,
     RunPassCommand,
+    ShutdownCommand,
+    StoppedMessage,
     WarmupStageCounts,
     WorkerEnvironment,
     WorkerSpec,
@@ -31,6 +38,7 @@ from bakery_scanner.e2e.cpu_benchmark_worker import (
     BenchmarkWorker,
     BenchmarkWorkerFailure,
     WorkerDependencies,
+    worker_process_main,
 )
 from bakery_scanner.e2e.cpu_dataset import CpuEvaluationSample, CpuEvaluationTarget
 from bakery_scanner.e2e.cpu_regression import (
@@ -618,3 +626,103 @@ def test_run_pass_rejects_malformed_regression_record_mutations(mutation):
 
     with pytest.raises(BenchmarkWorkerFailure, match="regression"):
         worker.run_pass(RunPassCommand(pass_index=0, image_keys=keys))
+
+
+class RecordingConnection:
+    def __init__(self, commands) -> None:
+        self.commands = list(commands)
+        self.sent = []
+        self.closed = False
+
+    def recv(self):
+        return self.commands.pop(0)
+
+    def send(self, message) -> None:
+        self.sent.append(message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_worker_process_target_runs_prepare_pass_and_shutdown_protocol(monkeypatch):
+    spec = _worker_spec()
+    metadata = _worker()[0].prepare()
+    command = RunPassCommand(pass_index=0, image_keys=("source/image-003.jpg",))
+    result = PassResult(spec.role, metadata.pid, command.pass_index, ())
+    construction: list[WorkerSpec] = []
+
+    class ProcessWorker:
+        def __init__(self, received_spec: WorkerSpec) -> None:
+            construction.append(received_spec)
+
+        def prepare(self):
+            return metadata
+
+        def run_pass(self, received_command):
+            assert received_command is command
+            return result
+
+    connection = RecordingConnection(
+        (PrepareCommand(spec), command, ShutdownCommand())
+    )
+    monkeypatch.setattr(
+        "bakery_scanner.e2e.cpu_benchmark_worker.BenchmarkWorker",
+        ProcessWorker,
+    )
+
+    worker_process_main(connection)
+
+    assert construction == [spec]
+    assert isinstance(connection.sent[0], ReadyMessage)
+    assert connection.sent[0].metadata is metadata
+    assert connection.sent[1] == PassResultMessage(result)
+    assert connection.sent[2] == StoppedMessage(spec.role, metadata.pid)
+    assert connection.closed
+
+
+def test_worker_process_target_requires_prepare_before_constructing_worker(
+    monkeypatch,
+):
+    constructions = []
+    connection = RecordingConnection((ShutdownCommand(),))
+    monkeypatch.setattr(
+        "bakery_scanner.e2e.cpu_benchmark_worker.BenchmarkWorker",
+        lambda spec: constructions.append(spec),
+    )
+
+    with pytest.raises(BenchmarkWorkerFailure, match="first command"):
+        worker_process_main(connection)
+
+    assert constructions == []
+    assert isinstance(connection.sent[0], ErrorMessage)
+    assert connection.sent[0].error.protocol_state.value == "created"
+    assert connection.closed
+
+
+def test_worker_process_target_sanitizes_exception_message(monkeypatch):
+    secret = "worker-secret-that-must-not-cross-the-pipe"
+    monkeypatch.setenv("BENCHMARK_TEST_SECRET", secret)
+    spec = _worker_spec()
+    connection = RecordingConnection((PrepareCommand(spec),))
+
+    class FailingWorker:
+        def __init__(self, received_spec: WorkerSpec) -> None:
+            pass
+
+        def prepare(self):
+            raise RuntimeError(f"failed with {secret}")
+
+    monkeypatch.setattr(
+        "bakery_scanner.e2e.cpu_benchmark_worker.BenchmarkWorker",
+        FailingWorker,
+    )
+
+    with pytest.raises(RuntimeError, match="failed with"):
+        worker_process_main(connection)
+
+    error = connection.sent[0].error
+    assert secret not in error.message
+    assert error.exception_type == "RuntimeError"
+    assert error.protocol_state.value == "preparing"
+    assert error.role == "reference"
+    assert error.pass_index is None
