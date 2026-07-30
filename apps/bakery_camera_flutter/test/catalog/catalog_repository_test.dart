@@ -59,6 +59,7 @@ void main() {
         product: ignoredActiveOrderProduct,
         quantity: 99,
         completed: false,
+        catalogRevisionId: snapshot.revision.revisionId,
       );
       await _insertOrder(
         database,
@@ -67,6 +68,7 @@ void main() {
         product: completedOrderProduct,
         quantity: 2,
         completed: true,
+        catalogRevisionId: snapshot.revision.revisionId,
       );
 
       final discovery = await repository.customerDiscoveryFor(snapshot);
@@ -82,11 +84,9 @@ void main() {
     'customer discovery orders equal completed counts by customer sort and excludes open orders',
     () async {
       final initialCatalog = await repository.activeCatalog();
-      await (database.update(database.products)
-            ..where(
-              (row) =>
-                  row.productId.equals(initialCatalog.products[1].productId),
-            ))
+      await (database.update(database.products)..where(
+            (row) => row.productId.equals(initialCatalog.products[1].productId),
+          ))
           .write(
             ProductsCompanion(
               sortOrder: Value(initialCatalog.products.first.sortOrder),
@@ -96,8 +96,13 @@ void main() {
       final firstTiedProduct = snapshot.products[0];
       final secondTiedProduct = snapshot.products[1];
       final openOrderProduct = snapshot.products[2];
+      final laterTiedProduct = snapshot.products[3];
       expect(firstTiedProduct.sortOrder, secondTiedProduct.sortOrder);
       expect(firstTiedProduct.productId, isNot(secondTiedProduct.productId));
+      expect(
+        laterTiedProduct.sortOrder,
+        greaterThan(firstTiedProduct.sortOrder),
+      );
 
       await _insertOrder(
         database,
@@ -106,6 +111,7 @@ void main() {
         product: firstTiedProduct,
         quantity: 4,
         completed: true,
+        catalogRevisionId: snapshot.revision.revisionId,
       );
       await _insertOrder(
         database,
@@ -114,6 +120,16 @@ void main() {
         product: secondTiedProduct,
         quantity: 4,
         completed: true,
+        catalogRevisionId: snapshot.revision.revisionId,
+      );
+      await _insertOrder(
+        database,
+        sessionId: 'session-tied-later',
+        orderId: 'order-tied-later',
+        product: laterTiedProduct,
+        quantity: 4,
+        completed: true,
+        catalogRevisionId: snapshot.revision.revisionId,
       );
       await _insertOrder(
         database,
@@ -122,21 +138,25 @@ void main() {
         product: openOrderProduct,
         quantity: 99,
         completed: false,
+        catalogRevisionId: snapshot.revision.revisionId,
       );
 
       final discovery = await repository.customerDiscoveryFor(snapshot);
-      final expectedTiedOrder = [firstTiedProduct, secondTiedProduct]
-        ..sort(Product.customerSort);
+      final expectedTiedOrder = [
+        firstTiedProduct,
+        secondTiedProduct,
+        laterTiedProduct,
+      ]..sort(Product.customerSort);
 
       expect(
-        discovery.featuredProducts.take(2).map((product) => product.productId),
+        discovery.featuredProducts.take(3).map((product) => product.productId),
         orderedEquals(expectedTiedOrder.map((product) => product.productId)),
       );
       expect(
         discovery.featuredProducts.indexWhere(
           (product) => product.productId == openOrderProduct.productId,
         ),
-        greaterThanOrEqualTo(2),
+        greaterThanOrEqualTo(3),
       );
     },
   );
@@ -174,6 +194,7 @@ Future<void> _insertOrder(
   required Product product,
   required int quantity,
   required bool completed,
+  required String catalogRevisionId,
 }) async {
   await database
       .into(database.checkoutSessions)
@@ -182,7 +203,7 @@ Future<void> _insertOrder(
           sessionId: sessionId,
           state: 'active',
           startedAtUs: 1,
-          catalogRevisionId: 'catalog-v1',
+          catalogRevisionId: catalogRevisionId,
           settingsRevisionId: 'settings-v1',
           detectorId: 'rfdetr_large_bakery_v1',
           detectorSha256: _hash('a'),
@@ -207,7 +228,7 @@ Future<void> _insertOrder(
         FinalOrdersCompanion.insert(
           orderId: orderId,
           sessionId: sessionId,
-          catalogRevisionId: 'catalog-v1',
+          catalogRevisionId: catalogRevisionId,
           createdAtUs: 2,
           totalQuantity: quantity,
           totalAmountKrw: product.unitPrice * quantity,
@@ -222,7 +243,7 @@ Future<void> _insertOrder(
         FinalOrderLinesCompanion.insert(
           finalLineId: 'line-$orderId',
           orderId: orderId,
-          productRevisionId: 'catalog-v1/${product.productId}',
+          productRevisionId: '$catalogRevisionId/${product.productId}',
           productId: product.productId,
           recognitionSkuId: Value(product.recognitionSkuId),
           productName: product.displayName,
