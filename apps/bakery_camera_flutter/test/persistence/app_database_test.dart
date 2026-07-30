@@ -169,6 +169,45 @@ void main() {
       throwsA(isA<StateError>()),
     );
   });
+
+  test('schema rejects non-hex hashes and unsafe audit paths', () async {
+    await _seedAttempt(db);
+
+    await expectLater(
+      db
+          .into(db.scanAttempts)
+          .insert(
+            ScanAttemptsCompanion.insert(
+              attemptId: 'attempt-invalid-hash',
+              sessionId: 'session-1',
+              attemptNumber: 2,
+              capturedAtUs: 4,
+              imageRelativePath: 'sessions/session-1/attempt-002.jpg',
+              imageByteSize: 42,
+              imageSha256: 'g' * 64,
+              status: 'staged',
+            ),
+          ),
+      throwsA(isA<Exception>()),
+    );
+    await expectLater(
+      db
+          .into(db.scanAttempts)
+          .insert(
+            ScanAttemptsCompanion.insert(
+              attemptId: 'attempt-unsafe-path',
+              sessionId: 'session-1',
+              attemptNumber: 3,
+              capturedAtUs: 5,
+              imageRelativePath: '../outside/attempt-003.jpg',
+              imageByteSize: 42,
+              imageSha256: _hash('5'),
+              status: 'staged',
+            ),
+          ),
+      throwsA(isA<Exception>()),
+    );
+  });
 }
 
 Future<void> _seedAttempt(BakeryDatabase db) async {

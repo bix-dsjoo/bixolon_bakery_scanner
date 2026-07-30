@@ -134,6 +134,91 @@ final class AuditRuntimeSnapshot {
   final String? startupFallbackReason;
 }
 
+String canonicalInferenceReceiptJson({
+  required InferenceResult result,
+  required AuditRuntimeSnapshot runtimeSnapshot,
+}) {
+  final receipt = <String, Object?>{
+    'receipt_version': 'checkout_inference_receipt_v1',
+    'runtime_snapshot': {
+      'detector_id': runtimeSnapshot.detectorId,
+      'detector_sha256': runtimeSnapshot.detectorSha256,
+      'repvit_artifact_id': runtimeSnapshot.repvitArtifactId,
+      'repvit_sha256': runtimeSnapshot.repvitSha256,
+      'repvit_manifest_sha256': runtimeSnapshot.repvitManifestSha256,
+      'repvit_prototype_sha256': runtimeSnapshot.repvitPrototypeSha256,
+      'dinov3_artifact_id': runtimeSnapshot.dinov3ArtifactId,
+      'dinov3_sha256': runtimeSnapshot.dinov3Sha256,
+      'dinov3_support_sha256': runtimeSnapshot.dinov3SupportSha256,
+      'calibration_id': runtimeSnapshot.calibrationId,
+      'calibration_sha256': runtimeSnapshot.calibrationSha256,
+      'preprocess_sha256': runtimeSnapshot.preprocessSha256,
+      'fusion_policy_id': runtimeSnapshot.fusionPolicyId,
+      'fusion_policy_sha256': runtimeSnapshot.fusionPolicySha256,
+      'config_snapshot': jsonDecode(runtimeSnapshot.configSnapshotJson),
+      'startup_device': runtimeSnapshot.startupDevice,
+      'startup_load_ms': runtimeSnapshot.startupLoadMs,
+      'startup_warmup_ms': runtimeSnapshot.startupWarmupMs,
+      'startup_fallback_reason': runtimeSnapshot.startupFallbackReason,
+    },
+    'result': {
+      'request_id': result.requestId,
+      'image': {'width': result.imageWidth, 'height': result.imageHeight},
+      'device': result.device,
+      'objects': [
+        for (final object in result.objects)
+          {
+            'object_id': object.objectId,
+            'sku_id': object.skuId,
+            'sku_name': object.skuName,
+            'bbox_xyxy': object.bboxXyxy,
+            'confidence': object.confidence,
+            'decision_path': object.decisionPath,
+            'top3': [
+              for (final candidate in object.candidates)
+                {
+                  'rank': candidate.rank,
+                  'sku_id': candidate.skuId,
+                  'sku_name': candidate.skuName,
+                  'score': candidate.score,
+                },
+            ],
+            'unknown_reason': object.unknownReason,
+            'detector': {
+              'source': object.detectorSource,
+              'score': object.detectorScore,
+            },
+            'provenance': object.provenance,
+          },
+      ],
+      'counts': {
+        for (final skuId in result.counts.keys.toList()..sort())
+          '$skuId': result.counts[skuId],
+      },
+      'unknown_count': result.unknownCount,
+      'presentation': {
+        'state': _presentationState(result.presentation.state),
+        'final_count_usable': result.presentation.finalCountUsable,
+        'retake_scope': _retakeScope(result.presentation.retakeScope),
+        'retake_object_ids': result.presentation.retakeObjectIds,
+        'instruction_code': _retakeReason(result.presentation.instruction),
+        'candidate_object_ids': result.presentation.candidateObjectIds,
+        'policy_id': result.presentation.policyId,
+        'policy_sha256': result.presentation.policySha256,
+      },
+      'timings_ms': {
+        'decode_preprocess': result.timings.decodePreprocessMs,
+        'detector': result.timings.detectorMs,
+        'repvit': result.timings.repvitMs,
+        'dinov3': result.timings.dinov3Ms,
+        'postprocess': result.timings.postprocessMs,
+        'total': result.timings.totalMs,
+      },
+    },
+  };
+  return jsonEncode(_canonicalizeJson(receipt));
+}
+
 final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
   DatabaseCheckoutAuditStore({
     required BakeryDatabase database,
@@ -301,6 +386,15 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
     required InferenceResult result,
     required ImmutableJsonReceipt receipt,
   }) async {
+    final expectedReceipt = canonicalInferenceReceiptJson(
+      result: result,
+      runtimeSnapshot: _runtime,
+    );
+    if (receipt.canonicalJson != expectedReceipt) {
+      throw StateError(
+        'inference receipt is not canonically bound to result and runtime',
+      );
+    }
     final calculatedReceiptHash = sha256
         .convert(utf8.encode(receipt.canonicalJson))
         .toString();
@@ -327,7 +421,9 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
           row.status != 'staged') {
         throw StateError('attempt is not the matching staged attempt');
       }
-      await _activeSession(attempt.sessionId);
+      final session = await _activeSession(attempt.sessionId);
+      _verifyRuntimeSnapshot(session);
+      _verifyResultProvenance(result.objects, session);
       for (final object in result.objects) {
         final inferenceObjectId = '${attempt.attemptId}/${object.objectId}';
         await _database
@@ -410,7 +506,7 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         resolution.sessionId,
         resolution.inferenceObject.objectId,
       );
-      _verifyInferenceIdentity(object, resolution.inferenceObject);
+      await _verifyInferenceIdentity(object, resolution.inferenceObject);
       final product = await _sessionProduct(session, resolution.product);
       final candidateRank = await _validateResolutionSource(
         object,
@@ -520,6 +616,7 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
           : await (_database.select(_database.objectResolutions)..where(
                   (row) =>
                       row.isCurrent.equals(true) &
+                      row.sessionId.equals(order.sessionId) &
                       row.inferenceObjectId.isIn(
                         objects
                             .map((object) => object.inferenceObjectId)
@@ -535,6 +632,28 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         _database.draftOrderLines,
       )..where((row) => row.sessionId.equals(order.sessionId))).get();
       _verifyDraftMatchesOrder(order, draftLines);
+      final draftByProduct = {
+        for (final line in draftLines) line.productId: line,
+      };
+      for (final resolution in resolutions) {
+        final object = objects.singleWhere(
+          (candidate) =>
+              candidate.inferenceObjectId == resolution.inferenceObjectId,
+        );
+        final draft = draftByProduct[resolution.productId];
+        if (draft == null) {
+          throw StateError(
+            'resolved product is missing from the persisted draft: '
+            '${resolution.productId}',
+          );
+        }
+        await _verifyPersistedResolution(
+          session: session,
+          object: object,
+          resolution: resolution,
+          draft: draft,
+        );
+      }
       for (final line in draftLines) {
         final resolvedCount = resolutions
             .where((resolution) => resolution.productId == line.productId)
@@ -736,10 +855,10 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         .getSingleOrNull();
   }
 
-  void _verifyInferenceIdentity(
+  Future<void> _verifyInferenceIdentity(
     InferenceObjectRow row,
     InferenceObject object,
-  ) {
+  ) async {
     if (row.skuId != object.skuId ||
         row.skuName != object.skuName ||
         row.decisionPath != object.decisionPath ||
@@ -750,6 +869,27 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         row.provenanceJson != jsonEncode(object.provenance) ||
         row.unknownReason != object.unknownReason) {
       throw StateError('resolution inference object does not match audit row');
+    }
+    final persistedCandidates =
+        await (_database.select(_database.inferenceCandidates)
+              ..where(
+                (candidate) =>
+                    candidate.inferenceObjectId.equals(row.inferenceObjectId),
+              )
+              ..orderBy([(candidate) => OrderingTerm.asc(candidate.rank)]))
+            .get();
+    if (persistedCandidates.length != object.candidates.length) {
+      throw StateError('resolution candidate evidence does not match audit');
+    }
+    for (var index = 0; index < persistedCandidates.length; index += 1) {
+      final persisted = persistedCandidates[index];
+      final supplied = object.candidates[index];
+      if (persisted.rank != supplied.rank ||
+          persisted.skuId != supplied.skuId ||
+          persisted.skuName != supplied.skuName ||
+          persisted.score != supplied.score) {
+        throw StateError('resolution candidate evidence does not match audit');
+      }
     }
   }
 
@@ -766,7 +906,19 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
       if (source == CustomerResolutionSource.customerTop3) {
         throw StateError('registered inference object has no Top 3 candidates');
       }
+      if (source == CustomerResolutionSource.aiAutoCustomerAccepted &&
+          product.recognitionSkuId != object.skuId) {
+        throw StateError('AI acceptance must retain the registered SKU');
+      }
+      if (source == CustomerResolutionSource.customerOverrodeAuto &&
+          product.recognitionSkuId == object.skuId) {
+        throw StateError('override must replace the registered SKU');
+      }
       return null;
+    }
+    if (source == CustomerResolutionSource.aiAutoCustomerAccepted ||
+        source == CustomerResolutionSource.customerOverrodeAuto) {
+      throw StateError('Unknown objects have no automatic SKU to accept');
     }
     if (source != CustomerResolutionSource.customerTop3) return null;
     if (product.recognitionSkuId == null) {
@@ -783,6 +935,109 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
       throw StateError('selected product is not an authorized Top 3 candidate');
     }
     return candidate.rank;
+  }
+
+  void _verifyRuntimeSnapshot(CheckoutSessionRow session) {
+    if (session.detectorId != _runtime.detectorId ||
+        session.detectorSha256 != _runtime.detectorSha256 ||
+        session.repvitArtifactId != _runtime.repvitArtifactId ||
+        session.repvitSha256 != _runtime.repvitSha256 ||
+        session.repvitManifestSha256 != _runtime.repvitManifestSha256 ||
+        session.repvitPrototypeSha256 != _runtime.repvitPrototypeSha256 ||
+        session.dinov3ArtifactId != _runtime.dinov3ArtifactId ||
+        session.dinov3Sha256 != _runtime.dinov3Sha256 ||
+        session.dinov3SupportSha256 != _runtime.dinov3SupportSha256 ||
+        session.calibrationId != _runtime.calibrationId ||
+        session.calibrationSha256 != _runtime.calibrationSha256 ||
+        session.preprocessSha256 != _runtime.preprocessSha256 ||
+        session.fusionPolicyId != _runtime.fusionPolicyId ||
+        session.fusionPolicySha256 != _runtime.fusionPolicySha256 ||
+        session.configSnapshotJson != _runtime.configSnapshotJson) {
+      throw StateError('runtime identity differs from session snapshot');
+    }
+  }
+
+  void _verifyResultProvenance(
+    List<InferenceObject> objects,
+    CheckoutSessionRow session,
+  ) {
+    for (final object in objects) {
+      final provenance = object.provenance;
+      if (provenance['detector_id'] != session.detectorId ||
+          provenance['repvit_artifact_id'] != session.repvitArtifactId ||
+          provenance['repvit_sha256'] != session.repvitSha256 ||
+          provenance['repvit_manifest_sha256'] !=
+              session.repvitManifestSha256 ||
+          provenance['repvit_prototype_sha256'] !=
+              session.repvitPrototypeSha256 ||
+          provenance['dinov3_artifact_id'] != session.dinov3ArtifactId ||
+          provenance['dinov3_sha256'] != session.dinov3Sha256 ||
+          provenance['dinov3_support_sha256'] != session.dinov3SupportSha256 ||
+          provenance['calibration_id'] != session.calibrationId ||
+          provenance['calibration_sha256'] != session.calibrationSha256 ||
+          provenance['preprocess_sha256'] != session.preprocessSha256) {
+        throw StateError(
+          'inference object provenance differs from session snapshot',
+        );
+      }
+    }
+  }
+
+  Future<void> _verifyPersistedResolution({
+    required CheckoutSessionRow session,
+    required InferenceObjectRow object,
+    required ObjectResolutionRow resolution,
+    required DraftOrderLineRow draft,
+  }) async {
+    if (resolution.sessionId != session.sessionId ||
+        resolution.canonicalBboxJson != object.bboxJson ||
+        resolution.productRevisionId != draft.productRevisionId ||
+        resolution.productId != draft.productId ||
+        resolution.productName != draft.productName ||
+        resolution.unitPriceKrw != draft.unitPriceKrw ||
+        resolution.recognitionSkuId != draft.recognitionSkuId) {
+      throw StateError('persisted resolution does not match session and draft');
+    }
+    final source = CustomerResolutionSource.parse(resolution.source);
+    if (object.skuId == null) {
+      if (source != CustomerResolutionSource.customerTop3 &&
+          source != CustomerResolutionSource.customerCatalog) {
+        throw StateError('Unknown resolution source is invalid');
+      }
+      if (source == CustomerResolutionSource.customerTop3) {
+        final candidate =
+            await (_database.select(_database.inferenceCandidates)..where(
+                  (row) =>
+                      row.inferenceObjectId.equals(object.inferenceObjectId) &
+                      row.rank.equalsNullable(resolution.candidateRank),
+                ))
+                .getSingleOrNull();
+        if (candidate == null ||
+            candidate.skuId != resolution.recognitionSkuId) {
+          throw StateError(
+            'Top 3 resolution does not match candidate evidence',
+          );
+        }
+      } else if (resolution.candidateRank != null) {
+        throw StateError('catalog resolution cannot claim a candidate rank');
+      }
+    } else {
+      if (source == CustomerResolutionSource.customerTop3 ||
+          source == CustomerResolutionSource.customerManualCart) {
+        throw StateError('registered resolution source is invalid');
+      }
+      if (source == CustomerResolutionSource.aiAutoCustomerAccepted &&
+          resolution.recognitionSkuId != object.skuId) {
+        throw StateError('AI acceptance differs from registered SKU');
+      }
+      if (source == CustomerResolutionSource.customerOverrodeAuto &&
+          resolution.recognitionSkuId == object.skuId) {
+        throw StateError('override did not replace the registered SKU');
+      }
+      if (resolution.candidateRank != null) {
+        throw StateError('registered resolution cannot claim candidate rank');
+      }
+    }
   }
 
   Future<void> _verifyOrderCatalog(
@@ -973,4 +1228,17 @@ void _requireRelativePath(String value) {
       'must be a safe relative path',
     );
   }
+}
+
+Object? _canonicalizeJson(Object? value) {
+  if (value is Map) {
+    final keys = value.keys.cast<String>().toList()..sort();
+    return <String, Object?>{
+      for (final key in keys) key: _canonicalizeJson(value[key]),
+    };
+  }
+  if (value is List) {
+    return [for (final item in value) _canonicalizeJson(item)];
+  }
+  return value;
 }

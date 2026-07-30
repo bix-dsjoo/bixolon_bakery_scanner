@@ -60,6 +60,10 @@ CHECK (
     AND photo_provenance_note IS NULL)
   OR
   (photo_relative_path IS NOT NULL AND length(photo_relative_path) > 0
+    AND photo_relative_path NOT GLOB '/*'
+    AND photo_relative_path NOT GLOB '\\*'
+    AND photo_relative_path NOT LIKE '%:%'
+    AND photo_relative_path NOT LIKE '%..%'
     AND photo_byte_size IS NOT NULL AND photo_byte_size > 0
     AND photo_sha256 IS NOT NULL AND length(photo_sha256) = 64
     AND photo_sha256 NOT GLOB '*[^0-9a-f]*'
@@ -137,6 +141,18 @@ class CheckoutSessions extends Table {
     'CHECK (json_valid(config_snapshot_json))',
     '''
 CHECK (
+  detector_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND repvit_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND repvit_manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND repvit_prototype_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND dinov3_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND dinov3_support_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND calibration_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND preprocess_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND fusion_policy_sha256 NOT GLOB '*[^0-9a-f]*'
+)''',
+    '''
+CHECK (
   (terminal_at_us IS NULL AND terminal_reason IS NULL
     AND state = 'active')
   OR
@@ -191,13 +207,35 @@ class ScanAttempts extends Table {
     "CHECK (status IN ('staged', 'completed'))",
     '''
 CHECK (
+  image_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND image_relative_path NOT GLOB '/*'
+  AND image_relative_path NOT GLOB '\\*'
+  AND image_relative_path NOT LIKE '%:%'
+  AND image_relative_path NOT LIKE '%..%'
+)''',
+    '''
+CHECK (
   (status = 'staged' AND canonical_width IS NULL AND canonical_height IS NULL
     AND receipt_relative_path IS NULL AND receipt_byte_size IS NULL
     AND receipt_sha256 IS NULL)
   OR
   (status = 'completed' AND canonical_width > 0 AND canonical_height > 0
     AND length(receipt_relative_path) > 0 AND receipt_byte_size > 0
-    AND length(receipt_sha256) = 64)
+    AND length(receipt_sha256) = 64
+    AND length(presentation_policy_id) > 0
+    AND length(presentation_policy_sha256) = 64)
+)''',
+    '''
+CHECK (
+  receipt_relative_path IS NULL
+  OR (
+    receipt_relative_path NOT GLOB '/*'
+    AND receipt_relative_path NOT GLOB '\\*'
+    AND receipt_relative_path NOT LIKE '%:%'
+    AND receipt_relative_path NOT LIKE '%..%'
+    AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+    AND presentation_policy_sha256 NOT GLOB '*[^0-9a-f]*'
+  )
 )''',
   ];
 }
@@ -241,14 +279,28 @@ CHECK (
     json_type(provenance_json, '\$.detector_id') = 'text'
     AND json_type(provenance_json, '\$.repvit_artifact_id') = 'text'
     AND length(json_extract(provenance_json, '\$.repvit_sha256')) = 64
+    AND json_extract(provenance_json, '\$.repvit_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND length(json_extract(provenance_json, '\$.repvit_manifest_sha256')) = 64
+    AND json_extract(provenance_json, '\$.repvit_manifest_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND length(json_extract(provenance_json, '\$.repvit_prototype_sha256')) = 64
+    AND json_extract(provenance_json, '\$.repvit_prototype_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND json_type(provenance_json, '\$.dinov3_artifact_id') = 'text'
     AND length(json_extract(provenance_json, '\$.dinov3_sha256')) = 64
+    AND json_extract(provenance_json, '\$.dinov3_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND length(json_extract(provenance_json, '\$.dinov3_support_sha256')) = 64
+    AND json_extract(provenance_json, '\$.dinov3_support_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND json_type(provenance_json, '\$.calibration_id') = 'text'
     AND length(json_extract(provenance_json, '\$.calibration_sha256')) = 64
+    AND json_extract(provenance_json, '\$.calibration_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND length(json_extract(provenance_json, '\$.preprocess_sha256')) = 64
+    AND json_extract(provenance_json, '\$.preprocess_sha256')
+      NOT GLOB '*[^0-9a-f]*'
     AND json_extract(provenance_json, '\$.canonical_frame_version')
       = 'exif_visual_rgb_v1'
     AND json_extract(provenance_json, '\$.exif_orientation') BETWEEN 1 AND 8
@@ -359,7 +411,17 @@ class FinalOrders extends Table {
   Set<Column<Object>> get primaryKey => {orderId};
 
   @override
-  List<String> get customConstraints => const ['UNIQUE (session_id)'];
+  List<String> get customConstraints => const [
+    'UNIQUE (session_id)',
+    '''
+CHECK (
+  receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND receipt_relative_path NOT GLOB '/*'
+  AND receipt_relative_path NOT GLOB '\\*'
+  AND receipt_relative_path NOT LIKE '%:%'
+  AND receipt_relative_path NOT LIKE '%..%'
+)''',
+  ];
 }
 
 @DataClassName('FinalOrderLineRow')
@@ -442,6 +504,18 @@ class RetentionEvents extends Table {
 
   @override
   Set<Column<Object>> get primaryKey => {retentionEventId};
+
+  @override
+  List<String> get customConstraints => const [
+    '''
+CHECK (
+  original_sha256 NOT GLOB '*[^0-9a-f]*'
+  AND relative_path NOT GLOB '/*'
+  AND relative_path NOT GLOB '\\*'
+  AND relative_path NOT LIKE '%:%'
+  AND relative_path NOT LIKE '%..%'
+)''',
+  ];
 }
 
 @DriftDatabase(
@@ -594,6 +668,351 @@ BEGIN
       )
   ) THEN RAISE(ABORT, 'inference candidate evidence is incomplete')
   END;
+END
+''');
+    await customStatement('''
+CREATE TRIGGER checkout_session_snapshot_immutable
+BEFORE UPDATE OF
+  started_at_us, catalog_revision_id, settings_revision_id,
+  detector_id, detector_sha256,
+  repvit_artifact_id, repvit_sha256, repvit_manifest_sha256,
+  repvit_prototype_sha256,
+  dinov3_artifact_id, dinov3_sha256, dinov3_support_sha256,
+  calibration_id, calibration_sha256, preprocess_sha256,
+  fusion_policy_id, fusion_policy_sha256, config_snapshot_json
+ON checkout_sessions
+BEGIN
+  SELECT RAISE(ABORT, 'checkout session snapshot is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_checkout_session_no_update
+BEFORE UPDATE ON checkout_sessions
+WHEN OLD.state = 'completed'
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout session is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_checkout_session_no_delete
+BEFORE DELETE ON checkout_sessions
+WHEN OLD.state = 'completed'
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout session is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER catalog_revision_identity_no_update
+BEFORE UPDATE OF revision_id, sha256, created_at_us ON catalog_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'catalog revision identity is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER catalog_revision_no_delete
+BEFORE DELETE ON catalog_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'catalog revision is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER settings_revision_no_update
+BEFORE UPDATE ON settings_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'settings revision is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER settings_revision_no_delete
+BEFORE DELETE ON settings_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'settings revision is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER snapshotted_product_no_update
+BEFORE UPDATE ON products
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE catalog_revision_id = OLD.catalog_revision_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'snapshotted product revision is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER snapshotted_product_no_delete
+BEFORE DELETE ON products
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE catalog_revision_id = OLD.catalog_revision_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'snapshotted product revision is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_scan_attempt_no_update
+BEFORE UPDATE ON scan_attempts
+WHEN OLD.status = 'completed'
+BEGIN
+  SELECT RAISE(ABORT, 'completed scan attempt is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_scan_attempt_no_delete
+BEFORE DELETE ON scan_attempts
+WHEN OLD.status = 'completed'
+BEGIN
+  SELECT RAISE(ABORT, 'completed scan attempt is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_session_scan_attempt_no_insert
+BEFORE INSERT ON scan_attempts
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = NEW.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout cannot gain scan attempts');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_object_no_insert
+BEFORE INSERT ON inference_objects
+WHEN EXISTS (
+  SELECT 1 FROM scan_attempts
+  WHERE attempt_id = NEW.attempt_id AND status = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed scan cannot gain inference objects');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_object_no_update
+BEFORE UPDATE ON inference_objects
+WHEN EXISTS (
+  SELECT 1 FROM scan_attempts
+  WHERE attempt_id = OLD.attempt_id AND status = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed inference object is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_object_no_delete
+BEFORE DELETE ON inference_objects
+WHEN EXISTS (
+  SELECT 1 FROM scan_attempts
+  WHERE attempt_id = OLD.attempt_id AND status = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed inference object is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_candidate_no_update
+BEFORE UPDATE ON inference_candidates
+WHEN EXISTS (
+  SELECT 1
+  FROM inference_objects AS object
+  JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  WHERE object.inference_object_id = OLD.inference_object_id
+    AND attempt.status = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed inference candidate is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_candidate_no_delete
+BEFORE DELETE ON inference_candidates
+WHEN EXISTS (
+  SELECT 1
+  FROM inference_objects AS object
+  JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+  WHERE object.inference_object_id = OLD.inference_object_id
+    AND attempt.status = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed inference candidate is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER object_resolution_session_guard_insert
+BEFORE INSERT ON object_resolutions
+WHEN NEW.inference_object_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM inference_objects AS object
+    JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+    WHERE object.inference_object_id = NEW.inference_object_id
+      AND attempt.session_id = NEW.session_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'resolution object does not belong to session');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER object_resolution_session_guard_update
+BEFORE UPDATE OF session_id, inference_object_id ON object_resolutions
+WHEN NEW.inference_object_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM inference_objects AS object
+    JOIN scan_attempts AS attempt ON attempt.attempt_id = object.attempt_id
+    WHERE object.inference_object_id = NEW.inference_object_id
+      AND attempt.session_id = NEW.session_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'resolution object does not belong to session');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_resolution_no_insert
+BEFORE INSERT ON object_resolutions
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = NEW.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout resolutions are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_resolution_no_update
+BEFORE UPDATE ON object_resolutions
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = OLD.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout resolutions are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_resolution_no_delete
+BEFORE DELETE ON object_resolutions
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = OLD.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout resolutions are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_draft_line_no_insert
+BEFORE INSERT ON draft_order_lines
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = NEW.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout draft is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_draft_line_no_update
+BEFORE UPDATE ON draft_order_lines
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = OLD.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout draft is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_draft_line_no_delete
+BEFORE DELETE ON draft_order_lines
+WHEN EXISTS (
+  SELECT 1 FROM checkout_sessions
+  WHERE session_id = OLD.session_id AND state = 'completed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'completed checkout draft is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER final_order_no_update
+BEFORE UPDATE ON final_orders
+BEGIN
+  SELECT RAISE(ABORT, 'final order is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER final_order_no_delete
+BEFORE DELETE ON final_orders
+BEGIN
+  SELECT RAISE(ABORT, 'final order is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER paid_final_line_no_insert
+BEFORE INSERT ON final_order_lines
+WHEN EXISTS (
+  SELECT 1 FROM simulated_payments WHERE order_id = NEW.order_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'paid final order lines are immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER final_order_line_no_update
+BEFORE UPDATE ON final_order_lines
+BEGIN
+  SELECT RAISE(ABORT, 'final order line is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER final_order_line_no_delete
+BEFORE DELETE ON final_order_lines
+BEGIN
+  SELECT RAISE(ABORT, 'final order line is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER simulated_payment_no_update
+BEFORE UPDATE ON simulated_payments
+BEGIN
+  SELECT RAISE(ABORT, 'simulated payment is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER simulated_payment_no_delete
+BEFORE DELETE ON simulated_payments
+BEGIN
+  SELECT RAISE(ABORT, 'simulated payment is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER audit_event_no_update
+BEFORE UPDATE ON audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'audit event is append-only');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER audit_event_no_delete
+BEFORE DELETE ON audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'audit event is append-only');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER retention_event_no_update
+BEFORE UPDATE ON retention_events
+BEGIN
+  SELECT RAISE(ABORT, 'retention event is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER retention_event_no_delete
+BEFORE DELETE ON retention_events
+BEGIN
+  SELECT RAISE(ABORT, 'retention event is immutable');
 END
 ''');
   }
