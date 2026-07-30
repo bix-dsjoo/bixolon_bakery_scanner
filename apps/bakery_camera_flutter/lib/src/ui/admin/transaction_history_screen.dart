@@ -22,6 +22,9 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   bool _isLoadingMore = false;
   Object? _reloadError;
   Object? _loadMoreError;
+  Object? _detailError;
+  String? _detailErrorSessionId;
+  bool _isOpeningDetail = false;
   int _requestGeneration = 0;
 
   @override
@@ -101,6 +104,34 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
     PageCursor cursor,
   ) => _isCurrentReload(generation, filter) && identical(cursor, _nextCursor);
 
+  Future<void> _openDetail(String sessionId) async {
+    if (!mounted || _isOpeningDetail) return;
+    setState(() {
+      _isOpeningDetail = true;
+      _detailError = null;
+      _detailErrorSessionId = null;
+    });
+    try {
+      final detail = await widget.repository.transactionDetail(sessionId);
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TransactionDetailScreen(detail: detail),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _detailError = error;
+        _detailErrorSessionId = sessionId;
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isOpeningDetail = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Material(
     child: _isLoading && _items.isEmpty
@@ -114,6 +145,10 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                   _reload();
                 },
               ),
+              if (_detailError != null && _detailErrorSessionId != null)
+                _DetailErrorBanner(
+                  onRetry: () => _openDetail(_detailErrorSessionId!),
+                ),
               const SizedBox(height: 16),
               Expanded(
                 child: _items.isEmpty && _reloadError == null
@@ -165,23 +200,44 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                           final item = _items[itemIndex];
                           return _TransactionTile(
                             item: item,
-                            onTap: () async {
-                              final detail = await widget.repository
-                                  .transactionDetail(item.sessionId);
-                              if (!context.mounted) return;
-                              await Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) =>
-                                      TransactionDetailScreen(detail: detail),
-                                ),
-                              );
-                            },
+                            onTap: _isOpeningDetail
+                                ? null
+                                : () => _openDetail(item.sessionId),
                           );
                         },
                       ),
               ),
             ],
           ),
+  );
+}
+
+class _DetailErrorBanner extends StatelessWidget {
+  const _DetailErrorBanner({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            '거래 상세를 불러오지 못했습니다.',
+            key: Key('transaction-detail-error'),
+          ),
+          const SizedBox(height: 8),
+          FilledButton(
+            key: const Key('transaction-retry-detail'),
+            onPressed: onRetry,
+            child: const Text('다시 시도'),
+          ),
+        ],
+      ),
+    ),
   );
 }
 
@@ -442,7 +498,7 @@ class _Filters extends StatelessWidget {
 class _TransactionTile extends StatelessWidget {
   const _TransactionTile({required this.item, required this.onTap});
   final TransactionListItem item;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) => Card(

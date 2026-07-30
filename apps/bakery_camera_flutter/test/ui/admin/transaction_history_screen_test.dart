@@ -1,5 +1,6 @@
 import 'package:bakery_camera_prototype/src/admin/admin_models.dart';
 import 'package:bakery_camera_prototype/src/admin/admin_repository.dart';
+import 'package:bakery_camera_prototype/src/ui/admin/transaction_detail_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/admin/transaction_history_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:flutter/material.dart';
@@ -199,7 +200,136 @@ void main() {
       );
     },
   );
+
+  testWidgets('history shows a retryable current detail error', (tester) async {
+    final repository = _DetailErrorRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: TransactionHistoryScreen(repository: repository),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('session-1'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('transaction-detail-error')), findsOneWidget);
+    expect(find.byKey(const Key('transaction-retry-detail')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byKey(const Key('transaction-retry-detail')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Scaffold), findsOneWidget);
+    expect(repository.detailRequests, 2);
+  });
+
+  testWidgets('history ignores a detail error after it is disposed', (
+    tester,
+  ) async {
+    final repository = _DeferredDetailRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: TransactionHistoryScreen(repository: repository),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('session-1'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    repository.completeError();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('history serializes rapid detail taps into one navigation', (
+    tester,
+  ) async {
+    final repository = _DeferredDetailRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: TransactionHistoryScreen(repository: repository),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('session-1'));
+    await tester.tap(find.text('session-1'));
+    await tester.pump();
+
+    expect(repository.detailRequests, 1);
+    repository.completeSuccess();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TransactionDetailScreen), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
+
+final class _DetailErrorRepository extends _Repository {
+  var detailRequests = 0;
+
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) {
+    detailRequests++;
+    if (detailRequests == 1) return Future.error(StateError('detail failed'));
+    return Future.value(_detail(sessionId));
+  }
+}
+
+final class _DeferredDetailRepository extends _Repository {
+  final _pendingDetail = Completer<AdminTransactionDetail>();
+  var detailRequests = 0;
+
+  @override
+  Future<AdminTransactionDetail> transactionDetail(String sessionId) {
+    detailRequests++;
+    return _pendingDetail.future;
+  }
+
+  void completeError() =>
+      _pendingDetail.completeError(StateError('detail disposed'));
+  void completeSuccess() => _pendingDetail.complete(_detailForSession());
+
+  AdminTransactionDetail _detailForSession() => _detail('session-1');
+}
+
+AdminTransactionDetail _detail(String sessionId) => AdminTransactionDetail(
+  sessionId: sessionId,
+  startedAt: DateTime.utc(2026),
+  terminalAt: null,
+  terminalState: 'completed',
+  terminalReason: null,
+  catalogRevisionId: 'catalog-v1',
+  settingsRevisionId: 'settings-v1',
+  configSnapshotJson: '{}',
+  artifacts: const AdminArtifactSnapshot(
+    detectorId: 'detector',
+    detectorSha256: 'a',
+    repvitArtifactId: 'repvit',
+    repvitSha256: 'a',
+    repvitManifestSha256: 'a',
+    repvitPrototypeSha256: 'a',
+    dinov3ArtifactId: 'dino',
+    dinov3Sha256: 'a',
+    dinov3SupportSha256: 'a',
+    calibrationId: 'calibration',
+    calibrationSha256: 'a',
+    preprocessSha256: 'a',
+    fusionPolicyId: 'policy',
+    fusionPolicySha256: 'a',
+  ),
+  attempts: const [],
+  resolutions: const [],
+  order: null,
+  payment: null,
+  hasIntegrityWarning: false,
+);
 
 final class _ReloadErrorRaceRepository implements TransactionAuditRepository {
   final _old = Completer<TransactionPage>();
@@ -407,7 +537,7 @@ final class _PagedRepository implements TransactionAuditRepository {
   );
 }
 
-final class _Repository implements TransactionAuditRepository {
+class _Repository implements TransactionAuditRepository {
   @override
   Future<AdminTransactionDetail> transactionDetail(String sessionId) =>
       throw UnimplementedError();
