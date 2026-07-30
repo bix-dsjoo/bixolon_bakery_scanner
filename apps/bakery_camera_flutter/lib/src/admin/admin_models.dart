@@ -128,10 +128,18 @@ final class TransactionFilter {
 
 /// A compound cursor prevents duplicate or skipped records sharing a timestamp.
 final class PageCursor {
-  const PageCursor({required this.startedAt, required this.sessionId});
+  const PageCursor({
+    required this.startedAt,
+    required this.sessionId,
+    this.priorityIndex,
+  });
 
   final DateTime startedAt;
   final String sessionId;
+
+  /// Review inboxes sort priority before time; transaction history leaves this
+  /// unset because its sort key contains only time and session id.
+  final int? priorityIndex;
 }
 
 final class TransactionPage {

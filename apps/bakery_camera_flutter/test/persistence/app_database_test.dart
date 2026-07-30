@@ -19,12 +19,12 @@ void main() {
     await db.close();
   });
 
-  test('schema version 2 installs immutable operational settings', () async {
+  test('schema version 3 installs immutable operational settings', () async {
     final settings = await db.select(db.settingsRevisions).getSingle();
     final pointer = await db.select(db.appSettings).getSingle();
     final diagnostics = await db.diagnostics();
 
-    expect(db.schemaVersion, 2);
+    expect(db.schemaVersion, 3);
     expect(settings.revisionId, 'settings-v1');
     expect(settings.retryLimit, 2);
     expect(settings.paymentCompleteDurationSeconds, 4);
@@ -34,9 +34,9 @@ void main() {
     expect(settings.kioskDisplayName, 'BIXOLON Bakery');
     expect(settings.adminAuthorLabel, 'prototype-admin');
     expect(pointer.activeSettingsRevisionId, 'settings-v1');
-    expect(diagnostics.schemaVersion, 2);
+    expect(diagnostics.schemaVersion, 3);
     expect(diagnostics.applicationVersion, '1.1.0+4');
-    expect(diagnostics.lastMigrationResult, 'created_schema_v2');
+    expect(diagnostics.lastMigrationResult, 'created_schema_v3');
   });
 
   test(
@@ -111,7 +111,101 @@ void main() {
       );
       expect(
         (await upgraded.diagnostics()).lastMigrationResult,
-        'migrated_1_to_2',
+        'migrated_1_to_3',
+      );
+    },
+  );
+
+  test(
+    'schema version 2 preserves annotations and defaults the new conclusion',
+    () async {
+      final previousWarningSetting =
+          driftRuntimeOptions.dontWarnAboutMultipleDatabases;
+      driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+      addTearDown(() {
+        driftRuntimeOptions.dontWarnAboutMultipleDatabases =
+            previousWarningSetting;
+      });
+      final directory = await Directory.systemTemp.createTemp(
+        'bakery-v2-upgrade-',
+      );
+      final file = File('${directory.path}${Platform.pathSeparator}scanner.db');
+      addTearDown(() async {
+        if (directory.existsSync()) await directory.delete(recursive: true);
+      });
+      final original = BakeryDatabase(NativeDatabase(file));
+      await original.select(original.appSettings).getSingle();
+      await original
+          .into(original.catalogRevisions)
+          .insert(
+            CatalogRevisionsCompanion.insert(
+              revisionId: 'catalog-v2-migration',
+              sha256: _hash('a'),
+              createdAtUs: 1,
+              isActive: true,
+            ),
+          );
+      await original
+          .into(original.checkoutSessions)
+          .insert(
+            CheckoutSessionsCompanion.insert(
+              sessionId: 'session-v2-history',
+              state: 'active',
+              startedAtUs: 2,
+              catalogRevisionId: 'catalog-v2-migration',
+              settingsRevisionId: 'settings-v1',
+              detectorId: 'detector',
+              detectorSha256: _hash('b'),
+              repvitArtifactId: 'repvit',
+              repvitSha256: _hash('c'),
+              repvitManifestSha256: _hash('d'),
+              repvitPrototypeSha256: _hash('e'),
+              dinov3ArtifactId: 'dino',
+              dinov3Sha256: _hash('f'),
+              dinov3SupportSha256: _hash('0'),
+              calibrationId: 'calibration',
+              calibrationSha256: _hash('1'),
+              preprocessSha256: _hash('2'),
+              fusionPolicyId: 'policy',
+              fusionPolicySha256: _hash('3'),
+              configSnapshotJson: '{}',
+            ),
+          );
+      await original.customStatement('DROP TABLE admin_review_annotations');
+      await original.customStatement('''
+CREATE TABLE admin_review_annotations (
+  annotation_id TEXT NOT NULL PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES checkout_sessions(session_id),
+  attempt_id TEXT NULL REFERENCES scan_attempts(attempt_id),
+  object_id TEXT NULL REFERENCES inference_objects(inference_object_id),
+  review_status TEXT NOT NULL CHECK (review_status IN ('open', 'reviewed', 'needs_follow_up')),
+  correct_product_id TEXT NULL,
+  reason_code TEXT NOT NULL,
+  note TEXT NULL,
+  author_label TEXT NOT NULL,
+  created_at_us INTEGER NOT NULL
+)
+''');
+      await original.customStatement('''
+INSERT INTO admin_review_annotations (
+  annotation_id, session_id, review_status, reason_code, author_label,
+  created_at_us
+) VALUES ('annotation-v2', 'session-v2-history', 'reviewed', 'catalog_issue', 'admin', 3)
+''');
+      await original.customStatement('PRAGMA user_version = 2');
+      await original.close();
+
+      final upgraded = BakeryDatabase(NativeDatabase(file));
+      addTearDown(upgraded.close);
+      final annotation = await upgraded
+          .select(upgraded.adminReviewAnnotations)
+          .getSingle();
+
+      expect(annotation.annotationId, 'annotation-v2');
+      expect(annotation.conclusionCode, 'ai_correct');
+      expect(
+        (await upgraded.diagnostics()).lastMigrationResult,
+        'migrated_2_to_3',
       );
     },
   );
@@ -237,7 +331,7 @@ void main() {
     });
     final original = BakeryDatabase(NativeDatabase(file));
     await original.select(original.appSettings).getSingle();
-    await original.customStatement('PRAGMA user_version = 3');
+    await original.customStatement('PRAGMA user_version = 4');
     await original.close();
     final newer = BakeryDatabase(NativeDatabase(file));
     addTearDown(newer.close);

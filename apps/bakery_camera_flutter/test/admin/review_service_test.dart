@@ -37,6 +37,65 @@ void main() {
   );
 
   test(
+    'review cursor preserves priority, timestamp, and session-id ordering',
+    () async {
+      await _insertSession(database, 'override-a', startedAtUs: 9);
+      await _insertSession(database, 'override-b', startedAtUs: 9);
+      await _insertAttemptAndObject(
+        database,
+        sessionId: 'override-a',
+        source: 'customer_overrode_auto',
+      );
+      await _insertAttemptAndObject(
+        database,
+        sessionId: 'override-b',
+        source: 'customer_overrode_auto',
+      );
+
+      final first = await service.reviewInbox(
+        const ReviewFilter(),
+        null,
+        limit: 2,
+      );
+      final second = await service.reviewInbox(
+        const ReviewFilter(),
+        first.nextCursor,
+        limit: 2,
+      );
+      final third = await service.reviewInbox(
+        const ReviewFilter(),
+        second.nextCursor,
+        limit: 99,
+      );
+
+      expect(first.items.map((item) => item.sessionId), [
+        'integrity',
+        'override-a',
+      ]);
+      expect(second.items.map((item) => item.sessionId), [
+        'override-b',
+        'override',
+      ]);
+      expect(
+        [
+          ...first.items,
+          ...second.items,
+          ...third.items,
+        ].map((item) => item.sessionId),
+        [
+          'integrity',
+          'override-a',
+          'override-b',
+          'override',
+          'unknown',
+          'catalog',
+          'retake',
+        ],
+      );
+    },
+  );
+
+  test(
     'annotation is append-only and leaves checkout evidence untouched',
     () async {
       final inferenceBefore = await database
@@ -97,6 +156,83 @@ void main() {
   });
 
   test(
+    'concurrent same-id retries reconcile one identical annotation',
+    () async {
+      const draft = AdminReviewAnnotationDraft(
+        sessionId: 'catalog',
+        reviewStatus: ReviewStatus.reviewed,
+        reasonCode: 'catalog_issue',
+        authorLabel: 'prototype-admin',
+      );
+      final second = DatabaseReviewService(
+        database,
+        createId: (_) => 'concurrent-annotation',
+        now: () => DateTime.utc(2026, 7, 31),
+      );
+      final first = DatabaseReviewService(
+        database,
+        createId: (_) => 'concurrent-annotation',
+        now: () => DateTime.utc(2026, 7, 31),
+      );
+
+      await Future.wait([first.annotate(draft), second.annotate(draft)]);
+
+      expect(
+        await (database.select(
+              database.adminReviewAnnotations,
+            )..where((row) => row.annotationId.equals('concurrent-annotation')))
+            .get(),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'concurrent same-id divergent annotations fail without rewriting',
+    () async {
+      final first = DatabaseReviewService(
+        database,
+        createId: (_) => 'divergent-annotation',
+        now: () => DateTime.utc(2026, 7, 31),
+      );
+      final second = DatabaseReviewService(
+        database,
+        createId: (_) => 'divergent-annotation',
+        now: () => DateTime.utc(2026, 7, 31),
+      );
+      const baseline = AdminReviewAnnotationDraft(
+        sessionId: 'catalog',
+        reviewStatus: ReviewStatus.reviewed,
+        reasonCode: 'catalog_issue',
+        authorLabel: 'prototype-admin',
+      );
+      const divergent = AdminReviewAnnotationDraft(
+        sessionId: 'catalog',
+        reviewStatus: ReviewStatus.needsFollowUp,
+        reasonCode: 'image_quality',
+        authorLabel: 'prototype-admin',
+      );
+
+      final results = await Future.wait<Object?>([
+        first
+            .annotate(baseline)
+            .then<Object?>((_) => null, onError: (Object error) => error),
+        second
+            .annotate(divergent)
+            .then<Object?>((_) => null, onError: (Object error) => error),
+      ]);
+
+      expect(results.where((result) => result != null), hasLength(1));
+      final row =
+          await (database.select(database.adminReviewAnnotations)..where(
+                (row) => row.annotationId.equals('divergent-annotation'),
+              ))
+              .getSingle();
+      expect(row.reasonCode, anyOf('catalog_issue', 'image_quality'));
+    },
+  );
+
+  test(
     'correct product must belong to the target session frozen catalog',
     () async {
       await expectLater(
@@ -113,6 +249,169 @@ void main() {
       );
     },
   );
+
+  test(
+    'raw SQL allows a retired product in frozen catalog and rejects others',
+    () async {
+      await database.customStatement(
+        '''
+INSERT INTO admin_review_annotations (
+  annotation_id, session_id, review_status, correct_product_id,
+  reason_code, author_label, created_at_us
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+''',
+        [
+          'raw-retired',
+          'unknown',
+          'reviewed',
+          'product',
+          'catalog_issue',
+          'admin',
+          1,
+        ],
+      );
+
+      await database
+          .into(database.catalogRevisions)
+          .insert(
+            CatalogRevisionsCompanion.insert(
+              revisionId: 'catalog-v2',
+              sha256: 'b' * 64,
+              createdAtUs: 2,
+              isActive: false,
+            ),
+          );
+      await database
+          .into(database.products)
+          .insert(
+            ProductsCompanion.insert(
+              productRevisionId: 'catalog-v2/other',
+              catalogRevisionId: 'catalog-v2',
+              productId: 'other-product',
+              displayName: 'Other',
+              unitPriceKrw: 1000,
+              categoryId: 'bread',
+              active: true,
+              sortOrder: 2,
+            ),
+          );
+      for (final productId in ['other-product', 'missing-product']) {
+        await expectLater(
+          database.customStatement(
+            '''
+INSERT INTO admin_review_annotations (
+  annotation_id, session_id, review_status, correct_product_id,
+  reason_code, author_label, created_at_us
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+''',
+            [
+              'raw-$productId',
+              'unknown',
+              'reviewed',
+              productId,
+              'catalog_issue',
+              'admin',
+              2,
+            ],
+          ),
+          throwsA(isA<Exception>()),
+        );
+      }
+    },
+  );
+}
+
+Future<void> _insertSession(
+  BakeryDatabase db,
+  String sessionId, {
+  required int startedAtUs,
+}) async {
+  const hash =
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  await db
+      .into(db.checkoutSessions)
+      .insert(
+        CheckoutSessionsCompanion.insert(
+          sessionId: sessionId,
+          state: 'active',
+          startedAtUs: startedAtUs,
+          catalogRevisionId: 'catalog-v1',
+          settingsRevisionId: 'settings-v1',
+          detectorId: 'detector',
+          detectorSha256: hash,
+          repvitArtifactId: 'repvit',
+          repvitSha256: hash,
+          repvitManifestSha256: hash,
+          repvitPrototypeSha256: hash,
+          dinov3ArtifactId: 'dino',
+          dinov3Sha256: hash,
+          dinov3SupportSha256: hash,
+          calibrationId: 'calibration',
+          calibrationSha256: hash,
+          preprocessSha256: hash,
+          fusionPolicyId: 'policy',
+          fusionPolicySha256: hash,
+          configSnapshotJson: '{}',
+        ),
+      );
+}
+
+Future<void> _insertAttemptAndObject(
+  BakeryDatabase db, {
+  required String sessionId,
+  required String source,
+}) async {
+  const hash =
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  await db
+      .into(db.scanAttempts)
+      .insert(
+        ScanAttemptsCompanion.insert(
+          attemptId: '$sessionId-attempt',
+          sessionId: sessionId,
+          attemptNumber: 1,
+          capturedAtUs: 1,
+          imageRelativePath: '$sessionId.jpg',
+          imageByteSize: 1,
+          imageSha256: hash,
+          status: 'staged',
+        ),
+      );
+  await db
+      .into(db.inferenceObjects)
+      .insert(
+        InferenceObjectsCompanion.insert(
+          inferenceObjectId: '$sessionId-object',
+          attemptId: '$sessionId-attempt',
+          objectId: '$sessionId-object',
+          skuId: const Value(7),
+          skuName: 'Registered',
+          decisionPath: 'repvit_direct',
+          confidence: .2,
+          bboxJson: '[0,0,1,1]',
+          detectorSource: 'detector',
+          detectorScore: .5,
+          provenanceJson: _provenance,
+          unknownReason: const Value(null),
+        ),
+      );
+  await db
+      .into(db.objectResolutions)
+      .insert(
+        ObjectResolutionsCompanion.insert(
+          resolutionId: '$sessionId-resolution',
+          sessionId: sessionId,
+          inferenceObjectId: Value('$sessionId-object'),
+          productRevisionId: 'catalog-v1/product',
+          productId: 'product',
+          productName: 'Bread',
+          unitPriceKrw: 1000,
+          source: source,
+          resolvedAtUs: 2,
+          canonicalBboxJson: const Value('[0,0,1,1]'),
+          isCurrent: true,
+        ),
+      );
 }
 
 Future<void> _seed(BakeryDatabase db) async {

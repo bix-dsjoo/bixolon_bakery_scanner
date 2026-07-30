@@ -568,6 +568,8 @@ class AdminReviewAnnotations extends Table {
       text().nullable().references(InferenceObjects, #inferenceObjectId)();
   TextColumn get reviewStatus => text().withLength(min: 1)();
   TextColumn get correctProductId => text().nullable()();
+  TextColumn get conclusionCode =>
+      text().withDefault(const Constant('ai_correct'))();
   TextColumn get reasonCode => text().withLength(min: 1)();
   TextColumn get note => text().nullable()();
   TextColumn get authorLabel => text().withLength(min: 1)();
@@ -579,6 +581,7 @@ class AdminReviewAnnotations extends Table {
   @override
   List<String> get customConstraints => const [
     "CHECK (review_status IN ('open', 'reviewed', 'needs_follow_up'))",
+    "CHECK (conclusion_code IN ('ai_correct', 'customer_correct', 'both_incorrect', 'insufficient_evidence'))",
   ];
 }
 
@@ -616,14 +619,14 @@ class BakeryDatabase extends _$BakeryDatabase {
   String _lastMigrationResult = 'not_opened';
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (migrator) async {
       await migrator.createAll();
       await _installIntegrityGuards();
-      _lastMigrationResult = 'created_schema_v2';
+      _lastMigrationResult = 'created_schema_v3';
       await _installSettings();
     },
     onUpgrade: (migrator, from, to) async {
@@ -633,6 +636,19 @@ class BakeryDatabase extends _$BakeryDatabase {
         );
       }
       if (from == 1 && to == 2) {
+        await migrator.createTable(adminReviewAnnotations);
+        await _installReviewIntegrityGuards();
+        return;
+      }
+      if (from == 2 && to == 3) {
+        await migrator.addColumn(
+          adminReviewAnnotations,
+          adminReviewAnnotations.conclusionCode,
+        );
+        await _installReviewIntegrityGuards();
+        return;
+      }
+      if (from == 1 && to == 3) {
         await migrator.createTable(adminReviewAnnotations);
         await _installReviewIntegrityGuards();
         return;
@@ -1186,6 +1202,9 @@ END
   }
 
   Future<void> _installReviewIntegrityGuards() async {
+    await customStatement(
+      'DROP TRIGGER IF EXISTS admin_review_annotation_correct_product_context',
+    );
     await customStatement('''
 CREATE TRIGGER admin_review_annotation_target_context
 BEFORE INSERT ON admin_review_annotations
@@ -1201,6 +1220,19 @@ WHEN (NEW.attempt_id IS NOT NULL AND NOT EXISTS (
 ))
 BEGIN
   SELECT RAISE(ABORT, 'review target does not belong to session');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER admin_review_annotation_correct_product_context
+BEFORE INSERT ON admin_review_annotations
+WHEN NEW.correct_product_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM products AS product
+  JOIN checkout_sessions AS session ON session.session_id = NEW.session_id
+  WHERE product.catalog_revision_id = session.catalog_revision_id
+    AND product.product_id = NEW.correct_product_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'review correct product is not in frozen catalog');
 END
 ''');
     await customStatement('''

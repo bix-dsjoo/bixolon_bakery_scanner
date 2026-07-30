@@ -25,6 +25,63 @@ enum ReviewPriority {
   retakeOrFailure,
 }
 
+/// A reviewer conclusion is evidence about a checkout, not a mutation of the
+/// stored inference result or customer order.
+enum ReviewConclusion {
+  aiCorrect,
+  customerCorrect,
+  bothIncorrect,
+  insufficientEvidence,
+}
+
+extension ReviewConclusionStorage on ReviewConclusion {
+  String get storageValue => switch (this) {
+    ReviewConclusion.aiCorrect => 'ai_correct',
+    ReviewConclusion.customerCorrect => 'customer_correct',
+    ReviewConclusion.bothIncorrect => 'both_incorrect',
+    ReviewConclusion.insufficientEvidence => 'insufficient_evidence',
+  };
+
+  static ReviewConclusion parse(String value) => switch (value) {
+    'ai_correct' => ReviewConclusion.aiCorrect,
+    'customer_correct' => ReviewConclusion.customerCorrect,
+    'both_incorrect' => ReviewConclusion.bothIncorrect,
+    'insufficient_evidence' => ReviewConclusion.insufficientEvidence,
+    _ => throw StateError('unknown review conclusion: $value'),
+  };
+}
+
+enum ReviewIssueTag {
+  productMisclassification,
+  miss,
+  duplicate,
+  merge,
+  split,
+  nonTargetDetection,
+  imageQuality,
+  catalogIssue,
+}
+
+extension ReviewIssueTagStorage on ReviewIssueTag {
+  String get storageValue => switch (this) {
+    ReviewIssueTag.productMisclassification => 'product_misclassification',
+    ReviewIssueTag.miss => 'miss',
+    ReviewIssueTag.duplicate => 'duplicate',
+    ReviewIssueTag.merge => 'merge',
+    ReviewIssueTag.split => 'split',
+    ReviewIssueTag.nonTargetDetection => 'non_target_detection',
+    ReviewIssueTag.imageQuality => 'image_quality',
+    ReviewIssueTag.catalogIssue => 'catalog_issue',
+  };
+
+  static ReviewIssueTag? tryParse(String value) {
+    for (final tag in ReviewIssueTag.values) {
+      if (tag.storageValue == value) return tag;
+    }
+    return null;
+  }
+}
+
 final class ReviewTarget {
   const ReviewTarget({required this.sessionId, this.attemptId, this.objectId});
 
@@ -44,6 +101,7 @@ final class AdminReviewAnnotationDraft {
     this.objectId,
     required this.reviewStatus,
     this.correctProductId,
+    this.conclusion = ReviewConclusion.aiCorrect,
     required this.reasonCode,
     this.note,
     required this.authorLabel,
@@ -54,6 +112,7 @@ final class AdminReviewAnnotationDraft {
   final String? objectId;
   final ReviewStatus reviewStatus;
   final String? correctProductId;
+  final ReviewConclusion conclusion;
   final String reasonCode;
   final String? note;
   final String authorLabel;
@@ -73,6 +132,7 @@ final class AdminReviewAnnotation {
     required this.reasonCode,
     required this.note,
     required this.correctProductId,
+    required this.conclusion,
     required this.authorLabel,
     required this.createdAt,
   });
@@ -83,6 +143,7 @@ final class AdminReviewAnnotation {
   final String reasonCode;
   final String? note;
   final String? correctProductId;
+  final ReviewConclusion conclusion;
   final String authorLabel;
   final DateTime createdAt;
 }

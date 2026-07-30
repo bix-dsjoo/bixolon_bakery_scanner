@@ -10782,6 +10782,18 @@ class $AdminReviewAnnotationsTable extends AdminReviewAnnotations
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _conclusionCodeMeta = const VerificationMeta(
+    'conclusionCode',
+  );
+  @override
+  late final GeneratedColumn<String> conclusionCode = GeneratedColumn<String>(
+    'conclusion_code',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('ai_correct'),
+  );
   static const VerificationMeta _reasonCodeMeta = const VerificationMeta(
     'reasonCode',
   );
@@ -10834,6 +10846,7 @@ class $AdminReviewAnnotationsTable extends AdminReviewAnnotations
     objectId,
     reviewStatus,
     correctProductId,
+    conclusionCode,
     reasonCode,
     note,
     authorLabel,
@@ -10899,6 +10912,15 @@ class $AdminReviewAnnotationsTable extends AdminReviewAnnotations
         correctProductId.isAcceptableOrUnknown(
           data['correct_product_id']!,
           _correctProductIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('conclusion_code')) {
+      context.handle(
+        _conclusionCodeMeta,
+        conclusionCode.isAcceptableOrUnknown(
+          data['conclusion_code']!,
+          _conclusionCodeMeta,
         ),
       );
     }
@@ -10974,6 +10996,10 @@ class $AdminReviewAnnotationsTable extends AdminReviewAnnotations
         DriftSqlType.string,
         data['${effectivePrefix}correct_product_id'],
       ),
+      conclusionCode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}conclusion_code'],
+      )!,
       reasonCode: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}reason_code'],
@@ -11007,6 +11033,7 @@ class AdminReviewAnnotationRow extends DataClass
   final String? objectId;
   final String reviewStatus;
   final String? correctProductId;
+  final String conclusionCode;
   final String reasonCode;
   final String? note;
   final String authorLabel;
@@ -11018,6 +11045,7 @@ class AdminReviewAnnotationRow extends DataClass
     this.objectId,
     required this.reviewStatus,
     this.correctProductId,
+    required this.conclusionCode,
     required this.reasonCode,
     this.note,
     required this.authorLabel,
@@ -11038,6 +11066,7 @@ class AdminReviewAnnotationRow extends DataClass
     if (!nullToAbsent || correctProductId != null) {
       map['correct_product_id'] = Variable<String>(correctProductId);
     }
+    map['conclusion_code'] = Variable<String>(conclusionCode);
     map['reason_code'] = Variable<String>(reasonCode);
     if (!nullToAbsent || note != null) {
       map['note'] = Variable<String>(note);
@@ -11061,6 +11090,7 @@ class AdminReviewAnnotationRow extends DataClass
       correctProductId: correctProductId == null && nullToAbsent
           ? const Value.absent()
           : Value(correctProductId),
+      conclusionCode: Value(conclusionCode),
       reasonCode: Value(reasonCode),
       note: note == null && nullToAbsent ? const Value.absent() : Value(note),
       authorLabel: Value(authorLabel),
@@ -11080,6 +11110,7 @@ class AdminReviewAnnotationRow extends DataClass
       objectId: serializer.fromJson<String?>(json['objectId']),
       reviewStatus: serializer.fromJson<String>(json['reviewStatus']),
       correctProductId: serializer.fromJson<String?>(json['correctProductId']),
+      conclusionCode: serializer.fromJson<String>(json['conclusionCode']),
       reasonCode: serializer.fromJson<String>(json['reasonCode']),
       note: serializer.fromJson<String?>(json['note']),
       authorLabel: serializer.fromJson<String>(json['authorLabel']),
@@ -11096,6 +11127,7 @@ class AdminReviewAnnotationRow extends DataClass
       'objectId': serializer.toJson<String?>(objectId),
       'reviewStatus': serializer.toJson<String>(reviewStatus),
       'correctProductId': serializer.toJson<String?>(correctProductId),
+      'conclusionCode': serializer.toJson<String>(conclusionCode),
       'reasonCode': serializer.toJson<String>(reasonCode),
       'note': serializer.toJson<String?>(note),
       'authorLabel': serializer.toJson<String>(authorLabel),
@@ -11110,6 +11142,7 @@ class AdminReviewAnnotationRow extends DataClass
     Value<String?> objectId = const Value.absent(),
     String? reviewStatus,
     Value<String?> correctProductId = const Value.absent(),
+    String? conclusionCode,
     String? reasonCode,
     Value<String?> note = const Value.absent(),
     String? authorLabel,
@@ -11123,6 +11156,7 @@ class AdminReviewAnnotationRow extends DataClass
     correctProductId: correctProductId.present
         ? correctProductId.value
         : this.correctProductId,
+    conclusionCode: conclusionCode ?? this.conclusionCode,
     reasonCode: reasonCode ?? this.reasonCode,
     note: note.present ? note.value : this.note,
     authorLabel: authorLabel ?? this.authorLabel,
@@ -11144,6 +11178,9 @@ class AdminReviewAnnotationRow extends DataClass
       correctProductId: data.correctProductId.present
           ? data.correctProductId.value
           : this.correctProductId,
+      conclusionCode: data.conclusionCode.present
+          ? data.conclusionCode.value
+          : this.conclusionCode,
       reasonCode: data.reasonCode.present
           ? data.reasonCode.value
           : this.reasonCode,
@@ -11166,6 +11203,7 @@ class AdminReviewAnnotationRow extends DataClass
           ..write('objectId: $objectId, ')
           ..write('reviewStatus: $reviewStatus, ')
           ..write('correctProductId: $correctProductId, ')
+          ..write('conclusionCode: $conclusionCode, ')
           ..write('reasonCode: $reasonCode, ')
           ..write('note: $note, ')
           ..write('authorLabel: $authorLabel, ')
@@ -11182,6 +11220,7 @@ class AdminReviewAnnotationRow extends DataClass
     objectId,
     reviewStatus,
     correctProductId,
+    conclusionCode,
     reasonCode,
     note,
     authorLabel,
@@ -11197,6 +11236,7 @@ class AdminReviewAnnotationRow extends DataClass
           other.objectId == this.objectId &&
           other.reviewStatus == this.reviewStatus &&
           other.correctProductId == this.correctProductId &&
+          other.conclusionCode == this.conclusionCode &&
           other.reasonCode == this.reasonCode &&
           other.note == this.note &&
           other.authorLabel == this.authorLabel &&
@@ -11211,6 +11251,7 @@ class AdminReviewAnnotationsCompanion
   final Value<String?> objectId;
   final Value<String> reviewStatus;
   final Value<String?> correctProductId;
+  final Value<String> conclusionCode;
   final Value<String> reasonCode;
   final Value<String?> note;
   final Value<String> authorLabel;
@@ -11223,6 +11264,7 @@ class AdminReviewAnnotationsCompanion
     this.objectId = const Value.absent(),
     this.reviewStatus = const Value.absent(),
     this.correctProductId = const Value.absent(),
+    this.conclusionCode = const Value.absent(),
     this.reasonCode = const Value.absent(),
     this.note = const Value.absent(),
     this.authorLabel = const Value.absent(),
@@ -11236,6 +11278,7 @@ class AdminReviewAnnotationsCompanion
     this.objectId = const Value.absent(),
     required String reviewStatus,
     this.correctProductId = const Value.absent(),
+    this.conclusionCode = const Value.absent(),
     required String reasonCode,
     this.note = const Value.absent(),
     required String authorLabel,
@@ -11254,6 +11297,7 @@ class AdminReviewAnnotationsCompanion
     Expression<String>? objectId,
     Expression<String>? reviewStatus,
     Expression<String>? correctProductId,
+    Expression<String>? conclusionCode,
     Expression<String>? reasonCode,
     Expression<String>? note,
     Expression<String>? authorLabel,
@@ -11267,6 +11311,7 @@ class AdminReviewAnnotationsCompanion
       if (objectId != null) 'object_id': objectId,
       if (reviewStatus != null) 'review_status': reviewStatus,
       if (correctProductId != null) 'correct_product_id': correctProductId,
+      if (conclusionCode != null) 'conclusion_code': conclusionCode,
       if (reasonCode != null) 'reason_code': reasonCode,
       if (note != null) 'note': note,
       if (authorLabel != null) 'author_label': authorLabel,
@@ -11282,6 +11327,7 @@ class AdminReviewAnnotationsCompanion
     Value<String?>? objectId,
     Value<String>? reviewStatus,
     Value<String?>? correctProductId,
+    Value<String>? conclusionCode,
     Value<String>? reasonCode,
     Value<String?>? note,
     Value<String>? authorLabel,
@@ -11295,6 +11341,7 @@ class AdminReviewAnnotationsCompanion
       objectId: objectId ?? this.objectId,
       reviewStatus: reviewStatus ?? this.reviewStatus,
       correctProductId: correctProductId ?? this.correctProductId,
+      conclusionCode: conclusionCode ?? this.conclusionCode,
       reasonCode: reasonCode ?? this.reasonCode,
       note: note ?? this.note,
       authorLabel: authorLabel ?? this.authorLabel,
@@ -11324,6 +11371,9 @@ class AdminReviewAnnotationsCompanion
     if (correctProductId.present) {
       map['correct_product_id'] = Variable<String>(correctProductId.value);
     }
+    if (conclusionCode.present) {
+      map['conclusion_code'] = Variable<String>(conclusionCode.value);
+    }
     if (reasonCode.present) {
       map['reason_code'] = Variable<String>(reasonCode.value);
     }
@@ -11351,6 +11401,7 @@ class AdminReviewAnnotationsCompanion
           ..write('objectId: $objectId, ')
           ..write('reviewStatus: $reviewStatus, ')
           ..write('correctProductId: $correctProductId, ')
+          ..write('conclusionCode: $conclusionCode, ')
           ..write('reasonCode: $reasonCode, ')
           ..write('note: $note, ')
           ..write('authorLabel: $authorLabel, ')
@@ -21012,6 +21063,7 @@ typedef $$AdminReviewAnnotationsTableCreateCompanionBuilder =
       Value<String?> objectId,
       required String reviewStatus,
       Value<String?> correctProductId,
+      Value<String> conclusionCode,
       required String reasonCode,
       Value<String?> note,
       required String authorLabel,
@@ -21026,6 +21078,7 @@ typedef $$AdminReviewAnnotationsTableUpdateCompanionBuilder =
       Value<String?> objectId,
       Value<String> reviewStatus,
       Value<String?> correctProductId,
+      Value<String> conclusionCode,
       Value<String> reasonCode,
       Value<String?> note,
       Value<String> authorLabel,
@@ -21126,6 +21179,11 @@ class $$AdminReviewAnnotationsTableFilterComposer
 
   ColumnFilters<String> get correctProductId => $composableBuilder(
     column: $table.correctProductId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get conclusionCode => $composableBuilder(
+    column: $table.conclusionCode,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -21243,6 +21301,11 @@ class $$AdminReviewAnnotationsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get conclusionCode => $composableBuilder(
+    column: $table.conclusionCode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get reasonCode => $composableBuilder(
     column: $table.reasonCode,
     builder: (column) => ColumnOrderings(column),
@@ -21354,6 +21417,11 @@ class $$AdminReviewAnnotationsTableAnnotationComposer
 
   GeneratedColumn<String> get correctProductId => $composableBuilder(
     column: $table.correctProductId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get conclusionCode => $composableBuilder(
+    column: $table.conclusionCode,
     builder: (column) => column,
   );
 
@@ -21494,6 +21562,7 @@ class $$AdminReviewAnnotationsTableTableManager
                 Value<String?> objectId = const Value.absent(),
                 Value<String> reviewStatus = const Value.absent(),
                 Value<String?> correctProductId = const Value.absent(),
+                Value<String> conclusionCode = const Value.absent(),
                 Value<String> reasonCode = const Value.absent(),
                 Value<String?> note = const Value.absent(),
                 Value<String> authorLabel = const Value.absent(),
@@ -21506,6 +21575,7 @@ class $$AdminReviewAnnotationsTableTableManager
                 objectId: objectId,
                 reviewStatus: reviewStatus,
                 correctProductId: correctProductId,
+                conclusionCode: conclusionCode,
                 reasonCode: reasonCode,
                 note: note,
                 authorLabel: authorLabel,
@@ -21520,6 +21590,7 @@ class $$AdminReviewAnnotationsTableTableManager
                 Value<String?> objectId = const Value.absent(),
                 required String reviewStatus,
                 Value<String?> correctProductId = const Value.absent(),
+                Value<String> conclusionCode = const Value.absent(),
                 required String reasonCode,
                 Value<String?> note = const Value.absent(),
                 required String authorLabel,
@@ -21532,6 +21603,7 @@ class $$AdminReviewAnnotationsTableTableManager
                 objectId: objectId,
                 reviewStatus: reviewStatus,
                 correctProductId: correctProductId,
+                conclusionCode: conclusionCode,
                 reasonCode: reasonCode,
                 note: note,
                 authorLabel: authorLabel,

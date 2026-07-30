@@ -32,17 +32,17 @@ final class DatabaseReviewService implements ReviewRepository {
     _requireText(draft.sessionId, 'sessionId');
     _requireText(draft.reasonCode, 'reasonCode');
     _requireText(draft.authorLabel, 'authorLabel');
+    if (draft.conclusion == ReviewConclusion.bothIncorrect &&
+        draft.correctProductId == null) {
+      throw ArgumentError.value(
+        draft.correctProductId,
+        'correctProductId',
+        'required when neither AI nor customer choice is correct',
+      );
+    }
     final annotationId = createId(draft);
     _requireText(annotationId, 'annotationId');
     await _database.transaction(() async {
-      final existing =
-          await (_database.select(_database.adminReviewAnnotations)
-                ..where((row) => row.annotationId.equals(annotationId)))
-              .getSingleOrNull();
-      if (existing != null) {
-        if (_sameDraft(existing, draft)) return;
-        throw StateError('annotation id is already bound to different content');
-      }
       final session =
           await (_database.select(_database.checkoutSessions)
                 ..where((row) => row.sessionId.equals(draft.sessionId)))
@@ -72,22 +72,36 @@ final class DatabaseReviewService implements ReviewRepository {
           );
         }
       }
-      await _database
-          .into(_database.adminReviewAnnotations)
-          .insert(
-            AdminReviewAnnotationsCompanion.insert(
-              annotationId: annotationId,
-              sessionId: draft.sessionId,
-              attemptId: Value(draft.attemptId),
-              objectId: Value(draft.objectId),
-              reviewStatus: draft.reviewStatus.storageValue,
-              correctProductId: Value(draft.correctProductId),
-              reasonCode: draft.reasonCode.trim(),
-              note: Value(_trimOrNull(draft.note)),
-              authorLabel: draft.authorLabel.trim(),
-              createdAtUs: now().toUtc().microsecondsSinceEpoch,
-            ),
-          );
+      final inserted = await _database.customUpdate(
+        '''
+INSERT OR IGNORE INTO admin_review_annotations (
+  annotation_id, session_id, attempt_id, object_id, review_status,
+  correct_product_id, conclusion_code, reason_code, note, author_label,
+  created_at_us
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+''',
+        variables: [
+          Variable.withString(annotationId),
+          Variable.withString(draft.sessionId),
+          Variable<String>(draft.attemptId),
+          Variable<String>(draft.objectId),
+          Variable.withString(draft.reviewStatus.storageValue),
+          Variable<String>(draft.correctProductId),
+          Variable.withString(draft.conclusion.storageValue),
+          Variable.withString(draft.reasonCode.trim()),
+          Variable<String>(_trimOrNull(draft.note)),
+          Variable.withString(draft.authorLabel.trim()),
+          Variable.withInt(now().toUtc().microsecondsSinceEpoch),
+        ],
+        updates: {_database.adminReviewAnnotations},
+      );
+      if (inserted > 0) return;
+      final existing =
+          await (_database.select(_database.adminReviewAnnotations)
+                ..where((row) => row.annotationId.equals(annotationId)))
+              .getSingleOrNull();
+      if (existing != null && _sameDraft(existing, draft)) return;
+      throw StateError('annotation id is already bound to different content');
     });
   }
 
@@ -110,7 +124,11 @@ final class DatabaseReviewService implements ReviewRepository {
     return ReviewPage(
       items: page,
       nextCursor: page.length < items.length && last != null
-          ? PageCursor(startedAt: last.occurredAt, sessionId: last.sessionId)
+          ? PageCursor(
+              startedAt: last.occurredAt,
+              sessionId: last.sessionId,
+              priorityIndex: last.priority.index,
+            )
           : null,
     );
   }
@@ -346,10 +364,22 @@ final class DatabaseReviewService implements ReviewRepository {
     ReviewPriority.manualCatalogResolution => '고객이 전체 상품에서 선택함',
     ReviewPriority.retakeOrFailure => '재촬영 또는 실패 확인 필요',
   };
-  static bool _isAfter(ReviewInboxItem item, PageCursor cursor) =>
-      item.occurredAt.isBefore(cursor.startedAt) ||
-      (item.occurredAt == cursor.startedAt &&
-          item.sessionId.compareTo(cursor.sessionId) < 0);
+  static bool _isAfter(ReviewInboxItem item, PageCursor cursor) {
+    final cursorPriority = cursor.priorityIndex;
+    if (cursorPriority == null) {
+      throw ArgumentError.value(
+        cursor,
+        'after',
+        'review inbox cursor must include priority',
+      );
+    }
+    final priority = item.priority.index.compareTo(cursorPriority);
+    if (priority != 0) return priority > 0;
+    final time = item.occurredAt.compareTo(cursor.startedAt);
+    if (time != 0) return time < 0;
+    return item.sessionId.compareTo(cursor.sessionId) > 0;
+  }
+
   static Map<K, List<T>> _group<T, K>(Iterable<T> rows, K Function(T row) key) {
     final result = <K, List<T>>{};
     for (final row in rows) {
@@ -370,6 +400,7 @@ final class DatabaseReviewService implements ReviewRepository {
         reasonCode: row.reasonCode,
         note: row.note,
         correctProductId: row.correctProductId,
+        conclusion: ReviewConclusionStorage.parse(row.conclusionCode),
         authorLabel: row.authorLabel,
         createdAt: DateTime.fromMicrosecondsSinceEpoch(
           row.createdAtUs,
@@ -385,6 +416,7 @@ final class DatabaseReviewService implements ReviewRepository {
       row.objectId == draft.objectId &&
       row.reviewStatus == draft.reviewStatus.storageValue &&
       row.correctProductId == draft.correctProductId &&
+      row.conclusionCode == draft.conclusion.storageValue &&
       row.reasonCode == draft.reasonCode.trim() &&
       row.note == _trimOrNull(draft.note) &&
       row.authorLabel == draft.authorLabel.trim();
