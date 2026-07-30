@@ -254,6 +254,31 @@ void main() {
   );
 
   test(
+    'manual cart entry failure is session absorbing and retries idempotently',
+    () async {
+      audit.retryLimit = 0;
+      worker.nextResult = _emptyResult();
+      await controller.initialize();
+      await controller.scan();
+      audit.draftFailuresRemaining = 1;
+
+      await controller.enterManualCart();
+
+      expect(controller.state.phase, CheckoutPhase.recoverableFailure);
+      expect(controller.state.failure!.code, 'manual_cart_entry_failure');
+      expect(audit.manualCartEntries, 1);
+      await expectLater(controller.retake(), throwsStateError);
+
+      await controller.retryFailure();
+      await controller.addManualProduct('product-donut');
+
+      expect(audit.manualCartEntries, 1);
+      expect(controller.state.phase, CheckoutPhase.orderReview);
+      expect(controller.state.lines.single.quantity, 1);
+    },
+  );
+
+  test(
     'count mismatch discards product output and returns to retake',
     () async {
       worker.nextResult = _registeredResult();
@@ -349,6 +374,32 @@ void main() {
     expect(controller.state.phase, CheckoutPhase.terminalFailure);
   });
 
+  test(
+    'next customer retry snapshot failure terminalizes and can start again',
+    () async {
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+      await controller.scan();
+      await controller.pay();
+      final completedSessionId = audit.begunSessionIds.single;
+      audit.retryError = StateError('settings snapshot unavailable');
+
+      await controller.startNextCustomer();
+
+      final failedSessionId = audit.begunSessionIds.last;
+      expect(failedSessionId, isNot(completedSessionId));
+      expect(controller.state.phase, CheckoutPhase.terminalFailure);
+      expect(controller.state.failure!.code, 'checkout_session_start_failure');
+      expect(audit.abandonedSessionIds, [failedSessionId]);
+
+      audit.retryError = null;
+      await controller.startNextCustomer();
+
+      expect(audit.begunSessionIds, hasLength(3));
+      expect(controller.state.phase, CheckoutPhase.ready);
+    },
+  );
+
   test('storage failure can retry the same retained capture', () async {
     evidence.captureError = StateError('temporary storage failure');
     worker.nextResult = _registeredResult();
@@ -364,6 +415,28 @@ void main() {
     expect(audit.completedAttempts, hasLength(1));
     expect(controller.state.phase, CheckoutPhase.orderReview);
   });
+
+  test(
+    'draft persistence failure retries mapped result before releasing capture',
+    () async {
+      audit.draftFailuresRemaining = 1;
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+
+      await controller.scan();
+
+      expect(controller.state.phase, CheckoutPhase.recoverableFailure);
+      expect(camera.releasedPaths, isEmpty);
+      expect(audit.completedAttempts, hasLength(1));
+
+      await controller.retryFailure();
+
+      expect(controller.state.phase, CheckoutPhase.orderReview);
+      expect(controller.state.lines, hasLength(1));
+      expect(camera.releasedPaths, [camera.capture.path]);
+      expect(audit.completedAttempts, hasLength(1));
+    },
+  );
 
   test(
     'payment failure retains frozen order and retries idempotently',
@@ -385,6 +458,47 @@ void main() {
       expect(audit.committedOrders, hasLength(2));
       expect(audit.committedOrders.last, same(frozen));
       expect(audit.resolutions, hasLength(1));
+    },
+  );
+
+  test('automatic resolution failure retries the pre-frozen order', () async {
+    worker.nextResult = _registeredResult();
+    audit.resolutionFailuresRemaining = 1;
+    await controller.initialize();
+    await controller.scan();
+
+    await controller.pay();
+
+    expect(controller.state.phase, CheckoutPhase.recoverableFailure);
+    expect(audit.committedOrders, isEmpty);
+
+    await controller.retryFailure();
+
+    expect(controller.state.phase, CheckoutPhase.paymentComplete);
+    expect(audit.resolutionAttempts, 2);
+    expect(audit.resolutions, hasLength(1));
+    expect(audit.committedOrders, hasLength(1));
+  });
+
+  test(
+    'payment draft failure retries without duplicating automatic resolution',
+    () async {
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+      await controller.scan();
+      audit.draftFailuresRemaining = 1;
+
+      await controller.pay();
+
+      expect(controller.state.phase, CheckoutPhase.recoverableFailure);
+      expect(audit.resolutions, hasLength(1));
+      expect(audit.committedOrders, isEmpty);
+
+      await controller.retryFailure();
+
+      expect(controller.state.phase, CheckoutPhase.paymentComplete);
+      expect(audit.resolutions, hasLength(1));
+      expect(audit.committedOrders, hasLength(1));
     },
   );
 
@@ -454,12 +568,17 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   List<InterruptedCheckout> interrupted = [];
   int retryLimit = 2;
   Object? retryError;
+  final List<String> begunSessionIds = [];
   int manualCartEntries = 0;
   final List<ObjectResolutionDraft> resolutions = [];
+  int resolutionAttempts = 0;
+  int resolutionFailuresRemaining = 0;
   final List<PersistedAttempt> completedAttempts = [];
   final List<String> abandonReasons = [];
+  final List<String> abandonedSessionIds = [];
   int abandonAttempts = 0;
   int abandonFailuresRemaining = 0;
+  int draftFailuresRemaining = 0;
   int paymentFailuresRemaining = 0;
   List<CheckoutLine> draftLines = [];
   FinalOrderDraft? committedOrder;
@@ -480,7 +599,10 @@ final class _FakeAuditStore implements CheckoutAuditStore {
   @override
   Future<String> beginSession(SessionSnapshot snapshot) async {
     events.add('begin');
-    return '00000000-0000-4000-8000-000000000001';
+    final sessionId =
+        '00000000-0000-4000-8000-${(begunSessionIds.length + 1).toString().padLeft(12, '0')}';
+    begunSessionIds.add(sessionId);
+    return sessionId;
   }
 
   @override
@@ -525,6 +647,11 @@ final class _FakeAuditStore implements CheckoutAuditStore {
 
   @override
   Future<void> recordResolution(ObjectResolutionDraft resolution) async {
+    resolutionAttempts += 1;
+    if (resolutionFailuresRemaining > 0) {
+      resolutionFailuresRemaining -= 1;
+      throw StateError('temporary resolution persistence failure');
+    }
     resolutions.add(resolution);
   }
 
@@ -533,6 +660,10 @@ final class _FakeAuditStore implements CheckoutAuditStore {
     String sessionId,
     List<CheckoutLine> lines,
   ) async {
+    if (draftFailuresRemaining > 0) {
+      draftFailuresRemaining -= 1;
+      throw StateError('temporary draft persistence failure');
+    }
     draftLines = List.of(lines);
   }
 
@@ -561,6 +692,7 @@ final class _FakeAuditStore implements CheckoutAuditStore {
       abandonFailuresRemaining -= 1;
       throw StateError('temporary abandonment persistence failure');
     }
+    abandonedSessionIds.add(sessionId);
     abandonReasons.add(reason);
   }
 }

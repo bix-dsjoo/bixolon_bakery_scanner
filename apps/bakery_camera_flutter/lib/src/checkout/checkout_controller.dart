@@ -21,6 +21,12 @@ final class _ScanRecovery {
   final int attemptNumber;
   DateTime? capturedAt;
   StagedAttempt? stagedAttempt;
+  InferenceResult? result;
+  CapturedImageSize? imageSize;
+  ImmutableJsonReceipt? receipt;
+  bool receiptRetained = false;
+  bool attemptCompleted = false;
+  InferenceCheckoutMapping? mapping;
 }
 
 final class CheckoutController extends ChangeNotifier {
@@ -110,14 +116,10 @@ final class CheckoutController extends ChangeNotifier {
       }
       _replaceState(_emptyState(CheckoutPhase.ready));
     } catch (error) {
-      await _abandonActiveSession('checkout_initialization_failure');
-      _replaceState(
-        _failureState(
-          phase: CheckoutPhase.terminalFailure,
-          code: 'checkout_initialization_failure',
-          message: 'Checkout initialization failed: $error',
-          recoverable: false,
-        ),
+      await _terminalizeSessionStartFailure(
+        code: 'checkout_initialization_failure',
+        abandonReason: 'checkout_initialization_failure',
+        error: error,
       );
     }
   }
@@ -216,14 +218,39 @@ final class CheckoutController extends ChangeNotifier {
     if (!manualCartEligible) {
       throw StateError('manual cart requires exhausted retries');
     }
+    _replaceState(
+      _failureState(
+        phase: CheckoutPhase.recoverableFailure,
+        code: 'manual_cart_entry_failure',
+        message: 'Manual cart entry is being durably prepared.',
+        recoverable: true,
+      ),
+    );
+    await _completeManualCartEntry();
+  }
+
+  Future<void> _completeManualCartEntry() async {
     final sessionId = _requireSession();
-    await _auditStore.enterManualCartMode(sessionId, _utcNow());
-    _manualCartMode = true;
-    _candidateProducts = const {};
-    _explicitlyResolvedObjectIds.clear();
-    _manualQuantities.clear();
-    await _auditStore.replaceDraftOrder(sessionId, const []);
-    _replaceState(_emptyState(CheckoutPhase.orderReview));
+    try {
+      if (!_manualCartMode) {
+        await _auditStore.enterManualCartMode(sessionId, _utcNow());
+        _manualCartMode = true;
+      }
+      _candidateProducts = const {};
+      _explicitlyResolvedObjectIds.clear();
+      _manualQuantities.clear();
+      await _auditStore.replaceDraftOrder(sessionId, const []);
+      _replaceState(_emptyState(CheckoutPhase.orderReview));
+    } catch (error) {
+      _replaceState(
+        _failureState(
+          phase: CheckoutPhase.recoverableFailure,
+          code: 'manual_cart_entry_failure',
+          message: 'Manual cart entry could not be safely completed: $error',
+          recoverable: true,
+        ),
+      );
+    }
   }
 
   Future<void> chooseTop3(String objectId, int recognitionSkuId) async {
@@ -358,6 +385,14 @@ final class CheckoutController extends ChangeNotifier {
       throw StateError('payment requires a resolved nonempty order');
     }
     final prior = _state;
+    final order = FinalOrderDraft(
+      sessionId: _requireSession(),
+      catalogRevision: _requireCatalog().revision,
+      lines: prior.lines,
+      createdAt: _utcNow(),
+    );
+    _frozenOrder = order;
+    _frozenReviewState = prior;
     _replaceState(
       CheckoutState(
         phase: CheckoutPhase.paying,
@@ -366,35 +401,7 @@ final class CheckoutController extends ChangeNotifier {
       ),
     );
     try {
-      if (!_manualCartMode) {
-        for (final draft in prior.objectDrafts) {
-          final object = draft.inferenceObject;
-          if (object.isUnknown ||
-              _explicitlyResolvedObjectIds.contains(object.objectId)) {
-            continue;
-          }
-          await _auditStore.recordResolution(
-            ObjectResolutionDraft(
-              sessionId: _requireSession(),
-              inferenceObject: object,
-              product: draft.acceptedProduct!,
-              source: CustomerResolutionSource.aiAutoCustomerAccepted,
-              resolvedAt: _utcNow(),
-            ),
-          );
-          _explicitlyResolvedObjectIds.add(object.objectId);
-        }
-      }
-      await _persistLines(prior.lines);
-      final order = FinalOrderDraft(
-        sessionId: _requireSession(),
-        catalogRevision: _requireCatalog().revision,
-        lines: prior.lines,
-        createdAt: _utcNow(),
-      );
-      _frozenOrder = order;
-      _frozenReviewState = prior;
-      await _commitFrozenPayment(order, prior);
+      await _prepareAndCommitFrozenPayment(order, prior);
     } catch (error) {
       _publishPaymentFailure(prior, error);
     }
@@ -416,10 +423,14 @@ final class CheckoutController extends ChangeNotifier {
         ),
       );
       try {
-        await _commitFrozenPayment(order, review);
+        await _prepareAndCommitFrozenPayment(order, review);
       } catch (error) {
         _publishPaymentFailure(review, error);
       }
+      return;
+    }
+    if (_state.failure?.code == 'manual_cart_entry_failure') {
+      await _completeManualCartEntry();
       return;
     }
     if (_state.failure?.code == 'audit_or_scan_failure') {
@@ -463,9 +474,20 @@ final class CheckoutController extends ChangeNotifier {
         _state.phase != CheckoutPhase.terminalFailure) {
       throw StateError('next customer requires a terminal checkout');
     }
-    await _scanner.resetCapture();
-    await _beginSession();
-    _replaceState(_emptyState(CheckoutPhase.ready));
+    try {
+      if (_sessionActive) {
+        await _abandonActiveSession('next_customer_recovery');
+      }
+      await _scanner.resetCapture();
+      await _beginSession();
+      _replaceState(_emptyState(CheckoutPhase.ready));
+    } catch (error) {
+      await _terminalizeSessionStartFailure(
+        code: 'checkout_session_start_failure',
+        abandonReason: 'checkout_session_start_failure',
+        error: error,
+      );
+    }
   }
 
   Future<void> close() async {
@@ -476,6 +498,9 @@ final class CheckoutController extends ChangeNotifier {
   }
 
   Future<void> _beginSession() async {
+    if (_sessionActive) {
+      throw StateError('cannot overwrite an active checkout session');
+    }
     final catalog = await _catalogRepository.activeCatalog();
     final sessionId = await _auditStore.beginSession(
       SessionSnapshot(
@@ -571,8 +596,8 @@ final class CheckoutController extends ChangeNotifier {
   }
 
   Future<void> _completeAndPresent(_ScanRecovery recovery) async {
-    final result = _scanner.state.result;
-    final imageSize = _scanner.state.capturedImageSize;
+    final result = recovery.result ?? _scanner.state.result;
+    final imageSize = recovery.imageSize ?? _scanner.state.capturedImageSize;
     final stagedAttempt = recovery.stagedAttempt;
     final capturedAt = recovery.capturedAt;
     if (result == null ||
@@ -581,21 +606,28 @@ final class CheckoutController extends ChangeNotifier {
         capturedAt == null) {
       throw StateError('analysis completed without staged strict evidence');
     }
-    final receipt = _createInferenceReceipt(result);
-    await _evidenceStore.retainInferenceReceipt(
-      sessionId: recovery.sessionId,
-      attemptNumber: recovery.attemptNumber,
-      capturedAtUtc: capturedAt,
-      receipt: receipt,
-    );
-    await _auditStore.completeAttempt(
-      attempt: stagedAttempt,
-      result: result,
-      receipt: receipt,
-    );
-    await _scanner.releaseCurrentCapture();
+    recovery.result = result;
+    recovery.imageSize = imageSize;
+    final receipt = recovery.receipt ??= _createInferenceReceipt(result);
+    if (!recovery.receiptRetained) {
+      await _evidenceStore.retainInferenceReceipt(
+        sessionId: recovery.sessionId,
+        attemptNumber: recovery.attemptNumber,
+        capturedAtUtc: capturedAt,
+        receipt: receipt,
+      );
+      recovery.receiptRetained = true;
+    }
+    if (!recovery.attemptCompleted) {
+      await _auditStore.completeAttempt(
+        attempt: stagedAttempt,
+        result: result,
+        receipt: receipt,
+      );
+      recovery.attemptCompleted = true;
+    }
 
-    final mapping = await _mapper.map(
+    final mapping = recovery.mapping ??= await _mapper.map(
       result: result,
       imageSize: imageSize,
       catalog: _requireCatalog(),
@@ -605,6 +637,7 @@ final class CheckoutController extends ChangeNotifier {
     _manualQuantities.clear();
     final lines = _linesFor(mapping.objectDrafts);
     await _auditStore.replaceDraftOrder(recovery.sessionId, lines);
+    await _scanner.releaseCurrentCapture();
     if (mapping.phase == CheckoutPhase.retakeRequired) {
       _failedAttempts += 1;
     }
@@ -617,6 +650,33 @@ final class CheckoutController extends ChangeNotifier {
         failure: mapping.failure,
       ),
     );
+  }
+
+  Future<void> _prepareAndCommitFrozenPayment(
+    FinalOrderDraft order,
+    CheckoutState review,
+  ) async {
+    if (!_manualCartMode) {
+      for (final draft in review.objectDrafts) {
+        final object = draft.inferenceObject;
+        if (object.isUnknown ||
+            _explicitlyResolvedObjectIds.contains(object.objectId)) {
+          continue;
+        }
+        await _auditStore.recordResolution(
+          ObjectResolutionDraft(
+            sessionId: order.sessionId,
+            inferenceObject: object,
+            product: draft.acceptedProduct!,
+            source: CustomerResolutionSource.aiAutoCustomerAccepted,
+            resolvedAt: order.createdAt,
+          ),
+        );
+        _explicitlyResolvedObjectIds.add(object.objectId);
+      }
+    }
+    await _auditStore.replaceDraftOrder(order.sessionId, order.lines);
+    await _commitFrozenPayment(order, review);
   }
 
   Future<void> _commitFrozenPayment(
@@ -726,6 +786,30 @@ final class CheckoutController extends ChangeNotifier {
     if (!_sessionActive || sessionId == null) return;
     await _auditStore.abandonSession(sessionId, reason);
     _sessionActive = false;
+  }
+
+  Future<void> _terminalizeSessionStartFailure({
+    required String code,
+    required String abandonReason,
+    required Object error,
+  }) async {
+    Object? abandonmentError;
+    try {
+      await _abandonActiveSession(abandonReason);
+    } catch (caught) {
+      abandonmentError = caught;
+    }
+    final suffix = abandonmentError == null
+        ? ''
+        : ' Session abandonment must be retried: $abandonmentError';
+    _replaceState(
+      _failureState(
+        phase: CheckoutPhase.terminalFailure,
+        code: code,
+        message: 'Checkout session setup failed: $error.$suffix',
+        recoverable: false,
+      ),
+    );
   }
 
   CheckoutState _emptyState(CheckoutPhase phase) =>
