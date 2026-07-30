@@ -78,6 +78,7 @@ final class CheckoutController extends ChangeNotifier {
   );
   List<InterruptedCheckout> _interruptedCheckouts = const [];
   CatalogSnapshot? _catalog;
+  CustomerCatalogDiscovery? _customerCatalogDiscovery;
   String? _sessionId;
   int? _retryLimit;
   CustomerCompletionPolicy? _completionPolicy;
@@ -115,7 +116,12 @@ final class CheckoutController extends ChangeNotifier {
   Product? productForCandidate(String objectId, int recognitionSkuId) =>
       _candidateProducts[objectId]?[recognitionSkuId];
 
-  CatalogRepository get catalogRepository => _catalogRepository;
+  CustomerCatalogDiscovery get customerCatalogDiscovery =>
+      _customerCatalogDiscovery ??
+      (throw StateError('checkout catalog discovery is unavailable'));
+
+  Future<List<Product>> searchSessionCatalog(String query) async =>
+      _requireCatalog().search(query);
 
   Future<void> initialize() async {
     _ensureOpen();
@@ -306,12 +312,11 @@ final class CheckoutController extends ChangeNotifier {
     _ensurePhase(CheckoutPhase.customerReview, 'catalog selection');
     final draft = _draft(objectId);
     final product = _product(productId);
-    final source = draft.inferenceObject.isUnknown
-        ? CustomerResolutionSource.customerCatalog
-        : product.recognitionSkuId == draft.inferenceObject.skuId
-        ? CustomerResolutionSource.aiAutoCustomerAccepted
-        : CustomerResolutionSource.customerOverrodeAuto;
-    await _resolve(draft: draft, product: product, source: source);
+    await _resolve(
+      draft: draft,
+      product: product,
+      source: CustomerResolutionSource.customerCatalog,
+    );
   }
 
   Future<void> acceptAiSelection(String objectId) async {
@@ -568,6 +573,8 @@ final class CheckoutController extends ChangeNotifier {
     }
     _ensureOpen();
     final catalog = await _catalogRepository.activeCatalog();
+    final discovery = await _catalogRepository.customerDiscoveryFor(catalog);
+    _verifyDiscoverySnapshot(catalog, discovery);
     _ensureOpen();
     final sessionId = await _auditStore.beginSession(
       SessionSnapshot(
@@ -576,6 +583,7 @@ final class CheckoutController extends ChangeNotifier {
       ),
     );
     _catalog = catalog;
+    _customerCatalogDiscovery = discovery;
     _sessionId = sessionId;
     _sessionActive = true;
     final retryLimit = await _auditStore.retryLimitForSession(sessionId);
@@ -955,6 +963,40 @@ final class CheckoutController extends ChangeNotifier {
     final catalog = _catalog;
     if (catalog == null) throw StateError('checkout catalog is unavailable');
     return catalog;
+  }
+
+  void _verifyDiscoverySnapshot(
+    CatalogSnapshot catalog,
+    CustomerCatalogDiscovery discovery,
+  ) {
+    final supplied = discovery.catalog;
+    final sameRevision =
+        supplied.revision.revisionId == catalog.revision.revisionId &&
+        supplied.revision.sha256 == catalog.revision.sha256 &&
+        supplied.revision.createdAt == catalog.revision.createdAt;
+    final sameProducts =
+        supplied.products.length == catalog.products.length &&
+        supplied.products.every(
+          (product) => catalog.products.any(
+            (expected) =>
+                expected.productId == product.productId &&
+                expected.displayName == product.displayName &&
+                expected.unitPrice == product.unitPrice &&
+                expected.recognitionSkuId == product.recognitionSkuId &&
+                expected.categoryId == product.categoryId &&
+                expected.photoAssetPath == product.photoAssetPath &&
+                expected.active == product.active &&
+                expected.sortOrder == product.sortOrder,
+          ),
+        );
+    final validFeaturedProducts = discovery.featuredProducts.every(
+      (featured) => supplied.products.any(
+        (product) => product.productId == featured.productId,
+      ),
+    );
+    if (!sameRevision || !sameProducts || !validFeaturedProducts) {
+      throw StateError('catalog discovery does not match the session snapshot');
+    }
   }
 
   String _requireSession() {

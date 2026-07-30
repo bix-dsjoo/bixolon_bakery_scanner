@@ -52,8 +52,9 @@ final class CheckoutRecoveryReport {
 abstract interface class CatalogRepository {
   Future<CatalogSnapshot> activeCatalog();
   Future<Product?> productForRecognitionSku(int recognitionSkuId);
-  Future<CustomerCatalogDiscovery> customerDiscovery();
-  Future<List<Product>> search(String query);
+  Future<CustomerCatalogDiscovery> customerDiscoveryFor(
+    CatalogSnapshot catalog,
+  );
 }
 
 abstract interface class CheckoutEvidenceStore {

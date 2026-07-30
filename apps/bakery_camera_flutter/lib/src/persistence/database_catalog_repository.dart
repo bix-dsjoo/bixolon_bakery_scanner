@@ -40,11 +40,27 @@ final class DatabaseCatalogRepository implements CatalogRepository {
   }
 
   @override
-  Future<CustomerCatalogDiscovery> customerDiscovery() async {
-    final catalog = await activeCatalog();
+  Future<CustomerCatalogDiscovery> customerDiscoveryFor(
+    CatalogSnapshot catalog,
+  ) async {
     final countsByRevisionProduct = <String, int>{};
-    final finalLines = await _database.select(_database.finalOrderLines).get();
-    for (final line in finalLines) {
+    final completedOrderLines =
+        await (_database.select(_database.finalOrderLines).join([
+          innerJoin(
+            _database.finalOrders,
+            _database.finalOrders.orderId.equalsExp(
+              _database.finalOrderLines.orderId,
+            ),
+          ),
+          innerJoin(
+            _database.checkoutSessions,
+            _database.checkoutSessions.sessionId.equalsExp(
+              _database.finalOrders.sessionId,
+            ),
+          ),
+        ])..where(_database.checkoutSessions.state.equals('completed'))).get();
+    for (final row in completedOrderLines) {
+      final line = row.readTable(_database.finalOrderLines);
       countsByRevisionProduct.update(
         line.productRevisionId,
         (count) => count + line.quantity,
@@ -68,6 +84,9 @@ final class DatabaseCatalogRepository implements CatalogRepository {
     );
   }
 
+  Future<CustomerCatalogDiscovery> customerDiscovery() async =>
+      customerDiscoveryFor(await activeCatalog());
+
   @override
   Future<Product?> productForRecognitionSku(int recognitionSkuId) async {
     if (recognitionSkuId < 1 || recognitionSkuId > 20) {
@@ -86,21 +105,10 @@ final class DatabaseCatalogRepository implements CatalogRepository {
     return matches.firstOrNull;
   }
 
-  @override
   Future<List<Product>> search(String query) async {
-    final normalized = _normalizeSearch(query);
     final catalog = await activeCatalog();
-    if (normalized.isEmpty) return catalog.products;
-    return catalog.products
-        .where(
-          (product) =>
-              _normalizeSearch(product.displayName).contains(normalized),
-        )
-        .toList(growable: false);
+    return catalog.search(query);
   }
-
-  String _normalizeSearch(String value) =>
-      value.trim().toLowerCase().replaceAll(' ', '');
 
   CatalogRevision _revision(CatalogRevisionRow row) => CatalogRevision(
     revisionId: row.revisionId,

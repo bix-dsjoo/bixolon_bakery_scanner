@@ -68,6 +68,8 @@ void main() {
       addTearDown(database.close);
       await _seedFullCatalog(database);
       final catalog = DatabaseCatalogRepository(database);
+      final sessionCatalog = await catalog.activeCatalog();
+      final discovery = await catalog.customerDiscoveryFor(sessionCatalog);
       final semantics = tester.ensureSemantics();
 
       for (final size in const [Size(1024, 720), Size(1280, 820)]) {
@@ -83,7 +85,8 @@ void main() {
                   padding: const EdgeInsets.only(top: 16),
                   child: CatalogPicker(
                     key: UniqueKey(),
-                    catalog: catalog,
+                    discovery: discovery,
+                    search: (query) async => sessionCatalog.search(query),
                     onSelected: (_) {},
                   ),
                 ),

@@ -91,7 +91,8 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
         child: Padding(
           padding: const EdgeInsets.only(top: 16),
           child: CatalogPicker(
-            catalog: widget.controller.catalogRepository,
+            discovery: widget.controller.customerCatalogDiscovery,
+            search: widget.controller.searchSessionCatalog,
             onSelected: (product) => _selectCatalog(product.productId),
           ),
         ),

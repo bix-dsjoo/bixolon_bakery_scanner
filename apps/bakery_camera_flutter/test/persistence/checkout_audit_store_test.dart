@@ -776,6 +776,58 @@ END
     },
   );
 
+  test(
+    'registered inference without a session catalog mapping records only catalog selection',
+    () async {
+      await (db.update(db.products)
+            ..where((row) => row.productId.equals(product.productId)))
+          .write(const ProductsCompanion(recognitionSkuId: Value(null)));
+      final catalogOnlyProduct = Product(
+        productId: product.productId,
+        displayName: product.displayName,
+        unitPrice: product.unitPrice,
+        recognitionSkuId: null,
+        categoryId: product.categoryId,
+        photoAssetPath: null,
+        active: true,
+        sortOrder: product.sortOrder,
+      );
+      final sessionId = await _beginSession(store, revision);
+      await _completeAttempt(store, sessionId);
+      final registered = buildUiInferenceResult().objects.singleWhere(
+        (object) => !object.isUnknown,
+      );
+
+      await expectLater(
+        store.recordResolution(
+          ObjectResolutionDraft(
+            sessionId: sessionId,
+            inferenceObject: registered,
+            product: catalogOnlyProduct,
+            source: CustomerResolutionSource.customerOverrodeAuto,
+            resolvedAt: DateTime.utc(2026, 7, 30, 7, 45),
+          ),
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      await store.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: sessionId,
+          inferenceObject: registered,
+          product: catalogOnlyProduct,
+          source: CustomerResolutionSource.customerCatalog,
+          resolvedAt: DateTime.utc(2026, 7, 30, 7, 46),
+        ),
+      );
+
+      expect(
+        (await db.select(db.objectResolutions).getSingle()).source,
+        CustomerResolutionSource.customerCatalog.storageValue,
+      );
+    },
+  );
+
   test('payment revalidates registered resolution source semantics', () async {
     final setup = await _resolvedOrder(
       store: store,

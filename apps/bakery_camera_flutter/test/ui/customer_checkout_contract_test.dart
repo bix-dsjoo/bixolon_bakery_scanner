@@ -21,8 +21,15 @@ void main() {
       _product('beta', 'Beta', 'savory', 2),
       _product('gamma', 'Gamma', 'sweet', 3),
     ]);
-    await _pump(tester, CatalogPicker(catalog: catalog, onSelected: (_) {}));
-    await tester.pump();
+    final snapshot = await catalog.activeCatalog();
+    await _pump(
+      tester,
+      CatalogPicker(
+        discovery: await catalog.customerDiscoveryFor(snapshot),
+        search: (query) async => snapshot.search(query),
+        onSelected: (_) {},
+      ),
+    );
 
     expect(find.text('Alpha'), findsWidgets);
     expect(find.text('Beta'), findsWidgets);
@@ -43,6 +50,40 @@ void main() {
     expect(find.text('Gamma'), findsWidgets);
     expect(find.text('Alpha'), findsNothing);
   });
+
+  testWidgets(
+    'catalog picker keeps featured search and selection on its supplied session snapshot',
+    (tester) async {
+      final catalog = _Catalog([
+        _product('original', 'Original Bread', 'sweet', 1),
+        _product('other', 'Other Bread', 'savory', 2),
+      ]);
+      final sessionSnapshot = await catalog.activeCatalog();
+      final discovery = await catalog.customerDiscoveryFor(sessionSnapshot);
+      catalog.activate([
+        _product('replacement', 'Replacement Bread', 'sweet', 3),
+      ]);
+      Product? selected;
+
+      await _pump(
+        tester,
+        CatalogPicker(
+          discovery: discovery,
+          search: (query) async => sessionSnapshot.search(query),
+          onSelected: (product) => selected = product,
+        ),
+      );
+
+      expect(find.text('Original Bread'), findsWidgets);
+      expect(find.text('Replacement Bread'), findsNothing);
+      await tester.enterText(find.byType(TextField), 'Original');
+      await tester.pump();
+      expect(find.text('Original Bread'), findsOneWidget);
+      await tester.tap(find.text('Original Bread'));
+
+      expect(selected?.productId, 'original');
+    },
+  );
 
   testWidgets('review exposes exact top3 and the full catalog escape hatch', (
     tester,
@@ -214,7 +255,9 @@ Product _product(String id, String name, String category, int sku) => Product(
 
 class _Catalog implements CatalogRepository {
   _Catalog(this.products);
-  final List<Product> products;
+  List<Product> products;
+
+  void activate(List<Product> replacement) => products = replacement;
 
   @override
   Future<CatalogSnapshot> activeCatalog() async => CatalogSnapshot(
@@ -227,11 +270,12 @@ class _Catalog implements CatalogRepository {
   );
 
   @override
-  Future<CustomerCatalogDiscovery> customerDiscovery() async =>
-      CustomerCatalogDiscovery(
-        catalog: await activeCatalog(),
-        featuredProducts: products.take(2).toList(),
-      );
+  Future<CustomerCatalogDiscovery> customerDiscoveryFor(
+    CatalogSnapshot catalog,
+  ) async => CustomerCatalogDiscovery(
+    catalog: catalog,
+    featuredProducts: catalog.products.take(2).toList(),
+  );
 
   @override
   Future<Product?> productForRecognitionSku(int recognitionSkuId) async =>
@@ -239,7 +283,6 @@ class _Catalog implements CatalogRepository {
           .where((item) => item.recognitionSkuId == recognitionSkuId)
           .firstOrNull;
 
-  @override
   Future<List<Product>> search(String query) async => products
       .where(
         (item) => item.displayName.toLowerCase().contains(query.toLowerCase()),

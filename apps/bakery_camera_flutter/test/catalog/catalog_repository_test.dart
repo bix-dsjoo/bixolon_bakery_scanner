@@ -45,4 +45,155 @@ void main() {
       expect(await repository.productForRecognitionSku(0), isNull);
     },
   );
+
+  test(
+    'featured products count completed orders only and sort by frequency',
+    () async {
+      final snapshot = await repository.activeCatalog();
+      final ignoredActiveOrderProduct = snapshot.products.first;
+      final completedOrderProduct = snapshot.products[1];
+      await _insertOrder(
+        database,
+        sessionId: 'session-open',
+        orderId: 'order-open',
+        product: ignoredActiveOrderProduct,
+        quantity: 99,
+        completed: false,
+      );
+      await _insertOrder(
+        database,
+        sessionId: 'session-completed',
+        orderId: 'order-completed',
+        product: completedOrderProduct,
+        quantity: 2,
+        completed: true,
+      );
+
+      final discovery = await repository.customerDiscoveryFor(snapshot);
+
+      expect(
+        discovery.featuredProducts.first.productId,
+        completedOrderProduct.productId,
+      );
+    },
+  );
+
+  test(
+    'customer product ordering resolves exact sort-order ties by product ID',
+    () {
+      final laterId = _product('product-z', sortOrder: 7);
+      final earlierId = _product('product-a', sortOrder: 7);
+      final sorted = [laterId, earlierId]..sort(Product.customerSort);
+
+      expect(sorted.map((product) => product.productId), [
+        'product-a',
+        'product-z',
+      ]);
+    },
+  );
 }
+
+Product _product(String productId, {required int sortOrder}) => Product(
+  productId: productId,
+  displayName: productId,
+  unitPrice: 1000,
+  recognitionSkuId: null,
+  categoryId: 'test',
+  photoAssetPath: null,
+  active: true,
+  sortOrder: sortOrder,
+);
+
+Future<void> _insertOrder(
+  BakeryDatabase database, {
+  required String sessionId,
+  required String orderId,
+  required Product product,
+  required int quantity,
+  required bool completed,
+}) async {
+  await database
+      .into(database.checkoutSessions)
+      .insert(
+        CheckoutSessionsCompanion.insert(
+          sessionId: sessionId,
+          state: 'active',
+          startedAtUs: 1,
+          catalogRevisionId: 'catalog-v1',
+          settingsRevisionId: 'settings-v1',
+          detectorId: 'rfdetr_large_bakery_v1',
+          detectorSha256: _hash('a'),
+          repvitArtifactId: 'repvit_m1_15plus5_v1',
+          repvitSha256: _hash('b'),
+          repvitManifestSha256: _hash('c'),
+          repvitPrototypeSha256: _hash('d'),
+          dinov3ArtifactId: 'dinov3_vits16_15plus5_v1',
+          dinov3Sha256: _hash('e'),
+          dinov3SupportSha256: _hash('f'),
+          calibrationId: 'calibration-v1',
+          calibrationSha256: _hash('0'),
+          preprocessSha256: _hash('1'),
+          fusionPolicyId: 'fusion-v1',
+          fusionPolicySha256: _hash('2'),
+          configSnapshotJson: '{"pipeline":"canonical_cpu"}',
+        ),
+      );
+  await database
+      .into(database.finalOrders)
+      .insert(
+        FinalOrdersCompanion.insert(
+          orderId: orderId,
+          sessionId: sessionId,
+          catalogRevisionId: 'catalog-v1',
+          createdAtUs: 2,
+          totalQuantity: quantity,
+          totalAmountKrw: product.unitPrice * quantity,
+          receiptRelativePath: 'sessions/$sessionId/final-order.json',
+          receiptByteSize: 1,
+          receiptSha256: _hash('3'),
+        ),
+      );
+  await database
+      .into(database.finalOrderLines)
+      .insert(
+        FinalOrderLinesCompanion.insert(
+          finalLineId: 'line-$orderId',
+          orderId: orderId,
+          productRevisionId: 'catalog-v1/${product.productId}',
+          productId: product.productId,
+          recognitionSkuId: Value(product.recognitionSkuId),
+          productName: product.displayName,
+          unitPriceKrw: product.unitPrice,
+          quantity: quantity,
+          lineAmountKrw: product.unitPrice * quantity,
+          resolutionSource: 'customer_manual_cart',
+        ),
+      );
+  if (!completed) return;
+  await database
+      .into(database.simulatedPayments)
+      .insert(
+        SimulatedPaymentsCompanion.insert(
+          paymentId: 'payment-$orderId',
+          orderId: orderId,
+          sessionId: sessionId,
+          amountKrw: product.unitPrice * quantity,
+          currency: 'KRW',
+          provider: 'simulated',
+          status: 'approved',
+          finalOrderSha256: _hash('4'),
+          paidAtUs: 3,
+        ),
+      );
+  await (database.update(
+    database.checkoutSessions,
+  )..where((row) => row.sessionId.equals(sessionId))).write(
+    const CheckoutSessionsCompanion(
+      state: Value('completed'),
+      terminalAtUs: Value(3),
+      terminalReason: Value('payment_committed'),
+    ),
+  );
+}
+
+String _hash(String character) => character * 64;

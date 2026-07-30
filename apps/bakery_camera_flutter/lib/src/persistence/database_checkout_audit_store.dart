@@ -885,6 +885,7 @@ final class DatabaseCheckoutAuditStore
       await _verifyInferenceIdentity(object, resolution.inferenceObject);
       final product = await _sessionProduct(session, resolution.product);
       final candidateRank = await _validateResolutionSource(
+        session,
         object,
         resolution.inferenceObject,
         product,
@@ -1306,6 +1307,7 @@ final class DatabaseCheckoutAuditStore
   }
 
   Future<int?> _validateResolutionSource(
+    CheckoutSessionRow session,
     InferenceObjectRow row,
     InferenceObject object,
     ProductRow product,
@@ -1315,7 +1317,21 @@ final class DatabaseCheckoutAuditStore
       throw StateError('object-linked resolution cannot be manual cart');
     }
     if (!object.isUnknown) {
-      final expectedSource = product.recognitionSkuId == object.skuId
+      final automaticallyMappedProduct = await _mappedSessionProductForSku(
+        session,
+        object.skuId!,
+      );
+      if (automaticallyMappedProduct == null) {
+        if (source != CustomerResolutionSource.customerCatalog) {
+          throw StateError(
+            'unmapped registered inference requires catalog selection',
+          );
+        }
+        return null;
+      }
+      final expectedSource =
+          product.productRevisionId ==
+              automaticallyMappedProduct.productRevisionId
           ? CustomerResolutionSource.aiAutoCustomerAccepted
           : CustomerResolutionSource.customerOverrodeAuto;
       if (source != expectedSource) {
@@ -1344,6 +1360,26 @@ final class DatabaseCheckoutAuditStore
       throw StateError('selected product is not an authorized Top 3 candidate');
     }
     return candidate.rank;
+  }
+
+  Future<ProductRow?> _mappedSessionProductForSku(
+    CheckoutSessionRow session,
+    int recognitionSkuId,
+  ) async {
+    final matches =
+        await (_database.select(_database.products)..where(
+              (row) =>
+                  row.catalogRevisionId.equals(session.catalogRevisionId) &
+                  row.active.equals(true) &
+                  row.recognitionSkuId.equals(recognitionSkuId),
+            ))
+            .get();
+    if (matches.length > 1) {
+      throw StateError(
+        'session catalog maps recognition SKU $recognitionSkuId more than once',
+      );
+    }
+    return matches.firstOrNull;
   }
 
   void _verifyRuntimeSnapshot(CheckoutSessionRow session) {
@@ -1408,7 +1444,14 @@ final class DatabaseCheckoutAuditStore
       throw StateError('persisted resolution does not match session and draft');
     }
     final source = CustomerResolutionSource.parse(resolution.source);
-    if (object.skuId == null) {
+    final automaticallyMappedProduct = object.skuId == null
+        ? null
+        : await _mappedSessionProductForSku(session, object.skuId!);
+    if (object.skuId == null || automaticallyMappedProduct == null) {
+      if (object.skuId != null &&
+          source != CustomerResolutionSource.customerCatalog) {
+        throw StateError('unmapped registered resolution source is invalid');
+      }
       if (source != CustomerResolutionSource.customerTop3 &&
           source != CustomerResolutionSource.customerCatalog) {
         throw StateError('Unknown resolution source is invalid');
@@ -1431,7 +1474,9 @@ final class DatabaseCheckoutAuditStore
         throw StateError('catalog resolution cannot claim a candidate rank');
       }
     } else {
-      final expectedSource = resolution.recognitionSkuId == object.skuId
+      final expectedSource =
+          resolution.productRevisionId ==
+              automaticallyMappedProduct.productRevisionId
           ? CustomerResolutionSource.aiAutoCustomerAccepted
           : CustomerResolutionSource.customerOverrodeAuto;
       if (source != expectedSource) {

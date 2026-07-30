@@ -56,6 +56,28 @@ final class CatalogSnapshot {
 
   final CatalogRevision revision;
   final List<Product> products;
+
+  /// Searches only the immutable product revision captured for a checkout.
+  /// Customer discovery must never re-read a newly activated catalog mid-sale.
+  List<Product> search(String query) {
+    final normalized = _normalizeSearch(query);
+    final matches =
+        products
+            .where(
+              (product) =>
+                  product.active &&
+                  (normalized.isEmpty ||
+                      _normalizeSearch(
+                        product.displayName,
+                      ).contains(normalized)),
+            )
+            .toList(growable: false)
+          ..sort(Product.customerSort);
+    return List.unmodifiable(matches);
+  }
+
+  static String _normalizeSearch(String value) =>
+      value.trim().toLowerCase().replaceAll(' ', '');
 }
 
 final class CustomerCatalogDiscovery {

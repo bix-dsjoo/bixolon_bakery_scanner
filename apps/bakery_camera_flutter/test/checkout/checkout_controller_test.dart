@@ -191,7 +191,7 @@ void main() {
   );
 
   test(
-    'registered SKU without mapping stays unresolved for catalog selection',
+    'registered SKU without mapping stays unresolved and records a catalog choice',
     () async {
       catalog.productsBySku.remove(6);
       worker.nextResult = _registeredResult();
@@ -206,9 +206,51 @@ void main() {
 
       expect(
         audit.resolutions.single.source,
-        CustomerResolutionSource.customerOverrodeAuto,
+        CustomerResolutionSource.customerCatalog,
       );
       expect(controller.state.phase, CheckoutPhase.orderReview);
+    },
+  );
+
+  test(
+    'session catalog discovery search and selected product stay on the initial revision',
+    () async {
+      worker.nextResult = _registeredResult();
+      await controller.initialize();
+      catalog.activateRevision(
+        revisionId: 'catalog-v2',
+        products: [_product('product-v2-only', 'Revision Two Only', 17)],
+      );
+
+      expect(
+        controller.customerCatalogDiscovery.catalog.revision.revisionId,
+        'catalog-v1',
+      );
+      expect(
+        controller.customerCatalogDiscovery.featuredProducts.map(
+          (product) => product.productId,
+        ),
+        contains('product-donut'),
+      );
+      expect(
+        (await controller.searchSessionCatalog(
+          'Donut',
+        )).map((product) => product.productId),
+        contains('product-donut'),
+      );
+      expect(
+        (await controller.searchSessionCatalog('Revision Two Only')),
+        isEmpty,
+      );
+
+      await controller.scan();
+      await controller.overrideResolvedProduct('object-1', 'product-donut');
+
+      expect(audit.resolutions.single.product.displayName, 'Sugar Donut');
+      expect(
+        audit.resolutions.single.source,
+        CustomerResolutionSource.customerOverrodeAuto,
+      );
     },
   );
 
@@ -896,7 +938,8 @@ final class _FakeCatalog implements CatalogRepository {
     };
   }
 
-  late final Map<int, Product> productsBySku;
+  late Map<int, Product> productsBySku;
+  String _revisionId = 'catalog-v1';
 
   List<Product> get products => productsBySku.values.toList(growable: false);
 
@@ -904,21 +947,39 @@ final class _FakeCatalog implements CatalogRepository {
   Future<CatalogSnapshot> activeCatalog() async =>
       CatalogSnapshot(revision: _revision, products: products);
 
+  void activateRevision({
+    required String revisionId,
+    required List<Product> products,
+  }) {
+    _revisionId = revisionId;
+    productsBySku = {
+      for (final product in products)
+        if (product.recognitionSkuId != null)
+          product.recognitionSkuId!: product,
+    };
+  }
+
   @override
   Future<Product?> productForRecognitionSku(int recognitionSkuId) async =>
       productsBySku[recognitionSkuId];
 
   @override
-  Future<CustomerCatalogDiscovery> customerDiscovery() async =>
-      CustomerCatalogDiscovery(
-        catalog: await activeCatalog(),
-        featuredProducts: products,
-      );
+  Future<CustomerCatalogDiscovery> customerDiscoveryFor(
+    CatalogSnapshot catalog,
+  ) async => CustomerCatalogDiscovery(
+    catalog: catalog,
+    featuredProducts: catalog.products,
+  );
 
-  @override
   Future<List<Product>> search(String query) async => products
       .where((product) => product.displayName.contains(query))
       .toList(growable: false);
+
+  CatalogRevision get _revision => CatalogRevision(
+    revisionId: _revisionId,
+    sha256: 'a' * 64,
+    createdAt: DateTime.utc(2026),
+  );
 }
 
 final class _FakeCamera implements CameraSession {
@@ -1008,12 +1069,6 @@ final class _FakeWorker implements InferenceSession {
     await _events.close();
   }
 }
-
-final _revision = CatalogRevision(
-  revisionId: 'catalog-v1',
-  sha256: 'c' * 64,
-  createdAt: DateTime.utc(2026, 7, 30, 7),
-);
 
 Product _product(String id, String name, int sku) => Product(
   productId: id,
