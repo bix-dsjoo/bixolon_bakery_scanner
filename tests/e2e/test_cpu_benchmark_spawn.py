@@ -51,6 +51,14 @@ def _coordinator(endpoint_factory) -> BenchmarkCoordinator:
     )
 
 
+def _assert_endpoints_finalized(endpoint_factory) -> None:
+    assert set(endpoint_factory.endpoints) == {"reference", "candidate"}
+    for endpoint in endpoint_factory.endpoints.values():
+        assert endpoint.is_finalized is True
+        assert endpoint.is_connection_closed is True
+        assert endpoint.is_process_closed is True
+
+
 @pytest.mark.skipif(
     multiprocessing.get_start_method(allow_none=True) == "forkserver",
     reason="test requires a spawn-capable platform",
@@ -86,6 +94,7 @@ def test_two_spawned_workers_remain_persistent_across_ab_ba_passes():
     assert factory.endpoints["candidate"].is_alive is False
     assert factory.endpoints["reference"].exit_code == 0
     assert factory.endpoints["candidate"].exit_code == 0
+    _assert_endpoints_finalized(factory)
 
 
 @pytest.mark.skipif(
@@ -114,3 +123,4 @@ def test_abnormal_spawned_worker_exit_is_structured_and_peer_is_finalized():
     assert factory.endpoints["candidate"].exit_code == CONTROLLED_CRASH_EXIT_CODE
     assert factory.endpoints["reference"].is_alive is False
     assert factory.endpoints["reference"].exit_code == 0
+    _assert_endpoints_finalized(factory)

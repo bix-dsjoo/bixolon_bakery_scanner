@@ -108,6 +108,7 @@ class _SpawnWorkerEndpoint:
             name=f"cpu-benchmark-{spec.role}",
         )
         self._connection_closed = False
+        self._process_closed = False
         self._finalized = False
         self._final_exit_code: int | None = None
         try:
@@ -213,8 +214,21 @@ class _SpawnWorkerEndpoint:
             self._process.join(0)
             self._final_exit_code = self._process.exitcode
             self._process.close()
+            self._process_closed = True
         finally:
             self._finalized = True
+
+    @property
+    def is_finalized(self) -> bool:
+        return self._finalized
+
+    @property
+    def is_connection_closed(self) -> bool:
+        return self._connection_closed
+
+    @property
+    def is_process_closed(self) -> bool:
+        return self._process_closed
 
     @property
     def pid(self) -> int:
