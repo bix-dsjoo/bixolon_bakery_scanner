@@ -30,6 +30,10 @@ final class AuditFileStore {
   static final _uuid = RegExp(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
   );
+  static final _canonicalFinalAuditPath = RegExp(
+    '^sessions/[0-9]{4}/[0-9]{2}/[0-9]{2}/${_uuid.pattern.substring(1, _uuid.pattern.length - 1)}/'
+    r'(?:attempt-[0-9]{3,}.(?:jpg|inference.json)|final-order.json)$',
+  );
 
   final Directory _root;
   final Sha256FileHasher _hasher;
@@ -184,20 +188,70 @@ final class AuditFileStore {
     return resolved;
   }
 
-  /// Reports unfinished pending files for review; it never deletes evidence.
-  Future<List<String>> findRecoveryCandidates() async {
+  /// Reports audit evidence requiring admin review; it never deletes evidence.
+  ///
+  /// [referencedRelativePaths] must be the durable database references known at
+  /// startup. A canonical final file absent from both that set and a recovery
+  /// marker is reported as an orphan.
+  Future<List<String>> findRecoveryCandidates({
+    Iterable<String> referencedRelativePaths = const [],
+  }) async {
     if (!await _root.exists()) return const [];
+    final referenced = {
+      for (final value in referencedRelativePaths)
+        if (_isCanonicalFinalAuditPath(value)) value,
+    };
+    final marked = await _markedRecoveryPaths();
+    final sessions = Directory(path.join(_root.path, 'sessions'));
+    if (!await sessions.exists()) return const [];
     final candidates = <String>[];
-    await for (final entity in _root.list(
+    await for (final entity in sessions.list(
       recursive: true,
       followLinks: false,
     )) {
-      if (entity is File && entity.path.endsWith('.pending')) {
-        candidates.add(_relativeFor(entity.path));
+      if (entity is! File) continue;
+      final relativePath = _relativeFor(entity.path);
+      if (relativePath.endsWith('.pending') &&
+          _isCanonicalFinalAuditPath(
+            relativePath.substring(0, relativePath.length - '.pending'.length),
+          )) {
+        candidates.add(relativePath);
+      } else if (_isCanonicalFinalAuditPath(relativePath) &&
+          !referenced.contains(relativePath) &&
+          !marked.contains(relativePath)) {
+        candidates.add(relativePath);
       }
     }
     candidates.sort();
     return candidates;
+  }
+
+  Future<Set<String>> _markedRecoveryPaths() async {
+    final marker = File(path.join(_root.path, 'recovery', 'markers.jsonl'));
+    if (!await marker.exists()) return const {};
+    await _assertExistingFileInsideRoot(marker);
+    final marked = <String>{};
+    await for (final line
+        in marker
+            .openRead()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())) {
+      try {
+        final decoded = jsonDecode(line);
+        if (decoded is! Map) continue;
+        final file = decoded['file'];
+        if (file is! Map) continue;
+        final relativePath = file['relative_path'];
+        if (relativePath is String &&
+            _isCanonicalFinalAuditPath(relativePath)) {
+          marked.add(relativePath);
+        }
+      } on FormatException {
+        // A malformed marker is itself preserved for review and cannot make an
+        // unrelated evidence file look referenced.
+      }
+    }
+    return marked;
   }
 
   Future<void> recordDatabaseFailure({
@@ -389,6 +443,9 @@ final class AuditFileStore {
 
   static bool _sameHash(FileHash left, FileHash right) =>
       left.byteSize == right.byteSize && left.sha256 == right.sha256;
+
+  static bool _isCanonicalFinalAuditPath(String value) =>
+      _canonicalFinalAuditPath.hasMatch(value);
 
   static void _requireSessionId(String sessionId) {
     if (!_uuid.hasMatch(sessionId)) {

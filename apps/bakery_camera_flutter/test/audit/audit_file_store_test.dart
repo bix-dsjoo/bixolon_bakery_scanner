@@ -241,4 +241,33 @@ void main() {
       expect(await File(store.resolve(stored.relativePath)).exists(), isTrue);
     },
   );
+
+  test(
+    'recovery scan flags an unreferenced canonical final and honors a marker',
+    () async {
+      final stored = await store.retainCapture(
+        sessionId: '00000000-0000-4000-8000-000000000001',
+        attemptNumber: 1,
+        capturedAtUtc: DateTime.utc(2026, 7, 30),
+        sourcePath: source.path,
+      );
+
+      expect(await store.findRecoveryCandidates(), [stored.relativePath]);
+
+      await store.recordDatabaseFailure(
+        operation: 'stage_attempt',
+        file: stored,
+        error: StateError('injected database failure'),
+      );
+
+      expect(await store.findRecoveryCandidates(), isEmpty);
+      expect(
+        await store.findRecoveryCandidates(
+          referencedRelativePaths: [stored.relativePath],
+        ),
+        isEmpty,
+      );
+      expect(await File(store.resolve(stored.relativePath)).exists(), isTrue);
+    },
+  );
 }

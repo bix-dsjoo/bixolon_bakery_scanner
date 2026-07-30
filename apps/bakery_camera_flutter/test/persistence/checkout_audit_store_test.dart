@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:bakery_camera_prototype/src/audit/audit_file_store.dart';
 import 'package:bakery_camera_prototype/src/catalog/product.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
@@ -279,9 +281,87 @@ void main() {
                 'database error',
                 isNotNull,
               )
-              .having((error) => error.markerError, 'marker error', isNotNull),
+              .having((error) => error.markerError, 'marker error', isNotNull)
+              .having(
+                (error) => error.retainedFile.relativePath,
+                'retained file path',
+                image.path,
+              )
+              .having(
+                (error) => error.retainedFile.byteSize,
+                'retained file size',
+                42,
+              )
+              .having(
+                (error) => error.retainedFile.sha256,
+                'retained file hash',
+                image.sha256,
+              ),
         ),
       );
+    },
+  );
+
+  test(
+    'failed marker leaves actual retained evidence discoverable at startup',
+    () async {
+      final temporaryDirectory = await Directory.systemTemp.createTemp(
+        'audit-recovery-',
+      );
+      try {
+        final files = AuditFileStore(
+          Directory('${temporaryDirectory.path}/audit'),
+        );
+        final references = _FileBackedFailingMarkerReferences(files);
+        var id = 700;
+        final fileStore = DatabaseCheckoutAuditStore(
+          database: db,
+          runtimeSnapshot: _runtimeSnapshot(),
+          references: references,
+          createId: (_) => _uuidFor(++id),
+          now: () => DateTime.utc(2026, 7, 30, 8),
+        );
+        final sessionId = await _beginSession(fileStore, revision);
+        final source = File('${temporaryDirectory.path}/capture.jpg');
+        await source.writeAsBytes(const [1, 2, 3, 4], flush: true);
+        final stored = await files.retainCapture(
+          sessionId: sessionId,
+          attemptNumber: 1,
+          capturedAtUtc: DateTime.utc(2026, 7, 30, 8),
+          sourcePath: source.path,
+        );
+        await db.customStatement('''
+CREATE TRIGGER reject_stage_for_recovery_test
+BEFORE INSERT ON scan_attempts
+BEGIN
+  SELECT RAISE(ABORT, 'injected stage failure');
+END
+''');
+
+        await expectLater(
+          fileStore.stageAttempt(
+            sessionId: sessionId,
+            attemptNumber: 1,
+            image: CapturedAuditFile(
+              fileId: 'image-1',
+              path: stored.relativePath,
+              sha256: stored.sha256,
+            ),
+          ),
+          throwsA(
+            isA<AuditRecoveryMarkerFailure>().having(
+              (error) => error.retainedFile.relativePath,
+              'retained file path',
+              stored.relativePath,
+            ),
+          ),
+        );
+
+        expect(await files.findRecoveryCandidates(), [stored.relativePath]);
+        expect(await File(files.resolve(stored.relativePath)).exists(), isTrue);
+      } finally {
+        await temporaryDirectory.delete(recursive: true);
+      }
     },
   );
 
@@ -1042,6 +1122,50 @@ final class _References
     }
     failedOperations.add(operation);
   }
+}
+
+final class _FileBackedFailingMarkerReferences
+    implements AuditReferenceVerifier, AuditRecoveryMarkerWriter {
+  _FileBackedFailingMarkerReferences(this._files);
+
+  final AuditFileStore _files;
+
+  @override
+  Future<VerifiedAuditFileReference> capturedImage({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required CapturedAuditFile image,
+  }) async {
+    final file = await _files.verifyExisting(
+      relativePath: image.path,
+      sha256: image.sha256,
+    );
+    return VerifiedAuditFileReference(
+      relativePath: file.relativePath,
+      byteSize: file.byteSize,
+      sha256: file.sha256,
+    );
+  }
+
+  @override
+  Future<VerifiedAuditFileReference> inferenceReceipt({
+    required String sessionId,
+    required int attemptNumber,
+    required DateTime capturedAtUtc,
+    required ImmutableJsonReceipt receipt,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<VerifiedAuditFileReference> finalOrderReceipt(FinalOrderDraft order) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> recordDatabaseFailure({
+    required String operation,
+    required VerifiedAuditFileReference file,
+    required Object error,
+  }) => throw StateError('injected marker failure');
 }
 
 String _capturePath(

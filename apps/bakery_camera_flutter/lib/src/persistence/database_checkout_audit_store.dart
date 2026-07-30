@@ -66,6 +66,7 @@ final class AuditRecoveryMarkerFailure extends StateError {
   AuditRecoveryMarkerFailure({
     required this.databaseError,
     required this.markerError,
+    required this.retainedFile,
   }) : super(
          'database write failed and recovery marker persistence also failed: '
          '$databaseError; $markerError',
@@ -73,6 +74,7 @@ final class AuditRecoveryMarkerFailure extends StateError {
 
   final Object databaseError;
   final Object markerError;
+  final VerifiedAuditFileReference retainedFile;
 }
 
 /// Concrete bridge from the storage-neutral database port to audit files.
@@ -1301,6 +1303,7 @@ final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
         throw AuditRecoveryMarkerFailure(
           databaseError: error,
           markerError: markerError,
+          retainedFile: file,
         );
       }
     }
