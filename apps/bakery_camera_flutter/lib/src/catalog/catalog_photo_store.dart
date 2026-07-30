@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -25,6 +26,66 @@ final class CatalogPhoto {
   final String provenanceNote;
 }
 
+/// An operator-approved local source record for catalog photography.
+///
+/// This is intentionally not an arbitrary filename or free-form assertion.
+/// The immutable record is stored with the copied content hash so a later
+/// reviewer can establish which local photo-record was approved. It does not
+/// accept checkout, inference, generated, training, or model artifacts as a
+/// source kind.
+final class CatalogPhotoProvenance {
+  const CatalogPhotoProvenance.approvedLocalImport({
+    required this.sourceReference,
+  });
+
+  static const _kind = 'operator_approved_local_product_photo';
+
+  final String sourceReference;
+
+  String serialize() {
+    _validateSourceReference(sourceReference);
+    return jsonEncode({
+      'kind': _kind,
+      'source_reference': sourceReference.trim(),
+    });
+  }
+
+  static CatalogPhotoProvenance parse(String serialized) {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(serialized);
+    } on FormatException {
+      throw const FormatException('catalog photo provenance is invalid');
+    }
+    if (decoded is! Map<String, Object?> ||
+        decoded.length != 2 ||
+        decoded['kind'] != _kind ||
+        decoded['source_reference'] is! String) {
+      throw const FormatException('catalog photo provenance is invalid');
+    }
+    final provenance = CatalogPhotoProvenance.approvedLocalImport(
+      sourceReference: decoded['source_reference']! as String,
+    );
+    _validateSourceReference(provenance.sourceReference);
+    if (serialized != provenance.serialize()) {
+      throw const FormatException('catalog photo provenance is not canonical');
+    }
+    return provenance;
+  }
+
+  static void _validateSourceReference(String value) {
+    final normalized = value.trim();
+    if (normalized.length < 3 ||
+        normalized.length > 128 ||
+        normalized.contains(RegExp(r'[\\/]')) ||
+        normalized.contains('..')) {
+      throw const FormatException(
+        'catalog photo source reference must be an approved local record id',
+      );
+    }
+  }
+}
+
 /// Imports only verified, locally chosen JPEG/PNG sale-product photographs.
 ///
 /// The caller supplies application data, never an arbitrary destination. The
@@ -34,23 +95,20 @@ final class CatalogPhotoStore {
   CatalogPhotoStore(
     this.applicationDataDirectory, {
     this.maximumByteSize = 8 * 1024 * 1024,
-  }) : assert(maximumByteSize > 0);
+    Iterable<String> forbiddenArtifactHashes = const [],
+  }) : _forbiddenArtifactHashes = Set.unmodifiable(forbiddenArtifactHashes),
+       assert(maximumByteSize > 0);
 
   final Directory applicationDataDirectory;
   final int maximumByteSize;
+  final Set<String> _forbiddenArtifactHashes;
 
   Future<CatalogPhoto> importFile(
     File source, {
-    required String provenanceNote,
+    required CatalogPhotoProvenance provenance,
+    Iterable<String> forbiddenArtifactHashes = const [],
   }) async {
-    final normalizedNote = provenanceNote.trim();
-    if (normalizedNote.isEmpty) {
-      throw ArgumentError.value(
-        provenanceNote,
-        'provenanceNote',
-        'is required',
-      );
-    }
+    final normalizedNote = provenance.serialize();
     final sourcePath = await _resolveAndValidateSource(source);
     final extension = path.extension(sourcePath).toLowerCase();
     if (extension != '.png' && extension != '.jpg' && extension != '.jpeg') {
@@ -69,6 +127,14 @@ final class CatalogPhotoStore {
     final mediaType = _mediaTypeFor(bytes, extension);
     await _verifyDecodable(bytes);
     final digest = sha256.convert(bytes).toString();
+    if (_forbiddenArtifactHashes.contains(digest) ||
+        forbiddenArtifactHashes.contains(digest)) {
+      throw ArgumentError.value(
+        source.path,
+        'source',
+        'matches a protected operational or generated artifact',
+      );
+    }
     final normalizedExtension = mediaType == 'image/png' ? '.png' : '.jpg';
     // Preserve POSIX separators in database provenance on every host.
     final relativePath = path.posix.join(
@@ -115,6 +181,11 @@ final class CatalogPhotoStore {
         !RegExp(r'^[a-f0-9]{64}$').hasMatch(photo.sha256)) {
       throw StateError('catalog photo metadata is invalid');
     }
+    try {
+      CatalogPhotoProvenance.parse(photo.provenanceNote);
+    } on FormatException {
+      throw StateError('catalog photo provenance is invalid');
+    }
     final file = File(
       path.join(applicationDataDirectory.path, photo.relativePath),
     );
@@ -125,6 +196,15 @@ final class CatalogPhotoStore {
     if (bytes.length != photo.byteSize ||
         sha256.convert(bytes).toString() != photo.sha256) {
       throw StateError('catalog photo hash mismatch');
+    }
+    try {
+      final observedMediaType = _mediaTypeFor(bytes, expectedExtension);
+      if (observedMediaType != photo.mediaType) {
+        throw StateError('catalog photo media type mismatch');
+      }
+      await _verifyDecodable(bytes);
+    } on FormatException {
+      throw StateError('catalog photo media type mismatch');
     }
     return file;
   }

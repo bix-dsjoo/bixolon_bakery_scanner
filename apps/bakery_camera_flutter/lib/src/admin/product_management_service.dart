@@ -81,13 +81,17 @@ final class ProductManagementService {
   /// this API.
   Future<CatalogPhoto> importPhoto(
     File source, {
-    required String provenanceNote,
-  }) {
+    required CatalogPhotoProvenance provenance,
+  }) async {
     final store = _photoStore;
     if (store == null) {
       throw StateError('catalog photo storage is not configured');
     }
-    return store.importFile(source, provenanceNote: provenanceNote);
+    return store.importFile(
+      source,
+      provenance: provenance,
+      forbiddenArtifactHashes: await _protectedOperationalPhotoHashes(),
+    );
   }
 
   Future<File?> resolvePhoto(ManagedCatalogProduct product) async {
@@ -116,6 +120,7 @@ final class ProductManagementService {
             .map(_normalizeForActiveMapping)
             .toList(growable: false);
         _validate(normalized);
+        await _verifyCatalogPhotoMembership(normalized);
 
         final revisionId = _createId();
         if (revisionId.trim().isEmpty || revisionId == previous.revisionId) {
@@ -362,15 +367,50 @@ final class ProductManagementService {
     if (fields.every((field) => field == null)) return;
     if (fields.any((field) => field == null) ||
         product.photoAssetPath == null ||
-        !product.photoAssetPath!.startsWith('catalog-media/') ||
-        product.photoAssetPath!.contains('..') ||
         product.photoByteSize! <= 0 ||
         !RegExp(r'^[a-f0-9]{64}$').hasMatch(product.photoSha256!) ||
         (product.photoMediaType != 'image/png' &&
-            product.photoMediaType != 'image/jpeg') ||
-        product.photoProvenanceNote!.trim().isEmpty) {
+            product.photoMediaType != 'image/jpeg')) {
       throw ArgumentError('catalog photo metadata is invalid');
     }
+    final expectedExtension = product.photoMediaType == 'image/png'
+        ? '.png'
+        : '.jpg';
+    final expectedPath =
+        'catalog-media/${product.photoSha256}$expectedExtension';
+    if (product.photoAssetPath != expectedPath) {
+      throw ArgumentError('catalog photo metadata is invalid');
+    }
+    try {
+      CatalogPhotoProvenance.parse(product.photoProvenanceNote!);
+    } on FormatException {
+      throw ArgumentError('catalog photo provenance is invalid');
+    }
+  }
+
+  Future<void> _verifyCatalogPhotoMembership(
+    List<ManagedCatalogProduct> products,
+  ) async {
+    final photos = products
+        .map(_photoOf)
+        .whereType<CatalogPhoto>()
+        .toList(growable: false);
+    if (photos.isEmpty) return;
+    final store = _photoStore;
+    if (store == null) {
+      throw StateError('catalog photo storage is not configured');
+    }
+    for (final photo in photos) {
+      await store.resolveVerified(photo);
+    }
+  }
+
+  /// Audit captures remain protected even after someone copies their bytes to
+  /// a benign-looking path. The store compares this complete digest set while
+  /// it reads the actual import bytes, rather than trusting source filenames.
+  Future<Set<String>> _protectedOperationalPhotoHashes() async {
+    final attempts = await _database.select(_database.scanAttempts).get();
+    return attempts.map((attempt) => attempt.imageSha256).toSet();
   }
 
   ProductsCompanion _productCompanion(

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -158,7 +159,10 @@ class _BakeryAppState extends State<BakeryApp> {
           database: database,
           createId: () => const Uuid().v4(),
           now: DateTime.now,
-          photoStore: CatalogPhotoStore(support),
+          photoStore: CatalogPhotoStore(
+            support,
+            forbiddenArtifactHashes: await _generatedUiIllustrationHashes(),
+          ),
         ),
       );
     } catch (_) {
@@ -198,6 +202,32 @@ class _BakeryAppState extends State<BakeryApp> {
       ),
     );
   }
+}
+
+/// Generated UI art has an explicit asset manifest. Its content hashes are a
+/// deny-list for catalog intake, so copying an ImageGen file to an innocent
+/// filename cannot turn it into sale-product photography.
+Future<Set<String>> _generatedUiIllustrationHashes() async {
+  final document = jsonDecode(
+    await rootBundle.loadString('assets/asset_manifest.json'),
+  );
+  if (document is! Map<String, Object?> ||
+      document['generated_ui_illustrations'] is! List<Object?>) {
+    throw const FormatException('generated UI asset manifest is invalid');
+  }
+  final hashes = <String>{};
+  for (final entry
+      in document['generated_ui_illustrations']! as List<Object?>) {
+    if (entry is! Map<String, Object?> || entry['sha256'] is! String) {
+      throw const FormatException('generated UI asset manifest is invalid');
+    }
+    final hash = entry['sha256']! as String;
+    if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(hash)) {
+      throw const FormatException('generated UI asset hash is invalid');
+    }
+    hashes.add(hash);
+  }
+  return hashes;
 }
 
 final class _AppServices {

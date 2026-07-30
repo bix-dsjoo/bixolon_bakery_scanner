@@ -249,7 +249,16 @@ class _ProductPhoto extends StatelessWidget {
           color: tokens.canvas,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: file == null
+        child: snapshot.hasError
+            ? Semantics(
+                label:
+                    '\uC0C1\uD488 \uC0AC\uC9C4 \uBB34\uACB0\uC131 \uC624\uB958',
+                child: const Tooltip(
+                  message: '\uC0AC\uC9C4 \uBB34\uACB0\uC131 \uC624\uB958',
+                  child: Icon(Icons.broken_image_outlined),
+                ),
+              )
+            : file == null
             ? const Icon(
                 Icons.bakery_dining_outlined,
                 semanticLabel: '\uC0C1\uD488 \uC0AC\uC9C4 \uC5C6\uC74C',
@@ -257,8 +266,11 @@ class _ProductPhoto extends StatelessWidget {
             : Image.file(
                 file,
                 fit: BoxFit.cover,
-                errorBuilder: (_, _, _) =>
-                    const Icon(Icons.broken_image_outlined),
+                errorBuilder: (_, _, _) => Semantics(
+                  label:
+                      '\uC0C1\uD488 \uC0AC\uC9C4 \uBB34\uACB0\uC131 \uC624\uB958',
+                  child: const Icon(Icons.broken_image_outlined),
+                ),
               ),
       );
     },

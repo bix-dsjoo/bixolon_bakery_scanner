@@ -34,7 +34,9 @@ void main() {
 
     final imported = await store.importFile(
       source,
-      provenanceNote: 'Operator approved product photograph on 2026-07-31',
+      provenance: const CatalogPhotoProvenance.approvedLocalImport(
+        sourceReference: 'operator-camera-roll-2026-07-31-01',
+      ),
     );
 
     expect(imported.relativePath, startsWith('catalog-media/'));
@@ -42,7 +44,10 @@ void main() {
     expect(imported.byteSize, bytes.length);
     expect(imported.sha256, sha256.convert(bytes).toString());
     expect(imported.mediaType, 'image/png');
-    expect(imported.provenanceNote, isNotEmpty);
+    expect(
+      CatalogPhotoProvenance.parse(imported.provenanceNote).sourceReference,
+      'operator-camera-roll-2026-07-31-01',
+    );
     expect(
       await File(
         '${store.applicationDataDirectory.path}${Platform.pathSeparator}${imported.relativePath}',
@@ -70,11 +75,21 @@ void main() {
     );
 
     await expectLater(
-      () => store.importFile(broken, provenanceNote: 'approved'),
+      () => store.importFile(
+        broken,
+        provenance: const CatalogPhotoProvenance.approvedLocalImport(
+          sourceReference: 'operator-camera-roll-01',
+        ),
+      ),
       throwsA(isA<FormatException>()),
     );
     await expectLater(
-      () => store.importFile(inference, provenanceNote: 'approved'),
+      () => store.importFile(
+        inference,
+        provenance: const CatalogPhotoProvenance.approvedLocalImport(
+          sourceReference: 'operator-camera-roll-01',
+        ),
+      ),
       throwsA(isA<ArgumentError>()),
     );
   });
@@ -88,12 +103,48 @@ void main() {
         'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGP8////fwYGBgYmEAHCAD34BABm6tHAAAAAAElFTkSuQmCC',
       ),
     );
-    final imported = await store.importFile(source, provenanceNote: 'approved');
+    final imported = await store.importFile(
+      source,
+      provenance: const CatalogPhotoProvenance.approvedLocalImport(
+        sourceReference: 'operator-camera-roll-01',
+      ),
+    );
     final destination = File(
       '${store.applicationDataDirectory.path}${Platform.pathSeparator}${imported.relativePath}',
     );
     await destination.writeAsBytes(const [1, 2, 3], flush: true);
 
     await expectLater(() => store.resolveVerified(imported), throwsStateError);
+  });
+
+  test('rejects a copied protected artifact by its verified digest', () async {
+    final bytes = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGP8////fwYGBgYmEAHCAD34BABm6tHAAAAAAElFTkSuQmCC',
+    );
+    final copied = File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}innocent-copy.png',
+    );
+    await copied.writeAsBytes(bytes);
+    final protectedStore = CatalogPhotoStore(
+      store.applicationDataDirectory,
+      forbiddenArtifactHashes: {sha256.convert(bytes).toString()},
+    );
+
+    await expectLater(
+      () => protectedStore.importFile(
+        copied,
+        provenance: const CatalogPhotoProvenance.approvedLocalImport(
+          sourceReference: 'operator-camera-roll-02',
+        ),
+      ),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
+
+  test('requires structured operator-approved local provenance', () async {
+    expect(
+      () => CatalogPhotoProvenance.parse('operator said approved'),
+      throwsA(isA<FormatException>()),
+    );
   });
 }

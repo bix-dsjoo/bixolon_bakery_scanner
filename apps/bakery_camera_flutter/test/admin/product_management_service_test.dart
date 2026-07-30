@@ -1,8 +1,13 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:bakery_camera_prototype/src/admin/product_management_service.dart';
+import 'package:bakery_camera_prototype/src/catalog/catalog_photo_store.dart';
 import 'package:bakery_camera_prototype/src/catalog/catalog_seed.dart';
 import 'package:bakery_camera_prototype/src/catalog/product.dart';
 import 'package:bakery_camera_prototype/src/persistence/app_database.dart';
 import 'package:bakery_camera_prototype/src/persistence/database_factory.dart';
+import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart' hide isNull;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -66,6 +71,132 @@ void main() {
       expect(event.detail, contains('catalog-v2'));
     },
   );
+
+  test(
+    'rejects a save when a referenced catalog photo is not verified',
+    () async {
+      final root = await Directory.systemTemp.createTemp('product-save-photo-');
+      addTearDown(() => root.delete(recursive: true));
+      final guarded = ProductManagementService(
+        database: database,
+        createId: () => 'catalog-photo-missing',
+        now: () => DateTime.utc(2026, 7, 31),
+        photoStore: CatalogPhotoStore(root),
+      );
+      final before = await guarded.activeCatalog();
+      final validPhotoMetadata = CatalogPhoto(
+        relativePath: 'catalog-media/${_hash('a')}.png',
+        byteSize: 42,
+        sha256: _hash('a'),
+        mediaType: 'image/png',
+        provenanceNote: const CatalogPhotoProvenance.approvedLocalImport(
+          sourceReference: 'operator-camera-roll-03',
+        ).serialize(),
+      );
+
+      await expectLater(
+        () => guarded.save(
+          ProductDraft.add(
+            productId: 'photo-without-membership',
+            displayName: 'Unverified photo bread',
+            unitPriceKrw: 1300,
+            categoryId: 'bread',
+            sortOrder: 99,
+            photo: validPhotoMetadata,
+          ),
+        ),
+        throwsStateError,
+      );
+      expect(
+        (await guarded.activeCatalog()).revision.revisionId,
+        before.revision.revisionId,
+      );
+    },
+  );
+
+  test(
+    'imports an approved local photo before persisting its catalog revision',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'product-import-photo-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final source = File('${root.path}${Platform.pathSeparator}sale.png');
+      await source.writeAsBytes(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGP8////fwYGBgYmEAHCAD34BABm6tHAAAAAAElFTkSuQmCC',
+        ),
+      );
+      final guarded = ProductManagementService(
+        database: database,
+        createId: () => 'catalog-photo-imported',
+        now: () => DateTime.utc(2026, 7, 31),
+        photoStore: CatalogPhotoStore(root),
+      );
+
+      final photo = await guarded.importPhoto(
+        source,
+        provenance: const CatalogPhotoProvenance.approvedLocalImport(
+          sourceReference: 'operator-camera-roll-06',
+        ),
+      );
+      final saved = await guarded.save(
+        ProductDraft.add(
+          productId: 'verified-photo-bread',
+          displayName: 'Verified photo bread',
+          unitPriceKrw: 2500,
+          categoryId: 'bread',
+          sortOrder: 98,
+          recognitionSkuId: 20,
+          photo: photo,
+        ),
+      );
+
+      final product = saved.products.singleWhere(
+        (item) => item.productId == 'verified-photo-bread',
+      );
+      expect(product.photoSha256, photo.sha256);
+      expect(product.photoByteSize, photo.byteSize);
+      expect(product.photoMediaType, photo.mediaType);
+      expect(
+        CatalogPhotoProvenance.parse(
+          product.photoProvenanceNote!,
+        ).sourceReference,
+        'operator-camera-roll-06',
+      );
+    },
+  );
+
+  test('rejects a copied checkout capture by its audit hash', () async {
+    final root = await Directory.systemTemp.createTemp('product-scan-photo-');
+    addTearDown(() => root.delete(recursive: true));
+    final source = File('${root.path}${Platform.pathSeparator}copied.png');
+    final bytes = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGP8////fwYGBgYmEAHCAD34BABm6tHAAAAAAElFTkSuQmCC',
+    );
+    await source.writeAsBytes(bytes);
+    await _insertStagedScanReference(
+      database,
+      catalogRevisionId: (await service.activeCatalog()).revision.revisionId,
+      imageSha256: sha256.convert(bytes).toString(),
+    );
+    final guarded = ProductManagementService(
+      database: database,
+      createId: () => 'unused',
+      now: () => DateTime.utc(2026),
+      photoStore: CatalogPhotoStore(root),
+    );
+
+    await expectLater(
+      () => guarded.importPhoto(
+        source,
+        provenance: const CatalogPhotoProvenance.approvedLocalImport(
+          sourceReference: 'operator-camera-roll-07',
+        ),
+      ),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
 
   test(
     'edits by cloning and deactivates without deleting historical product IDs',
@@ -270,6 +401,54 @@ Future<void> _insertCompletedOrder(
       terminalReason: Value('payment_committed'),
     ),
   );
+}
+
+Future<void> _insertStagedScanReference(
+  BakeryDatabase database, {
+  required String catalogRevisionId,
+  required String imageSha256,
+}) async {
+  const sessionId = 'protected-photo-source-session';
+  await database
+      .into(database.checkoutSessions)
+      .insert(
+        CheckoutSessionsCompanion.insert(
+          sessionId: sessionId,
+          state: 'active',
+          startedAtUs: 10,
+          catalogRevisionId: catalogRevisionId,
+          settingsRevisionId: 'settings-v1',
+          detectorId: 'rfdetr_large_bakery_v1',
+          detectorSha256: _hash('a'),
+          repvitArtifactId: 'repvit_m1_15plus5_v1',
+          repvitSha256: _hash('b'),
+          repvitManifestSha256: _hash('c'),
+          repvitPrototypeSha256: _hash('d'),
+          dinov3ArtifactId: 'dinov3_vits16_15plus5_v1',
+          dinov3Sha256: _hash('e'),
+          dinov3SupportSha256: _hash('f'),
+          calibrationId: 'calibration-v1',
+          calibrationSha256: _hash('0'),
+          preprocessSha256: _hash('1'),
+          fusionPolicyId: 'fusion-v1',
+          fusionPolicySha256: _hash('2'),
+          configSnapshotJson: '{"pipeline":"canonical_cpu"}',
+        ),
+      );
+  await database
+      .into(database.scanAttempts)
+      .insert(
+        ScanAttemptsCompanion.insert(
+          attemptId: 'protected-photo-source-attempt',
+          sessionId: sessionId,
+          attemptNumber: 1,
+          capturedAtUs: 11,
+          imageRelativePath: 'sessions/$sessionId/capture.jpg',
+          imageByteSize: 1,
+          imageSha256: imageSha256,
+          status: 'staged',
+        ),
+      );
 }
 
 String _hash(String character) => character * 64;
