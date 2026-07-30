@@ -71,6 +71,8 @@ flutter:
 
   assets:
     - assets/catalog/
+    - assets/fonts/pretendard_manifest.json
+    - assets/fonts/OFL.txt
     - assets/illustrations/
     - assets/asset_manifest.json
 
