@@ -92,6 +92,35 @@ void main() {
       expect(summary.failedSessions, 1);
     },
   );
+
+  test(
+    'dashboard counts an Unknown resolved just after Seoul day start even when captured earlier',
+    () async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      const seoulDayStartUs = 1785337200000000; // 2026-07-29T15:00:00Z
+      await _seedDashboard(
+        database,
+        earlierSessionIds: const {'paid-2'},
+        attemptCapturedAtUs: {
+          'attempt-3': seoulDayStartUs - 1,
+          'attempt-4': seoulDayStartUs - 1,
+        },
+        resolutionAtUs: seoulDayStartUs + 1,
+      );
+
+      final summary = await DatabaseAdminRepository(database).dashboard(
+        DateRange.utc(
+          DateTime.utc(2026, 7, 29, 15),
+          DateTime.utc(2026, 7, 30, 15),
+        ),
+      );
+
+      expect(summary.scanAttempts, 3);
+      expect(summary.customerResolvedUnknownObjects, 1);
+      expect(summary.customerOverrides, 1);
+    },
+  );
 }
 
 const _hash =
@@ -101,6 +130,7 @@ const _at = 1785373200000000; // 2026-07-30T00:00:00Z
 Future<void> _seedDashboard(
   BakeryDatabase db, {
   Set<String> earlierSessionIds = const {},
+  Map<String, int> attemptCapturedAtUs = const {},
   int resolutionAtUs = _at,
 }) async {
   await db
@@ -159,11 +189,11 @@ Future<void> _seedDashboard(
       startedAtUs: earlierSessionIds.contains(session) ? 1785298800000000 : _at,
     );
   }
-  await _attempt(db, 'attempt-1', 'paid-1', 1);
-  await _attempt(db, 'attempt-2', 'paid-1', 2);
-  await _attempt(db, 'attempt-3', 'paid-2', 1);
-  await _attempt(db, 'attempt-4', 'paid-3', 1);
-  await _attempt(db, 'attempt-5', 'failed', 1);
+  await _attempt(db, 'attempt-1', 'paid-1', 1, attemptCapturedAtUs);
+  await _attempt(db, 'attempt-2', 'paid-1', 2, attemptCapturedAtUs);
+  await _attempt(db, 'attempt-3', 'paid-2', 1, attemptCapturedAtUs);
+  await _attempt(db, 'attempt-4', 'paid-3', 1, attemptCapturedAtUs);
+  await _attempt(db, 'attempt-5', 'failed', 1, attemptCapturedAtUs);
   await _object(db, 'unknown-unresolved', 'attempt-1', unknown: true);
   await _object(db, 'unknown-resolved', 'attempt-3', unknown: true);
   await _object(db, 'known-overridden', 'attempt-4', unknown: false);
@@ -287,6 +317,7 @@ Future<void> _attempt(
   String id,
   String session,
   int number,
+  Map<String, int> capturedAtUs,
 ) => db
     .into(db.scanAttempts)
     .insert(
@@ -294,7 +325,7 @@ Future<void> _attempt(
         attemptId: id,
         sessionId: session,
         attemptNumber: number,
-        capturedAtUs: _at,
+        capturedAtUs: capturedAtUs[id] ?? _at,
         imageRelativePath: '$session/$id.jpg',
         imageByteSize: 1,
         imageSha256: _hash,

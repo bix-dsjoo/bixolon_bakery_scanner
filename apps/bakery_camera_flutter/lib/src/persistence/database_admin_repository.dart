@@ -30,7 +30,7 @@ final class DatabaseAdminRepository implements AdminRepository {
         .where((row) => attemptIds.contains(row.attemptId))
         .toList(growable: false);
     final objectById = {
-      for (final object in inRangeObjects) object.inferenceObjectId: object,
+      for (final object in objects) object.inferenceObjectId: object,
     };
 
     final committedPayments = payments
@@ -50,11 +50,12 @@ final class DatabaseAdminRepository implements AdminRepository {
         .where((row) => row.isCurrent && range.includes(_utc(row.resolvedAtUs)))
         .toList(growable: false);
     final resolvedUnknownIds = currentResolutions
-        .where(
-          (row) =>
-              row.inferenceObjectId != null &&
-              objectById[row.inferenceObjectId]?.skuId == null,
-        )
+        .where((row) {
+          final objectId = row.inferenceObjectId;
+          if (objectId == null) return false;
+          final object = objectById[objectId];
+          return object != null && object.skuId == null;
+        })
         .map((row) => row.inferenceObjectId!)
         .toSet();
     final unknownObjectIds = inRangeObjects
