@@ -91,13 +91,19 @@ _SHA256_LENGTH = 64
 class _SpawnWorkerEndpoint:
     """One duplex pipe and one persistent spawn-created child process."""
 
-    def __init__(self, spec: WorkerSpec, context) -> None:
+    def __init__(
+        self,
+        spec: WorkerSpec,
+        context,
+        *,
+        process_target: Callable[[Connection], None] = worker_process_main,
+    ) -> None:
         self._spec = spec
         self._connection: Connection
         parent_connection, child_connection = context.Pipe(duplex=True)
         self._connection = parent_connection
         self._process = context.Process(
-            target=worker_process_main,
+            target=process_target,
             args=(child_connection,),
             name=f"cpu-benchmark-{spec.role}",
         )
