@@ -29,6 +29,12 @@ final class Product {
   final String? photoAssetPath;
   final bool active;
   final int sortOrder;
+
+  static int customerSort(Product left, Product right) {
+    final sortOrder = left.sortOrder.compareTo(right.sortOrder);
+    if (sortOrder != 0) return sortOrder;
+    return left.productId.compareTo(right.productId);
+  }
 }
 
 final class CatalogRevision {
