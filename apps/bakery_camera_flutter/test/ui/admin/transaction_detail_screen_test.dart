@@ -17,7 +17,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('증거 파일을 확인할 수 없습니다'), findsOneWidget);
       expect(find.text('고객이 무엇을 결제했나요?'), findsOneWidget);
+      await tester.drag(find.byType(ListView), const Offset(0, -1000));
+      await tester.pumpAndSettle();
       expect(find.text('측정된 단계 시간'), findsOneWidget);
+      expect(find.text('세션 수명주기'), findsOneWidget);
+      expect(find.text('모델·정책·보정 원본'), findsOneWidget);
     },
   );
 }

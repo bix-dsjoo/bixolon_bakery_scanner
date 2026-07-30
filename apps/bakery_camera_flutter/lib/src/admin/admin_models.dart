@@ -104,6 +104,8 @@ final class TransactionFilter {
   const TransactionFilter({
     this.dateRange,
     this.sessionQuery,
+    this.productQuery,
+    this.modelPolicyQuery,
     this.paymentStatus = TransactionPaymentStatus.any,
     this.resolutionSource,
     this.requiresUnknown,
@@ -113,6 +115,8 @@ final class TransactionFilter {
 
   final DateRange? dateRange;
   final String? sessionQuery;
+  final String? productQuery;
+  final String? modelPolicyQuery;
   final TransactionPaymentStatus paymentStatus;
   final String? resolutionSource;
   final bool? requiresUnknown;
@@ -162,7 +166,14 @@ final class TransactionListItem {
   final bool hasFailure;
 }
 
-enum AuditEvidenceIntegrity { unverified, retained, missing, hashMismatch }
+enum AuditEvidenceIntegrity {
+  unverified,
+  retained,
+  retentionExpired,
+  missing,
+  hashMismatch,
+  unavailable,
+}
 
 final class AdminEvidenceReference {
   const AdminEvidenceReference({

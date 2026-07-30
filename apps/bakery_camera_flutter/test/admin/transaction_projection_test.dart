@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:bakery_camera_prototype/src/admin/admin_models.dart';
 import 'package:bakery_camera_prototype/src/persistence/app_database.dart';
 import 'package:bakery_camera_prototype/src/persistence/database_admin_repository.dart';
@@ -8,6 +10,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   test('transaction filters retain every explicit audit outcome', () {
     const filter = TransactionFilter(
+      productQuery: '식빵',
+      modelPolicyQuery: 'rfdetr',
       paymentStatus: TransactionPaymentStatus.completed,
       resolutionSource: 'customer_catalog',
       requiresUnknown: true,
@@ -16,6 +20,8 @@ void main() {
     );
 
     expect(filter.paymentStatus, TransactionPaymentStatus.completed);
+    expect(filter.productQuery, '식빵');
+    expect(filter.modelPolicyQuery, 'rfdetr');
     expect(filter.resolutionSource, 'customer_catalog');
     expect(filter.requiresUnknown, isTrue);
     expect(filter.requiresRetake, isTrue);
@@ -44,7 +50,7 @@ void main() {
       expect(next.items.single.sessionId, 'session-b');
       expect(
         (await repository.transactions(
-        TransactionFilter(
+          TransactionFilter(
             dateRange: DateRange.utc(
               DateTime.fromMicrosecondsSinceEpoch(0, isUtc: true),
               DateTime.fromMicrosecondsSinceEpoch(150, isUtc: true),
@@ -60,6 +66,21 @@ void main() {
           null,
         )).items.single.sessionId,
         'session-a',
+      );
+      expect(
+        (await repository.transactions(
+          const TransactionFilter(productQuery: '식빵'),
+          null,
+        )).items.single.sessionId,
+        'session-a',
+      );
+      expect(
+        (await repository.transactions(
+          const TransactionFilter(modelPolicyQuery: 'policy'),
+          null,
+          limit: 60,
+        )).items.length,
+        58,
       );
       expect(
         (await repository.transactions(
@@ -97,6 +118,105 @@ void main() {
           null,
         )).items.single.sessionId,
         'session-b',
+      );
+    },
+  );
+
+  test(
+    'keyset cursor still pages when its row is removed by a new filter',
+    () async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      await _seed(database);
+      final repository = DatabaseAdminRepository(database);
+
+      final first = await repository.transactions(
+        const TransactionFilter(),
+        null,
+        limit: 1,
+      );
+      final filtered = await repository.transactions(
+        const TransactionFilter(requiresFailure: true),
+        first.nextCursor,
+      );
+
+      expect(filtered.items.single.sessionId, 'session-b');
+    },
+  );
+
+  test(
+    'keyset pagination returns every one of more than fifty sessions',
+    () async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      await _seed(database);
+      final repository = DatabaseAdminRepository(database);
+      final seen = <String>[];
+      PageCursor? cursor;
+      do {
+        final page = await repository.transactions(
+          const TransactionFilter(),
+          cursor,
+          limit: 50,
+        );
+        seen.addAll(page.items.map((item) => item.sessionId));
+        cursor = page.nextCursor;
+      } while (cursor != null);
+
+      expect(seen.length, 58);
+      expect(seen.toSet().length, seen.length);
+    },
+  );
+
+  test(
+    'retention evidence remains expired instead of becoming a missing file',
+    () async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      await _seed(database);
+      await database
+          .into(database.retentionEvents)
+          .insert(
+            RetentionEventsCompanion.insert(
+              retentionEventId: 'retention-a-1',
+              attemptId: 'a-1',
+              relativePath: 'a-1.jpg',
+              originalByteSize: 1,
+              originalSha256: _hash,
+              prunedAtUs: 110,
+              reason: 'expired',
+            ),
+          );
+      final repository = DatabaseAdminRepository(
+        database,
+        verifyEvidence: (_, _, _) async => AuditEvidenceIntegrity.missing,
+      );
+
+      final detail = await repository.transactionDetail('session-a');
+
+      expect(
+        detail.attempts.single.image.integrity,
+        AuditEvidenceIntegrity.retentionExpired,
+      );
+    },
+  );
+
+  test(
+    'evidence permission failures stay available as an audit detail',
+    () async {
+      final database = openInMemoryBakeryDatabase();
+      addTearDown(database.close);
+      await _seed(database);
+      final repository = DatabaseAdminRepository(
+        database,
+        verifyEvidence: (_, _, _) => throw const FileSystemException('denied'),
+      );
+
+      final detail = await repository.transactionDetail('session-a');
+
+      expect(
+        detail.attempts.single.image.integrity,
+        AuditEvidenceIntegrity.unavailable,
       );
     },
   );
@@ -157,6 +277,34 @@ Future<void> _seed(BakeryDatabase db) async {
             sessionId: row.$1,
             state: 'active',
             startedAtUs: row.$2,
+            catalogRevisionId: 'catalog',
+            settingsRevisionId: 'settings',
+            detectorId: 'detector',
+            detectorSha256: _hash,
+            repvitArtifactId: 'repvit',
+            repvitSha256: _hash,
+            repvitManifestSha256: _hash,
+            repvitPrototypeSha256: _hash,
+            dinov3ArtifactId: 'dino',
+            dinov3Sha256: _hash,
+            dinov3SupportSha256: _hash,
+            calibrationId: 'calibration',
+            calibrationSha256: _hash,
+            preprocessSha256: _hash,
+            fusionPolicyId: 'policy',
+            fusionPolicySha256: _hash,
+            configSnapshotJson: '{}',
+          ),
+        );
+  }
+  for (var index = 0; index < 55; index++) {
+    await db
+        .into(db.checkoutSessions)
+        .insert(
+          CheckoutSessionsCompanion.insert(
+            sessionId: 'session-extra-$index',
+            state: 'active',
+            startedAtUs: -1 - index,
             catalogRevisionId: 'catalog',
             settingsRevisionId: 'settings',
             detectorId: 'detector',

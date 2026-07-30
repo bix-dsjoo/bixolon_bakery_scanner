@@ -5,6 +5,7 @@ import 'widgets/audit_fact_table.dart';
 
 class TransactionDetailScreen extends StatelessWidget {
   const TransactionDetailScreen({required this.detail, super.key});
+
   final AdminTransactionDetail detail;
 
   @override
@@ -20,48 +21,120 @@ class TransactionDetailScreen extends StatelessWidget {
           const Text('결제된 주문이 없습니다')
         else
           _OrderCard(order: detail.order!),
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
+        _Section(
+          title: '세션 수명주기',
+          child: AuditFactTable(
+            facts: {
+              '세션 ID': detail.sessionId,
+              '세션 시작': detail.startedAt.toIso8601String(),
+              '세션 종료': detail.terminalAt?.toIso8601String() ?? '진행 중',
+              '종료 상태': detail.terminalState,
+              '종료 사유': detail.terminalReason ?? '기록 없음',
+              '카탈로그 리비전': detail.catalogRevisionId,
+              '설정 리비전': detail.settingsRevisionId,
+            },
+          ),
+        ),
+        if (detail.payment != null)
+          _Section(
+            title: '결제 기록',
+            child: AuditFactTable(
+              facts: {
+                '결제 ID': detail.payment!.paymentId,
+                '결제 상태': detail.payment!.status,
+                '결제 수단': detail.payment!.provider,
+                '결제 금액': '${detail.payment!.amountKrw}원',
+                '결제 시각': detail.payment!.paidAt.toIso8601String(),
+                '최종 주문 SHA-256': detail.payment!.finalOrderSha256,
+              },
+            ),
+          ),
+        const SizedBox(height: 24),
         Text(
           '이 거래가 고객 판단으로 어디가 바뀌었나요?',
           style: Theme.of(context).textTheme.titleLarge,
         ),
-        ...detail.resolutions.map(
-          (row) => ListTile(
+        if (detail.resolutions.isEmpty) const Text('고객 선택 기록이 없습니다'),
+        for (final row in detail.resolutions)
+          ExpansionTile(
             title: Text(row.productName),
             subtitle: Text('${row.source} · ${row.resolvedAt.toLocal()}'),
             trailing: row.isCurrent
                 ? const Chip(label: Text('현재 선택'))
                 : const Chip(label: Text('이전 선택')),
+            children: [
+              AuditFactTable(
+                facts: {
+                  '해결 ID': row.resolutionId,
+                  '추론 객체 ID': row.inferenceObjectId ?? '직접 담기',
+                  '상품 ID': row.productId,
+                  '인식 SKU': row.recognitionSkuId?.toString() ?? '연결 없음',
+                  '고객 해결 방식': row.source,
+                  '후보 순위': row.candidateRank?.toString() ?? '해당 없음',
+                  '객체 상자': row.canonicalBoxJson ?? '직접 담기',
+                  '단가': '${row.unitPriceKrw}원',
+                },
+              ),
+            ],
           ),
-        ),
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
         Text('촬영과 모델 결정 근거', style: Theme.of(context).textTheme.titleLarge),
-        ...detail.attempts.map(
-          (attempt) => ExpansionTile(
+        for (final attempt in detail.attempts)
+          ExpansionTile(
             title: Text('촬영 ${attempt.attemptNumber} · ${attempt.status}'),
             subtitle: Text(attempt.image.relativePath),
             children: [
               AuditFactTable(
                 facts: {
+                  '촬영 시각': attempt.capturedAt.toIso8601String(),
+                  '이미지 경로': attempt.image.relativePath,
                   '이미지 SHA-256': attempt.image.sha256,
-                  '이미지 상태': _integrity(attempt.image.integrity),
+                  '이미지 바이트': attempt.image.byteSize.toString(),
+                  '증거 상태': _integrity(attempt.image.integrity),
+                  '추론 영수증 경로': attempt.receipt?.relativePath ?? '기록 없음',
+                  '추론 영수증 SHA-256': attempt.receipt?.sha256 ?? '기록 없음',
+                  '추론 영수증 상태': attempt.receipt == null
+                      ? '기록 없음'
+                      : _integrity(attempt.receipt!.integrity),
                   '재촬영 사유': attempt.retakeReason ?? '없음',
-                  '화면 상태': attempt.presentationState ?? '없음',
+                  '화면 상태': attempt.presentationState ?? '기록 없음',
                 },
               ),
               for (final object in attempt.objects)
-                ListTile(
+                ExpansionTile(
                   title: Text(object.skuId == null ? 'AI 미확정' : object.skuName),
                   subtitle: Text(
-                    '상자 ${object.boxJson} · 신뢰도 ${object.confidence} · ${object.decisionPath}',
+                    '상자 ${object.boxJson} · 신뢰도 ${object.confidence}',
                   ),
+                  children: [
+                    AuditFactTable(
+                      facts: {
+                        '객체 ID': object.objectId,
+                        'SKU ID': object.skuId?.toString() ?? 'Unknown',
+                        '객체 상자': object.boxJson,
+                        '결정 경로': object.decisionPath,
+                        '탐지 출처': object.detectorSource,
+                        '탐지 점수': object.detectorScore.toString(),
+                        'Unknown 사유': object.unknownReason ?? '해당 없음',
+                      },
+                    ),
+                    for (final candidate in object.candidates)
+                      ListTile(
+                        title: Text(
+                          '후보 ${candidate.rank}위 · ${candidate.skuName}',
+                        ),
+                        subtitle: Text(
+                          'SKU ${candidate.skuId} · 점수 ${candidate.score}',
+                        ),
+                      ),
+                  ],
                 ),
             ],
           ),
-        ),
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
         Text('측정된 단계 시간', style: Theme.of(context).textTheme.titleLarge),
-        const Text('운영 중 기록된 시간이며 성능 수치나 정확도 주장이 아닙니다.'),
+        const Text('이 화면의 기록은 실행 시간이며 성능 수치나 정확도 주장이 아닙니다.'),
         for (final attempt in detail.attempts)
           AuditFactTable(
             facts: {
@@ -76,17 +149,21 @@ class TransactionDetailScreen extends StatelessWidget {
           children: [
             AuditFactTable(
               facts: {
-                'Detector': detail.artifacts.detectorId,
+                'Detector ID': detail.artifacts.detectorId,
                 'Detector SHA-256': detail.artifacts.detectorSha256,
-                '카탈로그 리비전': detail.catalogRevisionId,
-                '설정 리비전': detail.settingsRevisionId,
+                'RepViT ID': detail.artifacts.repvitArtifactId,
                 'RepViT SHA-256': detail.artifacts.repvitSha256,
+                'RepViT manifest SHA-256':
+                    detail.artifacts.repvitManifestSha256,
                 'RepViT prototype SHA-256':
                     detail.artifacts.repvitPrototypeSha256,
+                'DINOv3 ID': detail.artifacts.dinov3ArtifactId,
                 'DINOv3 SHA-256': detail.artifacts.dinov3Sha256,
                 'DINOv3 support SHA-256': detail.artifacts.dinov3SupportSha256,
+                'Calibration ID': detail.artifacts.calibrationId,
                 'Calibration SHA-256': detail.artifacts.calibrationSha256,
                 'Preprocess SHA-256': detail.artifacts.preprocessSha256,
+                'Policy ID': detail.artifacts.fusionPolicyId,
                 'Policy SHA-256': detail.artifacts.fusionPolicySha256,
               },
             ),
@@ -95,29 +172,55 @@ class TransactionDetailScreen extends StatelessWidget {
       ],
     ),
   );
-  String _integrity(AuditEvidenceIntegrity value) => switch (value) {
+
+  static String _integrity(AuditEvidenceIntegrity value) => switch (value) {
     AuditEvidenceIntegrity.retained => '검증됨',
+    AuditEvidenceIntegrity.retentionExpired => '보관 기간 만료',
     AuditEvidenceIntegrity.missing => '파일 없음',
     AuditEvidenceIntegrity.hashMismatch => '해시 불일치',
+    AuditEvidenceIntegrity.unavailable => '확인할 수 없음',
     AuditEvidenceIntegrity.unverified => '검증 대기',
   };
 }
 
+class _Section extends StatelessWidget {
+  const _Section({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        child,
+      ],
+    ),
+  );
+}
+
 class _Warning extends StatelessWidget {
   const _Warning();
+
   @override
   Widget build(BuildContext context) => const Card(
     child: ListTile(
       leading: Icon(Icons.warning_amber_rounded),
       title: Text('증거 파일을 확인할 수 없습니다'),
-      subtitle: Text('파일이 없어졌거나 해시가 일치하지 않습니다. 거래 기록은 그대로 보존됩니다.'),
+      subtitle: Text('파일이 없거나 해시가 일치하지 않습니다. 거래 기록은 그대로 보존됩니다.'),
     ),
   );
 }
 
 class _OrderCard extends StatelessWidget {
   const _OrderCard({required this.order});
+
   final AdminFinalOrder order;
+
   @override
   Widget build(BuildContext context) => Card(
     child: Padding(
@@ -133,6 +236,18 @@ class _OrderCard extends StatelessWidget {
             Text(
               '${line.productName} ${line.quantity}개 · ${line.lineAmountKrw}원',
             ),
+          const SizedBox(height: 8),
+          AuditFactTable(
+            facts: {
+              '주문 ID': order.orderId,
+              '주문 시각': order.createdAt.toIso8601String(),
+              '주문 영수증 경로': order.receipt.relativePath,
+              '주문 영수증 SHA-256': order.receipt.sha256,
+              '주문 영수증 상태': TransactionDetailScreen._integrity(
+                order.receipt.integrity,
+              ),
+            },
+          ),
         ],
       ),
     ),

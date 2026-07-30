@@ -12,10 +12,10 @@ typedef AuditEvidenceIntegrityChecker =
 /// Read projections over immutable checkout evidence. It never writes audit data.
 final class DatabaseAdminRepository
     implements AdminRepository, TransactionAuditRepository {
-  DatabaseAdminRepository(this._database, {this._verifyEvidence});
+  DatabaseAdminRepository(this._database, {this.verifyEvidence});
 
   final BakeryDatabase _database;
-  final AuditEvidenceIntegrityChecker? _verifyEvidence;
+  final AuditEvidenceIntegrityChecker? verifyEvidence;
 
   @override
   Future<AdminDashboardSummary> dashboard(DateRange range) async {
@@ -209,7 +209,9 @@ final class DatabaseAdminRepository
     final orderBySession = {for (final row in orders) row.sessionId: row};
     final paymentBySession = {for (final row in payments) row.sessionId: row};
     final linesByOrder = _groupBy(orderLines, (row) => row.orderId);
-    final query = filter.sessionQuery?.trim().toLowerCase();
+    final sessionQuery = filter.sessionQuery?.trim().toLowerCase();
+    final productQuery = filter.productQuery?.trim().toLowerCase();
+    final modelPolicyQuery = filter.modelPolicyQuery?.trim().toLowerCase();
     final filtered =
         sessions.where((session) {
           final sessionAttempts =
@@ -225,20 +227,47 @@ final class DatabaseAdminRepository
               sessionAttempts.length > 1 ||
               sessionAttempts.any((row) => row.retakeReason != null);
           final hasFailure = session.state == 'failed';
-          final productMatches = [
-            ...sessionResolutions.map((row) => row.productName),
-            ...((order == null
-                    ? const <FinalOrderLineRow>[]
-                    : linesByOrder[order.orderId] ??
-                          const <FinalOrderLineRow>[])
-                .map((row) => row.productName)),
-          ].any((name) => query != null && name.toLowerCase().contains(query));
+          final productMatches =
+              [
+                ...sessionResolutions.map((row) => row.productName),
+                ...((order == null
+                        ? const <FinalOrderLineRow>[]
+                        : linesByOrder[order.orderId] ??
+                              const <FinalOrderLineRow>[])
+                    .map((row) => row.productName)),
+              ].any(
+                (name) =>
+                    productQuery != null &&
+                    name.toLowerCase().contains(productQuery),
+              );
+          final modelPolicyMatches =
+              [
+                session.detectorId,
+                session.repvitArtifactId,
+                session.dinov3ArtifactId,
+                session.calibrationId,
+                session.fusionPolicyId,
+                session.detectorSha256,
+                session.repvitSha256,
+                session.dinov3Sha256,
+                session.calibrationSha256,
+                session.fusionPolicySha256,
+              ].any(
+                (value) =>
+                    modelPolicyQuery != null &&
+                    value.toLowerCase().contains(modelPolicyQuery),
+              );
           return (filter.dateRange == null ||
                   filter.dateRange!.includes(_utc(session.startedAtUs))) &&
-              (query == null ||
-                  query.isEmpty ||
-                  session.sessionId.toLowerCase().contains(query) ||
+              (sessionQuery == null ||
+                  sessionQuery.isEmpty ||
+                  session.sessionId.toLowerCase().contains(sessionQuery)) &&
+              (productQuery == null ||
+                  productQuery.isEmpty ||
                   productMatches) &&
+              (modelPolicyQuery == null ||
+                  modelPolicyQuery.isEmpty ||
+                  modelPolicyMatches) &&
               (filter.paymentStatus == TransactionPaymentStatus.any ||
                   (filter.paymentStatus == TransactionPaymentStatus.completed &&
                       payment != null &&
@@ -259,24 +288,10 @@ final class DatabaseAdminRepository
           final time = right.startedAtUs.compareTo(left.startedAtUs);
           return time != 0 ? time : right.sessionId.compareTo(left.sessionId);
         });
-    final cursorIndex = after == null
-        ? -1
-        : filtered.indexWhere(
-            (row) =>
-                row.startedAtUs == after.startedAt.microsecondsSinceEpoch &&
-                row.sessionId == after.sessionId,
-          );
-    if (after != null && cursorIndex < 0) {
-      throw ArgumentError.value(
-        after,
-        'after',
-        'does not match this result set',
-      );
-    }
-    final afterIndex = cursorIndex + 1;
-    final pageRows = afterIndex <= 0
-        ? filtered.take(limit).toList(growable: false)
-        : filtered.skip(afterIndex).take(limit).toList(growable: false);
+    final pageable = after == null
+        ? filtered
+        : filtered.where((row) => _isAfterCursor(row, after)).toList();
+    final pageRows = pageable.take(limit).toList(growable: false);
     final items = pageRows
         .map((session) {
           final sessionAttempts =
@@ -308,7 +323,7 @@ final class DatabaseAdminRepository
           );
         })
         .toList(growable: false);
-    final hasMore = afterIndex + items.length < filtered.length;
+    final hasMore = items.length < pageable.length;
     final last = items.isEmpty ? null : items.last;
     return TransactionPage(
       items: items,
@@ -340,6 +355,15 @@ final class DatabaseAdminRepository
     final allCandidates = await _database
         .select(_database.inferenceCandidates)
         .get();
+    final retentionEvents = await _database
+        .select(_database.retentionEvents)
+        .get();
+    final retentionPathsByAttempt = <String, Set<String>>{};
+    for (final event in retentionEvents) {
+      retentionPathsByAttempt
+          .putIfAbsent(event.attemptId, () => <String>{})
+          .add(event.relativePath);
+    }
     final candidates = allCandidates
         .where((row) => objectIds.contains(row.inferenceObjectId))
         .toList(growable: false);
@@ -370,6 +394,11 @@ final class DatabaseAdminRepository
         attempt.imageRelativePath,
         attempt.imageSha256,
         attempt.imageByteSize,
+        retentionExpired:
+            retentionPathsByAttempt[attempt.attemptId]?.contains(
+              attempt.imageRelativePath,
+            ) ??
+            false,
       );
       final receipt = attempt.receiptRelativePath == null
           ? null
@@ -377,6 +406,11 @@ final class DatabaseAdminRepository
               attempt.receiptRelativePath!,
               attempt.receiptSha256!,
               attempt.receiptByteSize!,
+              retentionExpired:
+                  retentionPathsByAttempt[attempt.attemptId]?.contains(
+                    attempt.receiptRelativePath!,
+                  ) ??
+                  false,
             );
       final attemptObjects =
           (objectsByAttempt[attempt.attemptId] ?? const <InferenceObjectRow>[])
@@ -525,15 +559,37 @@ final class DatabaseAdminRepository
   Future<AdminEvidenceReference> _evidence(
     String path,
     String sha256,
-    int size,
-  ) async => AdminEvidenceReference(
-    relativePath: path,
-    sha256: sha256,
-    byteSize: size,
-    integrity: _verifyEvidence == null
-        ? AuditEvidenceIntegrity.unverified
-        : await _verifyEvidence(path, sha256, size),
-  );
+    int size, {
+    bool retentionExpired = false,
+  }) async {
+    AuditEvidenceIntegrity integrity;
+    if (retentionExpired) {
+      integrity = AuditEvidenceIntegrity.retentionExpired;
+    } else if (verifyEvidence == null) {
+      integrity = AuditEvidenceIntegrity.unverified;
+    } else {
+      try {
+        final checker = verifyEvidence;
+        integrity = await checker!(path, sha256, size);
+      } on Object {
+        integrity = AuditEvidenceIntegrity.unavailable;
+      }
+    }
+    return AdminEvidenceReference(
+      relativePath: path,
+      sha256: sha256,
+      byteSize: size,
+      integrity: integrity,
+    );
+  }
+
+  bool _isAfterCursor(CheckoutSessionRow row, PageCursor cursor) {
+    final timestamp = row.startedAtUs.compareTo(
+      cursor.startedAt.microsecondsSinceEpoch,
+    );
+    return timestamp < 0 ||
+        (timestamp == 0 && row.sessionId.compareTo(cursor.sessionId) < 0);
+  }
 
   Map<K, List<T>> _groupBy<T, K>(Iterable<T> rows, K Function(T row) key) {
     final grouped = <K, List<T>>{};
