@@ -467,6 +467,16 @@ Map<String, Object?> _resultJson(String requestId) {
     ],
     'counts': {'6': 1},
     'unknown_count': 0,
+    'presentation': {
+      'state': 'normal',
+      'final_count_usable': true,
+      'retake_scope': null,
+      'retake_object_ids': <Object?>[],
+      'instruction_code': null,
+      'candidate_object_ids': <Object?>[],
+      'policy_id': 'camera_action_state_v1',
+      'policy_sha256': '1' * 64,
+    },
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,

@@ -131,6 +131,16 @@ void main() {
       'objects': <Object?>[],
       'counts': <String, Object?>{},
       'unknown_count': 0,
+      'presentation': {
+        'state': 'needs_retake',
+        'final_count_usable': false,
+        'retake_scope': 'scan',
+        'retake_object_ids': <Object?>[],
+        'instruction_code': 'no_bread_detected',
+        'candidate_object_ids': <Object?>[],
+        'policy_id': 'camera_action_state_v1',
+        'policy_sha256': '1' * 64,
+      },
       'timings_ms': {
         'decode_preprocess': 1.0,
         'detector': 2.0,

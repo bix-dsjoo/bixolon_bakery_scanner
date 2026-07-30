@@ -3,6 +3,7 @@ import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
 InferenceResult buildUiInferenceResult({
   double dinov3Ms = 90,
   double totalMs = 290,
+  Map<String, Object?>? presentation,
 }) =>
     InferenceResult.fromJson({
       'type': 'result',
@@ -49,6 +50,12 @@ InferenceResult buildUiInferenceResult({
       ],
       'counts': {'6': 1},
       'unknown_count': 1,
+      'presentation':
+          presentation ??
+          buildPresentationJson(
+            state: 'unknown',
+            candidateObjectIds: const ['object-2'],
+          ),
       'timings_ms': {
         'decode_preprocess': 10.0,
         'detector': 120.0,
@@ -95,6 +102,10 @@ InferenceResult buildOrderingInferenceResult({double dinov3Ms = 0}) =>
       ],
       'counts': {'1': 1},
       'unknown_count': 2,
+      'presentation': buildPresentationJson(
+        state: 'unknown',
+        candidateObjectIds: const ['object-2', 'object-3'],
+      ),
       'timings_ms': {
         'decode_preprocess': 12.0,
         'detector': 240.0,
@@ -104,6 +115,25 @@ InferenceResult buildOrderingInferenceResult({double dinov3Ms = 0}) =>
         'total': 352.0,
       },
     });
+
+Map<String, Object?> buildPresentationJson({
+  String state = 'normal',
+  bool finalCountUsable = true,
+  String? retakeScope,
+  List<String> retakeObjectIds = const [],
+  String? instructionCode,
+  List<String> candidateObjectIds = const [],
+}) =>
+    {
+      'state': state,
+      'final_count_usable': finalCountUsable,
+      'retake_scope': retakeScope,
+      'retake_object_ids': retakeObjectIds,
+      'instruction_code': instructionCode,
+      'candidate_object_ids': candidateObjectIds,
+      'policy_id': 'camera_action_state_v1',
+      'policy_sha256': '1' * 64,
+    };
 
 List<Map<String, Object?>> candidateJson({required double topScore}) => [
   {'rank': 1, 'sku_id': 10, 'sku_name': 'Sugar Donut', 'score': topScore},

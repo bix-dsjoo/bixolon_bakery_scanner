@@ -25,6 +25,205 @@ void main() {
     expect(result.timings.totalMs, 42.0);
   });
 
+  test('parses object retake without changing canonical counts', () {
+    final result = InferenceResult.fromJson(
+      _resultJson(
+        objects: [
+          _confirmedObject('object-1', skuId: 6),
+          _unknownObject('object-2'),
+        ],
+        counts: {'6': 1},
+        unknownCount: 1,
+        presentation: _presentationJson(
+          state: 'needs_retake',
+          finalCountUsable: false,
+          retakeScope: 'object',
+          retakeObjectIds: const ['object-2'],
+          instructionCode: 'candidate_evidence_weak',
+        ),
+      ),
+    );
+
+    expect(result.counts, {6: 1});
+    expect(result.unknownCount, 1);
+    expect(result.presentation.state, InferencePresentationState.needsRetake);
+    expect(result.presentation.retakeScope, RetakeScope.object);
+    expect(result.presentation.retakeObjectIds, ['object-2']);
+    expect(
+      result.presentation.instruction,
+      RetakeInstruction.candidateEvidenceWeak,
+    );
+  });
+
+  test('normal presentation keeps canonical count equality', () {
+    final result = InferenceResult.fromJson(_resultJson());
+
+    expect(result.presentation.state, InferencePresentationState.normal);
+    expect(result.presentation.finalCountUsable, isTrue);
+    expect(result.registeredCount, result.objects.length);
+    expect(result.counts, {6: 1});
+  });
+
+  test('rejects a missing presentation map', () {
+    final json = _resultJson()..remove('presentation');
+
+    expect(() => InferenceResult.fromJson(json), throwsFormatException);
+  });
+
+  test('rejects a presentation policy hash outside lowercase SHA-256', () {
+    for (final invalidHash in ['a' * 63, 'A' * 64, 'g' * 64]) {
+      final presentation = _presentationJson();
+      presentation['policy_sha256'] = invalidHash;
+
+      expect(
+        () => InferenceResult.fromJson(_resultJson(presentation: presentation)),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test('rejects missing, duplicate, and non-Unknown named object IDs', () {
+    final objects = [
+      _confirmedObject('object-1', skuId: 6),
+      _unknownObject('object-2'),
+    ];
+    for (final candidateIds in [
+      const ['object-3'],
+      const ['object-2', 'object-2'],
+      const ['object-1'],
+    ]) {
+      expect(
+        () => InferenceResult.fromJson(
+          _resultJson(
+            objects: objects,
+            counts: const {'6': 1},
+            unknownCount: 1,
+            presentation: _presentationJson(
+              state: 'unknown',
+              candidateObjectIds: candidateIds,
+            ),
+          ),
+        ),
+        throwsFormatException,
+      );
+    }
+
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          objects: objects,
+          counts: const {'6': 1},
+          unknownCount: 1,
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'object',
+            retakeObjectIds: const ['object-3'],
+            instructionCode: 'separate_breads',
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('rejects every contradictory presentation state shape', () {
+    final objects = [
+      _confirmedObject('object-1', skuId: 6),
+      _unknownObject('object-2'),
+    ];
+    final invalidPresentations = <Map<String, Object?>>[
+      _presentationJson(finalCountUsable: false),
+      _presentationJson(retakeScope: 'scan'),
+      _presentationJson(instructionCode: 'no_bread_detected'),
+      _presentationJson(retakeObjectIds: const ['object-1']),
+      _presentationJson(candidateObjectIds: const ['object-2']),
+      _presentationJson(state: 'unknown'),
+      _presentationJson(
+        state: 'unknown',
+        finalCountUsable: false,
+        candidateObjectIds: const ['object-2'],
+      ),
+      _presentationJson(
+        state: 'unknown',
+        retakeScope: 'object',
+        candidateObjectIds: const ['object-2'],
+      ),
+      _presentationJson(
+        state: 'unknown',
+        instructionCode: 'candidate_evidence_weak',
+        candidateObjectIds: const ['object-2'],
+      ),
+      _presentationJson(
+        state: 'unknown',
+        retakeObjectIds: const ['object-1'],
+        candidateObjectIds: const ['object-2'],
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: true,
+        retakeScope: 'scan',
+        instructionCode: 'no_bread_detected',
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: false,
+        retakeScope: 'scan',
+        retakeObjectIds: const ['object-1'],
+        instructionCode: 'no_bread_detected',
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: false,
+        retakeScope: 'scan',
+        instructionCode: 'separate_breads',
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: false,
+        retakeScope: 'scan',
+        instructionCode: 'no_bread_detected',
+        candidateObjectIds: const ['object-2'],
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: false,
+        retakeScope: 'object',
+        instructionCode: 'separate_breads',
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: false,
+        retakeScope: 'object',
+        retakeObjectIds: const ['object-1'],
+        instructionCode: 'no_bread_detected',
+      ),
+      _presentationJson(
+        state: 'needs_retake',
+        finalCountUsable: false,
+        retakeScope: 'object',
+        retakeObjectIds: const ['object-1'],
+        instructionCode: 'separate_breads',
+        candidateObjectIds: const ['object-2'],
+      ),
+    ];
+
+    for (final presentation in invalidPresentations) {
+      expect(
+        () => InferenceResult.fromJson(
+          _resultJson(
+            objects: objects,
+            counts: const {'6': 1},
+            unknownCount: 1,
+            presentation: presentation,
+          ),
+        ),
+        throwsFormatException,
+        reason: '$presentation',
+      );
+    }
+  });
+
   test('rejects non-finite or non-positive image geometry', () {
     for (final dimensions in [
       {'width': double.nan, 'height': 480},
@@ -265,9 +464,14 @@ Map<String, Object?> _resultJson({
   List<Map<String, Object?>>? objects,
   Map<String, int>? counts,
   int unknownCount = 0,
+  Map<String, Object?>? presentation,
 }) {
   final resultObjects =
       objects ?? <Map<String, Object?>>[_confirmedObject('object-1')];
+  final unknownIds = [
+    for (final object in resultObjects)
+      if (object['sku_id'] == null) object['object_id']! as String,
+  ];
   return {
     'type': 'result',
     'request_id': requestId,
@@ -276,6 +480,14 @@ Map<String, Object?> _resultJson({
     'objects': resultObjects,
     'counts': counts ?? {'6': 1},
     'unknown_count': unknownCount,
+    'presentation':
+        presentation ??
+        (unknownIds.isEmpty
+            ? _presentationJson()
+            : _presentationJson(
+                state: 'unknown',
+                candidateObjectIds: unknownIds,
+              )),
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,
@@ -284,6 +496,26 @@ Map<String, Object?> _resultJson({
       'postprocess': 8.0,
       'total': 42.0,
     },
+  };
+}
+
+Map<String, Object?> _presentationJson({
+  String state = 'normal',
+  bool finalCountUsable = true,
+  String? retakeScope,
+  List<String> retakeObjectIds = const [],
+  String? instructionCode,
+  List<String> candidateObjectIds = const [],
+}) {
+  return {
+    'state': state,
+    'final_count_usable': finalCountUsable,
+    'retake_scope': retakeScope,
+    'retake_object_ids': retakeObjectIds,
+    'instruction_code': instructionCode,
+    'candidate_object_ids': candidateObjectIds,
+    'policy_id': 'camera_action_state_v1',
+    'policy_sha256': '1' * 64,
   };
 }
 

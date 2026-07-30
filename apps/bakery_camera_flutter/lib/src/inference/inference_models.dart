@@ -303,6 +303,200 @@ final class StartupMetrics {
   final double detectorThreshold;
 }
 
+enum InferencePresentationState {
+  normal,
+  unknown,
+  needsRetake;
+
+  static InferencePresentationState parse(Object? value) {
+    return switch (value) {
+      'normal' => InferencePresentationState.normal,
+      'unknown' => InferencePresentationState.unknown,
+      'needs_retake' => InferencePresentationState.needsRetake,
+      _ => throw FormatException('unsupported presentation state: $value'),
+    };
+  }
+}
+
+enum RetakeScope {
+  scan,
+  object;
+
+  static RetakeScope? parseNullable(Object? value) {
+    return switch (value) {
+      null => null,
+      'scan' => RetakeScope.scan,
+      'object' => RetakeScope.object,
+      _ => throw FormatException('unsupported retake scope: $value'),
+    };
+  }
+}
+
+enum RetakeInstruction {
+  noBreadDetected,
+  separateBreads,
+  candidateEvidenceWeak;
+
+  static RetakeInstruction? parseNullable(Object? value) {
+    return switch (value) {
+      null => null,
+      'no_bread_detected' => RetakeInstruction.noBreadDetected,
+      'separate_breads' => RetakeInstruction.separateBreads,
+      'candidate_evidence_weak' => RetakeInstruction.candidateEvidenceWeak,
+      _ => throw FormatException('unsupported retake instruction: $value'),
+    };
+  }
+}
+
+final class InferencePresentation {
+  InferencePresentation._({
+    required this.state,
+    required this.finalCountUsable,
+    required this.retakeScope,
+    required List<String> retakeObjectIds,
+    required this.instruction,
+    required List<String> candidateObjectIds,
+    required this.policyId,
+    required this.policySha256,
+  }) : retakeObjectIds = List.unmodifiable(retakeObjectIds),
+       candidateObjectIds = List.unmodifiable(candidateObjectIds);
+
+  factory InferencePresentation.fromJson(
+    Map<String, Object?> json, {
+    required List<InferenceObject> objects,
+  }) {
+    _expectFields(json, const {
+      'state',
+      'final_count_usable',
+      'retake_scope',
+      'retake_object_ids',
+      'instruction_code',
+      'candidate_object_ids',
+      'policy_id',
+      'policy_sha256',
+    });
+    final state = InferencePresentationState.parse(json['state']);
+    final finalCountUsableValue = json['final_count_usable'];
+    if (finalCountUsableValue is! bool) {
+      throw const FormatException(
+        'presentation final_count_usable must be a boolean',
+      );
+    }
+    final retakeScope = RetakeScope.parseNullable(json['retake_scope']);
+    final retakeObjectIds = _objectIdList(
+      json['retake_object_ids'],
+      'presentation retake_object_ids',
+    );
+    final instruction = RetakeInstruction.parseNullable(
+      json['instruction_code'],
+    );
+    final candidateObjectIds = _objectIdList(
+      json['candidate_object_ids'],
+      'presentation candidate_object_ids',
+    );
+    final policyId = _requiredString(
+      json['policy_id'],
+      'presentation policy_id',
+    );
+    if (policyId != 'camera_action_state_v1') {
+      throw const FormatException('presentation policy_id is invalid');
+    }
+    final policySha256 = _requiredString(
+      json['policy_sha256'],
+      'presentation policy_sha256',
+    );
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(policySha256)) {
+      throw const FormatException(
+        'presentation policy_sha256 must be a SHA-256 hash',
+      );
+    }
+
+    final objectsById = {for (final object in objects) object.objectId: object};
+    final namedObjectIds = [...retakeObjectIds, ...candidateObjectIds];
+    if (namedObjectIds.toSet().length != namedObjectIds.length ||
+        namedObjectIds.any((objectId) => !objectsById.containsKey(objectId))) {
+      throw const FormatException(
+        'presentation object IDs must be unique existing object IDs',
+      );
+    }
+    if (candidateObjectIds.any(
+      (objectId) => !objectsById[objectId]!.isUnknown,
+    )) {
+      throw const FormatException(
+        'presentation candidate IDs must identify Unknown objects',
+      );
+    }
+
+    switch (state) {
+      case InferencePresentationState.normal:
+        if (!finalCountUsableValue ||
+            retakeScope != null ||
+            instruction != null ||
+            retakeObjectIds.isNotEmpty ||
+            candidateObjectIds.isNotEmpty) {
+          throw const FormatException(
+            'normal presentation state is inconsistent',
+          );
+        }
+      case InferencePresentationState.unknown:
+        if (!finalCountUsableValue ||
+            retakeScope != null ||
+            instruction != null ||
+            retakeObjectIds.isNotEmpty ||
+            candidateObjectIds.isEmpty) {
+          throw const FormatException(
+            'unknown presentation state is inconsistent',
+          );
+        }
+      case InferencePresentationState.needsRetake:
+        if (finalCountUsableValue ||
+            retakeScope == null ||
+            candidateObjectIds.isNotEmpty) {
+          throw const FormatException(
+            'needs_retake presentation state is inconsistent',
+          );
+        }
+        switch (retakeScope) {
+          case RetakeScope.scan:
+            if (retakeObjectIds.isNotEmpty ||
+                instruction != RetakeInstruction.noBreadDetected) {
+              throw const FormatException(
+                'scan retake presentation state is inconsistent',
+              );
+            }
+          case RetakeScope.object:
+            if (retakeObjectIds.isEmpty ||
+                (instruction != RetakeInstruction.separateBreads &&
+                    instruction != RetakeInstruction.candidateEvidenceWeak)) {
+              throw const FormatException(
+                'object retake presentation state is inconsistent',
+              );
+            }
+        }
+    }
+
+    return InferencePresentation._(
+      state: state,
+      finalCountUsable: finalCountUsableValue,
+      retakeScope: retakeScope,
+      retakeObjectIds: retakeObjectIds,
+      instruction: instruction,
+      candidateObjectIds: candidateObjectIds,
+      policyId: policyId,
+      policySha256: policySha256,
+    );
+  }
+
+  final InferencePresentationState state;
+  final bool finalCountUsable;
+  final RetakeScope? retakeScope;
+  final List<String> retakeObjectIds;
+  final RetakeInstruction? instruction;
+  final List<String> candidateObjectIds;
+  final String policyId;
+  final String policySha256;
+}
+
 final class InferenceResult {
   InferenceResult._({
     required this.requestId,
@@ -312,6 +506,7 @@ final class InferenceResult {
     required List<InferenceObject> objects,
     required Map<int, int> counts,
     required this.unknownCount,
+    required this.presentation,
     required this.timings,
   }) : objects = List.unmodifiable(objects),
        counts = UnmodifiableMapView(counts);
@@ -325,6 +520,7 @@ final class InferenceResult {
       'objects',
       'counts',
       'unknown_count',
+      'presentation',
       'timings_ms',
     });
     if (json['type'] != 'result') {
@@ -391,6 +587,10 @@ final class InferenceResult {
       objects: objects,
       counts: counts,
       unknownCount: unknownCount,
+      presentation: InferencePresentation.fromJson(
+        _map(json['presentation'], 'presentation'),
+        objects: objects,
+      ),
       timings: StageTimings.fromJson(_map(json['timings_ms'], 'timings_ms')),
     );
   }
@@ -402,6 +602,7 @@ final class InferenceResult {
   final List<InferenceObject> objects;
   final Map<int, int> counts;
   final int unknownCount;
+  final InferencePresentation presentation;
   final StageTimings timings;
 
   int get registeredCount =>
@@ -684,6 +885,17 @@ List<Object?> _list(Object? value, String name) {
     throw FormatException('$name must be a JSON array');
   }
   return List<Object?>.from(value);
+}
+
+List<String> _objectIdList(Object? value, String name) {
+  final values = _list(value, name);
+  final ids = [
+    for (final value in values) _requiredString(value, '$name entry'),
+  ];
+  if (ids.toSet().length != ids.length) {
+    throw FormatException('$name entries must be unique');
+  }
+  return ids;
 }
 
 String _requiredString(Object? value, String name) {

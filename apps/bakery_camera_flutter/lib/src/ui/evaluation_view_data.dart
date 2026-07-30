@@ -2,6 +2,7 @@ import 'dart:collection';
 
 import '../inference/inference_models.dart';
 import '../scanner/scanner_controller.dart';
+import 'presentation_state.dart';
 
 final class EvaluationPanelData {
   EvaluationPanelData._({
@@ -15,6 +16,7 @@ final class EvaluationPanelData {
     required this.modelInferenceMs,
     required this.deviceLabel,
     required this.startupMetrics,
+    required this.presentation,
   }) : rows = UnmodifiableListView(rows),
        quantityRows = UnmodifiableListView(quantityRows),
        stageTimings = UnmodifiableListView(stageTimings);
@@ -24,6 +26,9 @@ final class EvaluationPanelData {
     if (result == null) {
       throw StateError('evaluation data requires an inference result');
     }
+    final presentation = CameraPresentationState.fromInference(
+      result.presentation,
+    );
 
     final rows = <EvaluationObjectRow>[
       for (var index = 0; index < result.objects.length; index += 1)
@@ -34,6 +39,9 @@ final class EvaluationPanelData {
           decisionScore: result.objects[index].isUnknown
               ? result.objects[index].candidates.first.score
               : result.objects[index].confidence,
+          showCandidates: presentation.candidateObjectIds.contains(
+            result.objects[index].objectId,
+          ),
         ),
     ];
     rows.sort((a, b) {
@@ -90,11 +98,11 @@ final class EvaluationPanelData {
       unknownCount: result.unknownCount,
       quantityRows: quantityRows,
       stageTimings: stageTimings,
-      pressToRenderMs:
-          state.pressToRenderedResultMs ?? result.timings.totalMs,
+      pressToRenderMs: state.pressToRenderedResultMs ?? result.timings.totalMs,
       modelInferenceMs: result.timings.totalMs,
       deviceLabel: inferenceDeviceLabel(result.device),
       startupMetrics: state.startupMetrics,
+      presentation: presentation,
     );
   }
 
@@ -108,6 +116,7 @@ final class EvaluationPanelData {
   final double modelInferenceMs;
   final String deviceLabel;
   final StartupMetrics? startupMetrics;
+  final CameraPresentationState presentation;
 }
 
 final class EvaluationObjectRow {
@@ -116,12 +125,14 @@ final class EvaluationObjectRow {
     required this.object,
     required this.decisionLabel,
     required this.decisionScore,
+    required this.showCandidates,
   });
 
   final int displayNumber;
   final InferenceObject object;
   final String decisionLabel;
   final double decisionScore;
+  final bool showCandidates;
 }
 
 final class EvaluationQuantityRow {
