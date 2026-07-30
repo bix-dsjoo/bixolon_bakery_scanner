@@ -1,0 +1,976 @@
+// ignore_for_file: prefer_initializing_formals
+
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+import 'package:drift/drift.dart';
+
+import '../catalog/product.dart';
+import '../checkout/checkout_models.dart';
+import '../checkout/checkout_ports.dart';
+import '../inference/inference_models.dart';
+import 'app_database.dart';
+
+typedef AuditIdGenerator = String Function(String prefix);
+typedef AuditClock = DateTime Function();
+
+final class VerifiedAuditFileReference {
+  VerifiedAuditFileReference({
+    required this.relativePath,
+    required this.byteSize,
+    required this.sha256,
+  }) {
+    _requireRelativePath(relativePath);
+    if (byteSize <= 0) {
+      throw ArgumentError.value(byteSize, 'byteSize', 'must be positive');
+    }
+    _requireSha256(sha256, 'sha256');
+  }
+
+  final String relativePath;
+  final int byteSize;
+  final String sha256;
+}
+
+abstract interface class AuditReferenceVerifier {
+  Future<VerifiedAuditFileReference> capturedImage(CapturedAuditFile image);
+  Future<VerifiedAuditFileReference> inferenceReceipt(
+    ImmutableJsonReceipt receipt,
+  );
+  Future<VerifiedAuditFileReference> finalOrderReceipt(FinalOrderDraft order);
+}
+
+/// Runtime facts already verified by the artifact loader before checkout starts.
+///
+/// The database adapter snapshots these with each session because the Task 2
+/// storage-neutral [SessionSnapshot] intentionally carries only catalog state.
+final class AuditRuntimeSnapshot {
+  AuditRuntimeSnapshot({
+    required this.detectorId,
+    required this.detectorSha256,
+    required this.repvitArtifactId,
+    required this.repvitSha256,
+    required this.repvitManifestSha256,
+    required this.repvitPrototypeSha256,
+    required this.dinov3ArtifactId,
+    required this.dinov3Sha256,
+    required this.dinov3SupportSha256,
+    required this.calibrationId,
+    required this.calibrationSha256,
+    required this.preprocessSha256,
+    required this.fusionPolicyId,
+    required this.fusionPolicySha256,
+    required this.configSnapshotJson,
+    required this.startupDevice,
+    required this.startupLoadMs,
+    required this.startupWarmupMs,
+    this.startupFallbackReason,
+  }) {
+    for (final entry in {
+      'detectorId': detectorId,
+      'repvitArtifactId': repvitArtifactId,
+      'dinov3ArtifactId': dinov3ArtifactId,
+      'calibrationId': calibrationId,
+      'fusionPolicyId': fusionPolicyId,
+      'startupDevice': startupDevice,
+    }.entries) {
+      if (entry.value.trim().isEmpty) {
+        throw ArgumentError.value(entry.value, entry.key, 'must not be empty');
+      }
+    }
+    for (final entry in {
+      'detectorSha256': detectorSha256,
+      'repvitSha256': repvitSha256,
+      'repvitManifestSha256': repvitManifestSha256,
+      'repvitPrototypeSha256': repvitPrototypeSha256,
+      'dinov3Sha256': dinov3Sha256,
+      'dinov3SupportSha256': dinov3SupportSha256,
+      'calibrationSha256': calibrationSha256,
+      'preprocessSha256': preprocessSha256,
+      'fusionPolicySha256': fusionPolicySha256,
+    }.entries) {
+      _requireSha256(entry.value, entry.key);
+    }
+    final decoded = jsonDecode(configSnapshotJson);
+    if (decoded is! Map<String, Object?>) {
+      throw ArgumentError.value(
+        configSnapshotJson,
+        'configSnapshotJson',
+        'must be a JSON object',
+      );
+    }
+    for (final entry in {
+      'startupLoadMs': startupLoadMs,
+      'startupWarmupMs': startupWarmupMs,
+    }.entries) {
+      if (!entry.value.isFinite || entry.value < 0) {
+        throw ArgumentError.value(
+          entry.value,
+          entry.key,
+          'must be finite and non-negative',
+        );
+      }
+    }
+  }
+
+  final String detectorId;
+  final String detectorSha256;
+  final String repvitArtifactId;
+  final String repvitSha256;
+  final String repvitManifestSha256;
+  final String repvitPrototypeSha256;
+  final String dinov3ArtifactId;
+  final String dinov3Sha256;
+  final String dinov3SupportSha256;
+  final String calibrationId;
+  final String calibrationSha256;
+  final String preprocessSha256;
+  final String fusionPolicyId;
+  final String fusionPolicySha256;
+  final String configSnapshotJson;
+  final String startupDevice;
+  final double startupLoadMs;
+  final double startupWarmupMs;
+  final String? startupFallbackReason;
+}
+
+final class DatabaseCheckoutAuditStore implements CheckoutAuditStore {
+  DatabaseCheckoutAuditStore({
+    required BakeryDatabase database,
+    required AuditRuntimeSnapshot runtimeSnapshot,
+    required AuditReferenceVerifier references,
+    required AuditIdGenerator createId,
+    required AuditClock now,
+  }) : _database = database,
+       _runtime = runtimeSnapshot,
+       _references = references,
+       _createId = createId,
+       _now = now;
+
+  final BakeryDatabase _database;
+  final AuditRuntimeSnapshot _runtime;
+  final AuditReferenceVerifier _references;
+  final AuditIdGenerator _createId;
+  final AuditClock _now;
+
+  @override
+  Future<List<InterruptedCheckout>> interruptNonterminalSessions(
+    DateTime detectedAt,
+  ) {
+    final interruptedAt = _utcMicros(detectedAt, 'detectedAt');
+    return _database.transaction(() async {
+      final sessions = await (_database.select(
+        _database.checkoutSessions,
+      )..where((row) => row.state.equals('active'))).get();
+      for (final session in sessions) {
+        await (_database.update(
+          _database.checkoutSessions,
+        )..where((row) => row.sessionId.equals(session.sessionId))).write(
+          CheckoutSessionsCompanion(
+            state: const Value('interrupted'),
+            terminalAtUs: Value(interruptedAt),
+            terminalReason: const Value('process_restart'),
+          ),
+        );
+        await _appendEvent(
+          session.sessionId,
+          'session_interrupted',
+          detectedAt,
+        );
+      }
+      return [
+        for (final session in sessions)
+          InterruptedCheckout(
+            sessionId: session.sessionId,
+            interruptedAt: detectedAt.toUtc(),
+          ),
+      ];
+    });
+  }
+
+  @override
+  Future<String> beginSession(SessionSnapshot snapshot) {
+    final startedAtUs = _utcMicros(
+      snapshot.sessionStartedAt,
+      'sessionStartedAt',
+    );
+    return _database.transaction(() async {
+      final catalog =
+          await (_database.select(_database.catalogRevisions)..where(
+                (row) =>
+                    row.revisionId.equals(snapshot.catalogRevision.revisionId) &
+                    row.isActive.equals(true),
+              ))
+              .getSingleOrNull();
+      if (catalog == null ||
+          catalog.sha256 != snapshot.catalogRevision.sha256 ||
+          catalog.createdAtUs !=
+              snapshot.catalogRevision.createdAt
+                  .toUtc()
+                  .microsecondsSinceEpoch) {
+        throw StateError('session catalog snapshot is not the active revision');
+      }
+      final settings = await (_database.select(
+        _database.appSettings,
+      )..where((row) => row.settingsId.equals('operational'))).getSingle();
+      final sessionId = _newId('session');
+      await _database
+          .into(_database.checkoutSessions)
+          .insert(
+            CheckoutSessionsCompanion.insert(
+              sessionId: sessionId,
+              state: 'active',
+              startedAtUs: startedAtUs,
+              catalogRevisionId: catalog.revisionId,
+              settingsRevisionId: settings.activeSettingsRevisionId,
+              detectorId: _runtime.detectorId,
+              detectorSha256: _runtime.detectorSha256,
+              repvitArtifactId: _runtime.repvitArtifactId,
+              repvitSha256: _runtime.repvitSha256,
+              repvitManifestSha256: _runtime.repvitManifestSha256,
+              repvitPrototypeSha256: _runtime.repvitPrototypeSha256,
+              dinov3ArtifactId: _runtime.dinov3ArtifactId,
+              dinov3Sha256: _runtime.dinov3Sha256,
+              dinov3SupportSha256: _runtime.dinov3SupportSha256,
+              calibrationId: _runtime.calibrationId,
+              calibrationSha256: _runtime.calibrationSha256,
+              preprocessSha256: _runtime.preprocessSha256,
+              fusionPolicyId: _runtime.fusionPolicyId,
+              fusionPolicySha256: _runtime.fusionPolicySha256,
+              configSnapshotJson: _runtime.configSnapshotJson,
+            ),
+          );
+      await _appendEvent(
+        sessionId,
+        'session_started',
+        snapshot.sessionStartedAt,
+      );
+      return sessionId;
+    });
+  }
+
+  @override
+  Future<StagedAttempt> stageAttempt({
+    required String sessionId,
+    required int attemptNumber,
+    required CapturedAuditFile image,
+  }) async {
+    if (attemptNumber <= 0) {
+      throw ArgumentError.value(
+        attemptNumber,
+        'attemptNumber',
+        'must be positive',
+      );
+    }
+    _requireSha256(image.sha256, 'image.sha256');
+    final reference = await _references.capturedImage(image);
+    if (reference.relativePath != image.path ||
+        reference.sha256 != image.sha256) {
+      throw StateError('captured image reference does not match staged image');
+    }
+    final capturedAt = _now().toUtc();
+    return _database.transaction(() async {
+      await _activeSession(sessionId);
+      final attemptId = _newId('attempt');
+      await _database
+          .into(_database.scanAttempts)
+          .insert(
+            ScanAttemptsCompanion.insert(
+              attemptId: attemptId,
+              sessionId: sessionId,
+              attemptNumber: attemptNumber,
+              capturedAtUs: capturedAt.microsecondsSinceEpoch,
+              imageRelativePath: reference.relativePath,
+              imageByteSize: reference.byteSize,
+              imageSha256: reference.sha256,
+              status: 'staged',
+            ),
+          );
+      await _appendEvent(sessionId, 'attempt_staged', capturedAt);
+      return StagedAttempt(
+        attemptId: attemptId,
+        sessionId: sessionId,
+        attemptNumber: attemptNumber,
+      );
+    });
+  }
+
+  @override
+  Future<PersistedAttempt> completeAttempt({
+    required StagedAttempt attempt,
+    required InferenceResult result,
+    required ImmutableJsonReceipt receipt,
+  }) async {
+    final calculatedReceiptHash = sha256
+        .convert(utf8.encode(receipt.canonicalJson))
+        .toString();
+    if (calculatedReceiptHash != receipt.sha256) {
+      throw StateError('inference receipt SHA-256 does not match its contents');
+    }
+    final reference = await _references.inferenceReceipt(receipt);
+    if (reference.sha256 != receipt.sha256) {
+      throw StateError('inference receipt reference has a different SHA-256');
+    }
+    final width = _canonicalDimension(result.imageWidth, 'imageWidth');
+    final height = _canonicalDimension(result.imageHeight, 'imageHeight');
+    _validateInferenceObjects(result.objects);
+
+    return _database.transaction(() async {
+      final row =
+          await (_database.select(_database.scanAttempts)..where(
+                (candidate) => candidate.attemptId.equals(attempt.attemptId),
+              ))
+              .getSingleOrNull();
+      if (row == null ||
+          row.sessionId != attempt.sessionId ||
+          row.attemptNumber != attempt.attemptNumber ||
+          row.status != 'staged') {
+        throw StateError('attempt is not the matching staged attempt');
+      }
+      await _activeSession(attempt.sessionId);
+      for (final object in result.objects) {
+        final inferenceObjectId = '${attempt.attemptId}/${object.objectId}';
+        await _database
+            .into(_database.inferenceObjects)
+            .insert(
+              InferenceObjectsCompanion.insert(
+                inferenceObjectId: inferenceObjectId,
+                attemptId: attempt.attemptId,
+                objectId: object.objectId,
+                skuId: Value(object.skuId),
+                skuName: object.skuName,
+                decisionPath: object.decisionPath,
+                confidence: object.confidence,
+                bboxJson: jsonEncode(object.bboxXyxy),
+                detectorSource: object.detectorSource,
+                detectorScore: object.detectorScore,
+                provenanceJson: jsonEncode(object.provenance),
+                unknownReason: Value(object.unknownReason),
+              ),
+            );
+        for (final candidate in object.candidates) {
+          await _database
+              .into(_database.inferenceCandidates)
+              .insert(
+                InferenceCandidatesCompanion.insert(
+                  inferenceCandidateId: '$inferenceObjectId/${candidate.rank}',
+                  inferenceObjectId: inferenceObjectId,
+                  rank: candidate.rank,
+                  skuId: candidate.skuId,
+                  skuName: candidate.skuName,
+                  score: candidate.score,
+                ),
+              );
+        }
+      }
+      await (_database.update(_database.scanAttempts)..where(
+            (candidate) => candidate.attemptId.equals(attempt.attemptId),
+          ))
+          .write(
+            ScanAttemptsCompanion(
+              status: const Value('completed'),
+              canonicalWidth: Value(width),
+              canonicalHeight: Value(height),
+              receiptRelativePath: Value(reference.relativePath),
+              receiptByteSize: Value(reference.byteSize),
+              receiptSha256: Value(reference.sha256),
+              presentationState: Value(
+                _presentationState(result.presentation.state),
+              ),
+              finalCountUsable: Value(result.presentation.finalCountUsable),
+              retakeScope: Value(_retakeScope(result.presentation.retakeScope)),
+              retakeReason: Value(
+                _retakeReason(result.presentation.instruction),
+              ),
+              presentationPolicyId: Value(result.presentation.policyId),
+              presentationPolicySha256: Value(result.presentation.policySha256),
+              decodePreprocessMs: Value(result.timings.decodePreprocessMs),
+              detectorMs: Value(result.timings.detectorMs),
+              repvitMs: Value(result.timings.repvitMs),
+              dinov3Ms: Value(result.timings.dinov3Ms),
+              postprocessMs: Value(result.timings.postprocessMs),
+              totalMs: Value(result.timings.totalMs),
+              startupDevice: Value(_runtime.startupDevice),
+              startupLoadMs: Value(_runtime.startupLoadMs),
+              startupWarmupMs: Value(_runtime.startupWarmupMs),
+              startupFallbackReason: Value(_runtime.startupFallbackReason),
+            ),
+          );
+      await _appendEvent(attempt.sessionId, 'attempt_completed', _now());
+      return PersistedAttempt(attemptId: attempt.attemptId);
+    });
+  }
+
+  @override
+  Future<void> recordResolution(ObjectResolutionDraft resolution) {
+    final resolvedAtUs = _utcMicros(resolution.resolvedAt, 'resolvedAt');
+    return _database.transaction(() async {
+      final session = await _activeSession(resolution.sessionId);
+      final object = await _latestObject(
+        resolution.sessionId,
+        resolution.inferenceObject.objectId,
+      );
+      _verifyInferenceIdentity(object, resolution.inferenceObject);
+      final product = await _sessionProduct(session, resolution.product);
+      final candidateRank = await _validateResolutionSource(
+        object,
+        resolution.inferenceObject,
+        product,
+        resolution.source,
+      );
+      await (_database.update(_database.objectResolutions)..where(
+            (row) =>
+                row.inferenceObjectId.equals(object.inferenceObjectId) &
+                row.isCurrent.equals(true),
+          ))
+          .write(const ObjectResolutionsCompanion(isCurrent: Value(false)));
+      await _database
+          .into(_database.objectResolutions)
+          .insert(
+            ObjectResolutionsCompanion.insert(
+              resolutionId: _newId('resolution'),
+              sessionId: resolution.sessionId,
+              inferenceObjectId: Value(object.inferenceObjectId),
+              productRevisionId: product.productRevisionId,
+              productId: product.productId,
+              recognitionSkuId: Value(product.recognitionSkuId),
+              productName: product.displayName,
+              unitPriceKrw: product.unitPriceKrw,
+              source: resolution.source.storageValue,
+              resolvedAtUs: resolvedAtUs,
+              candidateRank: Value(candidateRank),
+              canonicalBboxJson: Value(object.bboxJson),
+              isCurrent: true,
+            ),
+          );
+      await _appendEvent(
+        resolution.sessionId,
+        'object_resolved',
+        resolution.resolvedAt,
+      );
+    });
+  }
+
+  @override
+  Future<void> replaceDraftOrder(String sessionId, List<CheckoutLine> lines) {
+    if (lines.map((line) => line.product.productId).toSet().length !=
+        lines.length) {
+      throw ArgumentError.value(
+        lines,
+        'lines',
+        'draft product IDs must be unique',
+      );
+    }
+    return _database.transaction(() async {
+      final session = await _activeSession(sessionId);
+      final verified = <({ProductRow row, int quantity})>[];
+      for (final line in lines) {
+        verified.add((
+          row: await _sessionProduct(session, line.product),
+          quantity: line.quantity,
+        ));
+      }
+      await (_database.delete(
+        _database.draftOrderLines,
+      )..where((row) => row.sessionId.equals(sessionId))).go();
+      for (final entry in verified) {
+        final product = entry.row;
+        await _database
+            .into(_database.draftOrderLines)
+            .insert(
+              DraftOrderLinesCompanion.insert(
+                draftLineId: _newId('draft-line'),
+                sessionId: sessionId,
+                productRevisionId: product.productRevisionId,
+                productId: product.productId,
+                productName: product.displayName,
+                recognitionSkuId: Value(product.recognitionSkuId),
+                unitPriceKrw: product.unitPriceKrw,
+                quantity: entry.quantity,
+              ),
+            );
+      }
+      await _appendEvent(sessionId, 'draft_order_replaced', _now());
+    });
+  }
+
+  @override
+  Future<PaymentReceipt> commitSimulatedPayment(FinalOrderDraft order) {
+    return _database.transaction(() async {
+      final existing =
+          await (_database.select(_database.simulatedPayments)
+                ..where((row) => row.sessionId.equals(order.sessionId)))
+              .getSingleOrNull();
+      if (existing != null) return _receipt(existing);
+
+      final session = await _activeSession(order.sessionId);
+      await _verifyOrderCatalog(order, session);
+      for (final line in order.lines) {
+        await _sessionProduct(session, line.product);
+      }
+      final latestAttempt = await _latestCompletedAttempt(order.sessionId);
+      final objects = latestAttempt == null
+          ? const <InferenceObjectRow>[]
+          : await (_database.select(_database.inferenceObjects)..where(
+                  (row) => row.attemptId.equals(latestAttempt.attemptId),
+                ))
+                .get();
+      final resolutions = objects.isEmpty
+          ? const <ObjectResolutionRow>[]
+          : await (_database.select(_database.objectResolutions)..where(
+                  (row) =>
+                      row.isCurrent.equals(true) &
+                      row.inferenceObjectId.isIn(
+                        objects
+                            .map((object) => object.inferenceObjectId)
+                            .toList(growable: false),
+                      ),
+                ))
+                .get();
+      if (resolutions.length != objects.length) {
+        throw StateError('every current inference object must be resolved');
+      }
+
+      final draftLines = await (_database.select(
+        _database.draftOrderLines,
+      )..where((row) => row.sessionId.equals(order.sessionId))).get();
+      _verifyDraftMatchesOrder(order, draftLines);
+      for (final line in draftLines) {
+        final resolvedCount = resolutions
+            .where((resolution) => resolution.productId == line.productId)
+            .length;
+        if (resolvedCount > line.quantity) {
+          throw StateError(
+            'draft quantity is lower than resolved object count for '
+            '${line.productId}',
+          );
+        }
+      }
+
+      final receiptReference = await _references.finalOrderReceipt(order);
+      final orderId = _newId('order');
+      final paymentId = _newId('payment');
+      final paidAt = _now().toUtc();
+      await _database
+          .into(_database.finalOrders)
+          .insert(
+            FinalOrdersCompanion.insert(
+              orderId: orderId,
+              sessionId: order.sessionId,
+              catalogRevisionId: session.catalogRevisionId,
+              createdAtUs: order.createdAt.toUtc().microsecondsSinceEpoch,
+              totalQuantity: draftLines.fold(
+                0,
+                (total, line) => total + line.quantity,
+              ),
+              totalAmountKrw: draftLines.fold(
+                0,
+                (total, line) => total + (line.unitPriceKrw * line.quantity),
+              ),
+              receiptRelativePath: receiptReference.relativePath,
+              receiptByteSize: receiptReference.byteSize,
+              receiptSha256: receiptReference.sha256,
+            ),
+          );
+      for (final line in draftLines) {
+        final countsBySource = <String, int>{};
+        for (final resolution in resolutions.where(
+          (resolution) => resolution.productId == line.productId,
+        )) {
+          countsBySource[resolution.source] =
+              (countsBySource[resolution.source] ?? 0) + 1;
+        }
+        for (final entry in countsBySource.entries) {
+          await _insertFinalLine(
+            orderId: orderId,
+            draft: line,
+            quantity: entry.value,
+            source: entry.key,
+          );
+        }
+        final resolvedQuantity = countsBySource.values.fold(
+          0,
+          (total, quantity) => total + quantity,
+        );
+        final manualQuantity = line.quantity - resolvedQuantity;
+        if (manualQuantity > 0) {
+          await _insertFinalLine(
+            orderId: orderId,
+            draft: line,
+            quantity: manualQuantity,
+            source: CustomerResolutionSource.customerManualCart.storageValue,
+          );
+        }
+      }
+      final amount = draftLines.fold(
+        0,
+        (total, line) => total + (line.unitPriceKrw * line.quantity),
+      );
+      await _database
+          .into(_database.simulatedPayments)
+          .insert(
+            SimulatedPaymentsCompanion.insert(
+              paymentId: paymentId,
+              orderId: orderId,
+              sessionId: order.sessionId,
+              amountKrw: amount,
+              currency: 'KRW',
+              provider: 'simulated',
+              status: 'approved',
+              finalOrderSha256: receiptReference.sha256,
+              paidAtUs: paidAt.microsecondsSinceEpoch,
+            ),
+          );
+      await (_database.update(
+        _database.checkoutSessions,
+      )..where((row) => row.sessionId.equals(order.sessionId))).write(
+        CheckoutSessionsCompanion(
+          state: const Value('completed'),
+          terminalAtUs: Value(paidAt.microsecondsSinceEpoch),
+          terminalReason: const Value('payment_committed'),
+        ),
+      );
+      await _appendEvent(order.sessionId, 'payment_committed', paidAt);
+      return PaymentReceipt(
+        paymentId: paymentId,
+        sessionId: order.sessionId,
+        amount: amount,
+        paidAt: paidAt,
+      );
+    });
+  }
+
+  @override
+  Future<void> abandonSession(String sessionId, String reason) {
+    if (reason.trim().isEmpty) {
+      throw ArgumentError.value(reason, 'reason', 'must not be empty');
+    }
+    final abandonedAt = _now().toUtc();
+    return _database.transaction(() async {
+      await _activeSession(sessionId);
+      await (_database.update(
+        _database.checkoutSessions,
+      )..where((row) => row.sessionId.equals(sessionId))).write(
+        CheckoutSessionsCompanion(
+          state: const Value('abandoned'),
+          terminalAtUs: Value(abandonedAt.microsecondsSinceEpoch),
+          terminalReason: Value(reason),
+        ),
+      );
+      await _appendEvent(sessionId, 'session_abandoned', abandonedAt);
+    });
+  }
+
+  Future<CheckoutSessionRow> _activeSession(String sessionId) async {
+    final session = await (_database.select(
+      _database.checkoutSessions,
+    )..where((row) => row.sessionId.equals(sessionId))).getSingleOrNull();
+    if (session == null || session.state != 'active') {
+      throw StateError('checkout session is not active: $sessionId');
+    }
+    return session;
+  }
+
+  Future<ProductRow> _sessionProduct(
+    CheckoutSessionRow session,
+    Product requested,
+  ) async {
+    final row =
+        await (_database.select(_database.products)..where(
+              (row) =>
+                  row.catalogRevisionId.equals(session.catalogRevisionId) &
+                  row.productId.equals(requested.productId),
+            ))
+            .getSingleOrNull();
+    if (row == null ||
+        !row.active ||
+        row.displayName != requested.displayName ||
+        row.unitPriceKrw != requested.unitPrice ||
+        row.recognitionSkuId != requested.recognitionSkuId ||
+        row.categoryId != requested.categoryId) {
+      throw StateError(
+        'product does not match session catalog: ${requested.productId}',
+      );
+    }
+    return row;
+  }
+
+  Future<InferenceObjectRow> _latestObject(
+    String sessionId,
+    String objectId,
+  ) async {
+    final attempts =
+        await (_database.select(_database.scanAttempts)
+              ..where(
+                (row) =>
+                    row.sessionId.equals(sessionId) &
+                    row.status.equals('completed'),
+              )
+              ..orderBy([(row) => OrderingTerm.desc(row.attemptNumber)]))
+            .get();
+    if (attempts.isEmpty) {
+      throw StateError('session has no completed inference attempt');
+    }
+    final object =
+        await (_database.select(_database.inferenceObjects)..where(
+              (row) =>
+                  row.attemptId.equals(attempts.first.attemptId) &
+                  row.objectId.equals(objectId),
+            ))
+            .getSingleOrNull();
+    if (object == null) {
+      throw StateError('object is not in the latest completed attempt');
+    }
+    return object;
+  }
+
+  Future<ScanAttemptRow?> _latestCompletedAttempt(String sessionId) async {
+    return (_database.select(_database.scanAttempts)
+          ..where(
+            (row) =>
+                row.sessionId.equals(sessionId) &
+                row.status.equals('completed'),
+          )
+          ..orderBy([(row) => OrderingTerm.desc(row.attemptNumber)])
+          ..limit(1))
+        .getSingleOrNull();
+  }
+
+  void _verifyInferenceIdentity(
+    InferenceObjectRow row,
+    InferenceObject object,
+  ) {
+    if (row.skuId != object.skuId ||
+        row.skuName != object.skuName ||
+        row.decisionPath != object.decisionPath ||
+        row.confidence != object.confidence ||
+        row.bboxJson != jsonEncode(object.bboxXyxy) ||
+        row.detectorSource != object.detectorSource ||
+        row.detectorScore != object.detectorScore ||
+        row.provenanceJson != jsonEncode(object.provenance) ||
+        row.unknownReason != object.unknownReason) {
+      throw StateError('resolution inference object does not match audit row');
+    }
+  }
+
+  Future<int?> _validateResolutionSource(
+    InferenceObjectRow row,
+    InferenceObject object,
+    ProductRow product,
+    CustomerResolutionSource source,
+  ) async {
+    if (source == CustomerResolutionSource.customerManualCart) {
+      throw StateError('object-linked resolution cannot be manual cart');
+    }
+    if (!object.isUnknown) {
+      if (source == CustomerResolutionSource.customerTop3) {
+        throw StateError('registered inference object has no Top 3 candidates');
+      }
+      return null;
+    }
+    if (source != CustomerResolutionSource.customerTop3) return null;
+    if (product.recognitionSkuId == null) {
+      throw StateError('Top 3 selection must map to a recognition SKU');
+    }
+    final candidate =
+        await (_database.select(_database.inferenceCandidates)..where(
+              (candidate) =>
+                  candidate.inferenceObjectId.equals(row.inferenceObjectId) &
+                  candidate.skuId.equals(product.recognitionSkuId!),
+            ))
+            .getSingleOrNull();
+    if (candidate == null) {
+      throw StateError('selected product is not an authorized Top 3 candidate');
+    }
+    return candidate.rank;
+  }
+
+  Future<void> _verifyOrderCatalog(
+    FinalOrderDraft order,
+    CheckoutSessionRow session,
+  ) async {
+    if (order.catalogRevision.revisionId != session.catalogRevisionId) {
+      throw StateError('order catalog revision differs from session snapshot');
+    }
+    final revision =
+        await (_database.select(
+              _database.catalogRevisions,
+            )..where((row) => row.revisionId.equals(session.catalogRevisionId)))
+            .getSingle();
+    if (revision.sha256 != order.catalogRevision.sha256 ||
+        revision.createdAtUs !=
+            order.catalogRevision.createdAt.toUtc().microsecondsSinceEpoch) {
+      throw StateError('order catalog identity differs from session snapshot');
+    }
+  }
+
+  void _verifyDraftMatchesOrder(
+    FinalOrderDraft order,
+    List<DraftOrderLineRow> draft,
+  ) {
+    if (draft.length != order.lines.length || draft.isEmpty) {
+      throw StateError('final order does not match the persisted draft');
+    }
+    final requested = {
+      for (final line in order.lines) line.product.productId: line,
+    };
+    for (final row in draft) {
+      final line = requested[row.productId];
+      if (line == null ||
+          line.quantity != row.quantity ||
+          line.product.displayName != row.productName ||
+          line.product.unitPrice != row.unitPriceKrw ||
+          line.product.recognitionSkuId != row.recognitionSkuId) {
+        throw StateError('final order line differs from the persisted draft');
+      }
+    }
+  }
+
+  Future<void> _insertFinalLine({
+    required String orderId,
+    required DraftOrderLineRow draft,
+    required int quantity,
+    required String source,
+  }) {
+    return _database
+        .into(_database.finalOrderLines)
+        .insert(
+          FinalOrderLinesCompanion.insert(
+            finalLineId: _newId('final-line'),
+            orderId: orderId,
+            productRevisionId: draft.productRevisionId,
+            productId: draft.productId,
+            recognitionSkuId: Value(draft.recognitionSkuId),
+            productName: draft.productName,
+            unitPriceKrw: draft.unitPriceKrw,
+            quantity: quantity,
+            lineAmountKrw: draft.unitPriceKrw * quantity,
+            resolutionSource: source,
+          ),
+        );
+  }
+
+  PaymentReceipt _receipt(SimulatedPaymentRow payment) => PaymentReceipt(
+    paymentId: payment.paymentId,
+    sessionId: payment.sessionId,
+    amount: payment.amountKrw,
+    paidAt: DateTime.fromMicrosecondsSinceEpoch(payment.paidAtUs, isUtc: true),
+  );
+
+  Future<void> _appendEvent(
+    String sessionId,
+    String eventType,
+    DateTime occurredAt,
+  ) {
+    return _database
+        .into(_database.auditEvents)
+        .insert(
+          AuditEventsCompanion.insert(
+            eventId: _newId('event'),
+            sessionId: Value(sessionId),
+            eventType: eventType,
+            occurredAtUs: occurredAt.toUtc().microsecondsSinceEpoch,
+          ),
+        );
+  }
+
+  String _newId(String prefix) {
+    final value = _createId(prefix);
+    if (value.trim().isEmpty) {
+      throw StateError('ID generator returned an empty $prefix ID');
+    }
+    return value;
+  }
+}
+
+void _validateInferenceObjects(List<InferenceObject> objects) {
+  for (final object in objects) {
+    if (object.isUnknown) {
+      if (object.skuName != 'Unknown' ||
+          object.decisionPath != 'unknown_top3' ||
+          object.candidates.length != 3 ||
+          object.candidates.asMap().entries.any(
+            (entry) => entry.value.rank != entry.key + 1,
+          )) {
+        throw StateError(
+          'Unknown object requires exactly three ranked candidates',
+        );
+      }
+    } else if (object.skuName == 'Unknown' ||
+        !const {
+          'repvit_direct',
+          'dinov3_confirmed',
+          'fusion_ranked',
+        }.contains(object.decisionPath) ||
+        object.candidates.isNotEmpty) {
+      throw StateError('registered object identity is inconsistent');
+    }
+    final provenance = object.provenance;
+    for (final field in const {
+      'repvit_sha256',
+      'repvit_manifest_sha256',
+      'repvit_prototype_sha256',
+      'dinov3_sha256',
+      'dinov3_support_sha256',
+      'calibration_sha256',
+      'preprocess_sha256',
+    }) {
+      final value = provenance[field];
+      if (value is! String) {
+        throw StateError('object provenance is missing $field');
+      }
+      _requireSha256(value, 'provenance.$field');
+    }
+  }
+}
+
+int _canonicalDimension(double value, String name) {
+  if (!value.isFinite || value <= 0 || value != value.roundToDouble()) {
+    throw StateError('$name must be a positive integer in the canonical frame');
+  }
+  return value.toInt();
+}
+
+int _utcMicros(DateTime value, String name) {
+  if (!value.isUtc) {
+    throw ArgumentError.value(value, name, 'must be UTC');
+  }
+  return value.microsecondsSinceEpoch;
+}
+
+String _presentationState(InferencePresentationState state) => switch (state) {
+  InferencePresentationState.normal => 'normal',
+  InferencePresentationState.unknown => 'unknown',
+  InferencePresentationState.needsRetake => 'needs_retake',
+};
+
+String? _retakeScope(RetakeScope? scope) => switch (scope) {
+  null => null,
+  RetakeScope.scan => 'scan',
+  RetakeScope.object => 'object',
+};
+
+String? _retakeReason(RetakeInstruction? instruction) => switch (instruction) {
+  null => null,
+  RetakeInstruction.noBreadDetected => 'no_bread_detected',
+  RetakeInstruction.separateBreads => 'separate_breads',
+  RetakeInstruction.candidateEvidenceWeak => 'candidate_evidence_weak',
+};
+
+void _requireSha256(String value, String name) {
+  if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(value)) {
+    throw ArgumentError.value(value, name, 'must be a lowercase SHA-256');
+  }
+}
+
+void _requireRelativePath(String value) {
+  if (value.trim().isEmpty ||
+      RegExp(r'^[A-Za-z]:[\\/]|^[/\\]').hasMatch(value) ||
+      value.split(RegExp(r'[/\\]')).contains('..')) {
+    throw ArgumentError.value(
+      value,
+      'relativePath',
+      'must be a safe relative path',
+    );
+  }
+}
