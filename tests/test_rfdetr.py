@@ -1,3 +1,5 @@
+import hashlib
+import json
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -59,3 +61,25 @@ def test_rfdetr_loader_passes_cpu_device_to_the_backend_factory(tmp_path):
 
     assert runner.source == "rfdetr_large_bakery_v1"
     assert calls == [{"pretrain_weights": str(checkpoint.resolve()), "num_classes": 1, "device": "cpu"}]
+
+
+def test_rfdetr_manifest_pins_corrected_gt_zero_fp_threshold():
+    root = Path(__file__).resolve().parents[1]
+    model_root = root / "models" / "rfdetr_large_bakery_v1"
+    manifest = json.loads((model_root / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["score_threshold"] == 0.5691395401954651
+    calibration_path = model_root / manifest["calibration"]["file"]
+    assert hashlib.sha256(calibration_path.read_bytes()).hexdigest() == manifest["calibration"]["sha256"]
+
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    assert calibration["selected_threshold"] == manifest["score_threshold"]
+    assert calibration["selection_objective"] == "minimize_fn_subject_to_fp_eq_0_then_maximize_threshold"
+    assert calibration["metrics"] == {
+        "false_negatives": 4,
+        "false_positives": 0,
+        "ground_truth": 1406,
+        "images": 299,
+        "matched": 1402,
+        "recall": 0.9971550497866287,
+    }

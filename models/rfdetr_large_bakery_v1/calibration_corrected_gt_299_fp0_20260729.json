@@ -1,0 +1,18 @@
+{
+  "iou_threshold": 0.5,
+  "metrics": {
+    "false_negatives": 4,
+    "false_positives": 0,
+    "ground_truth": 1406,
+    "images": 299,
+    "matched": 1402,
+    "recall": 0.9971550497866287
+  },
+  "schema_version": 1,
+  "selected_threshold": 0.5691395401954651,
+  "selection_objective": "minimize_fn_subject_to_fp_eq_0_then_maximize_threshold",
+  "source_report": {
+    "file": "artifacts/evaluations/rfdetr_detector_threshold_sweep_corrected_gt_20260729.json",
+    "sha256": "f6775a2ff1d5e123dc927d8bc65f0f2e15180a553e17a7117deb284bb0623fff"
+  }
+}

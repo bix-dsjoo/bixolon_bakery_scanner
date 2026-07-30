@@ -8,7 +8,7 @@ def test_config_loads_current_dataset_paths():
 
     assert len(config.dataset.sources) == 3
     assert config.dataset.expected_images == 299
-    assert config.dataset.expected_boxes == 1410
+    assert config.dataset.expected_boxes == 1406
     assert {row.input_size for row in config.detectors.variants} == {640, 768}
     assert config.canonical_frame.width == 1152
     assert config.canonical_frame.height == 1536

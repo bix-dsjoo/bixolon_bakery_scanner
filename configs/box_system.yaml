@@ -15,7 +15,7 @@ dataset:
       images: ../datasets/detection/group_20class_batch02/images
       annotations: ../datasets/detection/group_20class_batch02/annotations/instances.json
   expected_images: 299
-  expected_boxes: 1410
+  expected_boxes: 1406
   folds: 5
 detectors:
   seeds: [20260724, 20260725, 20260726]

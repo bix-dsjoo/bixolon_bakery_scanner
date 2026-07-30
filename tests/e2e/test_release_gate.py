@@ -4,11 +4,11 @@ from bakery_scanner.e2e.release_gate import evaluate_release_gate
 
 def _metrics(**changes):
     values = dict(
-        ground_truth_count=1409,
-        final_count=1409,
-        matched_count=1409,
-        top1_correct_count=1409,
-        top3_correct_count=1409,
+        ground_truth_count=1406,
+        final_count=1406,
+        matched_count=1406,
+        top1_correct_count=1406,
+        top3_correct_count=1406,
         false_positive_count=0,
         false_negative_count=0,
         unknown_count=0,

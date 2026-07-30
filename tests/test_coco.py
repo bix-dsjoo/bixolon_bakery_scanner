@@ -17,7 +17,7 @@ def test_real_sources_merge_to_one_bread_class(tmp_path: Path):
     )
 
     assert staged.image_count == 299
-    assert staged.box_count == 1410
+    assert staged.box_count == 1406
     payload = json.loads(staged.annotations.read_text(encoding="utf-8"))
     assert payload["categories"] == [
         {"id": 1, "name": "bread", "supercategory": "object"}

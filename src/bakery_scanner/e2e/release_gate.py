@@ -46,7 +46,7 @@ def _metric_failures(label: str, metrics: ImageMetrics) -> tuple[str, ...]:
     )
     failures = [
         f"{label}:ground_truth_count={metrics.ground_truth_count}"
-        if metrics.ground_truth_count != 1409 else None,
+        if metrics.ground_truth_count != 1406 else None,
         f"{label}:final_count={metrics.final_count}"
         if metrics.final_count != metrics.ground_truth_count else None,
     ]
