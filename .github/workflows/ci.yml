@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install -e ".[dev,verifier]"
       - run: python -m bakery_scanner.artifacts.cli --manifest-only
       - run: python -m pytest
 
