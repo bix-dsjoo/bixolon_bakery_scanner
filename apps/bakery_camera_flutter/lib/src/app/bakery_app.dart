@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
+import '../admin/admin_models.dart';
 import '../audit/audit_file_store.dart';
 import '../camera/camera_service.dart';
 import '../catalog/catalog_seed.dart';
@@ -16,11 +17,13 @@ import '../checkout/simulated_payment_service.dart';
 import '../inference/inference_launch_config.dart';
 import '../inference/inference_worker_client.dart';
 import '../persistence/database_catalog_repository.dart';
+import '../persistence/database_admin_repository.dart';
 import '../persistence/database_checkout_audit_store.dart';
 import '../persistence/database_factory.dart';
 import '../scanner/scanner_controller.dart';
 import '../ui/app_theme.dart';
 import '../ui/admin/admin_destination.dart';
+import '../ui/admin/dashboard_screen.dart';
 import 'app_mode_controller.dart';
 import 'app_mode_surface.dart';
 
@@ -34,7 +37,7 @@ class BakeryApp extends StatefulWidget {
 }
 
 class _BakeryAppState extends State<BakeryApp> {
-  Future<CheckoutController>? _bootstrap;
+  Future<_AppServices>? _bootstrap;
 
   @override
   void initState() {
@@ -47,15 +50,18 @@ class _BakeryAppState extends State<BakeryApp> {
     title: 'BIXOLON Bakery',
     debugShowCheckedModeBanner: false,
     theme: buildBakeryTheme(),
-    home: FutureBuilder<CheckoutController>(
+    home: FutureBuilder<_AppServices>(
       future: _bootstrap,
       builder: (context, snapshot) {
         if (snapshot.hasData) {
-          final checkout = snapshot.requireData;
+          final services = snapshot.requireData;
           return BakeryAppSurface(
-            checkout: checkout,
-            customerLifecycle: _CheckoutCustomerModeLifecycle(checkout),
-            adminDestinationBuilder: _adminPlaceholder,
+            checkout: services.checkout,
+            customerLifecycle: _CheckoutCustomerModeLifecycle(
+              services.checkout,
+            ),
+            adminDestinationBuilder: (context, destination) =>
+                _adminDestination(context, destination, services.admin),
           );
         }
         if (snapshot.hasError) return const _UnavailableBootstrapScreen();
@@ -64,7 +70,7 @@ class _BakeryAppState extends State<BakeryApp> {
     ),
   );
 
-  Future<CheckoutController> _createCheckout() async {
+  Future<_AppServices> _createCheckout() async {
     final database = openProductionBakeryDatabase();
     try {
       await CatalogSeed(database).installIfEmpty();
@@ -111,21 +117,47 @@ class _BakeryAppState extends State<BakeryApp> {
         ),
       );
       await controller.initialize();
-      return controller;
+      return _AppServices(
+        checkout: controller,
+        admin: DatabaseAdminRepository(database),
+      );
     } catch (_) {
       await database.close();
       rethrow;
     }
   }
 
-  Widget _adminPlaceholder(
+  Widget _adminDestination(
     BuildContext context,
     AdminDestination destination,
-  ) => Center(
-    child: Text(
-      '${destination.label} 화면을 준비하고 있어요.',
-      style: Theme.of(context).textTheme.bodyLarge,
-    ),
+    DatabaseAdminRepository admin,
+  ) {
+    if (destination == AdminDestination.dashboard) {
+      return DashboardScreen(repository: admin, range: _seoulTodayRange());
+    }
+    return Center(
+      child: Text(
+        '${destination.label} 화면을 준비하고 있어요.',
+        style: Theme.of(context).textTheme.bodyLarge,
+      ),
+    );
+  }
+}
+
+final class _AppServices {
+  const _AppServices({required this.checkout, required this.admin});
+
+  final CheckoutController checkout;
+  final DatabaseAdminRepository admin;
+}
+
+DateRange _seoulTodayRange() {
+  const seoulOffset = Duration(hours: 9);
+  final seoulNow = DateTime.now().toUtc().add(seoulOffset);
+  final localStart = DateTime.utc(seoulNow.year, seoulNow.month, seoulNow.day);
+  return DateRange.utc(
+    localStart.subtract(seoulOffset),
+    localStart.add(const Duration(days: 1)).subtract(seoulOffset),
   );
 }
 
