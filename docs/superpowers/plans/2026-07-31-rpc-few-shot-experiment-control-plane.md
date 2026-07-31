@@ -203,7 +203,7 @@ git commit -m "feat: add leakage-safe RPC class and scene splits"
 - Create: `tests/experiments/test_rpc_support.py`
 
 **Interfaces:**
-- Consumes validated `SupportCandidate(category_id, source_identity, image_sha256, capture_stratum, embedding)` records for train images.
+- Consumes validated `SupportCandidate(category_id, source_identity, source_file_name, image_sha256, capture_stratum, embedding)` records for train images.
 - Produces `materialize_support_order(candidates, method, seed)` and `support_prefix(order, shot_count)`.
 - `materialize_support_order` accepts only `"rnd"` and `"div"`; all later shot conditions are immutable prefixes of one order.
 
