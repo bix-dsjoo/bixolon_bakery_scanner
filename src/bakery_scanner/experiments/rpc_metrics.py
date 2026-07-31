@@ -211,6 +211,11 @@ def validate_evidence_against_condition(
             row.predicted_category_id is not None and row.predicted_category_id not in permitted
         ):
             raise ValueError("evidence category is outside the bound cohort")
+    observed_truth = {row.truth_category_id for row in frozen}
+    if novel - observed_truth:
+        raise ValueError("novel cohort is absent from evidence")
+    if base - observed_truth:
+        raise ValueError("base cohort is absent from evidence")
     return frozen
 
 

@@ -12,6 +12,7 @@ from bakery_scanner.experiments.rpc_metrics import (
     forced_top1_summary,
     full_system_summary,
     passes_minimum_rule,
+    validate_evidence_against_condition,
     validate_paired_evidence,
 )
 
@@ -114,6 +115,23 @@ def test_paired_validation_rejects_difficulty_mismatch_for_same_identity():
 def test_full_system_summary_rejects_an_absent_novel_cohort():
     with pytest.raises(ValueError, match="novel cohort"):
         full_system_summary((_row("only-base", truth=2, predicted=2),), novel_category_ids={1})
+
+
+def test_condition_binding_rejects_a_declared_base_category_absent_from_truth_rows():
+    condition = {
+        "condition": {"condition_id": "candidate", "fold": 0},
+        "cohort": {
+            "fold": 0,
+            "manifest_sha256": "1" * 64,
+            "novel_category_ids": [1],
+            "base_category_ids": [2, 3],
+        },
+        **_HASHES,
+    }
+    rows = (_row("novel", truth=1), _row("observed-base", truth=2))
+
+    with pytest.raises(ValueError, match="base cohort is absent"):
+        validate_evidence_against_condition(rows, condition)
 
 
 def test_bootstrap_is_repeatable_and_rejects_zero_replicates():
