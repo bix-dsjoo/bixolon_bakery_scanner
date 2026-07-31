@@ -20,7 +20,7 @@ def _write_coco(root: Path, split: str, *, bbox: list[float] | None = None) -> b
     image_path = root / f"{split}.jpg"
     image_path.write_bytes(f"pixels:{split}".encode("ascii"))
     payload = {
-        "images": [{"id": 1, "file_name": image_path.name}],
+        "images": [{"id": 1, "file_name": image_path.name, "width": 12, "height": 9}],
         "annotations": [
             {
                 "id": 1,
@@ -72,6 +72,53 @@ def test_load_rpc_index_rejects_non_positive_coco_box(tmp_path: Path):
 
     with pytest.raises(ValueError, match="non-positive bbox"):
         load_rpc_index(contract, tmp_path)
+
+
+@pytest.mark.parametrize("bbox", [[-1, 2, 3, 4], [10, 2, 3, 4], [1, 7, 3, 3]])
+def test_load_rpc_index_rejects_coco_box_outside_declared_image_bounds(
+    tmp_path: Path, bbox: list[float]
+):
+    contract = _synthetic_contract(tmp_path, bbox=bbox)
+
+    with pytest.raises(ValueError, match="outside image bounds"):
+        load_rpc_index(contract, tmp_path)
+
+
+def test_load_rpc_index_accepts_and_indexes_multiple_val_and_test_annotations(
+    tmp_path: Path,
+):
+    contract = _synthetic_contract(tmp_path)
+    digests = dict(contract.annotation_sha256)
+    for split in ("val2019", "test2019"):
+        annotation_path = tmp_path / f"instances_{split}.json"
+        payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+        payload["annotations"].append(
+            {"id": 2, "image_id": 1, "category_id": 7, "bbox": [5, 2, 3, 4]}
+        )
+        content = canonical_json_bytes(payload)
+        annotation_path.write_bytes(content)
+        digests[split] = hashlib.sha256(content).hexdigest()
+    multi_object_contract = RpcDatasetContract(
+        annotation_sha256=digests,
+        image_counts=contract.image_counts,
+    )
+
+    index = load_rpc_index(multi_object_contract, tmp_path)
+
+    assert [(item.split, item.annotation_id) for item in index.objects] == [
+        ("train2019", 1),
+        ("val2019", 1),
+        ("val2019", 2),
+        ("test2019", 1),
+        ("test2019", 2),
+    ]
+    assert [(item.split, item.category_id) for item in index.images] == [
+        ("train2019", 7),
+        ("val2019", 7),
+        ("val2019", 7),
+        ("test2019", 7),
+        ("test2019", 7),
+    ]
 
 
 def test_load_rpc_index_indexes_source_file_identity_and_digest(tmp_path: Path):

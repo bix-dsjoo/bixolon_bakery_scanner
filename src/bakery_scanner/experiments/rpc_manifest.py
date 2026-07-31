@@ -93,13 +93,12 @@ def load_rpc_index(contract: RpcDatasetContract, root: Path) -> RpcIndex:
         annotation_path = source_root / f"instances_{split}.json"
         content = _read_and_verify_annotation(annotation_path, contract.annotation_sha256[split])
         payload = _parse_coco(content, split)
-        split_images, split_objects = _index_split(source_root, split, payload)
-        if len(split_images) != contract.image_counts[split]:
+        split_images, split_objects, source_image_count = _index_split(
+            source_root, split, payload
+        )
+        if source_image_count != contract.image_counts[split]:
             raise ValueError(f"{split} image count mismatch")
-        if split == "train2019" and any(
-            sum(item.image_id == image.image_id for item in split_objects) != 1
-            for image in split_images
-        ):
+        if split == "train2019" and len(split_images) != source_image_count:
             raise ValueError("train2019 images must have exactly one object")
         images.extend(split_images)
         objects.extend(split_objects)
@@ -161,16 +160,27 @@ def _parse_coco(content: bytes, split: str) -> dict[str, Any]:
 
 def _index_split(
     source_root: Path, split: str, payload: dict[str, Any]
-) -> tuple[list[RpcImage], list[RpcObject]]:
+) -> tuple[list[RpcImage], list[RpcObject], int]:
     image_records: dict[int, dict[str, Any]] = {}
     for record in payload["images"]:
         if not isinstance(record, dict) or type(record.get("id")) is not int:
             raise ValueError(f"{split} malformed image record")
         image_id = record["id"]
-        file_name = record.get("file_name")
+        file_name, width, height = (
+            record.get("file_name"),
+            record.get("width"),
+            record.get("height"),
+        )
         if image_id in image_records:
             raise ValueError(f"{split} duplicate image ID")
-        if not isinstance(file_name, str) or not file_name:
+        if (
+            not isinstance(file_name, str)
+            or not file_name
+            or type(width) is not int
+            or type(height) is not int
+            or width <= 0
+            or height <= 0
+        ):
             raise ValueError(f"{split} malformed image record")
         image_records[image_id] = record
 
@@ -184,7 +194,7 @@ def _index_split(
 
     annotation_ids: set[int] = set()
     objects: list[RpcObject] = []
-    categories_by_image: dict[int, int] = {}
+    annotation_counts: dict[int, int] = {}
     for record in payload["annotations"]:
         if not isinstance(record, dict):
             raise ValueError(f"{split} malformed annotation record")
@@ -198,15 +208,17 @@ def _index_split(
         annotation_ids.add(annotation_id)
         if image_id not in image_records or category_id not in category_ids:
             raise ValueError(f"{split} invalid category or image link")
-        bbox = _parse_bbox(record.get("bbox"), split)
-        if image_id in categories_by_image:
-            raise ValueError(f"{split} images must have one checkout annotation")
-        categories_by_image[image_id] = category_id
+        image_record = image_records[image_id]
+        bbox = _parse_bbox(
+            record.get("bbox"), split, image_record["width"], image_record["height"]
+        )
+        annotation_counts[image_id] = annotation_counts.get(image_id, 0) + 1
         objects.append(RpcObject(split, annotation_id, image_id, category_id, bbox))
 
     indexed: list[RpcImage] = []
-    for image_id, record in sorted(image_records.items()):
-        if image_id not in categories_by_image:
+    source_details: dict[int, tuple[Path, int, str]] = {}
+    for image_id, record in image_records.items():
+        if image_id not in annotation_counts:
             raise ValueError(f"{split} image is missing checkout annotation")
         source_path = (source_root / record["file_name"]).resolve()
         try:
@@ -216,21 +228,32 @@ def _index_split(
         if not source_path.is_file():
             raise ValueError(f"{split} source image is missing")
         source_bytes = source_path.read_bytes()
+        source_details[image_id] = (
+            source_path,
+            len(source_bytes),
+            hashlib.sha256(source_bytes).hexdigest(),
+        )
+
+    for item in objects:
+        record = image_records[item.image_id]
+        source_path, byte_size, source_sha256 = source_details[item.image_id]
         indexed.append(
             RpcImage(
                 split=split,
-                image_id=image_id,
-                source_identity=f"{split}:{image_id}:{record['file_name']}",
+                image_id=item.image_id,
+                source_identity=f"{split}:{item.image_id}:{record['file_name']}",
                 source_path=source_path,
-                category_id=categories_by_image[image_id],
-                byte_size=len(source_bytes),
-                sha256=hashlib.sha256(source_bytes).hexdigest(),
+                category_id=item.category_id,
+                byte_size=byte_size,
+                sha256=source_sha256,
             )
         )
-    return indexed, objects
+    return indexed, objects, len(image_records)
 
 
-def _parse_bbox(value: object, split: str) -> tuple[float, float, float, float]:
+def _parse_bbox(
+    value: object, split: str, image_width: int, image_height: int
+) -> tuple[float, float, float, float]:
     if not isinstance(value, list) or len(value) != 4:
         raise ValueError(f"{split} malformed bbox")
     checked: list[float] = []
@@ -242,6 +265,9 @@ def _parse_bbox(value: object, split: str) -> tuple[float, float, float, float]:
         raise ValueError(f"{split} non-finite bbox")
     if checked[2] <= 0 or checked[3] <= 0:
         raise ValueError(f"{split} non-positive bbox")
+    x, y, width, height = checked
+    if x < 0 or y < 0 or x + width > image_width or y + height > image_height:
+        raise ValueError(f"{split} bbox outside image bounds")
     return tuple(checked)  # type: ignore[return-value]
 
 
