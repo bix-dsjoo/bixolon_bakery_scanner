@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -34,11 +34,20 @@ def load_canonical_json(path: Path) -> Mapping[str, object]:
     return value
 
 
-def load_canonical_jsonl(path: Path) -> tuple[ResearchEvidenceRow, ...]:
+@dataclass(frozen=True, slots=True)
+class LoadedEvidence:
+    """Rows and digest derived from one immutable read of canonical JSONL bytes."""
+
+    rows: tuple[ResearchEvidenceRow, ...]
+    sha256: str
+
+
+def load_canonical_jsonl(path: Path) -> LoadedEvidence:
     try:
-        raw_lines = path.read_bytes().splitlines()
+        content = path.read_bytes()
     except OSError as exc:
         raise ValueError(f"cannot read evidence: {path}") from exc
+    raw_lines = content.splitlines()
     if not raw_lines:
         raise ValueError("evidence must not be empty")
     rows: list[ResearchEvidenceRow] = []
@@ -55,7 +64,7 @@ def load_canonical_jsonl(path: Path) -> tuple[ResearchEvidenceRow, ...]:
             rows.append(ResearchEvidenceRow.from_dict(value))
         except ValueError as exc:
             raise ValueError(f"invalid evidence JSONL line {number}") from exc
-    return tuple(rows)
+    return LoadedEvidence(tuple(rows), hashlib.sha256(content).hexdigest())
 
 
 def score(
@@ -92,8 +101,10 @@ def score(
             "reference_condition_id": reference_id,
         })
         return
-    candidate_rows = validate_evidence_against_condition(load_canonical_jsonl(evidence_path), condition)
-    reference_rows = validate_evidence_against_condition(load_canonical_jsonl(reference_path), reference_condition)
+    candidate_evidence = load_canonical_jsonl(evidence_path)
+    reference_evidence = load_canonical_jsonl(reference_path)
+    candidate_rows = validate_evidence_against_condition(candidate_evidence.rows, condition)
+    reference_rows = validate_evidence_against_condition(reference_evidence.rows, reference_condition)
     candidate_rows, reference_rows = validate_paired_evidence(candidate_rows, reference_rows)
     novel = candidate_novel
     candidate_summary = full_system_summary(candidate_rows, novel_category_ids=novel, reference_rows=reference_rows)
@@ -111,8 +122,8 @@ def score(
             "base_category_ids": sorted(candidate_base),
             "novel_category_ids": sorted(novel),
         },
-        "candidate_provenance": _provenance(condition, evidence_path),
-        "reference_provenance": _provenance(reference_condition, reference_path),
+        "candidate_provenance": _provenance(condition, candidate_evidence.sha256),
+        "reference_provenance": _provenance(reference_condition, reference_evidence.sha256),
         "candidate_forced_top1": asdict(candidate_forced),
         "reference_forced_top1": asdict(reference_forced),
         "candidate_full_system": asdict(candidate_summary),
@@ -122,14 +133,14 @@ def score(
     })
 
 
-def _provenance(condition: Mapping[str, object], evidence_path: Path) -> dict[str, str]:
+def _provenance(condition: Mapping[str, object], evidence_sha256: str) -> dict[str, str]:
     condition_id, hashes = condition_provenance(condition)
     cohort = condition.get("cohort")
     if not isinstance(cohort, Mapping) or not isinstance(cohort.get("manifest_sha256"), str):
         raise ValueError("condition receipt lacks cohort provenance")
     return {
         "condition_id": condition_id,
-        "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        "evidence_sha256": evidence_sha256,
         "cohort_manifest_sha256": cohort["manifest_sha256"],
         **dict(hashes),
     }

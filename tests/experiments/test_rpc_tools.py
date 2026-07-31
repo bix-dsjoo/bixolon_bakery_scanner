@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -35,6 +37,15 @@ def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def _score_module():
+    specification = importlib.util.spec_from_file_location("score_rpc_fewshot_test", ROOT / "tools/evaluate/score_rpc_fewshot.py")
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
 
 
 def _receipt(condition_id: str) -> dict[str, object]:
@@ -205,3 +216,46 @@ def test_score_cli_rejects_equal_cohorts_bound_to_different_manifest_hashes(tmp_
     assert result.returncode != 0
     assert "cohort manifest" in result.stderr
     assert not output.exists()
+
+
+def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _score_module()
+    candidate_receipt = _task4_receipt(condition_index=0, output_uri="file:///candidate")
+    reference_receipt = _task4_receipt(condition_index=1, output_uri="file:///reference")
+    candidate_id = candidate_receipt["condition"]["condition_id"]
+    reference_id = reference_receipt["condition"]["condition_id"]
+    evidence = tmp_path / "evidence.jsonl"
+    reference = tmp_path / "reference.jsonl"
+    condition = tmp_path / "condition.json"
+    reference_condition = tmp_path / "reference-condition.json"
+    output = tmp_path / "receipt.json"
+    parsed_bytes = (
+        _canonical(_evidence(candidate_id)).encode("utf-8") + b"\n"
+        + _canonical(_evidence(candidate_id, sample_id="base", truth_category_id=2, predicted_category_id=2, scores=[0.1, 0.9])).encode("utf-8") + b"\n"
+    )
+    replacement_bytes = (
+        _canonical(_evidence(candidate_id, scores=[0.8, 0.2])).encode("utf-8") + b"\n"
+        + _canonical(_evidence(candidate_id, sample_id="base", truth_category_id=2, predicted_category_id=2, scores=[0.2, 0.8])).encode("utf-8") + b"\n"
+    )
+    evidence.write_bytes(parsed_bytes)
+    reference.write_text(
+        _canonical(_evidence(reference_id)) + "\n"
+        + _canonical(_evidence(reference_id, sample_id="base", truth_category_id=2, predicted_category_id=2, scores=[0.1, 0.9])) + "\n",
+        encoding="utf-8",
+    )
+    condition.write_text(_canonical(candidate_receipt), encoding="utf-8")
+    reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
+    real_loader = module.load_canonical_jsonl
+
+    def replace_after_parse(path: Path):
+        loaded = real_loader(path)
+        if path == evidence:
+            evidence.write_bytes(replacement_bytes)
+        return loaded
+
+    monkeypatch.setattr(module, "load_canonical_jsonl", replace_after_parse)
+    module.score(evidence, reference, condition, reference_condition, output, bootstrap_seed=7, bootstrap_replicates=10)
+
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert receipt["candidate_provenance"]["evidence_sha256"] == hashlib.sha256(parsed_bytes).hexdigest()
+    assert receipt["candidate_provenance"]["evidence_sha256"] != hashlib.sha256(replacement_bytes).hexdigest()
