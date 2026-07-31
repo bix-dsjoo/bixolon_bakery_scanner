@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import random
 
 import pytest
 
@@ -14,6 +15,7 @@ from bakery_scanner.experiments.rpc_metrics import (
     passes_minimum_rule,
     validate_evidence_against_condition,
     validate_paired_evidence,
+    _hierarchical_sample,
 )
 
 
@@ -33,8 +35,8 @@ def _row(
     *,
     truth: int = 1,
     predicted: int | None = 1,
-    scores: tuple[float, float] = (0.9, 0.1),
-    category_ids: tuple[int, int] = (1, 2),
+    scores: tuple[float, ...] = (0.9, 0.1),
+    category_ids: tuple[int, ...] = (1, 2),
     fold: int = 0,
     difficulty: str = "E",
     burst_id: str = "burst-a",
@@ -86,7 +88,7 @@ def test_minimum_rule_accepts_exact_boundaries():
     interval = replace(
         bootstrap_paired_deltas(candidate, reference, novel_category_ids={1}, seed=8, replicates=10),
         novel_macro_recall_lower_delta=-0.02,
-        wrong_registered_sku_rate_upper_delta=0.005,
+        novel_wrong_registered_sku_rate_upper_delta=0.005,
     )
 
     assert candidate_summary.novel_loss_over_10pp_fraction == 0.0
@@ -223,6 +225,88 @@ def test_bootstrap_is_repeatable_and_rejects_zero_replicates():
     assert first == second
     with pytest.raises(ValueError, match="replicates"):
         bootstrap_paired_deltas(candidate, reference, novel_category_ids={1}, seed=13, replicates=0)
+
+
+def test_bootstrap_wrong_sku_interval_uses_novel_truth_rows_only():
+    reference = (
+        _row("novel", truth=1, predicted=1),
+        _row("base", truth=2, predicted=2),
+    )
+    candidate = (
+        _row("novel", truth=1, predicted=1),
+        _row("base", truth=2, predicted=1),
+    )
+
+    interval = bootstrap_paired_deltas(
+        candidate,
+        reference,
+        novel_category_ids={1},
+        seed=13,
+        replicates=20,
+    )
+
+    assert interval.novel_wrong_registered_sku_rate_lower_delta == 0.0
+    assert interval.novel_wrong_registered_sku_rate_upper_delta == 0.0
+
+
+def test_hierarchical_sampler_keeps_bursts_intact_without_resampling_base_categories():
+    candidate = tuple(
+        _row(
+            f"{burst}-{category}",
+            truth=category,
+            predicted=category,
+            category_ids=(1, 2, 3),
+            scores=(0.9, 0.05, 0.05),
+            burst_id=burst,
+        )
+        for burst in ("burst-a", "burst-b")
+        for category in (1, 2, 3)
+    )
+    reference = tuple(replace(row, condition_id="reference") for row in candidate)
+    pairs = tuple(zip(candidate, reference, strict=True))
+
+    sampled = _hierarchical_sample(pairs, random.Random(0), frozenset({1, 2}))
+    counts = {
+        (burst, category): sum(
+            pair[0].burst_id == burst and pair[0].truth_category_id == category
+            for pair in sampled
+        )
+        for burst in ("burst-a", "burst-b")
+        for category in (1, 2, 3)
+    }
+
+    assert len(set(counts[("burst-a", category)] for category in (1, 2, 3))) == 1
+    assert len(set(counts[("burst-b", category)] for category in (1, 2, 3))) == 1
+
+
+def test_bootstrap_preserves_novel_category_draw_multiplicity_in_macro_delta():
+    reference = tuple(
+        _row(
+            f"category-{category}",
+            truth=category,
+            predicted=category,
+            category_ids=(1, 2, 3, 4),
+            scores=(0.7, 0.1, 0.1, 0.1),
+        )
+        for category in (1, 2, 3, 4)
+    )
+    candidate = tuple(
+        replace(row, predicted_category_id=4 if row.truth_category_id == 2 else row.truth_category_id)
+        for row in reference
+    )
+
+    interval = bootstrap_paired_deltas(
+        candidate,
+        reference,
+        novel_category_ids={1, 2, 3},
+        seed=4,
+        replicates=1,
+    )
+
+    # Seed 4 draws novel categories [1, 2, 1], so category 2 contributes
+    # exactly one of the three macro terms.
+    assert interval.novel_macro_recall_lower_delta == pytest.approx(-1 / 3)
+    assert interval.novel_macro_recall_upper_delta == pytest.approx(-1 / 3)
 
 
 def test_summaries_account_for_forced_top1_full_system_and_each_difficulty():

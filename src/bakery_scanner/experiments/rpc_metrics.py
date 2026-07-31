@@ -172,10 +172,21 @@ class PairedBootstrapInterval:
     seed: int
     novel_macro_recall_lower_delta: float
     novel_macro_recall_upper_delta: float
-    wrong_registered_sku_rate_lower_delta: float
-    wrong_registered_sku_rate_upper_delta: float
+    novel_wrong_registered_sku_rate_lower_delta: float
+    novel_wrong_registered_sku_rate_upper_delta: float
     base_macro_recall_lower_delta: float
     base_macro_recall_upper_delta: float
+
+
+@dataclass(frozen=True, slots=True)
+class PairedConditionEvidence:
+    """One fold/seed condition pair participating in a final aggregate."""
+
+    fold: int
+    support_seed: int
+    novel_category_ids: frozenset[int]
+    candidate: tuple[ResearchEvidenceRow, ...]
+    reference: tuple[ResearchEvidenceRow, ...]
 
 
 def validate_evidence_rows(rows: Iterable[ResearchEvidenceRow]) -> tuple[ResearchEvidenceRow, ...]:
@@ -325,35 +336,130 @@ def bootstrap_paired_deltas(
     candidate: Iterable[ResearchEvidenceRow], reference: Iterable[ResearchEvidenceRow], *, novel_category_ids: set[int] | frozenset[int], seed: int, replicates: int
 ) -> PairedBootstrapInterval:
     """Deterministically resample category/fold then scene-burst/difficulty pairs."""
+    candidate_rows = tuple(candidate)
+    reference_rows = tuple(reference)
+    if not candidate_rows:
+        raise ValueError("evidence must not be empty")
+    folds = {row.fold for row in candidate_rows}
+    if len(folds) != 1:
+        raise ValueError("single-condition bootstrap requires exactly one fold")
+    return bootstrap_paired_condition_deltas(
+        (
+            PairedConditionEvidence(
+                fold=next(iter(folds)),
+                support_seed=0,
+                novel_category_ids=frozenset(novel_category_ids),
+                candidate=candidate_rows,
+                reference=reference_rows,
+            ),
+        ),
+        seed=seed,
+        replicates=replicates,
+    )
+
+
+def bootstrap_paired_condition_deltas(
+    conditions: Iterable[PairedConditionEvidence],
+    *,
+    seed: int,
+    replicates: int,
+) -> PairedBootstrapInterval:
+    """Run one paired hierarchy across every declared fold/seed condition."""
     if type(seed) is not int:
         raise ValueError("seed must be an integer")
     if type(replicates) is not int or replicates <= 0:
         raise ValueError("replicates must be a positive integer")
-    candidate_rows, reference_rows = validate_paired_evidence(candidate, reference)
-    _validate_observed_cohorts(candidate_rows, frozenset(novel_category_ids))
-    _validate_observed_cohorts(reference_rows, frozenset(novel_category_ids))
-    reference_by_id = {row.pair_identity: row for row in reference_rows}
-    paired = tuple((row, reference_by_id[row.pair_identity]) for row in candidate_rows)
+    frozen = tuple(conditions)
+    if not frozen or not all(isinstance(item, PairedConditionEvidence) for item in frozen):
+        raise ValueError("aggregate bootstrap requires paired condition evidence")
+    if len({(item.fold, item.support_seed) for item in frozen}) != len(frozen):
+        raise ValueError("duplicate fold/support-seed evidence")
+    prepared: dict[
+        int,
+        list[
+            tuple[
+                PairedConditionEvidence,
+                tuple[tuple[ResearchEvidenceRow, ResearchEvidenceRow], ...],
+            ]
+        ],
+    ] = defaultdict(list)
+    for item in frozen:
+        if type(item.fold) is not int or item.fold < 0 or type(item.support_seed) is not int:
+            raise ValueError("invalid fold/support-seed evidence")
+        candidate_rows, reference_rows = validate_paired_evidence(
+            item.candidate, item.reference
+        )
+        if any(row.fold != item.fold for row in candidate_rows + reference_rows):
+            raise ValueError("aggregate evidence fold mismatch")
+        _validate_observed_cohorts(candidate_rows, item.novel_category_ids)
+        _validate_observed_cohorts(reference_rows, item.novel_category_ids)
+        reference_by_id = {row.pair_identity: row for row in reference_rows}
+        paired = tuple((row, reference_by_id[row.pair_identity]) for row in candidate_rows)
+        prepared[item.fold].append((item, paired))
+    for fold_groups in prepared.values():
+        template_item, template_pairs = fold_groups[0]
+        template_signature = {
+            (pair[0].pair_identity, pair[0].difficulty) for pair in template_pairs
+        }
+        for item, pairs in fold_groups[1:]:
+            if item.novel_category_ids != template_item.novel_category_ids:
+                raise ValueError("fold evidence novel cohort mismatch")
+            if {
+                (pair[0].pair_identity, pair[0].difficulty) for pair in pairs
+            } != template_signature:
+                raise ValueError("fold/seed evidence identity mismatch")
     randomizer = random.Random(seed)
     deltas: list[tuple[float, float, float]] = []
     for _ in range(replicates):
-        sampled = _hierarchical_sample(paired, randomizer, frozenset(novel_category_ids))
-        sampled_candidate = tuple(pair[0] for pair in sampled)
-        sampled_reference = tuple(pair[1] for pair in sampled)
-        c_summary = _full_summary(sampled_candidate, frozenset(novel_category_ids), None)
-        r_summary = _full_summary(sampled_reference, frozenset(novel_category_ids), None)
-        deltas.append((
-            c_summary.novel_macro_final_correct_recall - r_summary.novel_macro_final_correct_recall,
-            c_summary.wrong_registered_sku_rate - r_summary.wrong_registered_sku_rate,
-            c_summary.base_macro_final_correct_recall - r_summary.base_macro_final_correct_recall,
-        ))
+        condition_deltas: list[tuple[float, float, float]] = []
+        for fold in sorted(prepared):
+            fold_groups = prepared[fold]
+            template_item, template_pairs = fold_groups[0]
+            sampled_template, novel_multiplicity = _hierarchical_sample_with_weights(
+                template_pairs, randomizer, template_item.novel_category_ids
+            )
+            sampled_ids = tuple(pair[0].pair_identity for pair in sampled_template)
+            for item, pairs in fold_groups:
+                by_identity = {pair[0].pair_identity: pair for pair in pairs}
+                sampled = tuple(by_identity[identity] for identity in sampled_ids)
+                sampled_candidate = tuple(pair[0] for pair in sampled)
+                sampled_reference = tuple(pair[1] for pair in sampled)
+                candidate_metrics = _bootstrap_metrics(
+                    sampled_candidate,
+                    item.novel_category_ids,
+                    novel_multiplicity,
+                )
+                reference_metrics = _bootstrap_metrics(
+                    sampled_reference,
+                    item.novel_category_ids,
+                    novel_multiplicity,
+                )
+                condition_deltas.append(
+                    tuple(
+                        candidate - reference
+                        for candidate, reference in zip(
+                            candidate_metrics, reference_metrics, strict=True
+                        )
+                    )
+                )
+        deltas.append(
+            tuple(
+                sum(delta[index] for delta in condition_deltas)
+                / len(condition_deltas)
+                for index in range(3)
+            )
+        )
     return PairedBootstrapInterval(
         replicates=replicates,
         seed=seed,
         novel_macro_recall_lower_delta=_percentile([delta[0] for delta in deltas], 0.025),
         novel_macro_recall_upper_delta=_percentile([delta[0] for delta in deltas], 0.975),
-        wrong_registered_sku_rate_lower_delta=_percentile([delta[1] for delta in deltas], 0.025),
-        wrong_registered_sku_rate_upper_delta=_percentile([delta[1] for delta in deltas], 0.975),
+        novel_wrong_registered_sku_rate_lower_delta=_percentile(
+            [delta[1] for delta in deltas], 0.025
+        ),
+        novel_wrong_registered_sku_rate_upper_delta=_percentile(
+            [delta[1] for delta in deltas], 0.975
+        ),
         base_macro_recall_lower_delta=_percentile([delta[2] for delta in deltas], 0.025),
         base_macro_recall_upper_delta=_percentile([delta[2] for delta in deltas], 0.975),
     )
@@ -384,7 +490,7 @@ def passes_minimum_rule(
     return (
         not unknown_only
         and interval.novel_macro_recall_lower_delta >= -0.02 - tolerance
-        and interval.wrong_registered_sku_rate_upper_delta <= 0.005 + tolerance
+        and interval.novel_wrong_registered_sku_rate_upper_delta <= 0.005 + tolerance
         and candidate.novel_loss_over_10pp_fraction <= 0.05 + tolerance
         and base_delta >= -0.01 - tolerance
     )
@@ -432,29 +538,90 @@ def _difficulty_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[in
 def _hierarchical_sample(
     pairs: Sequence[tuple[ResearchEvidenceRow, ResearchEvidenceRow]], randomizer: random.Random, novel: frozenset[int]
 ) -> tuple[tuple[ResearchEvidenceRow, ResearchEvidenceRow], ...]:
-    by_fold: dict[int, dict[int, list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]]]] = defaultdict(lambda: defaultdict(list))
+    sampled, _ = _hierarchical_sample_with_weights(pairs, randomizer, novel)
+    return sampled
+
+
+def _hierarchical_sample_with_weights(
+    pairs: Sequence[tuple[ResearchEvidenceRow, ResearchEvidenceRow]],
+    randomizer: random.Random,
+    novel: frozenset[int],
+) -> tuple[
+    tuple[tuple[ResearchEvidenceRow, ResearchEvidenceRow], ...],
+    Mapping[tuple[int, int], int],
+]:
+    by_fold: dict[int, list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]]] = defaultdict(list)
     for pair in pairs:
-        by_fold[pair[0].fold][pair[0].truth_category_id].append(pair)
+        by_fold[pair[0].fold].append(pair)
     sampled: list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]] = []
+    novel_multiplicity: dict[tuple[int, int], int] = {}
     for fold in sorted(by_fold):
-        category_pairs = by_fold[fold]
-        # Each cohort is sampled independently; this explicitly includes novel categories.
-        for cohort in (
-            sorted(category for category in category_pairs if category in novel),
-            sorted(category for category in category_pairs if category not in novel),
-        ):
-            if not cohort:
-                continue
-            for category in (randomizer.choice(cohort) for _ in cohort):
-                source = category_pairs[category]
-                by_difficulty: dict[str, dict[str, list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]]]] = defaultdict(lambda: defaultdict(list))
-                for pair in source:
-                    by_difficulty[pair[0].difficulty][pair[0].burst_id].append(pair)
-                for difficulty in sorted(by_difficulty):
-                    bursts = sorted(by_difficulty[difficulty])
-                    for burst in (randomizer.choice(bursts) for _ in bursts):
-                        sampled.extend(by_difficulty[difficulty][burst])
-    return tuple(sampled)
+        fold_pairs = by_fold[fold]
+        novel_categories = sorted(
+            {pair[0].truth_category_id for pair in fold_pairs} & novel
+        )
+        sampled_novel = [
+            randomizer.choice(novel_categories) for _ in novel_categories
+        ]
+        novel_multiplicity.update(
+            {
+                (fold, category): sampled_novel.count(category)
+                for category in novel_categories
+            }
+        )
+        by_difficulty: dict[
+            str,
+            dict[str, list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]]],
+        ] = defaultdict(lambda: defaultdict(list))
+        for pair in fold_pairs:
+            by_difficulty[pair[0].difficulty][pair[0].burst_id].append(pair)
+        for difficulty in sorted(by_difficulty):
+            bursts = sorted(by_difficulty[difficulty])
+            for burst in (randomizer.choice(bursts) for _ in bursts):
+                sampled.extend(by_difficulty[difficulty][burst])
+    return tuple(sampled), novel_multiplicity
+
+
+def _bootstrap_metrics(
+    rows: Sequence[ResearchEvidenceRow],
+    novel: frozenset[int],
+    novel_multiplicity: Mapping[tuple[int, int], int],
+) -> tuple[float, float, float]:
+    """Apply category draw weights after sampling whole scene-burst clusters."""
+    recalls = _category_recalls(rows, _final_correct)
+    observed_folds = {row.fold for row in rows}
+    drawn_novel = tuple(
+        (category, multiplicity)
+        for (fold, category), multiplicity in novel_multiplicity.items()
+        if category in novel and fold in observed_folds
+    )
+    novel_draw_count = sum(multiplicity for _, multiplicity in drawn_novel)
+    novel_macro = (
+        sum(
+            recalls.get(category, 0.0) * multiplicity
+            for category, multiplicity in drawn_novel
+        )
+        / novel_draw_count
+        if novel_draw_count
+        else 0.0
+    )
+    weighted_novel_rows = tuple(
+        (row, novel_multiplicity.get((row.fold, row.truth_category_id), 0))
+        for row in rows
+        if row.truth_category_id in novel
+    )
+    novel_object_count = sum(weight for _, weight in weighted_novel_rows)
+    novel_wrong_rate = (
+        sum(_wrong_registered(row) * weight for row, weight in weighted_novel_rows)
+        / novel_object_count
+        if novel_object_count
+        else 0.0
+    )
+    return (
+        novel_macro,
+        novel_wrong_rate,
+        _macro(recalls, _base_categories(rows, novel)),
+    )
 
 
 def _category_recalls(rows: Sequence[ResearchEvidenceRow], predicate: Any) -> dict[int, float]:

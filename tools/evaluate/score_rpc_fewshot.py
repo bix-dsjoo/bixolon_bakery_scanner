@@ -12,7 +12,10 @@ from typing import Any, Iterable, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
 from bakery_scanner.experiments.rpc_metrics import (
+    FullSystemSummary,
+    PairedConditionEvidence,
     ResearchEvidenceRow,
+    bootstrap_paired_condition_deltas,
     bootstrap_paired_deltas,
     condition_cohort,
     condition_provenance,
@@ -176,7 +179,9 @@ def score(
         "minimum_rule_inputs": {
             "registered_coverage": candidate_summary.registered_coverage,
             "novel_macro_recall_lower_delta": interval.novel_macro_recall_lower_delta,
-            "wrong_registered_sku_rate_upper_delta": interval.wrong_registered_sku_rate_upper_delta,
+            "novel_wrong_registered_sku_rate_upper_delta": (
+                interval.novel_wrong_registered_sku_rate_upper_delta
+            ),
             "novel_loss_over_10pp_fraction": candidate_summary.novel_loss_over_10pp_fraction,
             "candidate_base_macro_final_correct_recall": (
                 candidate_summary.base_macro_final_correct_recall
@@ -242,16 +247,31 @@ def validate_fold_base_checkpoint_evidence(
     return float(recall)
 
 
-def aggregate_score_receipts(score_paths: Iterable[Path], output: Path) -> None:
-    """Emit a final pass only for an exact, complete declared fold/seed matrix."""
+def aggregate_score_receipts(
+    score_paths: Iterable[Path],
+    output: Path,
+    *,
+    evidence_paths: Iterable[Path],
+    reference_evidence_paths: Iterable[Path],
+) -> None:
+    """Recompute one final decision from every declared raw evidence pair."""
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
+    candidate_evidence_paths = tuple(Path(path) for path in evidence_paths)
+    frozen_reference_paths = tuple(Path(path) for path in reference_evidence_paths)
     loaded_receipts = tuple(
         _load_canonical_json_with_digest(Path(path)) for path in score_paths
     )
     receipts = tuple(item[0] for item in loaded_receipts)
     if not receipts:
         raise ValueError("aggregate requires score receipts")
+    if (
+        len(candidate_evidence_paths) != len(receipts)
+        or len(frozen_reference_paths) != len(receipts)
+    ):
+        raise ValueError(
+            "aggregate requires one candidate/reference evidence file per score receipt"
+        )
     candidate_plan = _score_receipt_plan(receipts[0], "candidate_scoring_plan")
     reference_plan = _score_receipt_plan(receipts[0], "reference_scoring_plan")
     _validate_comparable_scoring_plans(candidate_plan, reference_plan)
@@ -278,11 +298,71 @@ def aggregate_score_receipts(score_paths: Iterable[Path], output: Path) -> None:
     _validate_paired_condition_axes(candidate_conditions, reference_conditions)
     _validate_complete_condition_set(candidate_conditions, candidate_plan)
     _validate_complete_condition_set(reference_conditions, reference_plan)
-    final_pass = all(_minimum_rule_inputs_pass(receipt.get("minimum_rule_inputs")) for receipt in receipts)
+    aggregate_conditions: list[PairedConditionEvidence] = []
+    candidate_summaries = []
+    reference_summaries = []
+    base_checkpoints: dict[int, tuple[str, str, float]] = {}
+    evidence_receipts: list[dict[str, object]] = []
+    for receipt, candidate_evidence_path, reference_evidence_path in zip(
+        receipts,
+        candidate_evidence_paths,
+        frozen_reference_paths,
+        strict=True,
+    ):
+        (
+            paired,
+            candidate_summary,
+            reference_summary,
+            base_checkpoint,
+            evidence_record,
+        ) = _load_aggregate_evidence(
+            receipt,
+            candidate_plan,
+            reference_plan,
+            candidate_evidence_path,
+            reference_evidence_path,
+        )
+        existing_base = base_checkpoints.setdefault(paired.fold, base_checkpoint)
+        if existing_base != base_checkpoint:
+            raise ValueError(
+                "score receipts in one fold have inconsistent fold base checkpoint evidence"
+            )
+        aggregate_conditions.append(paired)
+        candidate_summaries.append(candidate_summary)
+        reference_summaries.append(reference_summary)
+        evidence_receipts.append(evidence_record)
+    if set(base_checkpoints) != set(candidate_plan.folds):
+        raise ValueError("aggregate lacks fold base checkpoint evidence")
+    interval = bootstrap_paired_condition_deltas(
+        aggregate_conditions,
+        seed=candidate_plan.bootstrap_seed,
+        replicates=candidate_plan.bootstrap_replicates,
+    )
+    minimum_rule_inputs = {
+        "registered_coverage": _average(
+            summary.registered_coverage for summary in candidate_summaries
+        ),
+        "novel_macro_recall_lower_delta": interval.novel_macro_recall_lower_delta,
+        "novel_wrong_registered_sku_rate_upper_delta": (
+            interval.novel_wrong_registered_sku_rate_upper_delta
+        ),
+        "novel_loss_over_10pp_fraction": _aggregate_novel_loss_fraction(
+            aggregate_conditions,
+            candidate_summaries,
+            reference_summaries,
+        ),
+        "candidate_base_macro_final_correct_recall": _average(
+            summary.base_macro_final_correct_recall for summary in candidate_summaries
+        ),
+        "fold_base_checkpoint_macro_final_correct_recall": _average(
+            value[2] for value in base_checkpoints.values()
+        ),
+    }
+    final_pass = _minimum_rule_inputs_pass(minimum_rule_inputs)
     write_new_json(
         output,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "rpc-fewshot-final-score-receipt",
             "status": "completed",
             "decision_scope": "complete_declared_fold_seed_aggregate",
@@ -305,9 +385,271 @@ def aggregate_score_receipts(score_paths: Iterable[Path], output: Path) -> None:
                 ),
                 key=lambda item: item["candidate_condition_id"],
             ),
+            "raw_evidence": sorted(
+                evidence_receipts,
+                key=lambda item: item["candidate_condition_id"],
+            ),
+            "paired_bootstrap_95": asdict(interval),
+            "minimum_rule_inputs": minimum_rule_inputs,
             "final_pass": final_pass,
         },
     )
+
+
+def _load_aggregate_evidence(
+    receipt: Mapping[str, object],
+    candidate_plan: ScoringPlan,
+    reference_plan: ScoringPlan,
+    candidate_path: Path,
+    reference_path: Path,
+) -> tuple[
+    PairedConditionEvidence,
+    FullSystemSummary,
+    FullSystemSummary,
+    tuple[str, str, float],
+    dict[str, object],
+]:
+    candidate_condition = _score_receipt_condition(receipt, "candidate_condition")
+    reference_condition = _score_receipt_condition(receipt, "reference_condition")
+    fold = candidate_condition.get("fold")
+    support_seed = candidate_condition.get("support_seed")
+    if type(fold) is not int or type(support_seed) is not int:
+        raise ValueError("score receipt has invalid fold/support-seed axes")
+    if (
+        receipt.get("candidate_condition_id") != candidate_condition.get("condition_id")
+        or receipt.get("reference_condition_id")
+        != reference_condition.get("condition_id")
+    ):
+        raise ValueError("score receipt top-level condition ID mismatch")
+    novel, base = _score_receipt_cohort(receipt, candidate_plan)
+    candidate_provenance = _score_receipt_provenance(
+        receipt,
+        "candidate_provenance",
+        candidate_condition,
+        candidate_plan,
+    )
+    reference_provenance = _score_receipt_provenance(
+        receipt,
+        "reference_provenance",
+        reference_condition,
+        reference_plan,
+    )
+    if (
+        candidate_provenance["cohort_manifest_sha256"]
+        != reference_provenance["cohort_manifest_sha256"]
+    ):
+        raise ValueError("candidate/reference cohort manifest mismatch")
+    base_checkpoint = _score_receipt_base_checkpoint(
+        receipt,
+        fold,
+        candidate_plan,
+        reference_plan,
+        candidate_provenance,
+        reference_provenance,
+    )
+    loaded_candidate = load_canonical_jsonl(candidate_path)
+    loaded_reference = load_canonical_jsonl(reference_path)
+    if loaded_candidate.sha256 != candidate_provenance["evidence_sha256"]:
+        raise ValueError("candidate evidence SHA-256 mismatch")
+    if loaded_reference.sha256 != reference_provenance["evidence_sha256"]:
+        raise ValueError("reference evidence SHA-256 mismatch")
+    candidate_receipt = _reconstructed_condition_receipt(
+        candidate_condition,
+        candidate_plan,
+        candidate_provenance,
+        novel,
+        base,
+    )
+    reference_receipt = _reconstructed_condition_receipt(
+        reference_condition,
+        reference_plan,
+        reference_provenance,
+        novel,
+        base,
+    )
+    candidate_rows = validate_evidence_against_condition(
+        loaded_candidate.rows, candidate_receipt
+    )
+    reference_rows = validate_evidence_against_condition(
+        loaded_reference.rows, reference_receipt
+    )
+    candidate_rows, reference_rows = validate_paired_evidence(
+        candidate_rows, reference_rows
+    )
+    candidate_summary = full_system_summary(
+        candidate_rows,
+        novel_category_ids=novel,
+        reference_rows=reference_rows,
+    )
+    reference_summary = full_system_summary(
+        reference_rows,
+        novel_category_ids=novel,
+    )
+    return (
+        PairedConditionEvidence(
+            fold=fold,
+            support_seed=support_seed,
+            novel_category_ids=frozenset(novel),
+            candidate=candidate_rows,
+            reference=reference_rows,
+        ),
+        candidate_summary,
+        reference_summary,
+        base_checkpoint,
+        {
+            "candidate_condition_id": candidate_condition["condition_id"],
+            "candidate_evidence_sha256": loaded_candidate.sha256,
+            "reference_condition_id": reference_condition["condition_id"],
+            "reference_evidence_sha256": loaded_reference.sha256,
+        },
+    )
+
+
+def _score_receipt_cohort(
+    receipt: Mapping[str, object], plan: ScoringPlan
+) -> tuple[set[int], set[int]]:
+    raw = receipt.get("cohort")
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "base_category_ids",
+        "novel_category_ids",
+    }:
+        raise ValueError("score receipt lacks an immutable cohort")
+    novel = _category_ids(raw.get("novel_category_ids"), "novel cohort")
+    base = _category_ids(raw.get("base_category_ids"), "base cohort")
+    if novel & base or novel | base != set(plan.registered_category_ids):
+        raise ValueError("score receipt cohort does not match the scoring plan")
+    return novel, base
+
+
+def _score_receipt_provenance(
+    receipt: Mapping[str, object],
+    name: str,
+    condition: Mapping[str, object],
+    plan: ScoringPlan,
+) -> Mapping[str, str]:
+    value = receipt.get(name)
+    expected = {
+        "condition_id",
+        "evidence_sha256",
+        "cohort_manifest_sha256",
+        "base_checkpoint_sha256",
+        "base_checkpoint_evidence_sha256",
+        "scoring_plan_sha256",
+        "condition_manifest_sha256",
+        "model_sha256",
+        "support_sha256",
+        "calibration_sha256",
+        "policy_sha256",
+        "preprocessing_sha256",
+        "code_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError(f"score receipt lacks complete {name}")
+    condition_id = condition.get("condition_id")
+    if value.get("condition_id") != condition_id:
+        raise ValueError(f"{name} condition ID mismatch")
+    for field in expected - {"condition_id"}:
+        _require_sha256(field, value.get(field))
+    if value.get("scoring_plan_sha256") != plan.sha256:
+        raise ValueError(f"{name} scoring plan SHA-256 mismatch")
+    return value  # type: ignore[return-value]
+
+
+def _score_receipt_base_checkpoint(
+    receipt: Mapping[str, object],
+    fold: int,
+    candidate_plan: ScoringPlan,
+    reference_plan: ScoringPlan,
+    candidate_provenance: Mapping[str, str],
+    reference_provenance: Mapping[str, str],
+) -> tuple[str, str, float]:
+    value = receipt.get("fold_base_checkpoint")
+    if not isinstance(value, Mapping) or set(value) != {
+        "base_macro_final_correct_recall",
+        "checkpoint_sha256",
+        "evidence_sha256",
+        "fold",
+    }:
+        raise ValueError("score receipt lacks fold base checkpoint evidence")
+    if value.get("fold") != fold:
+        raise ValueError("score receipt fold base checkpoint fold mismatch")
+    checkpoint_sha256 = value.get("checkpoint_sha256")
+    evidence_sha256 = value.get("evidence_sha256")
+    _require_sha256("fold base checkpoint_sha256", checkpoint_sha256)
+    _require_sha256("fold base evidence_sha256", evidence_sha256)
+    candidate_artifact = next(
+        item for item in candidate_plan.fold_base_artifacts if item.fold == fold
+    )
+    reference_artifact = next(
+        item for item in reference_plan.fold_base_artifacts if item.fold == fold
+    )
+    expected = (
+        candidate_artifact.checkpoint_sha256,
+        candidate_artifact.evidence_sha256,
+    )
+    if (
+        expected
+        != (
+            reference_artifact.checkpoint_sha256,
+            reference_artifact.evidence_sha256,
+        )
+        or expected != (checkpoint_sha256, evidence_sha256)
+        or expected
+        != (
+            candidate_provenance["base_checkpoint_sha256"],
+            candidate_provenance["base_checkpoint_evidence_sha256"],
+        )
+        or expected
+        != (
+            reference_provenance["base_checkpoint_sha256"],
+            reference_provenance["base_checkpoint_evidence_sha256"],
+        )
+    ):
+        raise ValueError(
+            "score receipt fold base checkpoint does not match the scoring plan"
+        )
+    recall = value.get("base_macro_final_correct_recall")
+    if (
+        not isinstance(recall, (int, float))
+        or isinstance(recall, bool)
+        or not math.isfinite(float(recall))
+        or not 0.0 <= float(recall) <= 1.0
+    ):
+        raise ValueError("fold base checkpoint recall must be finite and in [0, 1]")
+    return str(checkpoint_sha256), str(evidence_sha256), float(recall)
+
+
+def _reconstructed_condition_receipt(
+    condition: Mapping[str, object],
+    plan: ScoringPlan,
+    provenance: Mapping[str, str],
+    novel: set[int],
+    base: set[int],
+) -> Mapping[str, object]:
+    return {
+        "condition": dict(condition),
+        "cohort": {
+            "base_category_ids": sorted(base),
+            "fold": condition["fold"],
+            "manifest_sha256": provenance["cohort_manifest_sha256"],
+            "novel_category_ids": sorted(novel),
+        },
+        "scoring": {
+            "registered_category_ids": list(plan.registered_category_ids),
+        },
+        **{
+            name: provenance[name]
+            for name in (
+                "condition_manifest_sha256",
+                "model_sha256",
+                "support_sha256",
+                "calibration_sha256",
+                "policy_sha256",
+                "preprocessing_sha256",
+                "code_sha256",
+            )
+        },
+    }
 
 
 def _provenance(condition: Mapping[str, object], evidence_sha256: str) -> dict[str, str]:
@@ -362,6 +704,16 @@ def _condition_scoring_plan(condition: Mapping[str, object]) -> ScoringPlan:
         plan.registered_category_ids
     ):
         raise ValueError("condition scoring cohort does not match the scoring plan")
+    binding = condition.get("fold_base_checkpoint")
+    artifact = next(item for item in plan.fold_base_artifacts if item.fold == nested.get("fold"))
+    if (
+        not isinstance(binding, Mapping)
+        or set(binding) != {"checkpoint_sha256", "evidence_sha256", "fold"}
+        or binding.get("fold") != nested.get("fold")
+        or binding.get("checkpoint_sha256") != artifact.checkpoint_sha256
+        or binding.get("evidence_sha256") != artifact.evidence_sha256
+    ):
+        raise ValueError("condition fold base checkpoint does not match the scoring plan")
     return plan
 
 
@@ -373,6 +725,7 @@ def _validate_comparable_scoring_plans(candidate: ScoringPlan, reference: Scorin
         or candidate.support_seeds != reference.support_seeds
         or candidate.cohort_id != reference.cohort_id
         or candidate.registered_category_ids != reference.registered_category_ids
+        or candidate.fold_base_artifacts != reference.fold_base_artifacts
     ):
         raise ValueError("candidate/reference scoring plan mismatch")
 
@@ -434,7 +787,7 @@ def _minimum_rule_inputs_pass(value: object) -> bool:
     required = {
         "registered_coverage",
         "novel_macro_recall_lower_delta",
-        "wrong_registered_sku_rate_upper_delta",
+        "novel_wrong_registered_sku_rate_upper_delta",
         "novel_loss_over_10pp_fraction",
         "candidate_base_macro_final_correct_recall",
         "fold_base_checkpoint_macro_final_correct_recall",
@@ -455,13 +808,75 @@ def _minimum_rule_inputs_pass(value: object) -> bool:
     return (
         numeric["registered_coverage"] > 0.0
         and numeric["novel_macro_recall_lower_delta"] >= -0.02 - tolerance
-        and numeric["wrong_registered_sku_rate_upper_delta"] <= 0.005 + tolerance
+        and numeric["novel_wrong_registered_sku_rate_upper_delta"] <= 0.005 + tolerance
         and numeric["novel_loss_over_10pp_fraction"] <= 0.05 + tolerance
         and (
             numeric["candidate_base_macro_final_correct_recall"]
             - numeric["fold_base_checkpoint_macro_final_correct_recall"]
         )
         >= -0.01 - tolerance
+    )
+
+
+def _category_ids(value: object, name: str) -> set[int]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{name} must be a nonempty category ID sequence")
+    try:
+        frozen = tuple(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a nonempty category ID sequence") from exc
+    if (
+        not frozen
+        or len(set(frozen)) != len(frozen)
+        or any(type(item) is not int or item <= 0 for item in frozen)
+    ):
+        raise ValueError(f"{name} must be a nonempty unique category ID sequence")
+    return set(frozen)
+
+
+def _require_sha256(name: str, value: object) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{name} must be lowercase SHA-256")
+
+
+def _average(values: Iterable[float]) -> float:
+    frozen = tuple(float(value) for value in values)
+    if not frozen or not all(math.isfinite(value) for value in frozen):
+        raise ValueError("aggregate metric inputs must be nonempty and finite")
+    return sum(frozen) / len(frozen)
+
+
+def _aggregate_novel_loss_fraction(
+    conditions: Iterable[PairedConditionEvidence],
+    candidate_summaries: Iterable[FullSystemSummary],
+    reference_summaries: Iterable[FullSystemSummary],
+) -> float:
+    losses: dict[tuple[int, int], list[float]] = {}
+    for condition, candidate, reference in zip(
+        conditions,
+        candidate_summaries,
+        reference_summaries,
+        strict=True,
+    ):
+        for category in condition.novel_category_ids:
+            if (
+                category not in candidate.per_category_final_correct_recall
+                or category not in reference.per_category_final_correct_recall
+            ):
+                raise ValueError("aggregate summary lacks a declared novel category")
+            losses.setdefault((condition.fold, category), []).append(
+                reference.per_category_final_correct_recall[category]
+                - candidate.per_category_final_correct_recall[category]
+            )
+    if not losses:
+        raise ValueError("aggregate summary lacks novel categories")
+    return (
+        sum(sum(values) / len(values) > 0.10 for values in losses.values())
+        / len(losses)
     )
 
 
@@ -482,6 +897,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reference-condition", type=Path)
     parser.add_argument("--base-checkpoint-evidence", type=Path)
     parser.add_argument("--aggregate-score-receipt", action="append", type=Path)
+    parser.add_argument("--aggregate-evidence", action="append", type=Path)
+    parser.add_argument("--aggregate-reference-evidence", action="append", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
@@ -497,8 +914,21 @@ def main(argv: list[str] | None = None) -> int:
                 )
             ):
                 raise ValueError("aggregate mode cannot accept single-condition inputs")
-            aggregate_score_receipts(tuple(args.aggregate_score_receipt), args.output)
+            if not args.aggregate_evidence or not args.aggregate_reference_evidence:
+                raise ValueError(
+                    "aggregate mode requires candidate and reference raw evidence"
+                )
+            aggregate_score_receipts(
+                tuple(args.aggregate_score_receipt),
+                args.output,
+                evidence_paths=tuple(args.aggregate_evidence),
+                reference_evidence_paths=tuple(args.aggregate_reference_evidence),
+            )
         else:
+            if args.aggregate_evidence or args.aggregate_reference_evidence:
+                raise ValueError(
+                    "aggregate evidence inputs require aggregate score receipts"
+                )
             single = (
                 args.evidence,
                 args.reference_evidence,

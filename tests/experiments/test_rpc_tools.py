@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from bakery_scanner.experiments.rpc_protocol import ExperimentReceipt, ScoringPlan, stage_one_conditions
+from bakery_scanner.experiments.rpc_protocol import (
+    ExperimentReceipt,
+    FoldBaseArtifact,
+    ScoringPlan,
+    stage_one_conditions,
+)
 
 
 ROOT = Path(__file__).parents[2]
@@ -75,6 +80,13 @@ def _receipt(condition_id: str) -> dict[str, object]:
         expected_condition_ids=(condition_id,),
         cohort_id="rpc-test",
         registered_category_ids=(1, 2),
+        fold_base_artifacts=(
+            FoldBaseArtifact(
+                fold=0,
+                checkpoint_sha256="2" * 64,
+                evidence_sha256=BASE_CHECKPOINT_EVIDENCE_SHA256,
+            ),
+        ),
     )
     return {
         "schema_version": 2,
@@ -112,6 +124,13 @@ def _task4_receipt(*, condition_index: int, output_uri: str, cohort_manifest_sha
         expected_condition_ids=(condition.condition_id,),
         cohort_id="rpc-test",
         registered_category_ids=(1, 2),
+        fold_base_artifacts=(
+            FoldBaseArtifact(
+                fold=0,
+                checkpoint_sha256="2" * 64,
+                evidence_sha256=BASE_CHECKPOINT_EVIDENCE_SHA256,
+            ),
+        ),
     )
     return ExperimentReceipt.completed(
         condition,

@@ -99,6 +99,42 @@ def refinement_shots(last_failure: int, first_pass: int) -> tuple[int, ...]:
 
 
 @dataclass(frozen=True, slots=True)
+class FoldBaseArtifact:
+    """Frozen fold-base checkpoint and its reviewed evidence receipt."""
+
+    fold: int
+    checkpoint_sha256: str
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.fold) is not int or self.fold < 0:
+            raise ValueError("fold base artifact fold must be a non-negative integer")
+        _validate_sha256("fold base checkpoint_sha256", self.checkpoint_sha256)
+        _validate_sha256("fold base evidence_sha256", self.evidence_sha256)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "FoldBaseArtifact":
+        if not isinstance(value, Mapping) or set(value) != {
+            "fold",
+            "checkpoint_sha256",
+            "evidence_sha256",
+        }:
+            raise ValueError("invalid fold base artifact")
+        return cls(
+            fold=value["fold"],  # type: ignore[arg-type]
+            checkpoint_sha256=value["checkpoint_sha256"],  # type: ignore[arg-type]
+            evidence_sha256=value["evidence_sha256"],  # type: ignore[arg-type]
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "checkpoint_sha256": self.checkpoint_sha256,
+            "evidence_sha256": self.evidence_sha256,
+            "fold": self.fold,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ScoringPlan:
     """Immutable decision universe shared by condition and score receipts."""
 
@@ -109,6 +145,7 @@ class ScoringPlan:
     expected_condition_ids: tuple[str, ...]
     cohort_id: str
     registered_category_ids: tuple[int, ...]
+    fold_base_artifacts: tuple[FoldBaseArtifact, ...]
     schema_version: Literal[1] = 1
 
     def __post_init__(self) -> None:
@@ -140,6 +177,13 @@ class ScoringPlan:
             self.registered_category_ids,
             lambda value: type(value) is int and value > 0,
         )
+        _validate_unique_tuple(
+            "fold_base_artifacts",
+            self.fold_base_artifacts,
+            lambda value: isinstance(value, FoldBaseArtifact),
+        )
+        if tuple(item.fold for item in self.fold_base_artifacts) != self.folds:
+            raise ValueError("fold base artifacts must exactly cover declared folds")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ScoringPlan":
@@ -153,6 +197,7 @@ class ScoringPlan:
             "expected_condition_ids",
             "cohort_id",
             "registered_category_ids",
+            "fold_base_artifacts",
             "schema_version",
         }
         if set(value) != expected:
@@ -166,6 +211,10 @@ class ScoringPlan:
                 expected_condition_ids=tuple(value["expected_condition_ids"]),  # type: ignore[arg-type]
                 cohort_id=value["cohort_id"],  # type: ignore[arg-type]
                 registered_category_ids=tuple(value["registered_category_ids"]),  # type: ignore[arg-type]
+                fold_base_artifacts=tuple(
+                    FoldBaseArtifact.from_dict(item)
+                    for item in value["fold_base_artifacts"]  # type: ignore[union-attr]
+                ),
                 schema_version=value["schema_version"],  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -178,6 +227,9 @@ class ScoringPlan:
             "cohort_id": self.cohort_id,
             "expected_condition_ids": list(self.expected_condition_ids),
             "folds": list(self.folds),
+            "fold_base_artifacts": [
+                item.to_dict() for item in self.fold_base_artifacts
+            ],
             "registered_category_ids": list(self.registered_category_ids),
             "schema_version": self.schema_version,
             "support_seeds": list(self.support_seeds),
@@ -226,6 +278,16 @@ class ExperimentReceipt:
             raise ValueError("condition fold is not declared by the scoring plan")
         if self.condition.support_seed not in self.scoring_plan.support_seeds:
             raise ValueError("condition support seed is not declared by the scoring plan")
+        fold_base = next(
+            item
+            for item in self.scoring_plan.fold_base_artifacts
+            if item.fold == self.condition.fold
+        )
+        if (
+            self.base_checkpoint_sha256 != fold_base.checkpoint_sha256
+            or self.base_checkpoint_evidence_sha256 != fold_base.evidence_sha256
+        ):
+            raise ValueError("condition fold base artifacts do not match the scoring plan")
         receipt_categories = set(self.novel_category_ids) | set(self.base_category_ids)
         if receipt_categories != set(self.scoring_plan.registered_category_ids):
             raise ValueError("condition cohort does not equal the scoring plan registered cohort")

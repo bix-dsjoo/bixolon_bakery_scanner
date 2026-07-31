@@ -11,6 +11,7 @@ import pytest
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentCondition,
     ExperimentReceipt,
+    FoldBaseArtifact,
     ScoringPlan,
     ascending_conditions,
     refinement_shots,
@@ -42,6 +43,13 @@ def _scoring_bindings() -> dict[str, object]:
             expected_condition_ids=(condition.condition_id,),
             cohort_id="rpc-test",
             registered_category_ids=(1, 2),
+            fold_base_artifacts=(
+                FoldBaseArtifact(
+                    fold=0,
+                    checkpoint_sha256="2" * 64,
+                    evidence_sha256="3" * 64,
+                ),
+            ),
         ),
         "base_checkpoint_sha256": "2" * 64,
         "base_checkpoint_evidence_sha256": "3" * 64,
