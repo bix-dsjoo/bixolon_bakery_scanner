@@ -6,7 +6,8 @@ import 'package:bakery_camera_prototype/src/audit/audit_file_store.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_state.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/analyzing_view.dart';
-import 'package:bakery_camera_prototype/src/ui/customer/customer_review_view.dart';
+import 'package:bakery_camera_prototype/src/ui/customer/captured_review_overlay.dart';
+import 'package:bakery_camera_prototype/src/ui/customer/customer_review_presentation.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/payment_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/ready_view.dart';
@@ -26,11 +27,13 @@ void main() {
       final displayPath = retainedImage.displayPath;
       expect(await File(displayPath).readAsBytes(), retainedImage.jpegBytes);
       final providerInputs = <String>[];
-      final image = CapturedReviewImage(
+      final image = CapturedReviewOverlay(
         imagePath: displayPath,
         imageWidth: 1920,
         imageHeight: 1080,
-        crop: Rect.fromLTWH(10, 20, 300, 400),
+        objects: const [],
+        selectedObjectId: null,
+        onSelectObject: (_) {},
         imageProviderFactory: (file) {
           providerInputs.add(file.path);
           return const _TestImageProvider();
@@ -42,33 +45,33 @@ void main() {
     },
   );
 
-  testWidgets(
-    'selected-object crop changes zoom for both box width and height',
-    (tester) async {
-      Future<double> zoomFor(Rect crop) async {
-        await _pump(
-          tester,
-          CapturedReviewImage(
-            imagePath: 'test/fixtures/missing-capture.jpg',
-            imageWidth: 1920,
-            imageHeight: 1080,
-            crop: crop,
+  testWidgets('review uses the full-scene overlay instead of a selected crop', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      CapturedReviewOverlay(
+        imagePath: 'test/fixtures/missing-capture.jpg',
+        imageWidth: 1920,
+        imageHeight: 1080,
+        objects: const [
+          CustomerReviewObject(
+            objectId: 'object-1',
+            displayNumber: 1,
+            rect: Rect.fromLTWH(10, 20, 300, 400),
+            state: CustomerReviewObjectState.needsChoice,
+            label: 'Review product',
           ),
-        );
-        return tester
-            .widget<Transform>(find.byKey(const Key('selected-object-zoom')))
-            .transform
-            .storage[0];
-      }
+        ],
+        selectedObjectId: 'object-1',
+        onSelectObject: (_) {},
+      ),
+    );
 
-      final compact = await zoomFor(const Rect.fromLTWH(700, 300, 200, 200));
-      final wider = await zoomFor(const Rect.fromLTWH(550, 300, 500, 200));
-      final taller = await zoomFor(const Rect.fromLTWH(700, 200, 200, 500));
-
-      expect(wider, isNot(compact));
-      expect(taller, isNot(compact));
-    },
-  );
+    expect(find.byKey(const Key('captured-review-full-scene')), findsOneWidget);
+    expect(find.byKey(const Key('selected-object-crop')), findsNothing);
+    expect(find.byKey(const Key('selected-object-zoom')), findsNothing);
+  });
 
   testWidgets(
     'manual next customer wins the auto-reset race without surfacing StateError',

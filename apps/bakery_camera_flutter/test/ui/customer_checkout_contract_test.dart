@@ -117,6 +117,87 @@ void main() {
     expect(catalogObject, unknown.objectId);
   });
 
+  testWidgets('links numbered ledger row to the selected image box', (
+    tester,
+  ) async {
+    final result = buildUiInferenceResult();
+    final accepted = ObjectDraft.accepted(
+      inferenceObject: result.objects.first,
+      product: _product('croissant', 'Croissant', 'sweet', 6),
+    );
+    final unresolved = ObjectDraft.unresolved(result.objects.last);
+    await _pump(
+      tester,
+      CustomerReviewView(
+        state: CheckoutState(
+          phase: CheckoutPhase.customerReview,
+          objectDrafts: [accepted, unresolved],
+          lines: const [],
+          capturedEvidenceDisplayPath: 'test/fixtures/missing-capture.jpg',
+          capturedImageWidth: 1920,
+          capturedImageHeight: 1080,
+        ),
+        productForCandidate: (_, sku) =>
+            _product('$sku', 'Top $sku', 'sweet', sku),
+        onChooseTop3: (_, _) {},
+        onOpenCatalog: (_) {},
+        onContinue: () {},
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('customer-review-overlay-object-1')));
+    await tester.pump();
+    final secondRow = find.byKey(const Key('customer-review-row-object-2'));
+    await tester.ensureVisible(secondRow);
+    await tester.tap(secondRow);
+    await tester.pump();
+    expect(
+      find.bySemanticsLabel(
+        '\uc0ac\uc9c4\uc5d0\uc11c 02\ubc88, \uc0c1\ud488\uc744 \ud655\uc778\ud574 \uc8fc\uc138\uc694 \uc120\ud0dd\ub428',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('customer-review-candidate-panel-object-2')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('customer-review-candidate-panel-object-1')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('preserves candidate order and routes catalog and retake', (
+    tester,
+  ) async {
+    final result = buildUiInferenceResult();
+    final calls = <String>[];
+    await _pump(
+      tester,
+      CustomerReviewView(
+        state: CheckoutState(
+          phase: CheckoutPhase.customerReview,
+          objectDrafts: [ObjectDraft.unresolved(result.objects.last)],
+          lines: const [],
+        ),
+        productForCandidate: (_, sku) =>
+            _product('$sku', 'Top ${sku - 9}', 'sweet', sku),
+        onChooseTop3: (_, sku) => calls.add('candidate:$sku'),
+        onOpenCatalog: (id) => calls.add('catalog:$id'),
+        onRetakeCapture: () => calls.add('retake'),
+        onContinue: () {},
+      ),
+    );
+
+    await tester.tap(find.text('Top 2'));
+    await tester.tap(
+      find.text('\uC804\uCCB4 \uC0C1\uD488\uC5D0\uC11C \uCC3E\uAE30'),
+    );
+    await tester.tap(find.text('\uB2E4\uC2DC \uCD2C\uC601'));
+
+    expect(calls, ['candidate:11', 'catalog:object-2', 'retake']);
+  });
+
   testWidgets(
     'order supports quantity remove mismatch and one payment action',
     (tester) async {

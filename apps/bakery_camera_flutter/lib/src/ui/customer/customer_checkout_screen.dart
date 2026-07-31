@@ -127,6 +127,7 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
           onChooseTop3: (objectId, skuId) =>
               widget.controller.chooseTop3(objectId, skuId),
           onOpenCatalog: _showCatalogForObject,
+          onRetakeCapture: () => widget.controller.reportCountMismatch(),
           onContinue: () => widget.controller.continueToOrderReview(),
         ),
         CheckoutPhase.orderReview => OrderReviewView(

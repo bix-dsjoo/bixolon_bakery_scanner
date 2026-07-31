@@ -1,21 +1,24 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import '../../catalog/product.dart';
+import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
 import '../components/bakery_primary_button.dart';
 import '../components/bakery_status_banner.dart';
 import '../components/checkout_scaffold.dart';
 import '../components/price_text.dart';
+import 'captured_review_overlay.dart';
+import 'customer_review_presentation.dart';
 
-class CustomerReviewView extends StatelessWidget {
+/// Links every customer review ledger row to its object in the retained image.
+class CustomerReviewView extends StatefulWidget {
   const CustomerReviewView({
     required this.state,
     required this.productForCandidate,
     required this.onChooseTop3,
     required this.onOpenCatalog,
     required this.onContinue,
+    this.onRetakeCapture,
     super.key,
   });
 
@@ -24,70 +27,124 @@ class CustomerReviewView extends StatelessWidget {
   final void Function(String objectId, int skuId) onChooseTop3;
   final ValueChanged<String> onOpenCatalog;
   final VoidCallback onContinue;
+  final VoidCallback? onRetakeCapture;
+
+  @override
+  State<CustomerReviewView> createState() => _CustomerReviewViewState();
+}
+
+class _CustomerReviewViewState extends State<CustomerReviewView> {
+  String? _selectedObjectId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedObjectId = _initialSelection(widget.state);
+  }
+
+  @override
+  void didUpdateWidget(CustomerReviewView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final selectedObjectId = _selectedObjectId;
+    if (selectedObjectId == null) {
+      _selectedObjectId = _initialSelection(widget.state);
+      return;
+    }
+    final previous = _draftFor(oldWidget.state, selectedObjectId);
+    final current = _draftFor(widget.state, selectedObjectId);
+    if (current == null ||
+        (previous?.isResolved == false && current.isResolved)) {
+      _selectedObjectId = _initialSelection(widget.state);
+    }
+  }
+
+  ObjectDraft? _draftFor(CheckoutState state, String objectId) {
+    for (final draft in state.objectDrafts) {
+      if (draft.inferenceObject.objectId == objectId) return draft;
+    }
+    return null;
+  }
+
+  String? _initialSelection(CheckoutState state) =>
+      state.activeObject?.inferenceObject.objectId ??
+      (state.objectDrafts.isEmpty
+          ? null
+          : state.objectDrafts.first.inferenceObject.objectId);
+
+  void _selectObject(String objectId) => setState(() {
+    _selectedObjectId = objectId;
+  });
 
   @override
   Widget build(BuildContext context) {
-    final draft = state.activeObject;
-    if (draft == null) {
-      return CheckoutScaffold(
-        title: '상품 확인',
-        primaryAction: BakeryPrimaryButton(
-          label: '주문 확인',
-          onPressed: onContinue,
-        ),
-        child: const SizedBox.shrink(),
-      );
-    }
+    final presentation = CustomerReviewPresentation.fromDrafts(
+      widget.state.objectDrafts,
+    );
+    final selectedObjectId = _selectedObjectId;
+    final selectedDraft = selectedObjectId == null
+        ? null
+        : _draftFor(widget.state, selectedObjectId);
+    final unresolvedCount = widget.state.objectDrafts
+        .where((draft) => !draft.isResolved)
+        .length;
+    final allResolved = unresolvedCount == 0;
+
     return CheckoutScaffold(
-      title: '상품 확인',
-      primaryAction: BakeryPrimaryButton(label: '다음', onPressed: null),
+      title: '\uC0C1\uD488 \uD655\uC778',
+      primaryAction: BakeryPrimaryButton(
+        label: allResolved ? '\uC8FC\uBB38 \uD655\uC778' : '\uB2E4\uC74C',
+        onPressed: allResolved ? widget.onContinue : null,
+      ),
       child: Padding(
         padding: const EdgeInsets.only(top: 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             BakeryStatusBanner(
-              status: BakeryStatus.uncertain,
-              title: '이 빵이 맞나요?',
-              message: '한 개씩 확인하면 주문을 정확히 담을 수 있어요.',
+              status: unresolvedCount == 0
+                  ? BakeryStatus.ready
+                  : BakeryStatus.uncertain,
+              title: unresolvedCount == 0
+                  ? '\uD655\uC778 \uC644\uB8CC'
+                  : '\uC774 \uBE75\uC774 \uB9DE\uB098\uC694?',
+              message: unresolvedCount == 0
+                  ? '\uBAA8\uB4E0 \uC0C1\uD488\uC744 \uD655\uC778\uD588\uC5B4\uC694.'
+                  : '\uC9C4\uD589\uD558\uAE30 \uC804 \uBAA8\uB4E0 \uC0C1\uD488\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.',
             ),
-            const SizedBox(height: 20),
-            if (state.capturedEvidenceDisplayPath case final imagePath?) ...[
-              CapturedReviewImage(
+            const SizedBox(height: 16),
+            if (widget.state.capturedEvidenceDisplayPath
+                case final imagePath?) ...[
+              CapturedReviewOverlay(
                 imagePath: imagePath,
-                imageWidth: state.capturedImageWidth ?? 1,
-                imageHeight: state.capturedImageHeight ?? 1,
-                crop: Rect.fromLTRB(
-                  draft.inferenceObject.bboxXyxy[0],
-                  draft.inferenceObject.bboxXyxy[1],
-                  draft.inferenceObject.bboxXyxy[2],
-                  draft.inferenceObject.bboxXyxy[3],
-                ),
+                imageWidth: widget.state.capturedImageWidth ?? 1,
+                imageHeight: widget.state.capturedImageHeight ?? 1,
+                objects: presentation.objects,
+                selectedObjectId: selectedObjectId,
+                onSelectObject: _selectObject,
               ),
               const SizedBox(height: 20),
             ],
-            if (draft.requiresCatalogSelection)
-              const Text('목록에서 상품을 찾아 선택해 주세요.')
-            else ...[
-              for (final candidate in draft.candidates)
-                if (productForCandidate(
-                      draft.inferenceObject.objectId,
-                      candidate.skuId,
-                    )
-                    case final product?)
-                  ListTile(
-                    title: Text(product.displayName),
-                    trailing: PriceText(amount: product.unitPrice),
-                    onTap: () => onChooseTop3(
-                      draft.inferenceObject.objectId,
-                      candidate.skuId,
-                    ),
-                  ),
+            if (!allResolved)
+              Text(
+                '\uD655\uC778\uC774 \uB05D\uB098\uC9C0 \uC54A\uC740 \uC0C1\uD488 $unresolvedCount\uAC1C\uAC00 \uC788\uC2B5\uB2C8\uB2E4.',
+              ),
+            if (!allResolved) const SizedBox(height: 12),
+            for (final item in presentation.objects) ...[
+              _ReviewLedgerRow(
+                item: item,
+                draft: _draftFor(widget.state, item.objectId),
+                selected: item.objectId == selectedObjectId,
+                onTap: () => _selectObject(item.objectId),
+              ),
+              if (item.objectId == selectedObjectId && selectedDraft != null)
+                _SelectedObjectActions(
+                  draft: selectedDraft,
+                  productForCandidate: widget.productForCandidate,
+                  onChooseTop3: widget.onChooseTop3,
+                  onOpenCatalog: widget.onOpenCatalog,
+                  onRetakeCapture: widget.onRetakeCapture,
+                ),
             ],
-            TextButton(
-              onPressed: () => onOpenCatalog(draft.inferenceObject.objectId),
-              child: const Text('전체 상품에서 찾기'),
-            ),
           ],
         ),
       ),
@@ -95,122 +152,96 @@ class CustomerReviewView extends StatelessWidget {
   }
 }
 
-/// Presents only the retained audit still and the currently selected bread.
-/// No recognition geometry, score, or model-facing data is rendered here.
-typedef CustomerReviewImageProviderFactory =
-    ImageProvider<Object> Function(File file);
-
-ImageProvider<Object> customerReviewFileImageProvider(File file) =>
-    FileImage(file);
-
-class CapturedReviewImage extends StatelessWidget {
-  const CapturedReviewImage({
-    required this.imagePath,
-    required this.imageWidth,
-    required this.imageHeight,
-    required this.crop,
-    this.imageProviderFactory = customerReviewFileImageProvider,
-    super.key,
+class _ReviewLedgerRow extends StatelessWidget {
+  const _ReviewLedgerRow({
+    required this.item,
+    required this.draft,
+    required this.selected,
+    required this.onTap,
   });
 
-  final String imagePath;
-  final int imageWidth;
-  final int imageHeight;
-  final Rect crop;
-  final CustomerReviewImageProviderFactory imageProviderFactory;
-
-  ImageProvider<Object> imageProviderForDisplayPath() =>
-      imageProviderFactory(File(imagePath));
+  final CustomerReviewObject item;
+  final ObjectDraft? draft;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final objectCrop = SelectedObjectCropGeometry.forImage(
-      imageWidth: imageWidth,
-      imageHeight: imageHeight,
-      crop: crop,
-    );
-    Widget image(BoxFit fit, AlignmentGeometry alignment) => Image(
-      image: imageProviderForDisplayPath(),
-      fit: fit,
-      alignment: alignment,
-      errorBuilder: (_, _, _) => const ColoredBox(
-        color: Color(0xFFE9E7E2),
-        child: Center(child: Icon(Icons.image_outlined)),
-      ),
-    );
-    return Row(
-      children: [
-        Expanded(
-          child: Semantics(
-            label: '촬영한 트레이 사진',
-            image: true,
-            child: ClipRRect(
-              key: const Key('captured-still'),
-              borderRadius: BorderRadius.circular(8),
-              child: AspectRatio(
-                aspectRatio: imageWidth / imageHeight,
-                child: image(BoxFit.cover, Alignment.center),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        SizedBox(
-          width: 112,
-          child: Semantics(
-            label: '선택한 빵 사진',
-            image: true,
-            child: ClipRRect(
-              key: const Key('selected-object-crop'),
-              borderRadius: BorderRadius.circular(8),
-              child: AspectRatio(
-                aspectRatio: 1,
-                child: Transform.scale(
-                  key: const Key('selected-object-zoom'),
-                  scale: objectCrop.zoom,
-                  alignment: objectCrop.alignment,
-                  child: image(BoxFit.cover, objectCrop.alignment),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
+    final product = draft?.product;
+    return ListTile(
+      key: Key('customer-review-row-${item.objectId}'),
+      selected: selected,
+      leading: Text(item.numberLabel),
+      title: Text(item.label),
+      subtitle: Text('\uC0AC\uC9C4\uC5D0\uC11C ${item.numberLabel}\uBC88'),
+      trailing: product == null ? null : PriceText(amount: product.unitPrice),
+      onTap: onTap,
     );
   }
 }
 
-/// Customer-safe crop presentation geometry. The object box changes both the
-/// framing and zoom, but recognition geometry is never shown to the customer.
-final class SelectedObjectCropGeometry {
-  const SelectedObjectCropGeometry({
-    required this.alignment,
-    required this.zoom,
+class _SelectedObjectActions extends StatelessWidget {
+  const _SelectedObjectActions({
+    required this.draft,
+    required this.productForCandidate,
+    required this.onChooseTop3,
+    required this.onOpenCatalog,
+    required this.onRetakeCapture,
   });
 
-  final Alignment alignment;
-  final double zoom;
+  final ObjectDraft draft;
+  final Product? Function(String objectId, int skuId) productForCandidate;
+  final void Function(String objectId, int skuId) onChooseTop3;
+  final ValueChanged<String> onOpenCatalog;
+  final VoidCallback? onRetakeCapture;
 
-  factory SelectedObjectCropGeometry.forImage({
-    required int imageWidth,
-    required int imageHeight,
-    required Rect crop,
-  }) {
-    final safeWidth = imageWidth > 0 ? imageWidth.toDouble() : 1.0;
-    final safeHeight = imageHeight > 0 ? imageHeight.toDouble() : 1.0;
-    final alignment = Alignment(
-      (crop.center.dx / safeWidth * 2 - 1).clamp(-1.0, 1.0).toDouble(),
-      (crop.center.dy / safeHeight * 2 - 1).clamp(-1.0, 1.0).toDouble(),
-    );
-    final relativeObjectSize = [
-      (crop.width / safeWidth).abs(),
-      (crop.height / safeHeight).abs(),
-    ].reduce((left, right) => left > right ? left : right);
-    return SelectedObjectCropGeometry(
-      alignment: alignment,
-      zoom: (0.72 / relativeObjectSize.clamp(0.01, 1.0))
-          .clamp(1.0, 6.0)
-          .toDouble(),
+  @override
+  Widget build(BuildContext context) {
+    if (draft.isResolved) return const SizedBox.shrink();
+    final objectId = draft.inferenceObject.objectId;
+    return Padding(
+      key: Key('customer-review-candidate-panel-$objectId'),
+      padding: const EdgeInsets.only(left: 16, right: 16, bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (draft.requiresCatalogSelection)
+            const Text(
+              '\uBAA9\uB85D\uC5D0\uC11C \uC0C1\uD488\uC744 \uCC3E\uC544 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.',
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final candidate in draft.candidates)
+                  if (productForCandidate(objectId, candidate.skuId)
+                      case final product?)
+                    OutlinedButton(
+                      onPressed: () => onChooseTop3(objectId, candidate.skuId),
+                      child: Text(product.displayName),
+                    ),
+              ],
+            ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              TextButton(
+                onPressed: () => onOpenCatalog(objectId),
+                child: const Text(
+                  '\uC804\uCCB4 \uC0C1\uD488\uC5D0\uC11C \uCC3E\uAE30',
+                ),
+              ),
+              if (onRetakeCapture != null)
+                TextButton(
+                  onPressed: onRetakeCapture,
+                  child: const Text('\uB2E4\uC2DC \uCD2C\uC601'),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
