@@ -26,6 +26,7 @@ from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
     ScoringPlan,
+    StageFourAscendingReceipt,
     StageFourConfirmationReceipt,
     StageFourSelection,
     confirmation_conditions,
@@ -37,6 +38,7 @@ from bakery_scanner.experiments.rpc_scoring import (
     materialize_locked_ground_truth,
 )
 from bakery_scanner.experiments import rpc_scoring as _rpc_scoring
+from bakery_scanner.experiments import rpc_protocol as _rpc_protocol
 from bakery_scanner.experiments.rpc_support import SupportCandidate, materialize_support_bank, parse_train_capture_stratum, write_support_bank
 
 
@@ -400,8 +402,8 @@ def _locked_selection_artifacts(
     fold: int,
     seed: int,
     *,
-    shot_counts: tuple[int, ...] = (3, 5, 10, 150),
-    failing_shot: int = 3,
+    shot_counts: tuple[int, ...] = (4, 5, 10, 150),
+    failing_shot: int = 4,
 ) -> tuple[StageFourSelection, tuple[Path, ...]]:
     """Build Stage-4 inputs through the real confirmation aggregate writer."""
     module = _score_module()
@@ -522,7 +524,103 @@ def _locked_selection_artifacts(
                 provisional_pass=json.loads(content)["provisional_pass"],
             )
         )
-    return StageFourSelection(tuple(claims)), tuple(paths)
+    provisional = next(
+        claim.condition.shot_count
+        for claim in claims
+        if claim.provisional_pass and claim.condition.shot_count != 150
+    )
+    ascending_claims: list[StageFourAscendingReceipt] = []
+    ascending_reference = _rpc_protocol._new_condition(
+        "m0", "div", 150, fold, seed, "ascending"
+    )
+    for index, shot in enumerate(_rpc_protocol._PROVISIONAL_ASCENDING_LINEAGES[provisional]):
+        condition = _rpc_protocol._new_condition(
+            "m0", "div", shot, fold, seed, "ascending"
+        )
+        bank = materialize_support_bank(
+            {
+                category_id: tuple(
+                    SupportCandidate(
+                        category_id,
+                        f"ascending-{prefix}-{number}",
+                        f"ascending-{prefix}-{number}_camera{(number % 4) + 1}-top.jpg",
+                        hashlib.sha256(f"ascending-{prefix}-{number}".encode()).hexdigest(),
+                        1,
+                        parse_train_capture_stratum(
+                            f"ascending-{prefix}-{number}_camera{(number % 4) + 1}-top.jpg",
+                            category_id,
+                        ),
+                        (float(number + 1), float((number % 7) + 1)),
+                    )
+                    for number in range(150)
+                )
+                for category_id, prefix in ((1, "novel"), (2, "base"))
+            }, method="div", seeds=(seed,)
+        )
+        bank_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ascending-bank-{fold}-{seed}-{index}.json"
+        if not bank_path.exists():
+            write_support_bank(bank_path, bank)
+        candidate_plan = replace(
+            _plan((condition.condition_id,), folds=(fold,), seeds=(seed,)),
+            fold_base_artifacts=(base_artifact,),
+        )
+        reference_plan = replace(
+            _plan((ascending_reference.condition_id,), folds=(fold,), seeds=(seed,)),
+            fold_base_artifacts=(base_artifact,),
+        )
+        candidate_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"ascending-candidate-{fold}-{seed}-{index}.jsonl"
+        reference_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"ascending-reference-{fold}-{seed}-{index}.jsonl"
+        score_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ascending-score-{fold}-{seed}-{index}.json"
+        _write_evidence(
+            candidate_evidence,
+            condition,
+            novel_prediction=None if shot < provisional else 1,
+            support_sha256=bank.sha256,
+        )
+        _write_evidence(reference_evidence, ascending_reference, support_sha256=bank.sha256)
+        candidate_receipt_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ascending-candidate-condition-{fold}-{seed}-{index}.json"
+        reference_receipt_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ascending-reference-condition-{fold}-{seed}-{index}.json"
+        for receipt_path, stage_condition, stage_plan in (
+            (candidate_receipt_path, condition, candidate_plan),
+            (reference_receipt_path, ascending_reference, reference_plan),
+        ):
+            _write_canonical(
+                receipt_path,
+                ExperimentReceipt.completed(
+                    stage_condition,
+                    **{**HASHES, "support_sha256": bank.sha256},
+                    cohort_manifest_sha256=DEVELOPMENT_GROUND_TRUTH_SHA256,
+                    novel_category_ids=(1,),
+                    base_category_ids=(2,),
+                    scoring_plan=stage_plan,
+                    base_checkpoint_sha256=base_checkpoint_sha256,
+                    base_checkpoint_evidence_sha256=base_evidence_sha256,
+                    environment_lock_digest="sha256:environment",
+                    output_uri=f"file:///external/ascending/{fold}/{seed}/{index}",
+                ).to_dict(),
+            )
+        module.score(
+            candidate_evidence,
+            reference_evidence,
+            candidate_receipt_path,
+            reference_receipt_path,
+            ground_truth_path,
+            base_evidence_path,
+            score_path,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+            support_bank_path=bank_path,
+        )
+        content = score_path.read_bytes()
+        ascending_claims.append(
+            StageFourAscendingReceipt(
+                condition=condition,
+                score_receipt_path=str(score_path),
+                score_receipt_sha256=hashlib.sha256(content).hexdigest(),
+                provisional_pass=json.loads(content)["minimum_rule_inputs"]["registered_coverage"] > 0.0
+                and shot >= provisional,
+            )
+        )
+    return StageFourSelection(tuple(claims), tuple(ascending_claims)), tuple(paths)
 
 
 def test_k80_locked_schedule_validates_three_real_stage_four_receipts():
@@ -1842,6 +1940,39 @@ def test_single_confirmation_aggregate_is_a_genuine_stage_four_artifact(
             trusted_index=_trusted_index(),
         )
     } == {5, 150}
+
+
+def test_locked_scheduler_requires_the_hash_bound_complete_ascending_lineage():
+    """Confirmation-only receipts cannot claim the first Stage-2/3 pass."""
+    selection, paths = _locked_selection_artifacts(0, 101)
+    without_lineage = StageFourSelection(selection.confirmation_receipts)
+
+    with pytest.raises(ValueError, match="hash-bound ascending evaluation lineage"):
+        locked_conditions(
+            without_lineage,
+            confirmation_score_receipt_paths=paths,
+            trusted_index=_trusted_index(),
+        )
+
+
+def test_locked_scheduler_rejects_a_missing_or_unreadable_ascending_lineage_receipt():
+    """A digest claim is insufficient unless the actual prior score is resolved."""
+    selection, paths = _locked_selection_artifacts(0, 101)
+    first = selection.ascending_receipts[0]
+    broken = StageFourSelection(
+        selection.confirmation_receipts,
+        (
+            replace(first, score_receipt_path="C:/missing-stage-two-score.json"),
+            *selection.ascending_receipts[1:],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cannot read Stage-4 ascending score receipt"):
+        locked_conditions(
+            broken,
+            confirmation_score_receipt_paths=paths,
+            trusted_index=_trusted_index(),
+        )
 
 
 def test_locked_scheduler_rejects_a_self_consistent_forged_stage_four_aggregate(

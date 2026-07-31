@@ -329,6 +329,12 @@ Only these frozen conditions enter the expensive confirmation:
 3. the next larger passing anchor;
 4. the balanced 150-shot reference.
 
+"Last failing" is not an arbitrary smaller shot count. It is the immediate
+predecessor in the preregistered Stage-2/3 sequence: for example, a `k=5`
+candidate requires the Stage-3 `k=4` failure, `k=8` requires `k=6`, and
+`k=20` requires `k=18`. A candidate that skips an evaluated anchor or
+refinement point is invalid.
+
 When `k=1` is itself the provisional minimum, there is no lower failing shot.
 Its preregistered special case therefore confirms exactly `k=1`, the next
 passing anchor `k=3`, and `k=150`; it must not invent a lower failure. The
@@ -385,6 +391,14 @@ receipt path, require canonical bytes whose SHA-256 values equal the claims,
 and verify each is a completed provisional Stage-4 confirmation receipt for
 the declared condition, cohort, scoring plan, method, selector, fold, and
 support seed.
+
+It also carries one hash-bound, canonical direct scorer receipt for every
+Stage-2/3 point in the selected ascending lineage (all prior failures, the
+smallest passing point, its next passing anchor, and the mandatory 150-shot
+ascending reference). Each receipt is re-derived from its raw evidence before
+Stage 5 and must reproduce its claimed pass/fail rule. This prevents a
+self-consistent confirmation quartet from inventing a minimum after skipped
+ascending or refinement candidates.
 
 If the provisional minimum passes, it is the RPC minimum for this model and
 capture contract. If it fails, no larger count is selected from the same locked

@@ -587,7 +587,7 @@ def test_stage_one_derivation_cache_reauthenticates_materialized_raw_images(
 def test_confirmation_and_locked_conditions_bind_the_150_shot_reference(tmp_path: Path):
     confirmation = confirmation_conditions(
         ("m0", "div"),
-        shot_counts=(3, 5, 10, 150),
+        shot_counts=(4, 5, 10, 150),
         seeds=(101,),
         folds=(0,),
     )
@@ -597,7 +597,7 @@ def test_confirmation_and_locked_conditions_bind_the_150_shot_reference(tmp_path
     )
 
     assert {condition.stage for condition in confirmation} == {"confirmation"}
-    assert {condition.shot_count for condition in confirmation} == {3, 5, 10, 150}
+    assert {condition.shot_count for condition in confirmation} == {4, 5, 10, 150}
     assert {condition.stage for condition in locked} == {"locked"}
     assert {condition.shot_count for condition in locked} == {5, 150}
 
@@ -687,7 +687,7 @@ def test_k80_three_receipt_exception_still_requires_the_40_shot_failure():
 
 
 def test_stage_four_requires_the_preregistered_adjacent_larger_anchor():
-    """A certificate cannot skip k=10 and call a later k the confirmation anchor."""
+    """A certificate cannot skip the fixed predecessor or next larger anchor."""
     skipped_anchor = tuple(
         _rpc_protocol._new_condition("m0", "div", shot, 0, 101, "confirmation")
         for shot in (1, 5, 20, 150)
@@ -701,9 +701,9 @@ def test_stage_four_requires_the_preregistered_adjacent_larger_anchor():
         for index, condition in enumerate(skipped_anchor)
     )
 
-    with pytest.raises(ValueError, match="adjacent next-larger anchor"):
+    with pytest.raises(ValueError, match="preceding ascending point"):
         StageFourSelection(skipped_certificate)
-    with pytest.raises(ValueError, match="adjacent next-larger anchor"):
+    with pytest.raises(ValueError, match="preceding ascending point"):
         confirmation_conditions(
             ("m0", "div"),
             shot_counts=(1, 5, 20, 150),
@@ -713,7 +713,7 @@ def test_stage_four_requires_the_preregistered_adjacent_larger_anchor():
 
     valid_conditions = confirmation_conditions(
         ("m0", "div"),
-        shot_counts=(1, 5, 10, 150),
+        shot_counts=(4, 5, 10, 150),
         seeds=(101,),
         folds=(0,),
     )
@@ -722,13 +722,33 @@ def test_stage_four_requires_the_preregistered_adjacent_larger_anchor():
             StageFourConfirmationReceipt(
                 condition=condition,
                 score_receipt_sha256=f"{index + 5:x}" * 64,
-                provisional_pass=condition.shot_count != 1,
+                provisional_pass=condition.shot_count != 4,
             )
             for index, condition in enumerate(valid_conditions)
         )
     )
 
     assert valid.provisional_minimum_shot_count == 5
+
+
+def test_stage_four_rejects_a_provisional_candidate_that_skips_ascending_lineage():
+    """k=8 cannot cite k=1 as its last failure after skipping k=3/5/6."""
+    skipped_candidate = tuple(
+        _rpc_protocol._new_condition("m0", "div", shot, 0, 101, "confirmation")
+        for shot in (1, 8, 10, 150)
+    )
+
+    with pytest.raises(ValueError, match="immediate preceding ascending point"):
+        StageFourSelection(
+            tuple(
+                StageFourConfirmationReceipt(
+                    condition=condition,
+                    score_receipt_sha256=f"{index + 1:x}" * 64,
+                    provisional_pass=condition.shot_count != 1,
+                )
+                for index, condition in enumerate(skipped_candidate)
+            )
+        )
 
 
 def test_all_available_is_an_ascending_diagnostic_not_a_shot_condition():
@@ -882,7 +902,7 @@ def test_stage_one_selection_requires_all_declared_fold_seed_cells(tmp_path: Pat
 def _stage_four_selection() -> StageFourSelection:
     conditions = confirmation_conditions(
         ("m0", "div"),
-        shot_counts=(3, 5, 10, 150),
+        shot_counts=(4, 5, 10, 150),
         seeds=(101,),
         folds=(0,),
     )
@@ -891,7 +911,7 @@ def _stage_four_selection() -> StageFourSelection:
             StageFourConfirmationReceipt(
                 condition=condition,
                 score_receipt_sha256=f"{index + 1:x}" * 64,
-                provisional_pass=condition.shot_count != 3,
+                provisional_pass=condition.shot_count != 4,
             )
             for index, condition in enumerate(conditions)
         )

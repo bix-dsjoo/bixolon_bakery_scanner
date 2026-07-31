@@ -25,6 +25,42 @@ _REFINEMENT_SHOTS = tuple(
 _CONFIRMATION_SHOTS = tuple(
     sorted(set(_ASCENDING_SHOTS + _EXTENDED_ASCENDING_SHOTS + _REFINEMENT_SHOTS))
 )
+# Stage 3 is a fixed, ordered refinement of the Stage-2 anchors.  A Stage-4
+# certificate may never call an earlier anchor the "last failure" merely
+# because that produces a self-consistent four-shot quartet.
+_PROVISIONAL_PREDECESSORS = {
+    3: 1,
+    4: 3,
+    5: 4,
+    6: 5,
+    8: 6,
+    10: 8,
+    12: 10,
+    15: 12,
+    18: 15,
+    20: 18,
+    40: 20,
+    80: 40,
+}
+_PROVISIONAL_ASCENDING_LINEAGES = {
+    # Every entry is the actual Stage-2/3 sequence needed to establish the
+    # first passing point, followed by the next-anchor check and the mandatory
+    # balanced reference.  Do not derive this from numeric ordering alone:
+    # refinement points exist only inside their preregistered interval.
+    1: (1, 3, 150),
+    3: (1, 3, 5, 150),
+    4: (1, 3, 4, 5, 150),
+    5: (1, 3, 4, 5, 10, 150),
+    6: (1, 3, 5, 6, 10, 150),
+    8: (1, 3, 5, 6, 8, 10, 150),
+    10: (1, 3, 5, 6, 8, 10, 20, 150),
+    12: (1, 3, 5, 10, 12, 20, 150),
+    15: (1, 3, 5, 10, 12, 15, 20, 150),
+    18: (1, 3, 5, 10, 12, 15, 18, 20, 150),
+    20: (1, 3, 5, 10, 12, 15, 18, 20, 40, 150),
+    40: (1, 3, 5, 10, 20, 40, 80, 150),
+    80: (1, 3, 5, 10, 20, 40, 80, 150),
+}
 _HASH_FIELDS = (
     "condition_manifest_sha256",
     "model_sha256",
@@ -70,7 +106,12 @@ def _confirmation_anchor_lineage(shot_counts: Iterable[int]) -> tuple[int, int]:
         )
     if len(non_reference) != 3:
         raise ValueError("Stage-4 confirmation requires three non-reference conditions")
-    _, provisional_minimum, next_anchor = non_reference
+    last_failure, provisional_minimum, next_anchor = non_reference
+    expected_last_failure = _PROVISIONAL_PREDECESSORS.get(provisional_minimum)
+    if last_failure != expected_last_failure:
+        raise ValueError(
+            "Stage-4 confirmation requires the immediate preceding ascending point as last failure"
+        )
     expected_next_anchor = _next_larger_confirmation_anchor(provisional_minimum)
     if next_anchor != expected_next_anchor:
         raise ValueError(
@@ -107,9 +148,7 @@ class ExperimentCondition:
             raise ValueError("all_available diagnostic is allowed only in ascending stage")
         if self.support_scope == "fixed_k" and self.stage == "stage1" and self.shot_count not in _STAGE_ONE_SHOTS:
             raise ValueError("unsupported Stage-1 condition")
-        if self.support_scope == "fixed_k" and self.stage == "ascending" and self.shot_count not in (
-            _ASCENDING_SHOTS + _EXTENDED_ASCENDING_SHOTS
-        ):
+        if self.support_scope == "fixed_k" and self.stage == "ascending" and self.shot_count not in _CONFIRMATION_SHOTS:
             raise ValueError("unsupported ascending condition")
         if self.support_scope == "fixed_k" and self.stage in {"confirmation", "locked"} and self.shot_count not in _CONFIRMATION_SHOTS:
             raise ValueError("unsupported confirmation or locked condition")
@@ -204,10 +243,54 @@ class StageFourConfirmationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class StageFourAscendingReceipt:
+    """One hash-bound Stage-2/3 score proving the selected learning curve."""
+
+    condition: ExperimentCondition
+    score_receipt_path: str
+    score_receipt_sha256: str
+    provisional_pass: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.condition, ExperimentCondition) or self.condition.stage != "ascending":
+            raise ValueError("Stage-4 ascending receipt requires an ascending condition")
+        if not isinstance(self.score_receipt_path, str) or not self.score_receipt_path:
+            raise ValueError("Stage-4 ascending score receipt path must be nonempty")
+        _validate_sha256("Stage-4 ascending score receipt SHA-256", self.score_receipt_sha256)
+        if type(self.provisional_pass) is not bool:
+            raise ValueError("Stage-4 ascending provisional_pass must be boolean")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "condition": self.condition.to_dict(),
+            "provisional_pass": self.provisional_pass,
+            "score_receipt_path": self.score_receipt_path,
+            "score_receipt_sha256": self.score_receipt_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "StageFourAscendingReceipt":
+        if not isinstance(value, Mapping) or set(value) != {
+            "condition", "provisional_pass", "score_receipt_path", "score_receipt_sha256"
+        }:
+            raise ValueError("invalid Stage-4 ascending receipt")
+        condition = value["condition"]
+        if not isinstance(condition, Mapping):
+            raise ValueError("invalid Stage-4 ascending receipt")
+        return cls(
+            condition=ExperimentCondition.from_dict(condition),
+            provisional_pass=value["provisional_pass"],  # type: ignore[arg-type]
+            score_receipt_path=value["score_receipt_path"],  # type: ignore[arg-type]
+            score_receipt_sha256=value["score_receipt_sha256"],  # type: ignore[arg-type]
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class StageFourSelection:
     """The only schedulable Stage-5 source: a frozen Stage-4 confirmation set."""
 
     confirmation_receipts: tuple[StageFourConfirmationReceipt, ...]
+    ascending_receipts: tuple[StageFourAscendingReceipt, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.confirmation_receipts, tuple) or len(self.confirmation_receipts) not in {3, 4}:
@@ -245,6 +328,37 @@ class StageFourSelection:
             raise ValueError("Stage-4 selection requires last failure and next passing anchor")
         if not passed[150]:
             raise ValueError("Stage-4 balanced 150-shot reference must pass")
+        if not isinstance(self.ascending_receipts, tuple) or any(
+            not isinstance(item, StageFourAscendingReceipt)
+            for item in self.ascending_receipts
+        ):
+            raise ValueError("Stage-4 selection contains an invalid ascending receipt")
+        if self.ascending_receipts:
+            self._validate_ascending_receipt_shape(provisional)
+
+    def _validate_ascending_receipt_shape(self, provisional: int) -> None:
+        """Reject incomplete or self-consistent-but-skipped learning curves."""
+        first = self.ascending_receipts[0].condition
+        if any(
+            (item.condition.method, item.condition.selector, item.condition.fold, item.condition.support_seed)
+            != (first.method, first.selector, first.fold, first.support_seed)
+            for item in self.ascending_receipts
+        ):
+            raise ValueError("Stage-4 ascending receipts must share method, selector, fold, and seed")
+        if (first.method, first.selector, first.fold, first.support_seed) != (
+            self.method, self.selector, self.fold, self.support_seed
+        ):
+            raise ValueError("Stage-4 ascending receipts do not match confirmation coordinates")
+        expected_shots = _PROVISIONAL_ASCENDING_LINEAGES[provisional]
+        shots = tuple(item.condition.shot_count for item in self.ascending_receipts)
+        if len(shots) != len(set(shots)) or set(shots) != set(expected_shots):
+            raise ValueError("Stage-4 ascending receipts do not cover the complete preregistered lineage")
+        passed = {item.condition.shot_count: item.provisional_pass for item in self.ascending_receipts}
+        if any(passed[shot] for shot in expected_shots if shot < provisional) or not passed[provisional]:
+            raise ValueError("Stage-4 ascending receipts do not prove the smallest passing point")
+        next_anchor = _next_larger_confirmation_anchor(provisional)
+        if not passed[next_anchor] or not passed[150]:
+            raise ValueError("Stage-4 ascending receipts require passing next anchor and reference")
 
     @property
     def method(self) -> str:
@@ -274,24 +388,31 @@ class StageFourSelection:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "ascending_receipts": [
+                item.to_dict() for item in self.ascending_receipts
+            ],
             "confirmation_receipts": [
                 item.to_dict() for item in self.confirmation_receipts
             ],
-            "schema_version": 1,
+            "schema_version": 2,
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "StageFourSelection":
         if not isinstance(value, Mapping) or set(value) != {
-            "confirmation_receipts", "schema_version"
-        } or value.get("schema_version") != 1 or not isinstance(value.get("confirmation_receipts"), list):
+            "ascending_receipts", "confirmation_receipts", "schema_version"
+        } or value.get("schema_version") != 2 or not isinstance(value.get("confirmation_receipts"), list) or not isinstance(value.get("ascending_receipts"), list):
             raise ValueError("invalid Stage-4 selection")
         try:
             return cls(
                 confirmation_receipts=tuple(
                     StageFourConfirmationReceipt.from_dict(item)
                     for item in value["confirmation_receipts"]  # type: ignore[union-attr]
-                )
+                ),
+                ascending_receipts=tuple(
+                    StageFourAscendingReceipt.from_dict(item)
+                    for item in value["ascending_receipts"]  # type: ignore[union-attr]
+                ),
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid Stage-4 selection") from exc
@@ -398,7 +519,102 @@ def validate_stage_four_confirmation_score_receipts(
         )
     if len(bindings) != 1:
         raise ValueError("Stage-4 confirmation score receipts do not share cohort and scoring plan")
-    return next(iter(bindings))
+    binding = next(iter(bindings))
+    _validate_stage_four_ascending_lineage(
+        selection,
+        binding=binding,
+        trusted_source_root=trusted_source_root,
+    )
+    return binding
+
+
+def _validate_stage_four_ascending_lineage(
+    selection: StageFourSelection,
+    *,
+    binding: StageFourConfirmationBinding,
+    trusted_source_root: Path,
+) -> None:
+    """Authenticate every score that established the Stage-2/3 minimum.
+
+    The confirmation quartet is deliberately a separate expensive evaluation.
+    Its four booleans cannot prove that the candidate was the first point to
+    pass in the earlier ascending/refinement funnel.  These immutable direct
+    scorer receipts close that gap and are re-derived before every Stage-5 use.
+    """
+    if not selection.ascending_receipts:
+        raise ValueError("Stage-4 selection lacks hash-bound ascending evaluation lineage")
+    provisional = selection.provisional_minimum_shot_count
+    expected_shots = _PROVISIONAL_ASCENDING_LINEAGES[provisional]
+    if len(selection.ascending_receipts) != len(expected_shots):
+        raise ValueError("Stage-4 ascending receipts do not cover the complete preregistered lineage")
+    try:
+        from bakery_scanner.experiments.rpc_scoring import (
+            _minimum_rule_inputs_pass,
+            validate_score_receipt_derivation,
+        )
+    except ImportError as exc:
+        raise ValueError("Stage-4 ascending scorer verifier is unavailable") from exc
+    for claim in selection.ascending_receipts:
+        path = Path(claim.score_receipt_path)
+        try:
+            content = path.read_bytes()
+            receipt = json.loads(
+                content.decode("utf-8"), object_pairs_hook=_unique_json_object
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("cannot read Stage-4 ascending score receipt") from exc
+        if not isinstance(receipt, dict) or canonical_json_bytes(receipt) != content:
+            raise ValueError("Stage-4 ascending score receipt is not canonical")
+        if hashlib.sha256(content).hexdigest() != claim.score_receipt_sha256:
+            raise ValueError("Stage-4 ascending score receipt SHA-256 does not match selection")
+        if (
+            receipt.get("schema_version") != 2
+            or receipt.get("kind") != "rpc-fewshot-score-receipt"
+            or receipt.get("status") != "completed"
+            or receipt.get("decision_status") != "non_final"
+        ):
+            raise ValueError("Stage-4 ascending receipt is not a completed scorer receipt")
+        candidate_value = receipt.get("candidate_condition")
+        reference_value = receipt.get("reference_condition")
+        if not isinstance(candidate_value, Mapping) or not isinstance(reference_value, Mapping):
+            raise ValueError("Stage-4 ascending receipt lacks canonical conditions")
+        try:
+            candidate = ExperimentCondition.from_dict(candidate_value)
+            reference = ExperimentCondition.from_dict(reference_value)
+        except ValueError as exc:
+            raise ValueError("Stage-4 ascending receipt has invalid conditions") from exc
+        if candidate != claim.condition or candidate.to_dict() != dict(candidate_value):
+            raise ValueError("Stage-4 ascending receipt condition does not match selection")
+        if (
+            candidate.stage != "ascending"
+            or reference.stage != "ascending"
+            or reference.shot_count != 150
+            or (reference.method, reference.selector, reference.fold, reference.support_seed)
+            != (candidate.method, candidate.selector, candidate.fold, candidate.support_seed)
+        ):
+            raise ValueError("Stage-4 ascending receipt does not belong to the ascending funnel")
+        try:
+            plan = ScoringPlan.from_dict(receipt.get("candidate_scoring_plan"))  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Stage-4 ascending receipt has invalid scoring plan") from exc
+        if (
+            plan.expected_condition_ids != (candidate.condition_id,)
+            or _stage_four_plan_context(plan) != binding.scoring_plan_fingerprint
+        ):
+            raise ValueError("Stage-4 ascending receipt scoring plan does not match confirmation")
+        provenance = receipt.get("candidate_provenance")
+        if not isinstance(provenance, Mapping) or provenance.get("cohort_manifest_sha256") != binding.cohort_manifest_sha256:
+            raise ValueError("Stage-4 ascending receipt cohort does not match confirmation")
+        try:
+            actual_pass = _minimum_rule_inputs_pass(receipt.get("minimum_rule_inputs"))
+            validate_score_receipt_derivation(
+                receipt,
+                trusted_source_root=trusted_source_root,
+            )
+        except ValueError as exc:
+            raise ValueError("Stage-4 ascending receipt is not derived from scorer artifacts") from exc
+        if actual_pass is not claim.provisional_pass:
+            raise ValueError("Stage-4 ascending receipt decision does not match scorer inputs")
 
 
 def validate_stage_four_binding_for_locked_target(
