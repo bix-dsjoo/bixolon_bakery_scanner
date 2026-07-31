@@ -79,6 +79,8 @@ def score(
     reference_novel, reference_base = condition_cohort(reference_condition)
     if candidate_novel != reference_novel or candidate_base != reference_base:
         raise ValueError("candidate/reference condition cohort mismatch")
+    if _cohort_manifest_sha256(condition) != _cohort_manifest_sha256(reference_condition):
+        raise ValueError("candidate/reference cohort manifest mismatch")
     statuses = (condition.get("status"), reference_condition.get("status"))
     if statuses != ("completed", "completed"):
         write_new_json(output, {
@@ -131,6 +133,13 @@ def _provenance(condition: Mapping[str, object], evidence_path: Path) -> dict[st
         "cohort_manifest_sha256": cohort["manifest_sha256"],
         **dict(hashes),
     }
+
+
+def _cohort_manifest_sha256(condition: Mapping[str, object]) -> str:
+    cohort = condition.get("cohort")
+    if not isinstance(cohort, Mapping) or not isinstance(cohort.get("manifest_sha256"), str):
+        raise ValueError("condition receipt lacks cohort provenance")
+    return cohort["manifest_sha256"]
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
