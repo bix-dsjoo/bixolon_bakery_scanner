@@ -218,8 +218,14 @@ class _Warning extends StatelessWidget {
   const _Warning();
 
   @override
-  Widget build(BuildContext context) => const Card(
-    child: ListTile(
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.error.withValues(alpha: 0.045),
+      border: Border.symmetric(
+        horizontal: BorderSide(color: Theme.of(context).dividerColor),
+      ),
+    ),
+    child: const ListTile(
       leading: Icon(Icons.warning_amber_rounded),
       title: Text('증거 파일을 확인할 수 없습니다'),
       subtitle: Text('파일이 없거나 해시가 일치하지 않습니다. 거래 기록은 그대로 보존됩니다.'),
@@ -233,7 +239,12 @@ class _OrderCard extends StatelessWidget {
   final AdminFinalOrder order;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      border: Border.symmetric(
+        horizontal: BorderSide(color: Theme.of(context).dividerColor),
+      ),
+    ),
     child: Padding(
       padding: const EdgeInsets.all(16),
       child: Column(

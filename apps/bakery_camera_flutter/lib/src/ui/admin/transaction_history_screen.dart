@@ -174,11 +174,12 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                 child: _items.isEmpty && _reloadError == null
                     ? const Center(child: Text('조건에 맞는 거래가 없습니다'))
                     : ListView.separated(
+                        key: const ValueKey('transaction-list'),
                         itemCount:
                             _items.length +
                             (_nextCursor == null ? 0 : 1) +
                             (_reloadError == null ? 0 : 1),
-                        separatorBuilder: (_, _) => const SizedBox(height: 8),
+                        separatorBuilder: (_, _) => const Divider(),
                         itemBuilder: (context, index) {
                           final errorOffset = _reloadError == null ? 0 : 1;
                           if (_reloadError != null && index == 0) {
@@ -364,7 +365,7 @@ class _Filters extends StatelessWidget {
           ),
         ),
       ),
-      OutlinedButton.icon(
+      OutlinedButton(
         onPressed: () async {
           final selected = await showDateRangePicker(
             context: context,
@@ -389,8 +390,7 @@ class _Filters extends StatelessWidget {
             ),
           );
         },
-        icon: const Icon(Icons.date_range_outlined),
-        label: const Text('기간 선택'),
+        child: const Text('기간 선택'),
       ),
       DropdownButton<TransactionPaymentStatus>(
         value: filter.paymentStatus,
@@ -521,7 +521,8 @@ class _TransactionTile extends StatelessWidget {
   final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
     child: ListTile(
       onTap: onTap,
       title: Text(_outcome(item)),

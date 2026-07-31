@@ -37,7 +37,7 @@ class PaymentCompleteIllustration extends StatelessWidget {
     image: true,
     child: Image.asset(
       'assets/illustrations/payment_complete.png',
-      height: 144,
+      height: 120,
       fit: BoxFit.contain,
       excludeFromSemantics: true,
       errorBuilder: (_, _, _) => const SizedBox.shrink(),

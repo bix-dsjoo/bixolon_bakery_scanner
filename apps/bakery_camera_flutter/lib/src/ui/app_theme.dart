@@ -59,6 +59,38 @@ ThemeData buildBakeryTheme() {
     extensions: [tokens],
     textTheme: textTheme,
     dividerColor: tokens.divider,
+    dividerTheme: const DividerThemeData(
+      color: Color(0xFFE5E3E0),
+      thickness: 1,
+      space: 1,
+    ),
+    cardTheme: CardThemeData(
+      color: tokens.paper,
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        side: BorderSide(color: tokens.divider),
+        borderRadius: BorderRadius.circular(tokens.surfaceRadius),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: false,
+      isDense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 0, vertical: 12),
+      enabledBorder: UnderlineInputBorder(
+        borderSide: BorderSide(color: tokens.divider),
+      ),
+      focusedBorder: UnderlineInputBorder(
+        borderSide: BorderSide(color: tokens.focus, width: 2),
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      minTileHeight: 48,
+      shape: const RoundedRectangleBorder(),
+      iconColor: tokens.mutedInk,
+      textColor: tokens.ink,
+    ),
     focusColor: tokens.focus.withValues(alpha: 0.14),
     filledButtonTheme: FilledButtonThemeData(
       style: ButtonStyle(

@@ -42,7 +42,7 @@ void main() {
         () => find.byType(CustomerCheckoutScreen).evaluate().isNotEmpty,
       );
 
-      await tester.tap(find.byIcon(Icons.admin_panel_settings_outlined).first);
+      await tester.tap(find.text('관리자').first);
       await _pumpUntil(
         tester,
         () => find.byType(AdminEntryConfirmationSheet).evaluate().isNotEmpty,
@@ -71,7 +71,7 @@ void main() {
       await tester.pump();
       modes!.updateTransactionFilter('completed');
 
-      await tester.tap(find.byIcon(Icons.storefront_outlined));
+      await tester.tap(find.text('고객 화면으로 돌아가기'));
       await _pumpUntil(
         tester,
         () =>
@@ -82,7 +82,7 @@ void main() {
       expect(modes!.mode, AppMode.customer);
       expect(fixture.controller.state.phase, CheckoutPhase.ready);
 
-      await tester.tap(find.byIcon(Icons.admin_panel_settings_outlined).first);
+      await tester.tap(find.text('관리자').first);
       await _pumpUntil(
         tester,
         () => find.byType(AdminEntryConfirmationSheet).evaluate().isNotEmpty,

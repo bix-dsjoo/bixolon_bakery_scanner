@@ -219,10 +219,9 @@ class CustomerAdminEntryControl extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => TextButton.icon(
+  Widget build(BuildContext context) => TextButton(
     onPressed: () => _requestAdminEntry(context),
-    icon: const Icon(Icons.admin_panel_settings_outlined),
-    label: const Text('관리자'),
+    child: const Text('관리자'),
   );
 }
 

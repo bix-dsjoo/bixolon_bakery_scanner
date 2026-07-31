@@ -19,6 +19,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('transaction-list')), findsOneWidget);
+    expect(find.byType(Card), findsNothing);
     expect(find.text('결제 완료'), findsOneWidget);
     expect(find.text('자동 확인'), findsOneWidget);
     expect(find.text('session-1'), findsOneWidget);

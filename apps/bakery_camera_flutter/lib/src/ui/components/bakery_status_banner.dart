@@ -28,13 +28,14 @@ class BakeryStatusBanner extends StatelessWidget {
     };
 
     return Semantics(
+      key: const ValueKey('status-message'),
       container: true,
       label: '$title. $message',
       child: ExcludeSemantics(
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: tokens.paper,
-            border: Border(left: BorderSide(color: presentation.$2, width: 4)),
+            color: presentation.$2.withValues(alpha: 0.045),
+            border: Border.all(color: tokens.divider),
             borderRadius: BorderRadius.circular(tokens.surfaceRadius),
           ),
           child: Padding(

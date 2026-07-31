@@ -124,10 +124,9 @@ class _AdminNavigation extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.all(16),
-            child: OutlinedButton.icon(
+            child: OutlinedButton(
               onPressed: onReturnToCustomer,
-              icon: const Icon(Icons.storefront_outlined),
-              label: const Text('고객 화면으로 돌아가기'),
+              child: const Text('고객 화면으로 돌아가기'),
             ),
           ),
         ],
@@ -157,11 +156,14 @@ class _DestinationTile extends StatelessWidget {
         color: Colors.transparent,
         child: ListTile(
           selected: selected,
-          selectedTileColor: BixolonThemeExtension.of(
-            context,
-          ).action.withValues(alpha: 0.10),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-          title: Text(destination.label),
+          selectedTileColor: BixolonThemeExtension.of(context).canvas,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          title: Text(
+            destination.label,
+            style: TextStyle(
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
           onTap: onTap,
         ),
       ),
@@ -212,9 +214,11 @@ class _AdminModeLabel extends StatelessWidget {
       ],
       Semantics(
         label: '관리자 모드',
-        child: const Chip(
-          avatar: Icon(Icons.admin_panel_settings_outlined, size: 18),
-          label: Text('관리자 모드'),
+        child: Text(
+          '관리자 모드',
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            color: BixolonThemeExtension.of(context).mutedInk,
+          ),
         ),
       ),
     ],

@@ -50,14 +50,14 @@ class CheckoutScaffold extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
                   child: DecoratedBox(
+                    key: const ValueKey('customer-page-title'),
                     decoration: BoxDecoration(
                       border: Border(
-                        left: BorderSide(color: tokens.action, width: 4),
-                        bottom: BorderSide(color: tokens.ink, width: 1),
+                        bottom: BorderSide(color: tokens.divider, width: 1),
                       ),
                     ),
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 0, 12),
+                      padding: const EdgeInsets.only(bottom: 12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [

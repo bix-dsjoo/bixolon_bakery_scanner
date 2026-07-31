@@ -26,6 +26,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('diagnostics-sections')), findsOneWidget);
+    expect(find.byType(Card), findsNothing);
     expect(find.text('고객 계산을 계속할 수 있어요'), findsOneWidget);
     expect(find.text('시스템 다시 확인하기'), findsOneWidget);
     expect(

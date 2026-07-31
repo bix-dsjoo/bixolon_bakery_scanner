@@ -22,11 +22,7 @@ class RetakeRequiredView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => CheckoutScaffold(
     title: '다시 확인',
-    primaryAction: BakeryPrimaryButton(
-      label: '다시 촬영',
-      icon: Icons.camera_alt_outlined,
-      onPressed: onRetake,
-    ),
+    primaryAction: BakeryPrimaryButton(label: '다시 촬영', onPressed: onRetake),
     child: Padding(
       padding: const EdgeInsets.only(top: 24),
       child: Column(
@@ -39,11 +35,7 @@ class RetakeRequiredView extends StatelessWidget {
           ),
           if (manualCartEligible) ...[
             const SizedBox(height: 16),
-            TextButton.icon(
-              onPressed: onManualEntry,
-              icon: const Icon(Icons.list_alt_outlined),
-              label: const Text('직접 담기'),
-            ),
+            TextButton(onPressed: onManualEntry, child: const Text('직접 담기')),
           ],
         ],
       ),

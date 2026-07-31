@@ -29,8 +29,8 @@ class BixolonThemeExtension extends ThemeExtension<BixolonThemeExtension> {
     confirmed: Color(0xFF0E8A72),
     uncertainty: Color(0xFFC76B00),
     error: Color(0xFFC43A3A),
-    controlRadius: 6,
-    surfaceRadius: 12,
+    controlRadius: 4,
+    surfaceRadius: 8,
   );
 
   final Color canvas;

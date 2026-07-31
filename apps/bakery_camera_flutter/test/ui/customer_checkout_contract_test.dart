@@ -113,7 +113,7 @@ void main() {
     );
     await tester.tap(find.text('Top 2'));
     expect(chosen, '11');
-    await tester.tap(find.byIcon(Icons.search));
+    await tester.tap(find.text('전체 상품에서 찾기'));
     expect(catalogObject, unknown.objectId);
   });
 
@@ -140,7 +140,7 @@ void main() {
       );
       await tester.tap(find.byIcon(Icons.add).first);
       await tester.tap(find.byIcon(Icons.delete_outline));
-      await tester.tap(find.byIcon(Icons.restart_alt));
+      await tester.tap(find.text('실제 빵 수가 달라요'));
       await tester.tap(find.byType(FilledButton));
       expect(
         actions,

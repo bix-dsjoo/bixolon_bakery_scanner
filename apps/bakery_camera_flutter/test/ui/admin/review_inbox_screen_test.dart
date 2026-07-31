@@ -17,8 +17,11 @@ void main() {
     await tester.pumpWidget(_app(repository));
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('review-inbox-list')), findsOneWidget);
+    expect(find.byType(Card), findsNothing);
     await tester.tap(find.byKey(const Key('review-inbox-session-1')));
     await tester.pumpAndSettle();
+    expect(find.byType(Card), findsNothing);
     await _show(tester, find.byKey(const Key('review-save')));
     await tester.tap(find.byKey(const Key('review-save')));
     await tester.pumpAndSettle();

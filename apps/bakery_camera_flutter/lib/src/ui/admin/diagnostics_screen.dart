@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../admin/diagnostics_models.dart';
+import '../bixolon_theme_extension.dart';
 
 /// Administrator-only, read-only operational evidence. The screen deliberately
 /// exposes no policy editor, artifact browser, raw receipt export, or worker
@@ -47,14 +48,17 @@ class _DiagnosticsBody extends StatelessWidget {
     return SingleChildScrollView(
       key: const ValueKey('diagnostics-list'),
       child: Column(
+        key: const ValueKey('diagnostics-sections'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _ImpactCard(isReady: isReady, snapshot: snapshot),
           const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: onReload,
-            icon: const Icon(Icons.refresh),
-            label: const Text('시스템 다시 확인하기'),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              onPressed: onReload,
+              child: const Text('시스템 다시 확인하기'),
+            ),
           ),
           const SizedBox(height: 16),
           _SectionCard(
@@ -157,29 +161,35 @@ class _ImpactCard extends StatelessWidget {
   final DiagnosticsSnapshot snapshot;
 
   @override
-  Widget build(BuildContext context) => Card(
-    color: isReady
-        ? Theme.of(context).colorScheme.secondaryContainer
-        : Theme.of(context).colorScheme.errorContainer,
-    child: Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            isReady ? '고객 계산을 계속할 수 있어요' : '고객 계산 전 확인이 필요해요',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 6),
-          Text(
-            isReady
-                ? '카메라, 추론 워커, 저장소와 검증된 파이프라인이 준비되었습니다.'
-                : _impactDetail(snapshot),
-          ),
-        ],
+  Widget build(BuildContext context) {
+    final tokens = BixolonThemeExtension.of(context);
+    final tone = isReady ? tokens.confirmed : tokens.error;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.045),
+        border: Border.all(color: tokens.divider),
+        borderRadius: BorderRadius.circular(tokens.surfaceRadius),
       ),
-    ),
-  );
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isReady ? '고객 계산을 계속할 수 있어요' : '고객 계산 전 확인이 필요해요',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              isReady
+                  ? '카메라, 추론 워커, 저장소와 검증된 파이프라인이 준비되었습니다.'
+                  : _impactDetail(snapshot),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   String _impactDetail(DiagnosticsSnapshot value) {
     if (!value.live.cameraReady) return '카메라 연결 상태를 확인해 주세요.';
@@ -195,9 +205,14 @@ class _SectionCard extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      border: Border(
+        top: BorderSide(color: BixolonThemeExtension.of(context).divider),
+      ),
+    ),
     child: Padding(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(vertical: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

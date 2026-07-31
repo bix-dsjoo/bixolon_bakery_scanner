@@ -116,10 +116,11 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     if (_items.isEmpty) return const Center(child: Text('확인할 기록이 없습니다.'));
     final reloadErrorOffset = _initialError == null ? 0 : 1;
     return ListView.separated(
+      key: const ValueKey('review-inbox-list'),
       padding: const EdgeInsets.all(16),
       itemCount:
           _items.length + (_nextCursor == null ? 0 : 1) + reloadErrorOffset,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const Divider(),
       itemBuilder: (context, index) {
         if (_initialError != null && index == 0) {
           return _ReviewInboxReloadErrorBanner(onRetry: _reload);
@@ -138,7 +139,8 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
           );
         }
         final item = _items[itemIndex];
-        return Card(
+        return Material(
+          color: Colors.transparent,
           child: ListTile(
             key: Key('review-inbox-${item.sessionId}'),
             title: Text(item.summary),

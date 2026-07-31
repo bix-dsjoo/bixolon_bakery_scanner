@@ -15,6 +15,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.byType(Card), findsNothing);
       expect(find.text('구성 스냅샷'), findsOneWidget);
       expect(
         find.text('파일 없음: 이 증거 파일의 보존 기록 없이 파일을 찾을 수 없습니다.'),

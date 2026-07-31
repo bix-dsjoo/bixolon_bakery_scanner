@@ -8,11 +8,7 @@ import 'package:flutter/widgets.dart';
 /// flip keeps the live preview, captured result, and canonical overlay frame
 /// aligned.
 final class CanonicalCameraPreview extends StatelessWidget {
-  const CanonicalCameraPreview({
-    super.key,
-    required this.child,
-    this.platform,
-  });
+  const CanonicalCameraPreview({super.key, required this.child, this.platform});
 
   final Widget child;
   final TargetPlatform? platform;

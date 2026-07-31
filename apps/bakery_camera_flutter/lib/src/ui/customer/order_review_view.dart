@@ -34,7 +34,6 @@ class OrderReviewView extends StatelessWidget {
       title: '주문 확인',
       primaryAction: BakeryPrimaryButton(
         label: '${PriceText.formatKrw(total)} 결제하기',
-        icon: Icons.credit_card_outlined,
         onPressed: state.canPay ? onPay : null,
       ),
       child: Padding(
@@ -48,7 +47,7 @@ class OrderReviewView extends StatelessWidget {
                 image: true,
                 child: Image.asset(
                   'assets/illustrations/manual_cart_entry.png',
-                  height: 132,
+                  height: 120,
                   fit: BoxFit.contain,
                   excludeFromSemantics: true,
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
@@ -80,11 +79,7 @@ class OrderReviewView extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 16),
-            TextButton.icon(
-              onPressed: onAddProduct,
-              icon: const Icon(Icons.add_circle_outline),
-              label: const Text('상품 추가'),
-            ),
+            TextButton(onPressed: onAddProduct, child: const Text('상품 추가')),
             for (final draft in state.objectDrafts.where(
               (value) => value.isResolved,
             ))
@@ -93,10 +88,9 @@ class OrderReviewView extends StatelessWidget {
                     onOverrideObject(draft.inferenceObject.objectId),
                 child: Text('${draft.product!.displayName} 상품 변경'),
               ),
-            TextButton.icon(
+            TextButton(
               onPressed: onCountMismatch,
-              icon: const Icon(Icons.restart_alt),
-              label: const Text('실제 빵 수가 달라요'),
+              child: const Text('실제 빵 수가 달라요'),
             ),
           ],
         ),

@@ -17,7 +17,6 @@ class ReadyView extends StatelessWidget {
     title: '셀프 계산',
     primaryAction: BakeryPrimaryButton(
       label: '빵 확인하기',
-      icon: Icons.camera_alt_outlined,
       onPressed: onScan,
       autofocus: true,
     ),
@@ -36,7 +35,7 @@ class ReadyView extends StatelessWidget {
             key: Key('live-tray-placement-guide'),
             height: 180,
             child: ClipRRect(
-              borderRadius: BorderRadius.all(Radius.circular(12)),
+              borderRadius: BorderRadius.all(Radius.circular(8)),
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -50,7 +49,7 @@ class ReadyView extends StatelessWidget {
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         border: Border.all(color: Color(0xFFFFFFFF), width: 2),
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(8),
                       ),
                       child: SizedBox(width: 190, height: 120),
                     ),

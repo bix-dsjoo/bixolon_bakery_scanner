@@ -252,7 +252,7 @@ class _ImmutableReviewFacts extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Card(
+      _FactSection(
         key: const Key('review-immutable-session'),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -276,7 +276,7 @@ class _ImmutableReviewFacts extends StatelessWidget {
       ),
       const SizedBox(height: 12),
       for (final object in detail.immutableObjects) ...[
-        Card(
+        _FactSection(
           key: Key('review-immutable-object-${object.inferenceObjectId}'),
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -316,7 +316,7 @@ class _ImmutableReviewFacts extends StatelessWidget {
         ),
         const SizedBox(height: 12),
       ],
-      Card(
+      _FactSection(
         key: const Key('review-annotation-history'),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -351,6 +351,22 @@ class _ImmutableReviewFacts extends StatelessWidget {
         ),
       ),
     ],
+  );
+}
+
+class _FactSection extends StatelessWidget {
+  const _FactSection({required this.child, super.key});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      border: Border.symmetric(
+        horizontal: BorderSide(color: Theme.of(context).dividerColor),
+      ),
+    ),
+    child: child,
   );
 }
 

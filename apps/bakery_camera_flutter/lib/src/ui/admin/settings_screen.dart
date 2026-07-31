@@ -92,6 +92,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Form(
       key: _formKey,
       child: ListView(
+        key: const ValueKey('settings-sections'),
         children: [
           const Text(
             '\uC124\uC815\uC740 \uB2E4\uC74C \uACE0\uAC1D \uACC4\uC0B0\uBD80\uD130 \uC801\uC6A9\uB429\uB2C8\uB2E4.',
@@ -156,11 +157,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 keyboardType: TextInputType.number,
               ),
               const SizedBox(height: 12),
-              OutlinedButton.icon(
+              OutlinedButton(
                 key: const Key('retention-preview'),
                 onPressed: _saving ? null : () => _previewRetention(settings),
-                icon: const Icon(Icons.preview_outlined),
-                label: const Text(
+                child: const Text(
                   '\uC0AD\uC81C\uD560 \uAE30\uB85D \uBBF8\uB9AC \uBCF4\uAE30',
                 ),
               ),
@@ -279,9 +279,12 @@ class _SettingsGroup extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+    ),
     child: Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(vertical: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

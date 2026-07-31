@@ -281,11 +281,10 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
             ),
           ),
           const SizedBox(height: 8),
-          OutlinedButton.icon(
+          OutlinedButton(
             key: const Key('product-import-photo'),
             onPressed: _busy ? null : _importPhoto,
-            icon: const Icon(Icons.add_photo_alternate_outlined),
-            label: Text(_importingPhoto ? '사진 확인 중' : '사진 가져오기'),
+            child: Text(_importingPhoto ? '사진 확인 중' : '사진 가져오기'),
           ),
           if (_photo != null) ...[
             const SizedBox(height: 8),

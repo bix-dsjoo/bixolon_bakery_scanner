@@ -106,11 +106,7 @@ final class _FlatDisclosure extends StatelessWidget {
 }
 
 final class DisclosureMetric extends StatelessWidget {
-  const DisclosureMetric({
-    super.key,
-    required this.label,
-    required this.value,
-  });
+  const DisclosureMetric({super.key, required this.label, required this.value});
 
   final String label;
   final String value;

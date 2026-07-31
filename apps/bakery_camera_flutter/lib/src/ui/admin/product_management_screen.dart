@@ -94,18 +94,18 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         const SizedBox(height: 16),
         Align(
           alignment: Alignment.centerRight,
-          child: FilledButton.icon(
+          child: FilledButton(
             key: const Key('product-add'),
             onPressed: () => _openEditor(),
-            icon: const Icon(Icons.add),
-            label: const Text('\uC0C1\uD488 \uCD94\uAC00'),
+            child: const Text('\uC0C1\uD488 \uCD94\uAC00'),
           ),
         ),
         const SizedBox(height: 12),
         Expanded(
           child: ListView.separated(
+            key: const ValueKey('product-list'),
             itemCount: catalog.products.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 8),
+            separatorBuilder: (_, _) => const Divider(),
             itemBuilder: (context, index) => _ProductCard(
               product: catalog.products[index],
               service: widget.service,
@@ -132,9 +132,10 @@ class _ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = BixolonThemeExtension.of(context);
-    return Card(
+    return Material(
+      color: tokens.paper,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -158,29 +159,34 @@ class _ProductCard extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(_krw(product.unitPriceKrw)),
                       const SizedBox(height: 8),
+                      const SizedBox(height: 8),
                       Wrap(
-                        spacing: 8,
+                        spacing: 16,
                         runSpacing: 6,
                         children: [
-                          Chip(
-                            avatar: Icon(
-                              product.active
-                                  ? Icons.check_circle_outline
-                                  : Icons.pause_circle_outline,
-                              size: 18,
-                            ),
-                            label: Text(
-                              product.active
-                                  ? '\uD310\uB9E4 \uAC00\uB2A5'
-                                  : '\uD310\uB9E4 \uC911\uC9C0',
-                            ),
+                          _StatusLabel(
+                            icon: product.active
+                                ? Icons.check_circle_outline
+                                : Icons.pause_circle_outline,
+                            label: product.active
+                                ? '\uD310\uB9E4 \uAC00\uB2A5'
+                                : '\uD310\uB9E4 \uC911\uC9C0',
+                            color: product.active
+                                ? tokens.confirmed
+                                : tokens.mutedInk,
                           ),
-                          Chip(
-                            label: Text(
-                              product.active && product.recognitionSkuId != null
-                                  ? 'AI \uC5F0\uACB0\uB428'
-                                  : '\uC9C1\uC811 \uC120\uD0DD \uC804\uC6A9',
-                            ),
+                          _StatusLabel(
+                            icon:
+                                product.active &&
+                                    product.recognitionSkuId != null
+                                ? Icons.link
+                                : Icons.person_outline,
+                            label:
+                                product.active &&
+                                    product.recognitionSkuId != null
+                                ? 'AI \uC5F0\uACB0\uB428'
+                                : '\uC9C1\uC811 \uC120\uD0DD \uC804\uC6A9',
+                            color: tokens.mutedInk,
                           ),
                         ],
                       ),
@@ -222,6 +228,31 @@ class _ProductCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _StatusLabel extends StatelessWidget {
+  const _StatusLabel({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 16, color: color),
+      const SizedBox(width: 6),
+      Text(
+        label,
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: color),
+      ),
+    ],
+  );
 }
 
 class _ProductPhoto extends StatelessWidget {

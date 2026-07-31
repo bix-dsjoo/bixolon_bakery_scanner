@@ -35,30 +35,22 @@ class DashboardScreen extends StatelessWidget {
         final summary = snapshot.requireData;
         return ListView(
           children: [
-            Wrap(
-              spacing: 16,
-              runSpacing: 16,
-              children: [
-                _MetricCard(
+            _MetricLedger(
+              key: const ValueKey('dashboard-summary-ledger'),
+              metrics: [
+                _MetricData(
                   label: '결제 완료',
                   value: '${summary.completedOrders}건',
-                  icon: Icons.receipt_long_outlined,
                 ),
-                _MetricCard(
-                  label: '결제 금액',
-                  value: _krw(summary.grossKrw),
-                  icon: Icons.payments_outlined,
-                ),
-                _MetricCard(
+                _MetricData(label: '결제 금액', value: _krw(summary.grossKrw)),
+                _MetricData(
                   label: '확인 필요',
                   value: '${summary.unresolvedAttentionCount}건',
-                  icon: Icons.priority_high_outlined,
                   tone: _Tone.attention,
                 ),
-                _MetricCard(
+                _MetricData(
                   label: '시스템 상태',
                   value: _availabilityLabel(availability),
-                  icon: _availabilityIcon(availability),
                   tone: _availabilityTone(availability),
                 ),
               ],
@@ -66,15 +58,14 @@ class DashboardScreen extends StatelessWidget {
             const SizedBox(height: 32),
             Text('운영 지표', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                _RateCard('재촬영', summary.retakeRate),
-                _RateCard('AI 미확정', summary.unknownRate),
-                _RateCard('자동 결과 변경', summary.overrideRate),
-                _RateCard('직접 담기', summary.manualEntryRate),
-                _RateCard('실패', summary.failureRate),
+            _RateLedger(
+              key: const ValueKey('dashboard-rate-ledger'),
+              rates: [
+                ('재촬영', summary.retakeRate),
+                ('AI 미확정', summary.unknownRate),
+                ('자동 결과 변경', summary.overrideRate),
+                ('직접 담기', summary.manualEntryRate),
+                ('실패', summary.failureRate),
               ],
             ),
             const SizedBox(height: 32),
@@ -85,19 +76,31 @@ class DashboardScreen extends StatelessWidget {
               builder: (context, snapshot) {
                 final items = snapshot.data ?? const <AttentionItem>[];
                 if (items.isEmpty) return const Text('확인이 필요한 최근 기록이 없습니다.');
-                return Card(
+                return DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.symmetric(
+                      horizontal: BorderSide(
+                        color: BixolonThemeExtension.of(context).divider,
+                      ),
+                    ),
+                  ),
                   child: Column(
                     children: [
-                      for (final item in items)
+                      for (var index = 0; index < items.length; index++) ...[
+                        if (index > 0) const Divider(),
                         ListTile(
-                          leading: const Icon(Icons.arrow_forward),
-                          title: Text(item.label),
-                          subtitle: Text(item.sessionId),
-                          trailing: const Icon(Icons.chevron_right),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          title: Text(items[index].label),
+                          subtitle: Text(items[index].sessionId),
+                          trailing: const Icon(Icons.chevron_right, size: 20),
                           onTap: onAttentionSelected == null
                               ? null
-                              : () => onAttentionSelected!(item),
+                              : () => onAttentionSelected!(items[index]),
                         ),
+                      ],
                     ],
                   ),
                 );
@@ -167,13 +170,6 @@ String _availabilityLabel(DashboardAvailability availability) =>
       DashboardAvailability.unavailable => '점검 필요',
     };
 
-IconData _availabilityIcon(DashboardAvailability availability) =>
-    switch (availability) {
-      DashboardAvailability.unknown => Icons.help_outline,
-      DashboardAvailability.ready => Icons.check_circle_outline,
-      DashboardAvailability.unavailable => Icons.error_outline,
-    };
-
 _Tone _availabilityTone(DashboardAvailability availability) =>
     switch (availability) {
       DashboardAvailability.unknown => _Tone.attention,
@@ -181,77 +177,155 @@ _Tone _availabilityTone(DashboardAvailability availability) =>
       DashboardAvailability.unavailable => _Tone.attention,
     };
 
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({
+class _MetricData {
+  const _MetricData({
     required this.label,
     required this.value,
-    required this.icon,
     this.tone = _Tone.normal,
   });
+
   final String label;
   final String value;
-  final IconData icon;
   final _Tone tone;
+}
+
+class _MetricLedger extends StatelessWidget {
+  const _MetricLedger({required this.metrics, super.key});
+
+  final List<_MetricData> metrics;
 
   @override
   Widget build(BuildContext context) {
     final tokens = BixolonThemeExtension.of(context);
-    final color = switch (tone) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columnCount = constraints.maxWidth < 760 ? 2 : metrics.length;
+        final rows = <Widget>[];
+        for (var start = 0; start < metrics.length; start += columnCount) {
+          final end = (start + columnCount).clamp(0, metrics.length);
+          if (rows.isNotEmpty) rows.add(const Divider());
+          rows.add(
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var index = start; index < end; index++) ...[
+                    if (index > start)
+                      VerticalDivider(width: 1, color: tokens.divider),
+                    Expanded(child: _MetricCell(metric: metrics[index])),
+                  ],
+                  for (var index = end; index < start + columnCount; index++)
+                    const Expanded(child: SizedBox.shrink()),
+                ],
+              ),
+            ),
+          );
+        }
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            color: tokens.paper,
+            border: Border.symmetric(
+              horizontal: BorderSide(color: tokens.divider),
+            ),
+          ),
+          child: Column(children: rows),
+        );
+      },
+    );
+  }
+}
+
+class _MetricCell extends StatelessWidget {
+  const _MetricCell({required this.metric});
+
+  final _MetricData metric;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = BixolonThemeExtension.of(context);
+    final color = switch (metric.tone) {
       _Tone.ok => tokens.confirmed,
       _Tone.attention => tokens.uncertainty,
       _ => tokens.ink,
     };
-    return SizedBox(
-      width: 210,
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: color),
-              const SizedBox(height: 20),
-              Text(label),
-              const SizedBox(height: 6),
-              Text(
-                value,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  color: color,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            metric.label,
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: tokens.mutedInk),
           ),
-        ),
+          const SizedBox(height: 6),
+          Text(
+            metric.value,
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              color: color,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _RateCard extends StatelessWidget {
-  const _RateCard(this.label, this.rate);
-  final String label;
-  final MetricRate rate;
+class _RateLedger extends StatelessWidget {
+  const _RateLedger({required this.rates, super.key});
+
+  final List<(String, MetricRate)> rates;
+
   @override
-  Widget build(BuildContext context) => SizedBox(
-    width: 180,
-    child: Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) {
+    final tokens = BixolonThemeExtension.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.symmetric(horizontal: BorderSide(color: tokens.divider)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) => Wrap(
           children: [
-            Text(label),
-            const SizedBox(height: 8),
-            Text(
-              '${rate.numerator} / ${rate.denominator}',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
+            for (final rate in rates)
+              SizedBox(
+                width: constraints.maxWidth < 760
+                    ? constraints.maxWidth / 2
+                    : constraints.maxWidth / rates.length,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 14,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        rate.$1,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: tokens.mutedInk,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${rate.$2.numerator} / ${rate.$2.denominator}',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 String _krw(int value) {

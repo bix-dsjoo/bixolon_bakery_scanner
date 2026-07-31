@@ -84,10 +84,9 @@ class CustomerReviewView extends StatelessWidget {
                     ),
                   ),
             ],
-            TextButton.icon(
+            TextButton(
               onPressed: () => onOpenCatalog(draft.inferenceObject.objectId),
-              icon: const Icon(Icons.search),
-              label: const Text('전체 상품에서 찾기'),
+              child: const Text('전체 상품에서 찾기'),
             ),
           ],
         ),
@@ -147,7 +146,7 @@ class CapturedReviewImage extends StatelessWidget {
             image: true,
             child: ClipRRect(
               key: const Key('captured-still'),
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(8),
               child: AspectRatio(
                 aspectRatio: imageWidth / imageHeight,
                 child: image(BoxFit.cover, Alignment.center),
@@ -163,7 +162,7 @@ class CapturedReviewImage extends StatelessWidget {
             image: true,
             child: ClipRRect(
               key: const Key('selected-object-crop'),
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(8),
               child: AspectRatio(
                 aspectRatio: 1,
                 child: Transform.scale(
