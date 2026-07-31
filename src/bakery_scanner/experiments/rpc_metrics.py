@@ -199,12 +199,18 @@ def validate_evidence_against_condition(
     """Bind canonical rows to the immutable condition receipt's hashes."""
     frozen = validate_evidence_rows(rows)
     expected_id, expected_hashes = condition_provenance(condition)
+    novel, base = condition_cohort(condition)
+    permitted = novel | base
     for row in frozen:
         if row.condition_id != expected_id:
             raise ValueError("condition ID provenance mismatch")
         for name, expected in expected_hashes.items():
             if getattr(row, name) != expected:
                 raise ValueError(f"{name} provenance mismatch")
+        if row.truth_category_id not in permitted or (
+            row.predicted_category_id is not None and row.predicted_category_id not in permitted
+        ):
+            raise ValueError("evidence category is outside the bound cohort")
     return frozen
 
 
@@ -224,6 +230,25 @@ def condition_provenance(condition: Mapping[str, object]) -> tuple[str, Mapping[
     return condition_id, hashes
 
 
+def condition_cohort(condition: Mapping[str, object]) -> tuple[set[int], set[int]]:
+    """Return the receipt-bound novel/base cohorts, never an ambient override."""
+    if not isinstance(condition, Mapping):
+        raise ValueError("condition receipt must be an object")
+    cohort = condition.get("cohort")
+    nested = condition.get("condition")
+    if not isinstance(cohort, Mapping) or not isinstance(nested, Mapping):
+        raise ValueError("condition receipt lacks bound cohort")
+    fold = cohort.get("fold")
+    if type(fold) is not int or fold != nested.get("fold"):
+        raise ValueError("condition receipt cohort fold mismatch")
+    _validate_hash("cohort manifest_sha256", cohort.get("manifest_sha256"))
+    novel = _category_set(cohort.get("novel_category_ids"), "novel cohort")
+    base = _category_set(cohort.get("base_category_ids"), "base cohort")
+    if novel & base:
+        raise ValueError("novel and base cohorts overlap")
+    return novel, base
+
+
 def validate_paired_evidence(
     candidate: Iterable[ResearchEvidenceRow], reference: Iterable[ResearchEvidenceRow]
 ) -> tuple[tuple[ResearchEvidenceRow, ...], tuple[ResearchEvidenceRow, ...]]:
@@ -236,6 +261,9 @@ def validate_paired_evidence(
         raise ValueError("paired identity mismatch")
     if len(candidate_ids) != len(candidate_rows) or len(reference_ids) != len(reference_rows):
         raise ValueError("duplicate paired identity")
+    reference_by_identity = {row.pair_identity: row for row in reference_rows}
+    if any(row.difficulty != reference_by_identity[row.pair_identity].difficulty for row in candidate_rows):
+        raise ValueError("paired difficulty mismatch")
     return candidate_rows, reference_rows
 
 
@@ -243,6 +271,7 @@ def forced_top1_summary(
     rows: Iterable[ResearchEvidenceRow], *, novel_category_ids: set[int] | frozenset[int]
 ) -> ForcedTop1Summary:
     frozen = validate_evidence_rows(rows)
+    _validate_observed_cohorts(frozen, frozenset(novel_category_ids))
     recalls = _category_recalls(frozen, lambda row: row.forced_top1_category_id == row.truth_category_id)
     agreement = _mean(row.predicted_category_id == row.forced_top1_category_id for row in frozen)
     return ForcedTop1Summary(
@@ -258,6 +287,7 @@ def full_system_summary(
     rows: Iterable[ResearchEvidenceRow], *, novel_category_ids: set[int] | frozenset[int], reference_rows: Iterable[ResearchEvidenceRow] | None = None
 ) -> FullSystemSummary:
     frozen = validate_evidence_rows(rows)
+    _validate_observed_cohorts(frozen, frozenset(novel_category_ids))
     if reference_rows is not None:
         _, reference = validate_paired_evidence(frozen, reference_rows)
         reference_recalls = _category_recalls(reference, _final_correct)
@@ -275,6 +305,8 @@ def bootstrap_paired_deltas(
     if type(replicates) is not int or replicates <= 0:
         raise ValueError("replicates must be a positive integer")
     candidate_rows, reference_rows = validate_paired_evidence(candidate, reference)
+    _validate_observed_cohorts(candidate_rows, frozenset(novel_category_ids))
+    _validate_observed_cohorts(reference_rows, frozenset(novel_category_ids))
     reference_by_id = {row.pair_identity: row for row in reference_rows}
     paired = tuple((row, reference_by_id[row.pair_identity]) for row in candidate_rows)
     randomizer = random.Random(seed)
@@ -399,6 +431,29 @@ def _base_categories(rows: Sequence[ResearchEvidenceRow], novel: set[int] | froz
 def _macro(recalls: Mapping[int, float], categories: Iterable[int]) -> float:
     selected = [recalls[category] for category in sorted(set(categories)) if category in recalls]
     return sum(selected) / len(selected) if selected else 0.0
+
+
+def _validate_observed_cohorts(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int]) -> None:
+    if not novel:
+        raise ValueError("novel cohort must not be empty")
+    observed = {row.truth_category_id for row in rows}
+    absent_novel = novel - observed
+    if absent_novel:
+        raise ValueError("novel cohort is absent from evidence")
+    if not observed - novel:
+        raise ValueError("base cohort is absent from evidence")
+
+
+def _category_set(value: object, name: str) -> set[int]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{name} must be a nonempty category ID sequence")
+    try:
+        result = set(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a nonempty category ID sequence") from exc
+    if not result or any(type(item) is not int or item <= 0 for item in result):
+        raise ValueError(f"{name} must be a nonempty category ID sequence")
+    return result
 
 
 def _final_correct(row: ResearchEvidenceRow) -> bool:

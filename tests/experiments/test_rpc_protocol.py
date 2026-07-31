@@ -19,6 +19,11 @@ from bakery_scanner.experiments.rpc_protocol import (
 
 
 _HASH = "a" * 64
+_COHORT = {
+    "cohort_manifest_sha256": "1" * 64,
+    "novel_category_ids": (1,),
+    "base_category_ids": (2,),
+}
 
 
 def _condition() -> ExperimentCondition:
@@ -74,7 +79,44 @@ def test_ascending_rejects_unsupported_or_non_preregistered_methods(methods: tup
 
 def test_receipt_rejects_missing_policy_hash(tmp_path: Path):
     with pytest.raises(ValueError, match="policy_sha256"):
-        ExperimentReceipt.completed(_condition(), policy_sha256="", output_uri="file:///external/run")
+        ExperimentReceipt.completed(_condition(), policy_sha256="", output_uri="file:///external/run", **_COHORT)
+
+
+def test_completed_receipt_binds_nonempty_disjoint_rpc_cohorts():
+    receipt = ExperimentReceipt.completed(
+        _condition(),
+        condition_manifest_sha256=_HASH,
+        model_sha256="b" * 64,
+        support_sha256="c" * 64,
+        calibration_sha256="d" * 64,
+        policy_sha256="e" * 64,
+        preprocessing_sha256="f" * 64,
+        code_sha256="0" * 64,
+        **_COHORT,
+        environment_lock_digest="sha256:environment",
+        output_uri="file:///external/run",
+    )
+
+    assert receipt.to_dict()["cohort"]["novel_category_ids"] == [1]
+
+
+def test_receipt_rejects_mutable_or_overlapping_cohorts():
+    values = {
+        "condition_manifest_sha256": _HASH,
+        "model_sha256": "b" * 64,
+        "support_sha256": "c" * 64,
+        "calibration_sha256": "d" * 64,
+        "policy_sha256": "e" * 64,
+        "preprocessing_sha256": "f" * 64,
+        "code_sha256": "0" * 64,
+        "cohort_manifest_sha256": "1" * 64,
+        "novel_category_ids": [1],
+        "base_category_ids": (2,),
+        "environment_lock_digest": "sha256:environment",
+        "output_uri": "file:///external/run",
+    }
+    with pytest.raises(ValueError, match="tuple"):
+        ExperimentReceipt.completed(_condition(), **values)
 
 
 def test_unavailable_receipt_is_never_reported_as_passed():
@@ -88,6 +130,7 @@ def test_unavailable_receipt_is_never_reported_as_passed():
         policy_sha256="e" * 64,
         preprocessing_sha256="f" * 64,
         code_sha256="0" * 64,
+        **_COHORT,
         environment_lock_digest="sha256:environment",
         output_uri="file:///external/run",
     )
@@ -105,6 +148,7 @@ def test_receipt_serializes_canonical_json_and_refuses_replacement(tmp_path: Pat
         policy_sha256="e" * 64,
         preprocessing_sha256="f" * 64,
         code_sha256="0" * 64,
+        **_COHORT,
         environment_lock_digest="sha256:environment",
         output_uri="file:///external/run",
     )

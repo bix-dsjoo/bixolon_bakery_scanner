@@ -103,6 +103,19 @@ def test_paired_validation_rejects_identity_and_provenance_mismatches():
         validate_paired_evidence(candidate + candidate, reference + reference)
 
 
+def test_paired_validation_rejects_difficulty_mismatch_for_same_identity():
+    candidate = (_row("same", difficulty="E"),)
+    reference = (_row("same", condition_id="reference", difficulty="H"),)
+
+    with pytest.raises(ValueError, match="difficulty mismatch"):
+        validate_paired_evidence(candidate, reference)
+
+
+def test_full_system_summary_rejects_an_absent_novel_cohort():
+    with pytest.raises(ValueError, match="novel cohort"):
+        full_system_summary((_row("only-base", truth=2, predicted=2),), novel_category_ids={1})
+
+
 def test_bootstrap_is_repeatable_and_rejects_zero_replicates():
     reference = (
         _row("n-e", truth=1, predicted=1, difficulty="E", burst_id="e"),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -12,7 +13,9 @@ from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_
 from bakery_scanner.experiments.rpc_metrics import (
     ResearchEvidenceRow,
     bootstrap_paired_deltas,
+    condition_cohort,
     condition_provenance,
+    forced_top1_summary,
     full_system_summary,
     passes_minimum_rule,
     validate_evidence_against_condition,
@@ -64,7 +67,6 @@ def score(
     *,
     bootstrap_seed: int,
     bootstrap_replicates: int,
-    novel_category_ids: set[int] | None = None,
 ) -> None:
     """Write one compact score receipt from existing evidence only."""
     if output.exists():
@@ -73,6 +75,10 @@ def score(
     reference_condition = load_canonical_json(reference_condition_path)
     candidate_id, _ = condition_provenance(condition)
     reference_id, _ = condition_provenance(reference_condition)
+    candidate_novel, candidate_base = condition_cohort(condition)
+    reference_novel, reference_base = condition_cohort(reference_condition)
+    if candidate_novel != reference_novel or candidate_base != reference_base:
+        raise ValueError("candidate/reference condition cohort mismatch")
     statuses = (condition.get("status"), reference_condition.get("status"))
     if statuses != ("completed", "completed"):
         write_new_json(output, {
@@ -87,9 +93,11 @@ def score(
     candidate_rows = validate_evidence_against_condition(load_canonical_jsonl(evidence_path), condition)
     reference_rows = validate_evidence_against_condition(load_canonical_jsonl(reference_path), reference_condition)
     candidate_rows, reference_rows = validate_paired_evidence(candidate_rows, reference_rows)
-    novel = novel_category_ids if novel_category_ids is not None else _novel_categories(condition)
+    novel = candidate_novel
     candidate_summary = full_system_summary(candidate_rows, novel_category_ids=novel, reference_rows=reference_rows)
     reference_summary = full_system_summary(reference_rows, novel_category_ids=novel)
+    candidate_forced = forced_top1_summary(candidate_rows, novel_category_ids=novel)
+    reference_forced = forced_top1_summary(reference_rows, novel_category_ids=novel)
     interval = bootstrap_paired_deltas(candidate_rows, reference_rows, novel_category_ids=novel, seed=bootstrap_seed, replicates=bootstrap_replicates)
     write_new_json(output, {
         "schema_version": 1,
@@ -97,23 +105,32 @@ def score(
         "status": "completed",
         "candidate_condition_id": candidate_id,
         "reference_condition_id": reference_id,
-        "novel_category_ids": sorted(novel),
-        "candidate": asdict(candidate_summary),
-        "reference": asdict(reference_summary),
+        "cohort": {
+            "base_category_ids": sorted(candidate_base),
+            "novel_category_ids": sorted(novel),
+        },
+        "candidate_provenance": _provenance(condition, evidence_path),
+        "reference_provenance": _provenance(reference_condition, reference_path),
+        "candidate_forced_top1": asdict(candidate_forced),
+        "reference_forced_top1": asdict(reference_forced),
+        "candidate_full_system": asdict(candidate_summary),
+        "reference_full_system": asdict(reference_summary),
         "paired_bootstrap_95": asdict(interval),
         "passes_minimum_rule": passes_minimum_rule(candidate_summary, reference_summary, interval),
     })
 
 
-def _novel_categories(condition: Mapping[str, object]) -> set[int]:
-    value: object = condition.get("novel_category_ids")
-    if value is None and isinstance(condition.get("condition"), Mapping):
-        value = condition["condition"].get("novel_category_ids")  # type: ignore[index]
-    if not isinstance(value, list) or not value or any(type(item) is not int or item <= 0 for item in value):
-        raise ValueError("condition receipt must declare nonempty novel_category_ids")
-    if len(set(value)) != len(value):
-        raise ValueError("condition receipt has duplicate novel_category_ids")
-    return set(value)
+def _provenance(condition: Mapping[str, object], evidence_path: Path) -> dict[str, str]:
+    condition_id, hashes = condition_provenance(condition)
+    cohort = condition.get("cohort")
+    if not isinstance(cohort, Mapping) or not isinstance(cohort.get("manifest_sha256"), str):
+        raise ValueError("condition receipt lacks cohort provenance")
+    return {
+        "condition_id": condition_id,
+        "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        "cohort_manifest_sha256": cohort["manifest_sha256"],
+        **dict(hashes),
+    }
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -134,12 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--bootstrap-seed", required=True, type=int)
     parser.add_argument("--bootstrap-replicates", type=int, default=1000)
-    parser.add_argument("--novel-category-id", type=int, action="append")
     args = parser.parse_args(argv)
     try:
-        explicit_novel = set(args.novel_category_id) if args.novel_category_id is not None else None
-        if explicit_novel is not None and (not explicit_novel or any(item <= 0 for item in explicit_novel)):
-            raise ValueError("novel category IDs must be positive")
         score(
             args.evidence,
             args.reference_evidence,
@@ -148,7 +161,6 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             bootstrap_seed=args.bootstrap_seed,
             bootstrap_replicates=args.bootstrap_replicates,
-            novel_category_ids=explicit_novel,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))

@@ -108,6 +108,9 @@ class ExperimentReceipt:
     policy_sha256: str
     preprocessing_sha256: str
     code_sha256: str
+    cohort_manifest_sha256: str
+    novel_category_ids: tuple[int, ...]
+    base_category_ids: tuple[int, ...]
     environment_lock_digest: str
     output_uri: str
     status: Literal["completed", "failed", "unavailable"]
@@ -118,6 +121,8 @@ class ExperimentReceipt:
             raise ValueError("condition must be an ExperimentCondition")
         for name in _HASH_FIELDS:
             _validate_sha256(name, getattr(self, name))
+        _validate_sha256("cohort_manifest_sha256", self.cohort_manifest_sha256)
+        _validate_cohorts(self.novel_category_ids, self.base_category_ids)
         if not isinstance(self.environment_lock_digest, str) or not self.environment_lock_digest:
             raise ValueError("environment_lock_digest must be nonempty")
         if not isinstance(self.output_uri, str) or not self.output_uri:
@@ -128,13 +133,13 @@ class ExperimentReceipt:
             raise ValueError("unavailable receipt requires a reason")
 
     @classmethod
-    def completed(cls, condition: ExperimentCondition, **values: str) -> "ExperimentReceipt":
+    def completed(cls, condition: ExperimentCondition, **values: object) -> "ExperimentReceipt":
         _validate_sha256("policy_sha256", values.get("policy_sha256"))
         return cls(condition=condition, status="completed", **values)
 
     @classmethod
     def unavailable(
-        cls, condition: ExperimentCondition, *, reason: str, **values: str
+        cls, condition: ExperimentCondition, *, reason: str, **values: object
     ) -> "ExperimentReceipt":
         return cls(condition=condition, status="unavailable", reason=reason, **values)
 
@@ -142,6 +147,12 @@ class ExperimentReceipt:
         return {
             "calibration_sha256": self.calibration_sha256,
             "code_sha256": self.code_sha256,
+            "cohort": {
+                "base_category_ids": list(self.base_category_ids),
+                "fold": self.condition.fold,
+                "manifest_sha256": self.cohort_manifest_sha256,
+                "novel_category_ids": list(self.novel_category_ids),
+            },
             "condition": self.condition.to_dict(),
             "condition_manifest_sha256": self.condition_manifest_sha256,
             "environment_lock_digest": self.environment_lock_digest,
@@ -200,3 +211,14 @@ def _method_pair(method: str | tuple[str, str]) -> tuple[str, str]:
 def _validate_sha256(name: str, value: object) -> None:
     if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise ValueError(f"{name} must be a lowercase 64-character SHA-256")
+
+
+def _validate_cohorts(novel: object, base: object) -> None:
+    for name, values in (("novel_category_ids", novel), ("base_category_ids", base)):
+        if not isinstance(values, tuple):
+            raise ValueError(f"{name} must be a nonempty tuple of positive category IDs")
+        frozen = values
+        if not frozen or any(type(value) is not int or value <= 0 for value in frozen) or len(set(frozen)) != len(frozen):
+            raise ValueError(f"{name} must be a nonempty tuple of unique positive category IDs")
+    if set(novel) & set(base):
+        raise ValueError("novel and base category cohorts must be disjoint")
