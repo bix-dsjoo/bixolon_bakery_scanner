@@ -6,6 +6,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass
+from numbers import Real
 from typing import Iterable
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
@@ -24,6 +25,7 @@ class SupportCandidate:
 
     category_id: int
     source_identity: str
+    source_file_name: str
     image_sha256: str
     source_byte_size: int
     capture_stratum: CaptureStratum
@@ -34,17 +36,26 @@ class SupportCandidate:
             raise ValueError("candidate category ID must be positive")
         if not isinstance(self.source_identity, str) or not self.source_identity:
             raise ValueError("candidate source identity must be non-empty")
+        if not isinstance(self.source_file_name, str) or not self.source_file_name:
+            raise ValueError("candidate source file name must be non-empty")
         if not isinstance(self.image_sha256, str) or _SHA256.fullmatch(self.image_sha256) is None:
             raise ValueError("candidate image SHA-256 must be lowercase SHA-256")
         if type(self.source_byte_size) is not int or self.source_byte_size <= 0:
             raise ValueError("candidate source byte size must be positive")
         _validate_capture_stratum(self.capture_stratum, self.category_id)
+        if self.capture_stratum != parse_train_capture_stratum(self.source_file_name, self.category_id):
+            raise ValueError("capture stratum mismatch")
+        if isinstance(self.embedding, (str, bytes)):
+            raise ValueError("candidate embedding must be a finite numeric 1-D sequence")
         try:
-            values = tuple(float(value) for value in self.embedding)
+            raw_values = tuple(self.embedding)
         except (TypeError, ValueError) as exc:
-            raise ValueError("candidate embedding must be a finite 1-D sequence") from exc
-        if not values or not all(math.isfinite(value) for value in values):
-            raise ValueError("candidate embedding must be a finite 1-D sequence")
+            raise ValueError("candidate embedding must be a finite numeric 1-D sequence") from exc
+        if not raw_values or any(isinstance(value, bool) or not isinstance(value, Real) for value in raw_values):
+            raise ValueError("candidate embedding must be a finite numeric 1-D sequence")
+        values = tuple(float(value) for value in raw_values)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("candidate embedding must be a finite numeric 1-D sequence")
         object.__setattr__(self, "embedding", values)
 
 
@@ -175,7 +186,14 @@ def _diversity_order(
 ) -> tuple[SupportCandidate, ...]:
     dimensions = len(rows[0].embedding)
     centroid = tuple(sum(normalized[row.source_identity][index] for row in rows) / len(rows) for index in range(dimensions))
-    first = min(rows, key=lambda row: (_distance(normalized[row.source_identity], centroid), row.image_sha256))
+    first = min(
+        rows,
+        key=lambda row: (
+            _distance(normalized[row.source_identity], centroid),
+            row.image_sha256,
+            row.source_identity,
+        ),
+    )
     selected = [first]
     remaining = {row.source_identity: row for row in rows if row != first}
     stratum_counts = {first.capture_stratum: 1}
@@ -194,6 +212,7 @@ def _diversity_order(
             key=lambda row: (
                 -min(_distance(normalized[row.source_identity], normalized[picked.source_identity]) for picked in selected),
                 row.image_sha256,
+                row.source_identity,
             ),
         )
         selected.append(next_row)
@@ -214,6 +233,7 @@ def _manifest_candidate(row: SupportCandidate) -> dict[str, object]:
     return {
         "category_id": row.category_id,
         "source_identity": row.source_identity,
+        "source_file_name": row.source_file_name,
         "image_sha256": row.image_sha256,
         "source_byte_size": row.source_byte_size,
         "capture_stratum": row.capture_stratum,

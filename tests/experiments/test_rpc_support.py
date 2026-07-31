@@ -20,11 +20,13 @@ def _candidate(
     embedding: tuple[float, float],
     *,
     category_id: int = 7,
+    image_sha256: str | None = None,
 ) -> SupportCandidate:
     return SupportCandidate(
         category_id=category_id,
         source_identity=source_identity,
-        image_sha256=hashlib.sha256(source_identity.encode("utf-8")).hexdigest(),
+        source_file_name=file_name,
+        image_sha256=image_sha256 or hashlib.sha256(source_identity.encode("utf-8")).hexdigest(),
         source_byte_size=100,
         capture_stratum=parse_train_capture_stratum(file_name, category_id),
         embedding=embedding,
@@ -98,6 +100,7 @@ def test_selector_rejects_inconsistent_embedding_dimensions():
         SupportCandidate(
             category_id=7,
             source_identity="three-d",
+            source_file_name="roll_camera3-top.jpg",
             image_sha256="a" * 64,
             source_byte_size=100,
             capture_stratum=parse_train_capture_stratum("roll_camera3-top.jpg", 7),
@@ -122,3 +125,42 @@ def test_support_prefix_rejects_request_above_availability():
     order = materialize_support_order(_candidates(), method="rnd", seed=11)
     with pytest.raises(ValueError, match="insufficient support candidates"):
         support_prefix(order, 5)
+
+
+def test_diversity_uses_source_identity_after_equal_digest_and_distance_ties():
+    candidates = (
+        _candidate("charlie", "roll_camera3-top.jpg", (1.0, 0.0), image_sha256="a" * 64),
+        _candidate("alpha", "roll_camera1-top.jpg", (1.0, 0.0), image_sha256="a" * 64),
+        _candidate("bravo", "roll_camera2-top.jpg", (1.0, 0.0), image_sha256="a" * 64),
+    )
+
+    order = materialize_support_order(candidates, method="div", seed=11)
+
+    assert order.source_identities == ("alpha", "bravo", "charlie")
+    assert order == materialize_support_order(tuple(reversed(candidates)), method="div", seed=11)
+
+
+def test_candidate_rejects_capture_stratum_that_disagrees_with_source_file_name():
+    with pytest.raises(ValueError, match="capture stratum mismatch"):
+        SupportCandidate(
+            category_id=7,
+            source_identity="mismatched",
+            source_file_name="roll_camera1-top.jpg",
+            image_sha256="a" * 64,
+            source_byte_size=100,
+            capture_stratum=parse_train_capture_stratum("roll_camera2-top.jpg", 7),
+            embedding=(1.0, 0.0),
+        )
+
+
+def test_candidate_rejects_non_numeric_embedding_values():
+    with pytest.raises(ValueError, match="finite numeric 1-D sequence"):
+        SupportCandidate(
+            category_id=7,
+            source_identity="non-numeric",
+            source_file_name="roll_camera1-top.jpg",
+            image_sha256="a" * 64,
+            source_byte_size=100,
+            capture_stratum=parse_train_capture_stratum("roll_camera1-top.jpg", 7),
+            embedding=("1.0", "2.0"),  # type: ignore[arg-type]
+        )
