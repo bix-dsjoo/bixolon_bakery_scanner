@@ -765,6 +765,13 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
             path, trusted_source_root=trusted_source_root
         ),
     )
+    # This test isolates read-once evidence bytes; use the score boundary's
+    # injected support-bank seam rather than duplicating a full bank fixture.
+    monkeypatch.setattr(
+        _rpc_scoring, "load_support_bank",
+        lambda _path: type("Bank", (), {"sha256": "c" * 64})(),
+    )
+    monkeypatch.setattr(_rpc_scoring, "validate_support_bank_for_condition", lambda *args, **kwargs: None)
     module.score(
         evidence,
         reference,
@@ -774,6 +781,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
         base_checkpoint_evidence,
         output,
         trusted_index=_trusted_index(),
+        support_bank_path=tmp_path / "support-bank.json",
     )
 
     receipt = json.loads(output.read_text(encoding="utf-8"))
