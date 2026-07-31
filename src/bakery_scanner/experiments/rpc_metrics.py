@@ -155,6 +155,8 @@ class DifficultySummary:
 class FullSystemSummary:
     sample_count: int
     wrong_registered_sku_rate: float
+    novel_wrong_registered_sku_rate: float
+    base_wrong_registered_sku_rate: float
     unknown_rate: float
     registered_coverage: float
     novel_macro_final_correct_recall: float
@@ -200,6 +202,7 @@ def validate_evidence_against_condition(
     frozen = validate_evidence_rows(rows)
     expected_id, expected_hashes = condition_provenance(condition)
     novel, base = condition_cohort(condition)
+    registered = _receipt_registered_categories(condition)
     permitted = novel | base
     for row in frozen:
         if row.condition_id != expected_id:
@@ -211,12 +214,25 @@ def validate_evidence_against_condition(
             row.predicted_category_id is not None and row.predicted_category_id not in permitted
         ):
             raise ValueError("evidence category is outside the bound cohort")
+        if row.score_category_ids != registered:
+            raise ValueError("score category IDs must equal the complete registered cohort order")
     observed_truth = {row.truth_category_id for row in frozen}
     if novel - observed_truth:
         raise ValueError("novel cohort is absent from evidence")
     if base - observed_truth:
         raise ValueError("base cohort is absent from evidence")
     return frozen
+
+
+def _receipt_registered_categories(condition: Mapping[str, object]) -> tuple[int, ...]:
+    scoring = condition.get("scoring")
+    if not isinstance(scoring, Mapping):
+        raise ValueError("condition receipt lacks immutable scoring plan")
+    values = scoring.get("registered_category_ids")
+    categories = _integer_tuple(values, "registered category IDs")
+    if not categories or len(set(categories)) != len(categories):
+        raise ValueError("registered category IDs must be a complete ordered unique cohort")
+    return categories
 
 
 def condition_provenance(condition: Mapping[str, object]) -> tuple[str, Mapping[str, str]]:
@@ -370,6 +386,8 @@ def _full_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int], re
     return FullSystemSummary(
         sample_count=len(rows),
         wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows),
+        novel_wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows if row.truth_category_id in novel),
+        base_wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows if row.truth_category_id not in novel),
         unknown_rate=_mean(row.predicted_category_id is None for row in rows),
         registered_coverage=_mean(row.predicted_category_id is not None for row in rows),
         novel_macro_final_correct_recall=_macro(recalls, novel),

@@ -58,6 +58,7 @@ def _receipt(condition_id: str) -> dict[str, object]:
             "novel_category_ids": [1],
             "base_category_ids": [2],
         },
+        "scoring": {"registered_category_ids": [1, 2]},
         "environment_lock_digest": "sha256:environment",
         "output_uri": "file:///external/run",
         "reason": "",

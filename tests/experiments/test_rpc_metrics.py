@@ -126,12 +126,35 @@ def test_condition_binding_rejects_a_declared_base_category_absent_from_truth_ro
             "novel_category_ids": [1],
             "base_category_ids": [2, 3],
         },
+        "scoring": {"registered_category_ids": [1, 2]},
         **_HASHES,
     }
     rows = (_row("novel", truth=1), _row("observed-base", truth=2))
 
     with pytest.raises(ValueError, match="base cohort is absent"):
         validate_evidence_against_condition(rows, condition)
+
+
+def test_full_system_summary_reports_wrong_registered_rates_per_cohort():
+    summary = full_system_summary(
+        (_row("novel", truth=1, predicted=2), _row("base", truth=2, predicted=1)),
+        novel_category_ids={1},
+    )
+
+    assert summary.novel_wrong_registered_sku_rate == 1.0
+    assert summary.base_wrong_registered_sku_rate == 1.0
+
+
+def test_condition_binding_requires_the_complete_receipt_score_category_order():
+    condition = {
+        "condition": {"condition_id": "candidate", "fold": 0},
+        "cohort": {"fold": 0, "manifest_sha256": "1" * 64, "novel_category_ids": [1], "base_category_ids": [2]},
+        "scoring": {"registered_category_ids": [1, 2, 3]},
+        **_HASHES,
+    }
+
+    with pytest.raises(ValueError, match="complete registered cohort"):
+        validate_evidence_against_condition((_row("novel", truth=1), _row("base", truth=2)), condition)
 
 
 def test_bootstrap_is_repeatable_and_rejects_zero_replicates():

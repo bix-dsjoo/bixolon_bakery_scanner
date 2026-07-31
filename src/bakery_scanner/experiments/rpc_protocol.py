@@ -153,6 +153,9 @@ class ExperimentReceipt:
                 "manifest_sha256": self.cohort_manifest_sha256,
                 "novel_category_ids": list(self.novel_category_ids),
             },
+            "scoring": {
+                "registered_category_ids": sorted(self.novel_category_ids + self.base_category_ids),
+            },
             "condition": self.condition.to_dict(),
             "condition_manifest_sha256": self.condition_manifest_sha256,
             "environment_lock_digest": self.environment_lock_digest,
