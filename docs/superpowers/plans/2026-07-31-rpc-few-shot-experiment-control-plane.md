@@ -127,11 +127,12 @@ git commit -m "feat: add immutable RPC experiment input contract"
 ### Task 2: Materialize leakage-safe class folds and checkout roles
 
 **Files:**
+- Modify: `src/bakery_scanner/experiments/rpc_manifest.py`
 - Create: `src/bakery_scanner/experiments/rpc_splits.py`
 - Create: `tests/experiments/test_rpc_splits.py`
 
 **Interfaces:**
-- Consumes `RpcIndex` and returns `ClassFoldAssignment` and `SceneRoleAssignment`.
+- Consumes `RpcIndex` (including the source COCO category/supercategory metadata) and returns `ClassFoldAssignment` and `SceneRoleAssignment`.
 - Produces `build_class_folds(index, *, split_version, seed)` and `build_scene_roles(index, *, split_version)`.
 - `ClassFoldAssignment` guarantees five folds of 40 novel and 160 base categories; `SceneRoleAssignment` guarantees exactly one of `calibration`, `development_selection`, or `locked_acceptance` for every checkout burst.
 
