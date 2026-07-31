@@ -281,6 +281,9 @@ Top-1 results are more than two percentage points below another method and it
 offers no branch-level wrong-SKU improvement. Any contender within one
 percentage point of the best method on either branch, or on a non-dominated
 accuracy/error trade-off, expands to ten seeds. At most two methods continue.
+The five-seed receipt is only a screen: when it declares an expansion, it may
+not schedule Stage 2. A separate hash-bound ten-seed re-selection receipt must
+recompute the decision from exactly the retained expansion contenders.
 
 ### Stage 2: ascending learning curve
 

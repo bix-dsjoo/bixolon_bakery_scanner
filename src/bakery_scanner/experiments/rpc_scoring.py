@@ -52,6 +52,7 @@ _SCORE_BRANCHES: tuple[BranchName, ...] = (
     "dinov3_local",
 )
 _CANONICAL_SCENE_SPLIT_VERSION = "rpc-2019-five-fold-v1"
+_VERIFIED_SCORE_DERIVATIONS: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
 
 
 def load_canonical_json(path: Path) -> Mapping[str, object]:
@@ -600,12 +601,15 @@ def score(
     *,
     trusted_source_root: Path,
     support_bank_path: Path | None = None,
+    _validated_ground_truth: LoadedGroundTruth | None = None,
 ) -> None:
     """Write one non-final condition score; only complete aggregation can pass."""
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
-    condition = load_canonical_json(condition_path)
-    reference_condition = load_canonical_json(reference_condition_path)
+    condition, condition_receipt_sha256 = _load_canonical_json_with_digest(condition_path)
+    reference_condition, reference_condition_receipt_sha256 = _load_canonical_json_with_digest(
+        reference_condition_path
+    )
     candidate_plan = _condition_scoring_plan(
         condition,
         trusted_source_root=trusted_source_root,
@@ -644,7 +648,7 @@ def score(
             support_seed=parsed.support_seed, category_ids=(*candidate_novel, *candidate_base),
             shot_count=parsed.shot_count, support_scope=parsed.support_scope,
         )
-    ground_truth = load_stage_ground_truth(
+    ground_truth = _validated_ground_truth or load_stage_ground_truth(
         ground_truth_manifest_path, stage=paired_stage,
         trusted_source_root=trusted_source_root,
     )
@@ -723,6 +727,39 @@ def score(
             "candidate": {"path": str(evidence_path), "sha256": candidate_evidence.sha256},
             "reference": {"path": str(reference_path), "sha256": reference_evidence.sha256},
         },
+        "derivation_artifacts": {
+            "base_checkpoint_evidence": {
+                "path": str(base_checkpoint_evidence_path),
+                "sha256": base_evidence_sha256,
+            },
+            "candidate_condition_receipt": {
+                "path": str(condition_path),
+                "sha256": condition_receipt_sha256,
+            },
+            "candidate_evidence": {
+                "path": str(evidence_path),
+                "sha256": candidate_evidence.sha256,
+            },
+            "development_ground_truth": {
+                "path": str(ground_truth_manifest_path),
+                "sha256": ground_truth.sha256,
+            },
+            "reference_condition_receipt": {
+                "path": str(reference_condition_path),
+                "sha256": reference_condition_receipt_sha256,
+            },
+            "reference_evidence": {
+                "path": str(reference_path),
+                "sha256": reference_evidence.sha256,
+            },
+            "support_bank": {
+                "path": str(support_bank_path),
+                "content_sha256": hashlib.sha256(
+                    Path(support_bank_path).read_bytes()
+                ).hexdigest(),
+                "support_sha256": support_bank.sha256,
+            },
+        },
         "support_bank": {"path": str(support_bank_path), "sha256": support_bank.sha256},
         "candidate_branch_top1": candidate_branches,
         "reference_branch_top1": reference_branches,
@@ -786,6 +823,120 @@ def _branch_top1_summaries(
         )
         for branch in _SCORE_BRANCHES
     }
+
+
+def validate_score_receipt_derivation(
+    receipt: Mapping[str, object],
+    *,
+    trusted_source_root: Path,
+    _validated_ground_truth: LoadedGroundTruth | None = None,
+) -> None:
+    """Rebuild one completed score receipt from every hash-bound source input.
+
+    A score receipt is a cacheable conclusion, never a source of truth.  This
+    verifier exists for the Stage-1 scheduler, where accepting scalar branch
+    fields would otherwise let a hand-authored JSON file select a method.
+    """
+    artifacts = receipt.get("derivation_artifacts")
+    names = (
+        "candidate_condition_receipt",
+        "reference_condition_receipt",
+        "candidate_evidence",
+        "reference_evidence",
+        "development_ground_truth",
+        "base_checkpoint_evidence",
+        "support_bank",
+    )
+    if not isinstance(artifacts, Mapping) or set(artifacts) != set(names):
+        raise ValueError("score receipt lacks complete derived scorer artifacts")
+    paths: dict[str, Path] = {}
+    artifact_digests: list[tuple[str, str]] = []
+    for name in names:
+        record = artifacts.get(name)
+        expected_fields = (
+            {"path", "content_sha256", "support_sha256"}
+            if name == "support_bank"
+            else {"path", "sha256"}
+        )
+        if not isinstance(record, Mapping) or set(record) != expected_fields:
+            raise ValueError("score receipt has invalid derived scorer artifacts")
+        raw_path = record.get("path")
+        expected_sha = record.get(
+            "content_sha256" if name == "support_bank" else "sha256"
+        )
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("score receipt has invalid derived scorer artifact path")
+        _require_sha256(f"derived {name} SHA-256", expected_sha)
+        if name == "support_bank":
+            _require_sha256(
+                "derived support bank SHA-256", record.get("support_sha256")
+            )
+        path = Path(raw_path)
+        try:
+            actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ValueError("score receipt cannot resolve derived scorer artifact") from exc
+        if actual_sha != expected_sha:
+            raise ValueError("score receipt derived scorer artifact SHA-256 mismatch")
+        paths[name] = path
+        artifact_digests.append((name, str(expected_sha)))
+    raw = receipt.get("raw_evidence")
+    support = receipt.get("support_bank")
+    base = receipt.get("fold_base_checkpoint")
+    truth = receipt.get("locked_ground_truth")
+    if (
+        not isinstance(raw, Mapping)
+        or not isinstance(support, Mapping)
+        or not isinstance(base, Mapping)
+        or not isinstance(truth, Mapping)
+        or raw.get("candidate") != artifacts["candidate_evidence"]
+        or raw.get("reference") != artifacts["reference_evidence"]
+        or support.get("path") != artifacts["support_bank"].get("path")  # type: ignore[union-attr]
+        or support.get("sha256")
+        != artifacts["support_bank"].get("support_sha256")  # type: ignore[union-attr]
+        or base.get("evidence_path") != str(paths["base_checkpoint_evidence"])
+        or base.get("evidence_sha256")
+        != artifacts["base_checkpoint_evidence"].get("sha256")  # type: ignore[union-attr]
+        or truth.get("manifest_sha256")
+        != artifacts["development_ground_truth"].get("sha256")  # type: ignore[union-attr]
+    ):
+        raise ValueError("score receipt derived scorer artifacts do not match receipt provenance")
+    if (
+        _validated_ground_truth is not None
+        and _validated_ground_truth.sha256
+        != artifacts["development_ground_truth"].get("sha256")  # type: ignore[union-attr]
+    ):
+        raise ValueError("score receipt derived scorer ground truth does not match artifact")
+    cache_key = (
+        str(Path(trusted_source_root).resolve()),
+        hashlib.sha256(canonical_json_bytes(dict(receipt))).hexdigest(),
+        tuple(sorted(artifact_digests)),
+    )
+    if cache_key in _VERIFIED_SCORE_DERIVATIONS:
+        return
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="rpc-score-rederivation-") as directory:
+        rebuilt_path = Path(directory) / "rebuilt-score.json"
+        try:
+            score(
+                paths["candidate_evidence"],
+                paths["reference_evidence"],
+                paths["candidate_condition_receipt"],
+                paths["reference_condition_receipt"],
+                paths["development_ground_truth"],
+                paths["base_checkpoint_evidence"],
+                rebuilt_path,
+                trusted_source_root=trusted_source_root,
+                support_bank_path=paths["support_bank"],
+                _validated_ground_truth=_validated_ground_truth,
+            )
+            rebuilt = load_canonical_json(rebuilt_path)
+        except (OSError, ValueError) as exc:
+            raise ValueError("score receipt derived scorer artifacts cannot reproduce output") from exc
+    if dict(rebuilt) != dict(receipt):
+        raise ValueError("score receipt is not derived from scorer artifacts")
+    _VERIFIED_SCORE_DERIVATIONS.add(cache_key)
 
 
 def _ground_truth_summary(

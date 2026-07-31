@@ -271,7 +271,7 @@ git commit -m "feat: add nested RPC few-shot support selection"
 
 **Interfaces:**
 - Consumes class folds, support orders, and a `StageRequest`.
-- Produces `ExperimentCondition`, `stage_one_conditions()`, hash-bound `write_stage_one_selection_receipt()` / `load_stage_one_selection_receipt()`, `ascending_conditions(methods, stage_one_selection_receipt_path, stage_one_score_receipt_paths)`, `refinement_shots(last_failure, first_pass)`, and `write_experiment_receipt()`.
+- Produces `ExperimentCondition`, `stage_one_conditions()`, hash-bound `write_stage_one_selection_receipt()` / `load_stage_one_selection_receipt()` (including the authenticated source root and a parent five-seed receipt for ten-seed re-selection), `ascending_conditions(...)`, `refinement_shots(last_failure, first_pass)`, and `write_experiment_receipt()`.
 - Receipts accept `completed`, `failed`, or `unavailable`; no condition may claim a result without all declared SHA-256 values and an external-output URI.
 
 - [ ] **Step 1: Write the Stage-1 matrix tests**

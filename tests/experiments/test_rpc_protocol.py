@@ -38,6 +38,12 @@ from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
 from bakery_scanner.experiments.rpc_metrics import ResearchEvidenceRow
 from bakery_scanner.experiments import rpc_scoring
 from bakery_scanner.experiments import rpc_protocol as _rpc_protocol
+from bakery_scanner.experiments.rpc_support import (
+    SupportCandidate,
+    materialize_support_bank,
+    parse_train_capture_stratum,
+    write_support_bank,
+)
 
 
 _HASH = "a" * 64
@@ -74,88 +80,152 @@ def _stage_one_score_artifacts(
     *,
     declared_seeds: tuple[int, ...] = (101,),
     write_selection: bool = True,
+    clear_winner: bool = False,
+    method_pairs: tuple[tuple[str, str], ...] | None = None,
 ) -> tuple[Path, tuple[Path, ...]]:
-    """Materialize the complete 12-cell method screen as canonical score files."""
-    paths: list[Path] = []
-    cells = stage_one_conditions(seeds=(101,), folds=(0,))
+    """Build Stage-1 receipts through the real scorer, never JSON shortcuts."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    fixture = _scoring_fixture()
+    fixture._install_trusted_index_for_test(fixture._trusted_index())
+    ground_truth_path = tmp_path / "development-ground-truth.json"
+    fixture._write_development_ground_truth(ground_truth_path)
+    development_truth = rpc_scoring.load_stage_ground_truth(
+        ground_truth_path, stage="stage1", trusted_source_root=_TEST_TRUSTED_ROOT
+    )
+    base_evidence_path = tmp_path / "base-evidence.json"
+    base_sha = fixture._write_fold_base_evidence(
+        base_evidence_path,
+        fold=0,
+        checkpoint_sha256="2" * 64,
+        cohort_manifest_sha256=fixture.DEVELOPMENT_GROUND_TRUTH_SHA256,
+    )
+    cells = tuple(
+        cell
+        for cell in stage_one_conditions(seeds=declared_seeds, folds=(0,))
+        if method_pairs is None or (cell.method, cell.selector) in method_pairs
+    )
     plan = ScoringPlan(
         bootstrap_seed=7,
         bootstrap_replicates=10,
         folds=(0,),
         support_seeds=declared_seeds,
-        expected_condition_ids=tuple(
-            item.condition_id
-            for item in stage_one_conditions(seeds=declared_seeds, folds=(0,))
-        ),
+        expected_condition_ids=tuple(item.condition_id for item in cells),
         cohort_id="rpc-test",
         registered_category_ids=(1, 2),
-        fold_base_artifacts=(FoldBaseArtifact(0, "2" * 64, "3" * 64),),
+        fold_base_artifacts=(FoldBaseArtifact(0, "2" * 64, base_sha),),
     )
+    banks = {
+        selector: _stage_one_support_bank(tmp_path, selector, declared_seeds)
+        for selector in ("div", "rnd")
+    }
+    paths: list[Path] = []
     for index, condition in enumerate(cells):
-        method_score = 0.0 if condition.method == "m1" else 1.0
-        candidate_rows = (
+        bank_path, bank_sha = banks[condition.selector]
+        receipt = ExperimentReceipt.completed(
+            condition,
+            condition_manifest_sha256="a" * 64,
+            model_sha256="b" * 64,
+            support_sha256=bank_sha,
+            calibration_sha256="d" * 64,
+            policy_sha256="e" * 64,
+            preprocessing_sha256="f" * 64,
+            code_sha256="0" * 64,
+            cohort_manifest_sha256=fixture.DEVELOPMENT_GROUND_TRUTH_SHA256,
+            novel_category_ids=(1,),
+            base_category_ids=(2,),
+            scoring_plan=plan,
+            base_checkpoint_sha256="2" * 64,
+            base_checkpoint_evidence_sha256=base_sha,
+            environment_lock_digest="sha256:environment",
+            output_uri=f"file:///external/stage1/{index}",
+        )
+        condition_path = tmp_path / f"stage1-condition-{index}.json"
+        condition_path.write_bytes(canonical_json_bytes(receipt.to_dict()))
+        method_score = (
+            1.0
+            if clear_winner and (condition.method, condition.selector) == ("m0", "div")
+            else 0.0
+            if clear_winner or condition.method == "m1"
+            else 1.0
+        )
+        evidence = (
             ResearchEvidenceRow(
-                sample_id=f"novel-{index}", object_id=index * 2 + 1,
-                condition_id=condition.condition_id, fold=0, difficulty="E", burst_id=f"burst-{index}",
-                truth_category_id=1, predicted_category_id=1, score_category_ids=(1, 2),
+                sample_id="novel", object_id=1, condition_id=condition.condition_id,
+                fold=0, difficulty="E", burst_id="burst", truth_category_id=1,
+                predicted_category_id=1, score_category_ids=(1, 2),
                 repvit_global_scores=(method_score, 1.0 - method_score),
-                dinov3_global_scores=(method_score, 1.0 - method_score), dinov3_local_scores=(method_score, 1.0 - method_score),
-                conditional_dino_executed=False, **{name: "a" * 64 for name in ("condition_manifest_sha256", "model_sha256", "support_sha256", "calibration_sha256", "policy_sha256", "preprocessing_sha256", "code_sha256")},
+                dinov3_global_scores=(method_score, 1.0 - method_score),
+                dinov3_local_scores=(method_score, 1.0 - method_score),
+                conditional_dino_executed=True,
+                condition_manifest_sha256="a" * 64, model_sha256="b" * 64,
+                support_sha256=bank_sha, calibration_sha256="d" * 64,
+                policy_sha256="e" * 64, preprocessing_sha256="f" * 64,
+                code_sha256="0" * 64,
             ),
             ResearchEvidenceRow(
-                sample_id=f"base-{index}", object_id=index * 2 + 2,
-                condition_id=condition.condition_id, fold=0, difficulty="E", burst_id=f"burst-{index}",
-                truth_category_id=2, predicted_category_id=2, score_category_ids=(1, 2),
-                repvit_global_scores=(0.0, 1.0), dinov3_global_scores=(0.0, 1.0), dinov3_local_scores=(0.0, 1.0),
-                conditional_dino_executed=False, **{name: "a" * 64 for name in ("condition_manifest_sha256", "model_sha256", "support_sha256", "calibration_sha256", "policy_sha256", "preprocessing_sha256", "code_sha256")},
+                sample_id="base", object_id=2, condition_id=condition.condition_id,
+                fold=0, difficulty="E", burst_id="burst", truth_category_id=2,
+                predicted_category_id=2, score_category_ids=(1, 2),
+                repvit_global_scores=(0.0, 1.0), dinov3_global_scores=(0.0, 1.0),
+                dinov3_local_scores=(0.0, 1.0), conditional_dino_executed=False,
+                condition_manifest_sha256="a" * 64, model_sha256="b" * 64,
+                support_sha256=bank_sha, calibration_sha256="d" * 64,
+                policy_sha256="e" * 64, preprocessing_sha256="f" * 64,
+                code_sha256="0" * 64,
             ),
         )
-        raw_path = tmp_path / f"stage1-{index}.jsonl"
-        raw_path.write_bytes(b"\n".join(canonical_json_bytes(row.to_dict()) for row in candidate_rows) + b"\n")
-        raw_sha = hashlib.sha256(raw_path.read_bytes()).hexdigest()
-        payload = {
-            "schema_version": 2,
-            "kind": "rpc-fewshot-score-receipt",
-            "status": "completed",
-            "decision_status": "non_final",
-            "candidate_condition_id": condition.condition_id,
-            "reference_condition_id": condition.condition_id,
-            "candidate_condition": condition.to_dict(),
-            "reference_condition": condition.to_dict(),
-            "candidate_scoring_plan": plan.to_dict(),
-            "reference_scoring_plan": plan.to_dict(),
-            "cohort": {"novel_category_ids": [1], "base_category_ids": [2]},
-            "candidate_branch_top1": {
-                "repvit_global": {
-                    "novel_macro_recall": method_score,
-                    "wrong_registered_sku_rate": 1.0 - method_score,
-                },
-                "dinov3_global": {
-                    "novel_macro_recall": method_score,
-                    "wrong_registered_sku_rate": 1.0 - method_score,
-                },
-                "dinov3_local": {
-                    "novel_macro_recall": method_score,
-                    "wrong_registered_sku_rate": 1.0 - method_score,
-                },
-            },
-            "candidate_full_system": {},
-            "reference_full_system": {},
-            "candidate_provenance": {},
-            "reference_provenance": {},
-            "raw_evidence": {
-                "candidate": {"path": str(raw_path), "sha256": raw_sha},
-                "reference": {"path": str(raw_path), "sha256": raw_sha},
-            },
-            "stage1_global_top1_agreement": {"candidate": 1.0, "reference": 1.0},
-        }
-        path = tmp_path / f"stage1-{index}.json"
-        path.write_bytes(canonical_json_bytes(payload))
+        evidence_path = tmp_path / f"stage1-evidence-{index}.jsonl"
+        evidence_path.write_bytes(b"".join(canonical_json_bytes(row.to_dict()) + b"\n" for row in evidence))
+        path = tmp_path / f"stage1-score-{index}.json"
+        rpc_scoring.score(
+            evidence_path, evidence_path, condition_path, condition_path,
+            ground_truth_path, base_evidence_path, path,
+            trusted_source_root=_TEST_TRUSTED_ROOT, support_bank_path=bank_path,
+            _validated_ground_truth=development_truth,
+        )
         paths.append(path)
     receipt_path = tmp_path / "stage1-selection.json"
     if write_selection:
-        write_stage_one_selection_receipt(receipt_path, tuple(paths))
+        write_stage_one_selection_receipt(
+            receipt_path, tuple(paths), trusted_source_root=_TEST_TRUSTED_ROOT
+        )
     return receipt_path, tuple(paths)
+
+
+def _scoring_fixture():
+    specification = importlib.util.spec_from_file_location(
+        "rpc_scoring_stage1_fixture",
+        Path(__file__).with_name("test_rpc_scoring_plan.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
+
+
+def _stage_one_support_bank(
+    tmp_path: Path, selector: str, seeds: tuple[int, ...]
+) -> tuple[Path, str]:
+    bank = materialize_support_bank(
+        {
+            category: tuple(
+                SupportCandidate(
+                    category, f"{selector}-{category}-{index}",
+                    f"{selector}{category}{index}_camera{(index % 4) + 1}-top.jpg",
+                    hashlib.sha256(f"{selector}-{category}-{index}".encode()).hexdigest(),
+                    1, parse_train_capture_stratum(
+                        f"{selector}{category}{index}_camera{(index % 4) + 1}-top.jpg", category
+                    ), (float(index + 1), float(category)),
+                )
+                for index in range(160)
+            )
+            for category in (1, 2)
+        }, method=selector, seeds=seeds,
+    )
+    path = tmp_path / f"stage1-support-{selector}.json"
+    write_support_bank(path, bank)
+    return path, bank.sha256
 
 
 def _scoring_bindings() -> dict[str, object]:
@@ -218,9 +288,10 @@ def test_stage_one_rejects_an_unregistered_method_selector_shot_cell():
 
 
 def test_ascending_extended_shots_require_explicit_opt_in(tmp_path: Path):
-    selection_path, score_paths = _stage_one_score_artifacts(tmp_path)
+    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, clear_winner=True)
     retained = load_stage_one_selection_receipt(
-        selection_path, score_receipt_paths=score_paths
+        selection_path, score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
     ).decision.retained_methods
     basic = ascending_conditions(
         retained,
@@ -228,6 +299,7 @@ def test_ascending_extended_shots_require_explicit_opt_in(tmp_path: Path):
         folds=(0,),
         stage_one_selection_receipt_path=selection_path,
         stage_one_score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
     )
     extended = ascending_conditions(
         retained,
@@ -236,9 +308,123 @@ def test_ascending_extended_shots_require_explicit_opt_in(tmp_path: Path):
         extended=True,
         stage_one_selection_receipt_path=selection_path,
         stage_one_score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
     )
     assert {item.shot_count for item in basic} == {1, 3, 5, 10, 20}
     assert {item.shot_count for item in extended} == {1, 3, 5, 10, 20, 40, 80, 150}
+
+
+def test_ascending_rejects_an_unresolved_five_seed_expansion(tmp_path: Path):
+    """A five-seed screen cannot be mistaken for the ten-seed final choice."""
+    selection_path, score_paths = _stage_one_score_artifacts(
+        tmp_path, declared_seeds=(101, 102, 103, 104, 105)
+    )
+    selection = load_stage_one_selection_receipt(
+        selection_path, score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+    assert selection.decision.expand_to_ten_seeds
+
+    with pytest.raises(ValueError, match="ten-seed re-selection"):
+        ascending_conditions(
+            selection.decision.retained_methods,
+            seeds=(101,),
+            folds=(0,),
+            stage_one_selection_receipt_path=selection_path,
+            stage_one_score_receipt_paths=score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
+
+
+def test_clear_five_seed_winner_can_continue_without_seed_expansion(tmp_path: Path):
+    """The ten-seed gate is conditional, not an unconditional extra phase."""
+    selection_path, score_paths = _stage_one_score_artifacts(
+        tmp_path, declared_seeds=(101, 102, 103, 104, 105), clear_winner=True
+    )
+    selection = load_stage_one_selection_receipt(
+        selection_path, score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+
+    # The fixture makes m0 strictly dominate every other contender on both
+    # branch recalls and both wrong-SKU rates.
+    assert not selection.decision.expand_to_ten_seeds
+    assert ascending_conditions(
+        selection.decision.retained_methods,
+        seeds=(101,),
+        folds=(0,),
+        stage_one_selection_receipt_path=selection_path,
+        stage_one_score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+
+
+def test_hash_bound_ten_seed_reselection_allows_only_initial_contenders(
+    tmp_path: Path,
+):
+    initial_path, initial_scores = _stage_one_score_artifacts(
+        tmp_path / "five", declared_seeds=(101, 102, 103, 104, 105)
+    )
+    initial = StageOneSelectionReceipt.from_dict(
+        json.loads(initial_path.read_text(encoding="utf-8"))
+    )
+    assert initial.decision.expand_to_ten_seeds
+    ten_path, ten_scores = _stage_one_score_artifacts(
+        tmp_path / "ten",
+        declared_seeds=(101, 102, 103, 104, 105, 106, 107, 108, 109, 110),
+        method_pairs=initial.decision.expand_to_ten_seeds,
+        write_selection=False,
+    )
+    write_stage_one_selection_receipt(
+        ten_path, ten_scores,
+        initial_selection_receipt_path=initial_path,
+        initial_score_receipt_paths=initial_scores,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+    reselected = StageOneSelectionReceipt.from_dict(
+        json.loads(ten_path.read_text(encoding="utf-8"))
+    )
+
+    assert reselected.phase == "ten_seed_reselection"
+    assert set(reselected.decision.retained_methods) <= set(
+        initial.decision.expand_to_ten_seeds
+    )
+    assert ascending_conditions(
+        reselected.decision.retained_methods,
+        seeds=(101,), folds=(0,),
+        stage_one_selection_receipt_path=ten_path,
+        stage_one_score_receipt_paths=ten_scores,
+        initial_stage_one_selection_receipt_path=initial_path,
+        initial_stage_one_score_receipt_paths=initial_scores,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+def test_stage_one_rejects_a_full_looking_hand_authored_score_receipt(tmp_path: Path):
+    """JSON fields and hashes alone cannot substitute for a scorer derivation."""
+    _, score_paths = _stage_one_score_artifacts(tmp_path, write_selection=False)
+    forged = json.loads(score_paths[0].read_text(encoding="utf-8"))
+    forged["candidate_branch_top1"]["repvit_global"]["novel_macro_recall"] = 0.37
+    score_paths[0].write_bytes(canonical_json_bytes(forged))
+
+    with pytest.raises(ValueError, match="derived scorer"):
+        write_stage_one_selection_receipt(
+            tmp_path / "selection.json", score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
+
+
+def test_stage_one_cache_rechecks_raw_evidence_bytes_before_reuse(tmp_path: Path):
+    """A cached scorer reconstruction cannot hide post-validation artifact edits."""
+    selection_path, score_paths = _stage_one_score_artifacts(tmp_path)
+    receipt = json.loads(score_paths[0].read_text(encoding="utf-8"))
+    evidence_path = Path(receipt["raw_evidence"]["candidate"]["path"])
+    evidence_path.write_bytes(b"tampered\n")
+
+    with pytest.raises(ValueError, match="derived scorer"):
+        load_stage_one_selection_receipt(
+            selection_path,
+            score_receipt_paths=score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
 
 
 def test_confirmation_and_locked_conditions_bind_the_150_shot_reference(tmp_path: Path):
@@ -366,16 +552,18 @@ def test_stage_one_selection_receipt_rejects_forged_scalar_evidence(tmp_path: Pa
 
     with pytest.raises(ValueError, match="Stage-1 selection receipt"):
         load_stage_one_selection_receipt(
-            selection_path, score_receipt_paths=score_paths
+            selection_path, score_receipt_paths=score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
         )
 
 
 def test_ascending_rejects_rejected_pair_even_with_valid_stage_one_receipt(
     tmp_path: Path,
 ):
-    selection_path, score_paths = _stage_one_score_artifacts(tmp_path)
+    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, clear_winner=True)
     selection = load_stage_one_selection_receipt(
-        selection_path, score_receipt_paths=score_paths
+        selection_path, score_receipt_paths=score_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
     )
     rejected = next(
         pair for pair in (("m0", "div"), ("m1", "div"), ("m2", "div"), ("m2", "rnd"))
@@ -389,6 +577,7 @@ def test_ascending_rejects_rejected_pair_even_with_valid_stage_one_receipt(
             folds=(0,),
             stage_one_selection_receipt_path=selection_path,
             stage_one_score_receipt_paths=score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
         )
 
 
@@ -397,7 +586,9 @@ def test_stage_one_selection_requires_all_twelve_preregistered_cells(tmp_path: P
     _, score_paths = _stage_one_score_artifacts(tmp_path)
 
     with pytest.raises(ValueError, match="every preregistered 12-cell"):
-        write_stage_one_selection_receipt(selection_path, score_paths[:-1])
+        write_stage_one_selection_receipt(
+            selection_path, score_paths[:-1], trusted_source_root=_TEST_TRUSTED_ROOT
+        )
     assert not selection_path.exists()
 
 
@@ -408,7 +599,9 @@ def test_stage_one_selection_requires_all_declared_fold_seed_cells(tmp_path: Pat
     )
 
     with pytest.raises(ValueError, match="declared fold/seed"):
-        write_stage_one_selection_receipt(selection_path, score_paths)
+        write_stage_one_selection_receipt(
+            selection_path, score_paths[:12], trusted_source_root=_TEST_TRUSTED_ROOT
+        )
     assert not selection_path.exists()
 
 
@@ -716,6 +909,7 @@ def test_ascending_rejects_unsupported_or_non_preregistered_methods(methods: tup
             folds=(0,),
             stage_one_selection_receipt_path=selection_path,
             stage_one_score_receipt_paths=score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
         )
 
 

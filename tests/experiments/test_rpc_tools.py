@@ -540,7 +540,6 @@ def test_score_cli_rejects_evidence_that_omits_a_locked_ground_truth_object(
     reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
     _write_locked_ground_truth(ground_truth)
     _write_base_checkpoint_evidence(base_checkpoint_evidence)
-
     result = _run(
         "tools/evaluate/score_rpc_fewshot.py",
         "--evidence",
@@ -727,6 +726,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
     reference_condition = tmp_path / "reference-condition.json"
     ground_truth = tmp_path / "locked-ground-truth.json"
     base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
+    support_bank = tmp_path / "support-bank.json"
     output = tmp_path / "receipt.json"
     parsed_bytes = (
         _canonical(_evidence(candidate_id)).encode("utf-8") + b"\n"
@@ -746,6 +746,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
     reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
     _write_locked_ground_truth(ground_truth)
     _write_base_checkpoint_evidence(base_checkpoint_evidence)
+    support_bank.write_bytes(b"test-support-bank")
     real_loader = module.load_canonical_jsonl
 
     def replace_after_parse(path: Path):
@@ -781,7 +782,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
         base_checkpoint_evidence,
         output,
         trusted_index=_trusted_index(),
-        support_bank_path=tmp_path / "support-bank.json",
+        support_bank_path=support_bank,
     )
 
     receipt = json.loads(output.read_text(encoding="utf-8"))

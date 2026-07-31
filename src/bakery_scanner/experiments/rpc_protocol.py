@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Literal, Mapping
+from typing import Any, Callable, Iterable, Literal, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
 from bakery_scanner.experiments.rpc_metrics import ResearchEvidenceRow
@@ -920,6 +920,9 @@ def ascending_conditions(
     folds: Iterable[int],
     stage_one_selection_receipt_path: Path,
     stage_one_score_receipt_paths: Iterable[Path],
+    initial_stage_one_selection_receipt_path: Path | None = None,
+    initial_stage_one_score_receipt_paths: Iterable[Path] = (),
+    trusted_source_root: Path,
     extended: bool = False,
 ) -> tuple[ExperimentCondition, ...]:
     """Return only the method pairs authorized by immutable Stage-1 bytes."""
@@ -933,7 +936,14 @@ def ascending_conditions(
     selection = load_stage_one_selection_receipt(
         stage_one_selection_receipt_path,
         score_receipt_paths=stage_one_score_receipt_paths,
+        initial_selection_receipt_path=initial_stage_one_selection_receipt_path,
+        initial_score_receipt_paths=initial_stage_one_score_receipt_paths,
+        trusted_source_root=trusted_source_root,
     )
+    if selection.phase == "initial_screen" and selection.decision.expand_to_ten_seeds:
+        raise ValueError(
+            "Stage-1 five-seed expansion requires a hash-bound ten-seed re-selection before ascending"
+        )
     if set(pairs) != set(selection.decision.retained_methods):
         raise ValueError(
             "ascending conditions require exactly the Stage-1 retained method/selector pairs"
@@ -1106,6 +1116,9 @@ class StageOneSelectionReceipt:
     evidence: tuple[StageOneMethodEvidence, ...]
     score_receipt_sha256s: tuple[str, ...]
     decision: StageOneSelectionDecision
+    phase: Literal["initial_screen", "ten_seed_reselection"] = "initial_screen"
+    declared_support_seeds: tuple[int, ...] = (101,)
+    initial_selection_receipt_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not self.evidence or any(not isinstance(item, StageOneMethodEvidence) for item in self.evidence):
@@ -1116,14 +1129,39 @@ class StageOneSelectionReceipt:
             _validate_sha256("Stage-1 score receipt SHA-256", value)
         if not isinstance(self.decision, StageOneSelectionDecision):
             raise ValueError("Stage-1 selection receipt requires a decision")
-        if self.decision != select_stage_one_methods(self.evidence):
+        _validate_unique_tuple(
+            "Stage-1 declared support seeds",
+            self.declared_support_seeds,
+            lambda value: type(value) is int,
+        )
+        if self.phase not in {"initial_screen", "ten_seed_reselection"}:
+            raise ValueError("Stage-1 selection receipt has unsupported phase")
+        derived = select_stage_one_methods(self.evidence)
+        if self.phase == "initial_screen":
+            if self.initial_selection_receipt_sha256 is not None or self.decision != derived:
+                raise ValueError("Stage-1 initial selection receipt does not reproduce frozen evidence")
+        elif (
+            len(self.declared_support_seeds) != 10
+            or not isinstance(self.initial_selection_receipt_sha256, str)
+            or self.decision.retained_methods != derived.retained_methods
+            or self.decision.removed_methods != derived.removed_methods
+            or self.decision.expand_to_ten_seeds
+        ):
             raise ValueError("Stage-1 selection receipt decision does not reproduce frozen evidence")
+        if self.initial_selection_receipt_sha256 is not None:
+            _validate_sha256(
+                "Stage-1 initial selection receipt SHA-256",
+                self.initial_selection_receipt_sha256,
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "kind": "rpc-fewshot-stage1-selection-receipt",
             "decision_scope": "method_screen_only_not_a_minimum",
+            "phase": self.phase,
+            "declared_support_seeds": list(self.declared_support_seeds),
+            "initial_selection_receipt_sha256": self.initial_selection_receipt_sha256,
             "score_receipt_sha256s": list(self.score_receipt_sha256s),
             "evidence": [
                 {
@@ -1142,16 +1180,18 @@ class StageOneSelectionReceipt:
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "StageOneSelectionReceipt":
         expected = {
-            "schema_version", "kind", "decision_scope", "score_receipt_sha256s",
-            "evidence", "decision",
+            "schema_version", "kind", "decision_scope", "phase",
+            "declared_support_seeds", "initial_selection_receipt_sha256",
+            "score_receipt_sha256s", "evidence", "decision",
         }
         if (
             not isinstance(value, Mapping)
             or set(value) != expected
-            or value.get("schema_version") != 2
+            or value.get("schema_version") != 3
             or value.get("kind") != "rpc-fewshot-stage1-selection-receipt"
             or value.get("decision_scope") != "method_screen_only_not_a_minimum"
             or not isinstance(value.get("score_receipt_sha256s"), list)
+            or not isinstance(value.get("declared_support_seeds"), list)
             or not isinstance(value.get("evidence"), list)
             or not isinstance(value.get("decision"), Mapping)
         ):
@@ -1175,18 +1215,31 @@ class StageOneSelectionReceipt:
                 evidence=evidence,
                 score_receipt_sha256s=tuple(value["score_receipt_sha256s"]),  # type: ignore[arg-type]
                 decision=StageOneSelectionDecision.from_dict(value["decision"]),
+                phase=value["phase"],  # type: ignore[arg-type]
+                declared_support_seeds=tuple(value["declared_support_seeds"]),  # type: ignore[arg-type]
+                initial_selection_receipt_sha256=value["initial_selection_receipt_sha256"],  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid Stage-1 selection receipt") from exc
 
 
 def write_stage_one_selection_receipt(
-    output: Path, score_receipt_paths: Iterable[Path]
+    output: Path,
+    score_receipt_paths: Iterable[Path],
+    *,
+    initial_selection_receipt_path: Path | None = None,
+    initial_score_receipt_paths: Iterable[Path] = (),
+    trusted_source_root: Path,
 ) -> None:
     """Write the only schedulable Stage-1 choice from canonical score receipts."""
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
-    receipt = _stage_one_selection_from_score_receipts(score_receipt_paths)
+    receipt = _stage_one_selection_from_score_receipts(
+        score_receipt_paths,
+        initial_selection_receipt_path=initial_selection_receipt_path,
+        initial_score_receipt_paths=initial_score_receipt_paths,
+        trusted_source_root=trusted_source_root,
+    )
     write_new_json(output, receipt.to_dict())
 
 
@@ -1194,6 +1247,9 @@ def load_stage_one_selection_receipt(
     path: Path,
     *,
     score_receipt_paths: Iterable[Path],
+    initial_selection_receipt_path: Path | None = None,
+    initial_score_receipt_paths: Iterable[Path] = (),
+    trusted_source_root: Path,
 ) -> StageOneSelectionReceipt:
     """Resolve and re-derive a Stage-1 selection before it can schedule runs."""
     try:
@@ -1204,7 +1260,12 @@ def load_stage_one_selection_receipt(
     if not isinstance(value, dict) or canonical_json_bytes(value) != content:
         raise ValueError("Stage-1 selection receipt is not canonical")
     parsed = StageOneSelectionReceipt.from_dict(value)
-    derived = _stage_one_selection_from_score_receipts(score_receipt_paths)
+    derived = _stage_one_selection_from_score_receipts(
+        score_receipt_paths,
+        initial_selection_receipt_path=initial_selection_receipt_path,
+        initial_score_receipt_paths=initial_score_receipt_paths,
+        trusted_source_root=trusted_source_root,
+    )
     if parsed != derived:
         raise ValueError("Stage-1 selection receipt does not reproduce score receipt artifacts")
     return parsed
@@ -1212,6 +1273,10 @@ def load_stage_one_selection_receipt(
 
 def _stage_one_selection_from_score_receipts(
     score_receipt_paths: Iterable[Path],
+    *,
+    initial_selection_receipt_path: Path | None = None,
+    initial_score_receipt_paths: Iterable[Path] = (),
+    trusted_source_root: Path,
 ) -> StageOneSelectionReceipt:
     """Derive Stage-1 evidence from the complete 12-cell raw score matrix."""
     try:
@@ -1220,9 +1285,12 @@ def _stage_one_selection_from_score_receipts(
         raise ValueError("Stage-1 score receipt paths are invalid") from exc
     if not paths or len(paths) != len(set(paths)):
         raise ValueError("Stage-1 selection requires distinct score receipt paths")
-    loaded: list[tuple[ExperimentCondition, Mapping[str, object], str]] = []
+    loaded: list[
+        tuple[ExperimentCondition, Mapping[str, object], str, tuple[float, float, float, float]]
+    ] = []
     plans: list[ScoringPlan] = []
     digests: set[str] = set()
+    ground_truth_cache: dict[tuple[Path, str], Any] = {}
     for path in paths:
         try:
             content = path.read_bytes()
@@ -1274,12 +1342,36 @@ def _stage_one_selection_from_score_receipts(
         ):
             raise ValueError("Stage-1 score receipt scoring plans do not bind condition")
         plans.append(candidate_plan)
-        _stage_one_score_metrics(value)
-        loaded.append((candidate, value, digest))
+        metrics = _stage_one_score_metrics(
+            value,
+            trusted_source_root=trusted_source_root,
+            ground_truth_cache=ground_truth_cache,
+        )
+        loaded.append((candidate, value, digest, metrics))
     if len(set(plans)) != 1:
         raise ValueError("Stage-1 score receipts do not share one declared scoring plan")
     plan = plans[0]
-    coordinates = {(condition.fold, condition.support_seed) for condition, _, _ in loaded}
+    declared_seeds = plan.support_seeds
+    phase: Literal["initial_screen", "ten_seed_reselection"]
+    prior: StageOneSelectionReceipt | None = None
+    if len(declared_seeds) == 10:
+        phase = "ten_seed_reselection"
+        if initial_selection_receipt_path is None:
+            raise ValueError("ten-seed re-selection requires the hash-bound initial Stage-1 receipt")
+        prior = load_stage_one_selection_receipt(
+            initial_selection_receipt_path,
+            score_receipt_paths=initial_score_receipt_paths,
+            trusted_source_root=trusted_source_root,
+        )
+        if prior.phase != "initial_screen" or not prior.decision.expand_to_ten_seeds:
+            raise ValueError("ten-seed re-selection requires an expanding initial Stage-1 receipt")
+        expected_pairs = prior.decision.expand_to_ten_seeds
+    else:
+        phase = "initial_screen"
+        if initial_selection_receipt_path is not None or tuple(initial_score_receipt_paths):
+            raise ValueError("initial Stage-1 selection cannot bind a prior re-selection receipt")
+        expected_pairs = _STAGE_ONE_PAIRS
+    coordinates = {(condition.fold, condition.support_seed) for condition, _, _, _ in loaded}
     declared_coordinates = {
         (fold, seed) for fold in plan.folds for seed in plan.support_seeds
     }
@@ -1287,7 +1379,7 @@ def _stage_one_selection_from_score_receipts(
         raise ValueError("Stage-1 score receipts do not cover declared fold/seed cells")
     expected_cells = {
         (method, selector, shot, fold, seed)
-        for method, selector in _STAGE_ONE_PAIRS
+        for method, selector in expected_pairs
         for shot in _STAGE_ONE_SHOTS
         for fold, seed in declared_coordinates
     }
@@ -1296,12 +1388,12 @@ def _stage_one_selection_from_score_receipts(
             condition.method, condition.selector, condition.shot_count,
             condition.fold, condition.support_seed,
         )
-        for condition, _, _ in loaded
+        for condition, _, _, _ in loaded
     }
     expected_condition_ids = {
         condition.condition_id
-        for condition in stage_one_conditions(
-            seeds=plan.support_seeds, folds=plan.folds
+        for condition in _conditions(
+            expected_pairs, _STAGE_ONE_SHOTS, plan.support_seeds, plan.folds, "stage1"
         )
     }
     if (
@@ -1311,10 +1403,10 @@ def _stage_one_selection_from_score_receipts(
     ):
         raise ValueError("Stage-1 selection requires every preregistered 12-cell fold/seed score")
     evidence: list[StageOneMethodEvidence] = []
-    for method, selector in _STAGE_ONE_PAIRS:
+    for method, selector in expected_pairs:
         values = [
-            _stage_one_score_metrics(receipt)
-            for condition, receipt, _ in loaded
+            metrics
+            for condition, _receipt, _digest, metrics in loaded
             if (condition.method, condition.selector) == (method, selector)
         ]
         evidence.append(
@@ -1328,23 +1420,72 @@ def _stage_one_selection_from_score_receipts(
             )
         )
     frozen_evidence = tuple(evidence)
+    decision = select_stage_one_methods(frozen_evidence)
+    if phase == "ten_seed_reselection":
+        decision = StageOneSelectionDecision(
+            retained_methods=decision.retained_methods,
+            removed_methods=decision.removed_methods,
+            expand_to_ten_seeds=(),
+        )
     return StageOneSelectionReceipt(
         evidence=frozen_evidence,
         score_receipt_sha256s=tuple(
             digest
-            for _, _, digest in sorted(
+            for _, _, digest, _ in sorted(
                 loaded, key=lambda item: item[0].condition_id
             )
         ),
-        decision=select_stage_one_methods(frozen_evidence),
+        decision=decision,
+        phase=phase,
+        declared_support_seeds=declared_seeds,
+        initial_selection_receipt_sha256=(
+            hashlib.sha256(Path(initial_selection_receipt_path).read_bytes()).hexdigest()
+            if initial_selection_receipt_path is not None
+            else None
+        ),
     )
 
 
-def _stage_one_score_metrics(receipt: Mapping[str, object]) -> tuple[float, float, float, float]:
+def _stage_one_score_metrics(
+    receipt: Mapping[str, object],
+    *,
+    trusted_source_root: Path,
+    ground_truth_cache: dict[tuple[Path, str], Any] | None = None,
+) -> tuple[float, float, float, float]:
     # Stage-1 selection is authorized only by a full scorer receipt.  Compact
     # hand-authored scalar summaries cannot cross this boundary: they lack the
     # independently hashed raw-evidence and final-system provenance needed for
     # a reviewer to reproduce the branch report.
+    from bakery_scanner.experiments.rpc_scoring import (
+        load_stage_ground_truth,
+        validate_score_receipt_derivation,
+    )
+
+    validated_ground_truth = None
+    artifacts = receipt.get("derivation_artifacts")
+    if ground_truth_cache is not None and isinstance(artifacts, Mapping):
+        ground = artifacts.get("development_ground_truth")
+        if isinstance(ground, Mapping):
+            raw_path, digest = ground.get("path"), ground.get("sha256")
+            if isinstance(raw_path, str) and isinstance(digest, str):
+                key = (Path(raw_path), digest)
+                validated_ground_truth = ground_truth_cache.get(key)
+                if validated_ground_truth is None:
+                    validated_ground_truth = load_stage_ground_truth(
+                        key[0], stage="stage1", trusted_source_root=trusted_source_root
+                    )
+                    if validated_ground_truth.sha256 != digest:
+                        raise ValueError("Stage-1 ground truth does not match score receipt artifact")
+                    ground_truth_cache[key] = validated_ground_truth
+
+    try:
+        validate_score_receipt_derivation(
+            receipt,
+            trusted_source_root=trusted_source_root,
+            _validated_ground_truth=validated_ground_truth,
+        )
+    except ValueError as exc:
+        raise ValueError("Stage-1 score receipt is not a derived scorer output") from exc
     for name in (
         "candidate_full_system", "reference_full_system", "candidate_provenance",
         "reference_provenance", "raw_evidence",
@@ -1410,14 +1551,16 @@ def _rederive_stage_one_metrics(receipt: Mapping[str, object]) -> tuple[float, f
         raise ValueError("Stage-1 raw evidence lacks novel cohort")
     def metrics(branch: str) -> tuple[float, float]:
         per = []
-        wrong = []
         for category in novel:
             selected = [row for row in rows if row.truth_category_id == category]
             if not selected:
                 raise ValueError("Stage-1 raw evidence omits novel category")
             per.append(sum(row.branch_top1_category_id(branch) == category for row in selected) / len(selected))
-            wrong.extend(row.branch_top1_category_id(branch) != category for row in selected)
-        return sum(per) / len(per), sum(wrong) / len(wrong)
+        wrong = sum(
+            row.branch_top1_category_id(branch) != row.truth_category_id
+            for row in rows
+        ) / len(rows)
+        return sum(per) / len(per), wrong
     rep, rep_wrong = metrics("repvit_global")
     dino, dino_wrong = metrics("dinov3_global")
     # Local scores are part of the common evidence interface even though the
@@ -1483,14 +1626,18 @@ def select_stage_one_methods(
             for other in rows
             if other != item
         )
-    expanded = tuple(
-        item.method_selector
-        for item in survivors
-        if (
-            item.repvit_novel_macro_top1 >= best_repvit - 0.01
-            or item.dinov3_novel_macro_top1 >= best_dinov3 - 0.01
-            or has_accuracy_error_tradeoff(item)
+    expanded = (
+        tuple(
+            item.method_selector
+            for item in ranked
+            if (
+                item.repvit_novel_macro_top1 >= best_repvit - 0.01
+                or item.dinov3_novel_macro_top1 >= best_dinov3 - 0.01
+                or has_accuracy_error_tradeoff(item)
+            )
         )
+        if len(survivors) > 1
+        else ()
     )
     return StageOneSelectionDecision(
         retained_methods=tuple(item.method_selector for item in ranked),
