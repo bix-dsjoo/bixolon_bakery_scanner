@@ -1416,6 +1416,17 @@ def _rederive_stage_one_metrics(receipt: Mapping[str, object]) -> tuple[float, f
         return sum(per) / len(per), sum(wrong) / len(wrong)
     rep, rep_wrong = metrics("repvit_global")
     dino, dino_wrong = metrics("dinov3_global")
+    # Local scores are part of the common evidence interface even though the
+    # cheap screen ranks only global branches; force their producer decoding.
+    for row in rows:
+        row.branch_top1_category_id("dinov3_local")
+    agreement = sum(
+        row.branch_top1_category_id("repvit_global") == row.branch_top1_category_id("dinov3_global")
+        for row in rows
+    ) / len(rows)
+    reported_agreement = receipt.get("stage1_global_top1_agreement")
+    if not isinstance(reported_agreement, Mapping) or reported_agreement.get("candidate") != agreement:
+        raise ValueError("Stage-1 global Top-1 agreement does not reproduce raw evidence")
     return rep, dino, rep_wrong, dino_wrong
 
 

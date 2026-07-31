@@ -147,7 +147,7 @@ def _stage_one_score_artifacts(
                 "candidate": {"path": str(raw_path), "sha256": raw_sha},
                 "reference": {"path": str(raw_path), "sha256": raw_sha},
             },
-            "stage1_global_top1_agreement": {"candidate": 0.5, "reference": 0.5},
+            "stage1_global_top1_agreement": {"candidate": 1.0, "reference": 1.0},
         }
         path = tmp_path / f"stage1-{index}.json"
         path.write_bytes(canonical_json_bytes(payload))
