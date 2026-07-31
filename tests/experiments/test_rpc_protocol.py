@@ -145,6 +145,8 @@ def _stage_four_selection_artifacts(
         reference = next(item for item in conditions if item.shot_count == 150)
         candidate_plan = _confirmation_plan(condition)
         reference_plan = _confirmation_plan(reference)
+        provisional_pass = condition.shot_count != 3
+        lower_delta = 0.0 if provisional_pass else -0.03
         value = {
             "schema_version": 2,
             "kind": "rpc-fewshot-confirmation-score-receipt",
@@ -152,7 +154,7 @@ def _stage_four_selection_artifacts(
             "decision_status": "provisional",
             "aggregate_stage": "confirmation",
             "decision_scope": "complete_confirmation_fold_seed_aggregate",
-            "provisional_pass": condition.shot_count != 3,
+            "provisional_pass": provisional_pass,
             "condition_count": 1,
             "candidate_conditions": [condition.to_dict()],
             "reference_conditions": [reference.to_dict()],
@@ -160,7 +162,60 @@ def _stage_four_selection_artifacts(
             "reference_condition_ids": [reference.condition_id],
             "candidate_scoring_plan": candidate_plan.to_dict(),
             "reference_scoring_plan": reference_plan.to_dict(),
+            "candidate_scoring_plan_sha256": candidate_plan.sha256,
+            "reference_scoring_plan_sha256": reference_plan.sha256,
             "cohort": {"base_category_ids": [2], "novel_category_ids": [1]},
+            "score_receipts": [
+                {"candidate_condition_id": condition.condition_id, "sha256": "4" * 64}
+            ],
+            "raw_evidence": [
+                {
+                    "candidate_condition_id": condition.condition_id,
+                    "candidate_evidence_sha256": "5" * 64,
+                    "reference_condition_id": reference.condition_id,
+                    "reference_evidence_sha256": "6" * 64,
+                }
+            ],
+            "condition_branch_top1": [
+                {
+                    "candidate_condition_id": condition.condition_id,
+                    "reference_condition_id": reference.condition_id,
+                    "candidate": _branch_summaries(),
+                    "reference": _branch_summaries(),
+                }
+            ],
+            "candidate_full_system": _full_system_summary(),
+            "reference_full_system": _full_system_summary(),
+            "fold_base_checkpoint": {
+                "base_macro_final_correct_recall": 1.0,
+                "checkpoint_sha256": "2" * 64,
+                "evidence_sha256": "3" * 64,
+                "fold": 0,
+            },
+            "locked_ground_truth": {
+                "burst_count": 1,
+                "manifest_sha256": "1" * 64,
+                "object_count": 2,
+                "sample_count": 2,
+            },
+            "paired_bootstrap_95": {
+                "replicates": 10,
+                "seed": 7,
+                "novel_macro_recall_lower_delta": lower_delta,
+                "novel_macro_recall_upper_delta": 0.0,
+                "novel_wrong_registered_sku_rate_lower_delta": 0.0,
+                "novel_wrong_registered_sku_rate_upper_delta": 0.0,
+                "base_macro_recall_lower_delta": 0.0,
+                "base_macro_recall_upper_delta": 0.0,
+            },
+            "minimum_rule_inputs": {
+                "registered_coverage": 1.0,
+                "novel_macro_recall_lower_delta": lower_delta,
+                "novel_wrong_registered_sku_rate_upper_delta": 0.0,
+                "novel_loss_over_10pp_fraction": 0.0,
+                "candidate_base_macro_final_correct_recall": 1.0,
+                "fold_base_checkpoint_macro_final_correct_recall": 1.0,
+            },
         }
         path = tmp_path / f"confirmation-{index}.json"
         content = canonical_json_bytes(value)
@@ -174,6 +229,43 @@ def _stage_four_selection_artifacts(
             )
         )
     return StageFourSelection(tuple(claims)), tuple(paths)
+
+
+def _branch_summaries() -> dict[str, object]:
+    return {
+        branch: {
+            "sample_count": 2,
+            "novel_macro_recall": 1.0,
+            "base_macro_recall": 1.0,
+            "per_category_recall": {"1": 1.0, "2": 1.0},
+        }
+        for branch in ("repvit_global", "dinov3_global", "dinov3_local")
+    }
+
+
+def _full_system_summary() -> dict[str, object]:
+    return {
+        "sample_count": 2,
+        "wrong_registered_sku_rate": 0.0,
+        "novel_wrong_registered_sku_rate": 0.0,
+        "base_wrong_registered_sku_rate": 0.0,
+        "unknown_rate": 0.0,
+        "registered_coverage": 1.0,
+        "novel_macro_final_correct_recall": 1.0,
+        "base_macro_final_correct_recall": 1.0,
+        "per_category_final_correct_recall": {"1": 1.0, "2": 1.0},
+        "novel_loss_over_10pp_fraction": 0.0,
+        "by_difficulty": {
+            "E": {
+                "sample_count": 2,
+                "unknown_rate": 0.0,
+                "registered_coverage": 1.0,
+                "wrong_registered_sku_rate": 0.0,
+                "novel_macro_final_correct_recall": 1.0,
+                "base_macro_final_correct_recall": 1.0,
+            }
+        },
+    }
 
 
 def _confirmation_plan(condition: ExperimentCondition) -> ScoringPlan:
@@ -273,6 +365,80 @@ def test_locked_scheduler_rejects_mismatched_stage_four_cohort(
     with pytest.raises(ValueError, match="do not share cohort and scoring plan"):
         locked_conditions(
             mismatched, confirmation_score_receipt_paths=paths
+        )
+
+
+def test_locked_scheduler_rejects_a_minimal_forged_stage_four_receipt(
+    tmp_path: Path,
+):
+    """A hand-authored decision subset is not a Stage-4 aggregate artifact."""
+    selection, paths = _stage_four_selection_artifacts(tmp_path)
+    forged = json.loads(paths[0].read_text(encoding="utf-8"))
+    del forged["raw_evidence"]
+    content = canonical_json_bytes(forged)
+    paths[0].write_bytes(content)
+    selection = StageFourSelection(
+        tuple(
+            replace(claim, score_receipt_sha256=hashlib.sha256(content).hexdigest())
+            if index == 0
+            else claim
+            for index, claim in enumerate(selection.confirmation_receipts)
+        )
+    )
+
+    with pytest.raises(ValueError, match="strict aggregate schema"):
+        locked_conditions(selection, confirmation_score_receipt_paths=paths)
+
+
+def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
+    tmp_path: Path,
+):
+    """A valid Stage-4 quartet cannot authorize a different locked cohort."""
+    selection, paths = _stage_four_selection_artifacts(tmp_path)
+    condition = next(
+        item
+        for item in locked_conditions(selection, confirmation_score_receipt_paths=paths)
+        if item.shot_count == 5
+    )
+    plan = ScoringPlan(
+        bootstrap_seed=7,
+        bootstrap_replicates=10,
+        folds=(0,),
+        support_seeds=(101,),
+        expected_condition_ids=(condition.condition_id,),
+        cohort_id="rpc-test",
+        registered_category_ids=(1, 2),
+        fold_base_artifacts=(
+            FoldBaseArtifact(
+                fold=0,
+                checkpoint_sha256="2" * 64,
+                evidence_sha256="3" * 64,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Stage-4.*cohort"):
+        ExperimentReceipt.completed(
+            condition,
+            condition_manifest_sha256=_HASH,
+            model_sha256="b" * 64,
+            support_sha256="c" * 64,
+            calibration_sha256="d" * 64,
+            policy_sha256="e" * 64,
+            preprocessing_sha256="f" * 64,
+            code_sha256="0" * 64,
+            cohort_manifest_sha256="9" * 64,
+            novel_category_ids=(1,),
+            base_category_ids=(2,),
+            scoring_plan=plan,
+            base_checkpoint_sha256="2" * 64,
+            base_checkpoint_evidence_sha256="3" * 64,
+            environment_lock_digest="sha256:environment",
+            output_uri="file:///external/run",
+            stage_four_selection=selection,
+            stage_four_confirmation_score_receipt_paths=tuple(
+                str(path) for path in paths
+            ),
         )
 
 

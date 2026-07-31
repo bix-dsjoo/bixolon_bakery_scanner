@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal, Mapping
@@ -235,10 +236,53 @@ class StageFourSelection:
             raise ValueError("invalid Stage-4 selection") from exc
 
 
+@dataclass(frozen=True, slots=True)
+class StageFourConfirmationBinding:
+    """Verified common provenance emitted by one Stage-4 aggregate quartet."""
+
+    cohort_manifest_sha256: str
+    novel_category_ids: tuple[int, ...]
+    base_category_ids: tuple[int, ...]
+    scoring_plan_fingerprint: tuple[object, ...]
+    fold_base_artifact: FoldBaseArtifact
+
+    def validate_locked_target(
+        self,
+        *,
+        condition: ExperimentCondition,
+        cohort_manifest_sha256: str,
+        novel_category_ids: tuple[int, ...],
+        base_category_ids: tuple[int, ...],
+        scoring_plan: "ScoringPlan",
+        base_checkpoint_sha256: str,
+        base_checkpoint_evidence_sha256: str,
+    ) -> None:
+        """Require a locked target to use the exact Stage-4 decision universe."""
+        if condition.stage != "locked":
+            raise ValueError("Stage-4 binding can authorize only a locked condition")
+        if cohort_manifest_sha256 != self.cohort_manifest_sha256:
+            raise ValueError("locked target cohort does not match Stage-4 cohort")
+        if (
+            tuple(novel_category_ids) != self.novel_category_ids
+            or tuple(base_category_ids) != self.base_category_ids
+        ):
+            raise ValueError("locked target category cohort does not match Stage-4 cohort")
+        if _stage_four_plan_context(scoring_plan) != self.scoring_plan_fingerprint:
+            raise ValueError("locked target scoring plan does not match Stage-4 scoring plan")
+        if condition.fold != self.fold_base_artifact.fold or (
+            base_checkpoint_sha256,
+            base_checkpoint_evidence_sha256,
+        ) != (
+            self.fold_base_artifact.checkpoint_sha256,
+            self.fold_base_artifact.evidence_sha256,
+        ):
+            raise ValueError("locked target base checkpoint does not match Stage-4 artifact")
+
+
 def validate_stage_four_confirmation_score_receipts(
     selection: StageFourSelection,
     receipt_paths: Iterable[Path],
-) -> None:
+) -> StageFourConfirmationBinding:
     """Resolve every Stage-4 claim to its canonical, immutable score receipt.
 
     A selection deliberately records digests rather than copying large score
@@ -276,17 +320,44 @@ def validate_stage_four_confirmation_score_receipts(
     if set(loaded) != expected_digests:
         raise ValueError("Stage-4 confirmation score receipt SHA-256 does not match selection")
 
-    fingerprints: set[tuple[object, ...]] = set()
+    bindings: set[StageFourConfirmationBinding] = set()
     for claim in selection.confirmation_receipts:
         receipt = loaded[claim.score_receipt_sha256]
-        fingerprints.add(_validate_stage_four_confirmation_score_receipt(receipt, claim))
-    if len(fingerprints) != 1:
+        bindings.add(_validate_stage_four_confirmation_score_receipt(receipt, claim))
+    if len(bindings) != 1:
         raise ValueError("Stage-4 confirmation score receipts do not share cohort and scoring plan")
+    return next(iter(bindings))
+
+
+def validate_stage_four_binding_for_locked_target(
+    selection: StageFourSelection,
+    receipt_paths: Iterable[Path],
+    *,
+    condition: ExperimentCondition,
+    cohort_manifest_sha256: str,
+    novel_category_ids: tuple[int, ...],
+    base_category_ids: tuple[int, ...],
+    scoring_plan: "ScoringPlan",
+    base_checkpoint_sha256: str,
+    base_checkpoint_evidence_sha256: str,
+) -> StageFourConfirmationBinding:
+    """Resolve Stage-4 bytes and bind their provenance to one Stage-5 target."""
+    binding = validate_stage_four_confirmation_score_receipts(selection, receipt_paths)
+    binding.validate_locked_target(
+        condition=condition,
+        cohort_manifest_sha256=cohort_manifest_sha256,
+        novel_category_ids=novel_category_ids,
+        base_category_ids=base_category_ids,
+        scoring_plan=scoring_plan,
+        base_checkpoint_sha256=base_checkpoint_sha256,
+        base_checkpoint_evidence_sha256=base_checkpoint_evidence_sha256,
+    )
+    return binding
 
 
 def _validate_stage_four_confirmation_score_receipt(
     receipt: Mapping[str, object], claim: StageFourConfirmationReceipt
-) -> tuple[object, ...]:
+) -> StageFourConfirmationBinding:
     required = {
         "schema_version",
         "kind",
@@ -302,11 +373,21 @@ def _validate_stage_four_confirmation_score_receipt(
         "reference_condition_ids",
         "candidate_scoring_plan",
         "reference_scoring_plan",
+        "candidate_scoring_plan_sha256",
+        "reference_scoring_plan_sha256",
         "cohort",
+        "score_receipts",
+        "raw_evidence",
+        "condition_branch_top1",
+        "candidate_full_system",
+        "reference_full_system",
+        "fold_base_checkpoint",
+        "locked_ground_truth",
+        "paired_bootstrap_95",
+        "minimum_rule_inputs",
     }
-    missing = required - set(receipt)
-    if missing:
-        raise ValueError("Stage-4 confirmation score receipt lacks required provenance")
+    if set(receipt) != required:
+        raise ValueError("Stage-4 confirmation score receipt does not use the strict aggregate schema")
     if (
         receipt.get("schema_version") != 2
         or receipt.get("kind") != "rpc-fewshot-confirmation-score-receipt"
@@ -364,7 +445,297 @@ def _validate_stage_four_confirmation_score_receipt(
     novel = _stage_four_category_ids(cohort.get("novel_category_ids"), "novel")
     if base & novel or base | novel != set(candidate_plan.registered_category_ids):
         raise ValueError("Stage-4 confirmation score receipt cohort does not match scoring plan")
-    return candidate_fingerprint + (tuple(sorted(base)), tuple(sorted(novel)))
+    if (
+        receipt.get("candidate_scoring_plan_sha256") != candidate_plan.sha256
+        or receipt.get("reference_scoring_plan_sha256") != reference_plan.sha256
+    ):
+        raise ValueError("Stage-4 confirmation score receipt scoring plan SHA-256 mismatch")
+    _validate_stage_four_score_receipts(receipt.get("score_receipts"), candidate)
+    _validate_stage_four_raw_evidence(receipt.get("raw_evidence"), candidate, reference)
+    _validate_stage_four_branch_reports(
+        receipt.get("condition_branch_top1"), candidate, reference
+    )
+    _validate_stage_four_full_system(
+        receipt.get("candidate_full_system"), "candidate", candidate_plan
+    )
+    _validate_stage_four_full_system(
+        receipt.get("reference_full_system"), "reference", reference_plan
+    )
+    locked_ground_truth = _validate_stage_four_locked_ground_truth(
+        receipt.get("locked_ground_truth")
+    )
+    _validate_stage_four_fold_base_checkpoint(
+        receipt.get("minimum_rule_inputs"),
+        receipt.get("paired_bootstrap_95"),
+        receipt.get("candidate_full_system"),
+        receipt.get("fold_base_checkpoint"),
+        candidate_plan,
+        candidate,
+        receipt.get("provisional_pass"),
+    )
+    return StageFourConfirmationBinding(
+        cohort_manifest_sha256=locked_ground_truth,
+        novel_category_ids=tuple(sorted(novel)),
+        base_category_ids=tuple(sorted(base)),
+        scoring_plan_fingerprint=_stage_four_plan_context(candidate_plan),
+        fold_base_artifact=next(
+            item for item in candidate_plan.fold_base_artifacts if item.fold == candidate.fold
+        ),
+    )
+
+
+def _validate_stage_four_score_receipts(
+    value: object, candidate: ExperimentCondition
+) -> None:
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], Mapping):
+        raise ValueError("Stage-4 confirmation score receipt lacks aggregate score receipt provenance")
+    item = value[0]
+    if set(item) != {"candidate_condition_id", "sha256"} or (
+        item.get("candidate_condition_id") != candidate.condition_id
+    ):
+        raise ValueError("Stage-4 confirmation score receipt has invalid aggregate score receipt provenance")
+    _validate_sha256("Stage-4 aggregate score receipt SHA-256", item.get("sha256"))
+
+
+def _validate_stage_four_raw_evidence(
+    value: object, candidate: ExperimentCondition, reference: ExperimentCondition
+) -> None:
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], Mapping):
+        raise ValueError("Stage-4 confirmation score receipt lacks raw evidence provenance")
+    item = value[0]
+    required = {
+        "candidate_condition_id",
+        "candidate_evidence_sha256",
+        "reference_condition_id",
+        "reference_evidence_sha256",
+    }
+    if (
+        set(item) != required
+        or item.get("candidate_condition_id") != candidate.condition_id
+        or item.get("reference_condition_id") != reference.condition_id
+    ):
+        raise ValueError("Stage-4 confirmation score receipt has invalid raw evidence provenance")
+    _validate_sha256("Stage-4 candidate raw evidence SHA-256", item.get("candidate_evidence_sha256"))
+    _validate_sha256("Stage-4 reference raw evidence SHA-256", item.get("reference_evidence_sha256"))
+
+
+def _validate_stage_four_branch_reports(
+    value: object, candidate: ExperimentCondition, reference: ExperimentCondition
+) -> None:
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], Mapping):
+        raise ValueError("Stage-4 confirmation score receipt lacks branch evidence")
+    item = value[0]
+    if set(item) != {
+        "candidate_condition_id", "reference_condition_id", "candidate", "reference"
+    } or (
+        item.get("candidate_condition_id") != candidate.condition_id
+        or item.get("reference_condition_id") != reference.condition_id
+    ):
+        raise ValueError("Stage-4 confirmation score receipt has invalid branch evidence")
+    for name in ("candidate", "reference"):
+        branches = item.get(name)
+        if not isinstance(branches, Mapping) or set(branches) != {
+            "repvit_global", "dinov3_global", "dinov3_local"
+        }:
+            raise ValueError("Stage-4 confirmation score receipt has incomplete branch evidence")
+        for branch in branches.values():
+            _validate_stage_four_branch_summary(branch)
+
+
+def _validate_stage_four_branch_summary(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "sample_count", "novel_macro_recall", "base_macro_recall", "per_category_recall"
+    }:
+        raise ValueError("Stage-4 branch summary is invalid")
+    _validate_positive_integer("Stage-4 branch sample_count", value.get("sample_count"))
+    _validate_stage_four_metric("Stage-4 branch novel macro recall", value.get("novel_macro_recall"))
+    _validate_stage_four_metric("Stage-4 branch base macro recall", value.get("base_macro_recall"))
+    _validate_stage_four_category_metrics(value.get("per_category_recall"))
+
+
+def _validate_stage_four_full_system(
+    value: object, name: str, plan: "ScoringPlan"
+) -> None:
+    required = {
+        "sample_count",
+        "wrong_registered_sku_rate",
+        "novel_wrong_registered_sku_rate",
+        "base_wrong_registered_sku_rate",
+        "unknown_rate",
+        "registered_coverage",
+        "novel_macro_final_correct_recall",
+        "base_macro_final_correct_recall",
+        "per_category_final_correct_recall",
+        "novel_loss_over_10pp_fraction",
+        "by_difficulty",
+    }
+    if not isinstance(value, Mapping) or set(value) != required:
+        raise ValueError(f"Stage-4 {name} full-system summary is invalid")
+    _validate_positive_integer(f"Stage-4 {name} sample_count", value.get("sample_count"))
+    for metric in required - {"sample_count", "per_category_final_correct_recall", "by_difficulty"}:
+        _validate_stage_four_metric(f"Stage-4 {name} {metric}", value.get(metric))
+    _validate_stage_four_category_metrics(
+        value.get("per_category_final_correct_recall"), expected=plan.registered_category_ids
+    )
+    difficulties = value.get("by_difficulty")
+    if not isinstance(difficulties, Mapping) or not difficulties:
+        raise ValueError(f"Stage-4 {name} difficulty summary is invalid")
+    for difficulty, summary in difficulties.items():
+        if not isinstance(difficulty, str) or not difficulty:
+            raise ValueError(f"Stage-4 {name} difficulty summary is invalid")
+        _validate_stage_four_difficulty_summary(summary, name)
+
+
+def _validate_stage_four_difficulty_summary(value: object, name: str) -> None:
+    required = {
+        "sample_count", "unknown_rate", "registered_coverage", "wrong_registered_sku_rate",
+        "novel_macro_final_correct_recall", "base_macro_final_correct_recall",
+    }
+    if not isinstance(value, Mapping) or set(value) != required:
+        raise ValueError(f"Stage-4 {name} difficulty summary is invalid")
+    _validate_nonnegative_integer(
+        f"Stage-4 {name} difficulty sample_count", value.get("sample_count")
+    )
+    for metric in required - {"sample_count"}:
+        _validate_stage_four_metric(f"Stage-4 {name} difficulty {metric}", value.get(metric))
+
+
+def _validate_stage_four_category_metrics(value: object, *, expected: tuple[int, ...] | None = None) -> None:
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("Stage-4 category metrics are invalid")
+    categories: set[int] = set()
+    for category, metric in value.items():
+        try:
+            parsed = int(category)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Stage-4 category metrics are invalid") from exc
+        if str(parsed) != str(category) or parsed <= 0 or parsed in categories:
+            raise ValueError("Stage-4 category metrics are invalid")
+        categories.add(parsed)
+        _validate_stage_four_metric("Stage-4 category metric", metric)
+    if expected is not None and categories != set(expected):
+        raise ValueError("Stage-4 category metrics do not match the scoring plan")
+
+
+def _validate_stage_four_locked_ground_truth(value: object) -> str:
+    if not isinstance(value, Mapping) or set(value) != {
+        "burst_count", "manifest_sha256", "object_count", "sample_count"
+    }:
+        raise ValueError("Stage-4 confirmation score receipt lacks locked ground-truth provenance")
+    _validate_sha256("Stage-4 locked ground-truth manifest SHA-256", value.get("manifest_sha256"))
+    for name in ("burst_count", "object_count", "sample_count"):
+        _validate_positive_integer(f"Stage-4 locked ground-truth {name}", value.get(name))
+    return value["manifest_sha256"]  # type: ignore[return-value]
+
+
+def _validate_stage_four_fold_base_checkpoint(
+    minimum_rule_inputs: object,
+    paired_bootstrap: object,
+    candidate_summary: object,
+    fold_base_checkpoint: object,
+    plan: "ScoringPlan",
+    candidate: ExperimentCondition,
+    provisional_pass: object,
+) -> None:
+    if not isinstance(fold_base_checkpoint, Mapping) or set(fold_base_checkpoint) != {
+        "base_macro_final_correct_recall", "checkpoint_sha256", "evidence_sha256", "fold"
+    }:
+        raise ValueError("Stage-4 confirmation score receipt lacks fold base checkpoint")
+    artifact = next(item for item in plan.fold_base_artifacts if item.fold == candidate.fold)
+    if (
+        fold_base_checkpoint.get("fold") != candidate.fold
+        or fold_base_checkpoint.get("checkpoint_sha256") != artifact.checkpoint_sha256
+        or fold_base_checkpoint.get("evidence_sha256") != artifact.evidence_sha256
+    ):
+        raise ValueError("Stage-4 fold base checkpoint does not match scoring plan")
+    _validate_stage_four_metric(
+        "Stage-4 fold base checkpoint recall",
+        fold_base_checkpoint.get("base_macro_final_correct_recall"),
+    )
+    if not isinstance(paired_bootstrap, Mapping) or set(paired_bootstrap) != {
+        "replicates", "seed", "novel_macro_recall_lower_delta", "novel_macro_recall_upper_delta",
+        "novel_wrong_registered_sku_rate_lower_delta", "novel_wrong_registered_sku_rate_upper_delta",
+        "base_macro_recall_lower_delta", "base_macro_recall_upper_delta",
+    } or paired_bootstrap.get("seed") != plan.bootstrap_seed or (
+        paired_bootstrap.get("replicates") != plan.bootstrap_replicates
+    ):
+        raise ValueError("Stage-4 paired bootstrap does not match scoring plan")
+    for name in set(paired_bootstrap) - {"seed", "replicates"}:
+        _validate_finite_metric(f"Stage-4 paired bootstrap {name}", paired_bootstrap.get(name))
+    if any(
+        float(paired_bootstrap[lower]) > float(paired_bootstrap[upper])
+        for lower, upper in (
+            ("novel_macro_recall_lower_delta", "novel_macro_recall_upper_delta"),
+            ("novel_wrong_registered_sku_rate_lower_delta", "novel_wrong_registered_sku_rate_upper_delta"),
+            ("base_macro_recall_lower_delta", "base_macro_recall_upper_delta"),
+        )
+    ):
+        raise ValueError("Stage-4 paired bootstrap interval is invalid")
+    required = {
+        "registered_coverage", "novel_macro_recall_lower_delta",
+        "novel_wrong_registered_sku_rate_upper_delta", "novel_loss_over_10pp_fraction",
+        "candidate_base_macro_final_correct_recall", "fold_base_checkpoint_macro_final_correct_recall",
+    }
+    if not isinstance(minimum_rule_inputs, Mapping) or set(minimum_rule_inputs) != required:
+        raise ValueError("Stage-4 confirmation score receipt lacks minimum-rule inputs")
+    for name in required:
+        validator = (
+            _validate_finite_metric
+            if name in {
+                "novel_macro_recall_lower_delta",
+                "novel_wrong_registered_sku_rate_upper_delta",
+            }
+            else _validate_stage_four_metric
+        )
+        validator(f"Stage-4 minimum-rule {name}", minimum_rule_inputs.get(name))
+    if not isinstance(candidate_summary, Mapping) or (
+        minimum_rule_inputs["registered_coverage"] != candidate_summary.get("registered_coverage")
+        or minimum_rule_inputs["novel_loss_over_10pp_fraction"] != candidate_summary.get("novel_loss_over_10pp_fraction")
+        or minimum_rule_inputs["candidate_base_macro_final_correct_recall"]
+        != candidate_summary.get("base_macro_final_correct_recall")
+        or minimum_rule_inputs["fold_base_checkpoint_macro_final_correct_recall"]
+        != fold_base_checkpoint.get("base_macro_final_correct_recall")
+        or minimum_rule_inputs["novel_macro_recall_lower_delta"]
+        != paired_bootstrap.get("novel_macro_recall_lower_delta")
+        or minimum_rule_inputs["novel_wrong_registered_sku_rate_upper_delta"]
+        != paired_bootstrap.get("novel_wrong_registered_sku_rate_upper_delta")
+        or _stage_four_minimum_rule_pass(minimum_rule_inputs) is not provisional_pass
+    ):
+        raise ValueError("Stage-4 confirmation decision does not match its aggregate inputs")
+
+
+def _validate_positive_integer(name: str, value: object) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def _validate_nonnegative_integer(name: str, value: object) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+
+
+def _validate_finite_metric(name: str, value: object) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be finite")
+
+
+def _validate_stage_four_metric(name: str, value: object) -> None:
+    _validate_finite_metric(name, value)
+    if not 0.0 <= float(value) <= 1.0:
+        raise ValueError(f"{name} must be in [0, 1]")
+
+
+def _stage_four_minimum_rule_pass(value: Mapping[str, object]) -> bool:
+    return (
+        float(value["registered_coverage"]) > 0.0
+        and float(value["novel_macro_recall_lower_delta"]) >= -0.02
+        and float(value["novel_wrong_registered_sku_rate_upper_delta"]) <= 0.005
+        and float(value["novel_loss_over_10pp_fraction"]) <= 0.05
+        and (
+            float(value["candidate_base_macro_final_correct_recall"])
+            - float(value["fold_base_checkpoint_macro_final_correct_recall"])
+        ) >= -0.01
+    )
 
 
 def _one_stage_four_condition(
@@ -402,6 +773,16 @@ def _stage_four_plan_fingerprint(plan: "ScoringPlan") -> tuple[object, ...]:
         plan.cohort_id,
         plan.registered_category_ids,
         plan.fold_base_artifacts,
+    )
+
+
+def _stage_four_plan_context(plan: "ScoringPlan") -> tuple[object, ...]:
+    """Plan dimensions that must survive confirmation-to-locked expansion."""
+    return (
+        plan.bootstrap_seed,
+        plan.bootstrap_replicates,
+        plan.cohort_id,
+        plan.registered_category_ids,
     )
 
 
@@ -722,8 +1103,16 @@ class ExperimentReceipt:
                 150,
             }:
                 raise ValueError("locked receipt condition does not match its Stage-4 selection")
-            validate_stage_four_confirmation_score_receipts(
-                selection, self.stage_four_confirmation_score_receipt_paths
+            validate_stage_four_binding_for_locked_target(
+                selection,
+                self.stage_four_confirmation_score_receipt_paths,
+                condition=self.condition,
+                cohort_manifest_sha256=self.cohort_manifest_sha256,
+                novel_category_ids=self.novel_category_ids,
+                base_category_ids=self.base_category_ids,
+                scoring_plan=self.scoring_plan,
+                base_checkpoint_sha256=self.base_checkpoint_sha256,
+                base_checkpoint_evidence_sha256=self.base_checkpoint_evidence_sha256,
             )
         elif self.stage_four_selection is not None:
             raise ValueError("only locked receipts may bind a Stage-4 selection")

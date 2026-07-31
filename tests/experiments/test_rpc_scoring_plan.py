@@ -6,6 +6,7 @@ from dataclasses import replace
 from functools import lru_cache
 import hashlib
 import importlib.util
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -126,6 +127,8 @@ def _locked_selection(*, fold: int, seed: int) -> StageFourSelection:
 def _locked_selection_artifacts(
     fold: int, seed: int
 ) -> tuple[StageFourSelection, tuple[Path, ...]]:
+    """Build Stage-4 inputs through the real confirmation aggregate writer."""
+    module = _score_module()
     confirmations = confirmation_conditions(
         ("m0", "div"),
         shot_counts=(3, 5, 10, 150),
@@ -135,6 +138,8 @@ def _locked_selection_artifacts(
     paths: list[Path] = []
     claims: list[StageFourConfirmationReceipt] = []
     reference = next(item for item in confirmations if item.shot_count == 150)
+    ground_truth_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ground-truth-{fold}-{seed}.json"
+    _write_ground_truth(ground_truth_path)
     for index, condition in enumerate(confirmations):
         candidate_plan = _plan(
             (condition.condition_id,), folds=(fold,), seeds=(seed,)
@@ -142,32 +147,39 @@ def _locked_selection_artifacts(
         reference_plan = _plan(
             (reference.condition_id,), folds=(fold,), seeds=(seed,)
         )
-        value = {
-            "schema_version": 2,
-            "kind": "rpc-fewshot-confirmation-score-receipt",
-            "status": "completed",
-            "decision_status": "provisional",
-            "aggregate_stage": "confirmation",
-            "decision_scope": "complete_confirmation_fold_seed_aggregate",
-            "provisional_pass": condition.shot_count != 3,
-            "condition_count": 1,
-            "candidate_conditions": [condition.to_dict()],
-            "reference_conditions": [reference.to_dict()],
-            "candidate_condition_ids": [condition.condition_id],
-            "reference_condition_ids": [reference.condition_id],
-            "candidate_scoring_plan": candidate_plan.to_dict(),
-            "reference_scoring_plan": reference_plan.to_dict(),
-            "cohort": {"base_category_ids": [2], "novel_category_ids": [1]},
-        }
+        candidate_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"candidate-{fold}-{seed}-{index}.jsonl"
+        reference_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"reference-{fold}-{seed}-{index}.jsonl"
+        score_path = _STAGE_FOUR_ARTIFACT_ROOT / f"score-{fold}-{seed}-{index}.json"
+        _write_canonical(
+            score_path,
+            _non_final_score(
+                condition,
+                reference,
+                candidate_plan,
+                reference_plan,
+                candidate_evidence_sha256=_write_evidence(
+                    candidate_evidence,
+                    condition,
+                    novel_prediction=None if condition.shot_count == 3 else 1,
+                ),
+                reference_evidence_sha256=_write_evidence(reference_evidence, reference),
+            ),
+        )
         path = _STAGE_FOUR_ARTIFACT_ROOT / f"confirmation-{fold}-{seed}-{index}.json"
-        content = canonical_json_bytes(value)
-        path.write_bytes(content)
+        module.aggregate_score_receipts(
+            (score_path,),
+            path,
+            evidence_paths=(candidate_evidence,),
+            reference_evidence_paths=(reference_evidence,),
+            ground_truth_manifest_path=ground_truth_path,
+        )
+        content = path.read_bytes()
         paths.append(path)
         claims.append(
             StageFourConfirmationReceipt(
                 condition=condition,
                 score_receipt_sha256=hashlib.sha256(content).hexdigest(),
-                provisional_pass=condition.shot_count != 3,
+                provisional_pass=json.loads(content)["provisional_pass"],
             )
         )
     return StageFourSelection(tuple(claims)), tuple(paths)
@@ -441,6 +453,39 @@ def test_scoring_plan_is_immutable_and_receipt_binds_all_decision_inputs():
                 ),
             ),
         )
+
+
+def test_single_scorer_rejects_a_foreign_stage_four_target_binding():
+    """Serialized locked receipts are revalidated before the single scorer runs."""
+    module = _score_module()
+    selection, paths = _locked_selection_artifacts(0, 101)
+    condition = next(
+        item
+        for item in locked_conditions(
+            selection, confirmation_score_receipt_paths=paths
+        )
+        if item.shot_count == 5
+    )
+    plan = _plan((condition.condition_id,))
+    base = plan.fold_base_artifacts[0]
+    receipt = ExperimentReceipt.completed(
+        condition,
+        **HASHES,
+        cohort_manifest_sha256=LOCKED_GROUND_TRUTH_SHA256,
+        novel_category_ids=(1,),
+        base_category_ids=(2,),
+        scoring_plan=plan,
+        base_checkpoint_sha256=base.checkpoint_sha256,
+        base_checkpoint_evidence_sha256=base.evidence_sha256,
+        environment_lock_digest="sha256:environment",
+        output_uri="file:///external/run",
+        stage_four_selection=selection,
+        stage_four_confirmation_score_receipt_paths=tuple(str(path) for path in paths),
+    ).to_dict()
+    receipt["cohort"]["manifest_sha256"] = "9" * 64  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="locked target cohort does not match Stage-4 cohort"):
+        module._condition_scoring_plan(receipt)
 
 
 def test_yaml_scoring_plan_declares_bootstrap_matrix_ids_and_cohort():
@@ -767,6 +812,70 @@ def test_locked_aggregate_rejects_unresolvable_stage_four_confirmation_artifact(
         )
 
 
+def test_locked_aggregate_rejects_foreign_stage_four_ground_truth_binding(
+    tmp_path: Path,
+):
+    """Aggregate revalidation rejects an internally valid Stage-4 foreign cohort."""
+    module = _score_module()
+    candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
+    references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
+    candidate_plan = _plan(tuple(item.condition_id for item in candidates), seeds=(101, 102))
+    reference_plan = _plan(tuple(item.condition_id for item in references), seeds=(101, 102))
+    paths = []
+    evidence_paths = []
+    reference_evidence_paths = []
+    for index, (candidate, reference) in enumerate(zip(candidates, references, strict=True)):
+        score_path = tmp_path / f"foreign-stage-four-{index}.json"
+        evidence_path = tmp_path / f"foreign-candidate-{index}.jsonl"
+        reference_evidence_path = tmp_path / f"foreign-reference-{index}.jsonl"
+        score = _non_final_score(
+            candidate,
+            reference,
+            candidate_plan,
+            reference_plan,
+            candidate_evidence_sha256=_write_evidence(evidence_path, candidate),
+            reference_evidence_sha256=_write_evidence(reference_evidence_path, reference),
+        )
+        if index == 0:
+            selection = StageFourSelection.from_dict(score["stage_four_selection"])  # type: ignore[arg-type]
+            source_paths = tuple(
+                Path(item) for item in score["stage_four_confirmation_score_receipt_paths"]  # type: ignore[arg-type]
+            )
+            claims = []
+            for artifact_index, artifact_path in enumerate(source_paths):
+                value = json.loads(artifact_path.read_text(encoding="utf-8"))
+                value["locked_ground_truth"]["manifest_sha256"] = "9" * 64
+                foreign_path = tmp_path / f"foreign-confirmation-{artifact_index}.json"
+                content = canonical_json_bytes(value)
+                foreign_path.write_bytes(content)
+                claims.append(
+                    replace(
+                        selection.confirmation_receipts[artifact_index],
+                        score_receipt_sha256=hashlib.sha256(content).hexdigest(),
+                    )
+                )
+                source_paths = (*source_paths[:artifact_index], foreign_path, *source_paths[artifact_index + 1:])
+            score["stage_four_selection"] = StageFourSelection(tuple(claims)).to_dict()
+            score["stage_four_confirmation_score_receipt_paths"] = [
+                str(path) for path in source_paths
+            ]
+        _write_canonical(score_path, score)
+        paths.append(score_path)
+        evidence_paths.append(evidence_path)
+        reference_evidence_paths.append(reference_evidence_path)
+    ground_truth_path = tmp_path / "locked-ground-truth.json"
+    _write_ground_truth(ground_truth_path)
+
+    with pytest.raises(ValueError, match="locked target cohort does not match Stage-4 cohort"):
+        module.aggregate_score_receipts(
+            tuple(paths),
+            tmp_path / "foreign-aggregate.json",
+            evidence_paths=tuple(evidence_paths),
+            reference_evidence_paths=tuple(reference_evidence_paths),
+            ground_truth_manifest_path=ground_truth_path,
+        )
+
+
 def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
     module = _score_module()
     candidates = _confirmation_cells(
@@ -825,6 +934,66 @@ def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
     assert aggregate["decision_status"] == "provisional"
     assert aggregate["provisional_pass"] is True
     assert "final_pass" not in aggregate
+
+
+def test_single_confirmation_aggregate_is_a_genuine_stage_four_artifact(
+    tmp_path: Path,
+):
+    """Only the real aggregate writer may produce a schedulable Stage-4 file."""
+    module = _score_module()
+    ground_truth = tmp_path / "locked-ground-truth.json"
+    _write_ground_truth(ground_truth)
+    conditions = confirmation_conditions(
+        ("m0", "div"), shot_counts=(3, 5, 10, 150), seeds=(101,), folds=(0,)
+    )
+    reference = next(item for item in conditions if item.shot_count == 150)
+    paths: list[Path] = []
+    claims: list[StageFourConfirmationReceipt] = []
+    for index, candidate in enumerate(conditions):
+        candidate_plan = _plan((candidate.condition_id,))
+        reference_plan = _plan((reference.condition_id,))
+        candidate_evidence = tmp_path / f"stage-four-candidate-{index}.jsonl"
+        reference_evidence = tmp_path / f"stage-four-reference-{index}.jsonl"
+        score_path = tmp_path / f"stage-four-score-{index}.json"
+        _write_canonical(
+            score_path,
+            _non_final_score(
+                candidate,
+                reference,
+                candidate_plan,
+                reference_plan,
+                candidate_evidence_sha256=_write_evidence(
+                    candidate_evidence,
+                    candidate,
+                    novel_prediction=None if candidate.shot_count == 3 else 1,
+                ),
+                reference_evidence_sha256=_write_evidence(reference_evidence, reference),
+            ),
+        )
+        confirmation = tmp_path / f"confirmation-{index}.json"
+        module.aggregate_score_receipts(
+            (score_path,),
+            confirmation,
+            evidence_paths=(candidate_evidence,),
+            reference_evidence_paths=(reference_evidence,),
+            ground_truth_manifest_path=ground_truth,
+        )
+        content = confirmation.read_bytes()
+        paths.append(confirmation)
+        claims.append(
+            StageFourConfirmationReceipt(
+                condition=candidate,
+                score_receipt_sha256=hashlib.sha256(content).hexdigest(),
+                provisional_pass=candidate.shot_count != 3,
+            )
+        )
+    selection = StageFourSelection(tuple(claims))
+    assert {
+        condition.shot_count
+        for condition in locked_conditions(
+            selection, confirmation_score_receipt_paths=tuple(paths)
+        )
+    } == {5, 150}
 
 
 def test_aggregate_rejects_a_non_150_shot_locked_reference(tmp_path: Path):

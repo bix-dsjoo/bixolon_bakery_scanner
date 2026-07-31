@@ -32,6 +32,7 @@ from bakery_scanner.experiments.rpc_protocol import (
     ExperimentCondition,
     ScoringPlan,
     StageFourSelection,
+    validate_stage_four_binding_for_locked_target,
     validate_stage_four_confirmation_score_receipts,
 )
 
@@ -427,8 +428,6 @@ def aggregate_score_receipts(
     candidate_plan = _score_receipt_plan(receipts[0], "candidate_scoring_plan")
     reference_plan = _score_receipt_plan(receipts[0], "reference_scoring_plan")
     _validate_comparable_scoring_plans(candidate_plan, reference_plan)
-    if len(candidate_plan.expected_condition_ids) < 2:
-        raise ValueError("a single condition is non-final; no final pass is available")
     for receipt in receipts:
         if (
             receipt.get("schema_version") != 2
@@ -451,6 +450,8 @@ def aggregate_score_receipts(
     aggregate_stage = _validated_aggregate_stage(
         candidate_conditions, reference_conditions
     )
+    if aggregate_stage == "locked" and len(candidate_plan.expected_condition_ids) < 2:
+        raise ValueError("a single condition is non-final; no final pass is available")
     _validate_complete_condition_set(candidate_conditions, candidate_plan)
     _validate_complete_condition_set(reference_conditions, reference_plan)
     locked_selections: tuple[StageFourSelection, ...] = ()
@@ -580,6 +581,10 @@ def aggregate_score_receipts(
         aggregate_novel, aggregate_base = _score_receipt_cohort(
             receipts[0], candidate_plan
         )
+        condition = candidate_conditions[0]
+        checkpoint_sha256, evidence_sha256, base_recall = base_checkpoints[
+            condition["fold"]
+        ]
         output_receipt.update(
             {
                 "candidate_conditions": list(candidate_conditions),
@@ -587,6 +592,14 @@ def aggregate_score_receipts(
                 "cohort": {
                     "base_category_ids": sorted(aggregate_base),
                     "novel_category_ids": sorted(aggregate_novel),
+                },
+                "candidate_full_system": asdict(candidate_summaries[0]),
+                "reference_full_system": asdict(reference_summaries[0]),
+                "fold_base_checkpoint": {
+                    "base_macro_final_correct_recall": base_recall,
+                    "checkpoint_sha256": checkpoint_sha256,
+                    "evidence_sha256": evidence_sha256,
+                    "fold": condition["fold"],
                 },
             }
         )
@@ -970,7 +983,7 @@ def _condition_scoring_plan(condition: Mapping[str, object]) -> ScoringPlan:
         or binding.get("evidence_sha256") != artifact.evidence_sha256
     ):
         raise ValueError("condition fold base checkpoint does not match the scoring plan")
-    _validate_condition_stage_four_selection(condition, parsed)
+    _validate_condition_stage_four_selection(condition, parsed, plan)
     return plan
 
 
@@ -988,7 +1001,7 @@ def _parse_nested_condition(
 
 
 def _validate_condition_stage_four_selection(
-    receipt: Mapping[str, object], condition: ExperimentCondition
+    receipt: Mapping[str, object], condition: ExperimentCondition, plan: ScoringPlan
 ) -> None:
     selection_value = receipt.get("stage_four_selection")
     if condition.stage != "locked":
@@ -998,8 +1011,27 @@ def _validate_condition_stage_four_selection(
     if not isinstance(selection_value, Mapping):
         raise ValueError("locked condition lacks Stage-4 selection")
     selection = StageFourSelection.from_dict(selection_value)
-    validate_stage_four_confirmation_score_receipts(
-        selection, _stage_four_receipt_paths(receipt)
+    cohort = receipt.get("cohort")
+    binding = receipt.get("fold_base_checkpoint")
+    novel, base = condition_cohort(receipt)
+    if (
+        not isinstance(cohort, Mapping)
+        or not isinstance(cohort.get("manifest_sha256"), str)
+        or not isinstance(binding, Mapping)
+        or not isinstance(binding.get("checkpoint_sha256"), str)
+        or not isinstance(binding.get("evidence_sha256"), str)
+    ):
+        raise ValueError("locked condition lacks Stage-4 target provenance")
+    validate_stage_four_binding_for_locked_target(
+        selection,
+        _stage_four_receipt_paths(receipt),
+        condition=condition,
+        cohort_manifest_sha256=cohort["manifest_sha256"],
+        novel_category_ids=tuple(sorted(novel)),
+        base_category_ids=tuple(sorted(base)),
+        scoring_plan=plan,
+        base_checkpoint_sha256=binding["checkpoint_sha256"],
+        base_checkpoint_evidence_sha256=binding["evidence_sha256"],
     )
     _validate_locked_condition_against_selection(condition, selection)
 
@@ -1175,8 +1207,62 @@ def _validate_locked_score_receipt_pair(receipt: Mapping[str, object]) -> StageF
     candidate = _score_receipt_condition(receipt, "candidate_condition")
     reference = _score_receipt_condition(receipt, "reference_condition")
     selection = _locked_selection_from_value(receipt.get("stage_four_selection"))
-    validate_stage_four_confirmation_score_receipts(
-        selection, _stage_four_receipt_paths(receipt)
+    candidate_plan = _score_receipt_plan(receipt, "candidate_scoring_plan")
+    reference_plan = _score_receipt_plan(receipt, "reference_scoring_plan")
+    candidate_novel, candidate_base = _score_receipt_cohort(receipt, candidate_plan)
+    reference_novel, reference_base = _score_receipt_cohort(receipt, reference_plan)
+    if candidate_novel != reference_novel or candidate_base != reference_base:
+        raise ValueError("locked score receipt candidate/reference cohort mismatch")
+    parsed_candidate = ExperimentCondition.from_dict(candidate)
+    parsed_reference = ExperimentCondition.from_dict(reference)
+    candidate_provenance = _score_receipt_provenance(
+        receipt, "candidate_provenance", candidate, candidate_plan
+    )
+    reference_provenance = _score_receipt_provenance(
+        receipt, "reference_provenance", reference, reference_plan
+    )
+    if (
+        candidate_provenance["cohort_manifest_sha256"]
+        != reference_provenance["cohort_manifest_sha256"]
+    ):
+        raise ValueError("locked score receipt candidate/reference cohort manifest mismatch")
+    candidate_checkpoint, candidate_evidence, _ = _score_receipt_base_checkpoint(
+        receipt,
+        parsed_candidate.fold,
+        candidate_plan,
+        reference_plan,
+        candidate_provenance,
+        reference_provenance,
+    )
+    reference_checkpoint, reference_evidence, _ = _score_receipt_base_checkpoint(
+        receipt,
+        parsed_reference.fold,
+        candidate_plan,
+        reference_plan,
+        candidate_provenance,
+        reference_provenance,
+    )
+    validate_stage_four_binding_for_locked_target(
+        selection,
+        _stage_four_receipt_paths(receipt),
+        condition=parsed_candidate,
+        cohort_manifest_sha256=candidate_provenance["cohort_manifest_sha256"],
+        novel_category_ids=tuple(sorted(candidate_novel)),
+        base_category_ids=tuple(sorted(candidate_base)),
+        scoring_plan=candidate_plan,
+        base_checkpoint_sha256=candidate_checkpoint,
+        base_checkpoint_evidence_sha256=candidate_evidence,
+    )
+    validate_stage_four_binding_for_locked_target(
+        selection,
+        _stage_four_receipt_paths(receipt),
+        condition=parsed_reference,
+        cohort_manifest_sha256=reference_provenance["cohort_manifest_sha256"],
+        novel_category_ids=tuple(sorted(reference_novel)),
+        base_category_ids=tuple(sorted(reference_base)),
+        scoring_plan=reference_plan,
+        base_checkpoint_sha256=reference_checkpoint,
+        base_checkpoint_evidence_sha256=reference_evidence,
     )
     _validate_locked_pair_against_selection(candidate, reference, selection)
     return selection
