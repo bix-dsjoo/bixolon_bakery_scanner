@@ -23,84 +23,165 @@ class KioskDisplayNameScope extends InheritedWidget {
       displayName != oldWidget.displayName;
 }
 
-/// A customer shell with one fixed next action and receipt-style structure.
+/// Supplies the one header action without making each customer phase own a
+/// second overlay stack.
+class KioskHeaderActionScope extends InheritedWidget {
+  const KioskHeaderActionScope({
+    required this.action,
+    required super.child,
+    super.key,
+  });
+
+  final Widget action;
+
+  static Widget? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<KioskHeaderActionScope>()
+      ?.action;
+
+  @override
+  bool updateShouldNotify(KioskHeaderActionScope oldWidget) =>
+      action != oldWidget.action;
+}
+
+/// A customer shell with a compact full-width header and optional action rail.
 class CheckoutScaffold extends StatelessWidget {
   const CheckoutScaffold({
     required this.title,
     required this.child,
-    required this.primaryAction,
+    this.primaryAction,
+    this.maxWidth = 1240,
+    this.scrollable = true,
     super.key,
   });
 
   final String title;
   final Widget child;
-  final Widget primaryAction;
+  final Widget? primaryAction;
+  final double maxWidth;
+  final bool scrollable;
 
   @override
   Widget build(BuildContext context) {
     final tokens = BixolonThemeExtension.of(context);
     return Scaffold(
       body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 920),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-                  child: DecoratedBox(
-                    key: const ValueKey('customer-page-title'),
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(color: tokens.divider, width: 1),
-                      ),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const BixolonWordmark(),
-                          const SizedBox(height: 8),
-                          if (KioskDisplayNameScope.maybeOf(context)
-                              case final displayName?) ...[
-                            Text(
-                              displayName,
-                              key: const Key('kiosk-display-name'),
-                              style: Theme.of(context).textTheme.labelLarge,
-                            ),
-                            const SizedBox(height: 4),
-                          ],
-                          Text(
-                            title,
-                            style: Theme.of(context).textTheme.headlineSmall,
-                          ),
-                        ],
-                      ),
-                    ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              key: const Key('customer-header'),
+              height: 60,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: tokens.paper,
+                  border: Border(
+                    bottom: BorderSide(color: tokens.divider, width: 1),
                   ),
                 ),
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: child,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    child: _CustomerHeader(title: title),
                   ),
                 ),
-                DecoratedBox(
+              ),
+            ),
+            Expanded(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxWidth),
+                  child: scrollable
+                      ? SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: child,
+                        )
+                      : Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: child,
+                        ),
+                ),
+              ),
+            ),
+            if (primaryAction case final action?)
+              SizedBox(
+                key: const Key('customer-action-rail'),
+                height: 76,
+                child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: tokens.paper,
                     border: Border(top: BorderSide(color: tokens.divider)),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: primaryAction,
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: maxWidth),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: action,
+                      ),
+                    ),
                   ),
                 ),
-              ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomerHeader extends StatelessWidget {
+  const _CustomerHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayName = KioskDisplayNameScope.maybeOf(context);
+    final headerAction = KioskHeaderActionScope.maybeOf(context);
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Row(
+        children: [
+          const BixolonWordmark(style: TextStyle(fontSize: 16, height: 1.2)),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12),
+            child: SizedBox(
+              height: 16,
+              child: VerticalDivider(width: 1, thickness: 1),
             ),
           ),
-        ),
+          Flexible(
+            child: Text(
+              title,
+              key: const Key('customer-page-title'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.titleMedium,
+            ),
+          ),
+          if (displayName != null) ...[
+            const SizedBox(width: 12),
+            Flexible(
+              child: Text(
+                displayName,
+                key: const Key('kiosk-display-name'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.end,
+                style: textTheme.labelMedium,
+              ),
+            ),
+          ],
+          if (headerAction != null) ...[
+            const SizedBox(width: 8),
+            SizedBox(
+              key: const Key('customer-header-action'),
+              height: 48,
+              child: headerAction,
+            ),
+          ],
+        ],
       ),
     );
   }

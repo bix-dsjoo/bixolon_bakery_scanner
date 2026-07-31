@@ -14,7 +14,6 @@ class PaymentView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const CheckoutScaffold(
     title: '결제 중',
-    primaryAction: SizedBox(height: 56),
     child: Padding(
       padding: EdgeInsets.only(top: 24),
       child: BakeryStatusBanner(

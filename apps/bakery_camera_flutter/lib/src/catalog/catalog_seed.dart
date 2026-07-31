@@ -6,13 +6,13 @@ import 'package:flutter/services.dart';
 
 import '../persistence/app_database.dart';
 
-/// Installs the immutable prototype catalog exactly once into an empty store.
+/// Installs and activates the current immutable prototype catalog revision.
 final class CatalogSeed {
   CatalogSeed(this._database, {AssetBundle? assets})
     : _assets = assets ?? rootBundle;
 
-  static const catalogAssetPath = 'assets/catalog/catalog_v1.json';
-  static const sha256AssetPath = 'assets/catalog/catalog_v1.sha256';
+  static const catalogAssetPath = 'assets/catalog/catalog_v1_1_0_r2.json';
+  static const sha256AssetPath = 'assets/catalog/catalog_v1_1_0_r2.sha256';
 
   final BakeryDatabase _database;
   final AssetBundle _assets;
@@ -21,7 +21,13 @@ final class CatalogSeed {
     final seed = await _loadAndVerify();
     await _database.transaction(() async {
       final existing = await _database.select(_database.catalogRevisions).get();
-      if (existing.isNotEmpty) return;
+      if (existing.any((revision) => revision.revisionId == seed.revisionId)) {
+        return;
+      }
+
+      await _database
+          .update(_database.catalogRevisions)
+          .write(const CatalogRevisionsCompanion(isActive: Value(false)));
 
       await _database
           .into(_database.catalogRevisions)
@@ -72,7 +78,7 @@ final class CatalogSeed {
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('catalog seed must be a JSON object');
     }
-    if (decoded['revision_id'] != 'catalog-v1' ||
+    if (decoded['revision_id'] != 'catalog-v1.1.0-r2' ||
         decoded['currency'] != 'KRW') {
       throw const FormatException('catalog seed has an unsupported revision');
     }

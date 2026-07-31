@@ -147,7 +147,7 @@ void main() {
           unitPriceKrw: 2500,
           categoryId: 'bread',
           sortOrder: 98,
-          recognitionSkuId: 20,
+          recognitionSkuId: 17,
           photo: photo,
         ),
       );

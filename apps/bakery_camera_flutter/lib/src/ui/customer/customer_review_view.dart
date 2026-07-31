@@ -4,10 +4,11 @@ import '../../catalog/product.dart';
 import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
 import '../components/bakery_primary_button.dart';
-import '../components/bakery_status_banner.dart';
 import '../components/checkout_scaffold.dart';
 import '../components/price_text.dart';
+import '../bixolon_theme_extension.dart';
 import 'captured_review_overlay.dart';
+import 'catalog_picker.dart';
 import 'customer_review_presentation.dart';
 
 /// Links every customer review ledger row to its object in the retained image.
@@ -19,6 +20,10 @@ class CustomerReviewView extends StatefulWidget {
     required this.onOpenCatalog,
     required this.onContinue,
     this.onRetakeCapture,
+    this.catalogDiscovery,
+    this.catalogSearch,
+    this.onCatalogSelected,
+    this.onCloseCatalog,
     this.imageProviderFactory = customerReviewFileImageProvider,
     super.key,
   });
@@ -29,6 +34,10 @@ class CustomerReviewView extends StatefulWidget {
   final ValueChanged<String> onOpenCatalog;
   final VoidCallback onContinue;
   final VoidCallback? onRetakeCapture;
+  final CustomerCatalogDiscovery? catalogDiscovery;
+  final Future<List<Product>> Function(String query)? catalogSearch;
+  final ValueChanged<Product>? onCatalogSelected;
+  final VoidCallback? onCloseCatalog;
   final CustomerReviewImageProviderFactory imageProviderFactory;
 
   @override
@@ -37,8 +46,6 @@ class CustomerReviewView extends StatefulWidget {
 
 class _CustomerReviewViewState extends State<CustomerReviewView> {
   String? _selectedObjectId;
-  final _overlayVisibilityKeys = <String, GlobalKey>{};
-  final _rowVisibilityKeys = <String, GlobalKey>{};
 
   @override
   void initState() {
@@ -71,38 +78,15 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
 
   String? _initialSelection(CheckoutState state) =>
       state.activeObject?.inferenceObject.objectId ??
-      (state.objectDrafts.isEmpty
-          ? null
-          : state.objectDrafts.first.inferenceObject.objectId);
+      state.objectDrafts
+          .where((draft) => !draft.isResolved)
+          .firstOrNull
+          ?.inferenceObject
+          .objectId ??
+      state.objectDrafts.firstOrNull?.inferenceObject.objectId;
 
-  GlobalKey _visibilityKeyFor(Map<String, GlobalKey> keys, String objectId) =>
-      keys.putIfAbsent(objectId, GlobalKey.new);
-
-  void _selectFromOverlay(String objectId) {
-    _selectAndReveal(objectId, _visibilityKeyFor(_rowVisibilityKeys, objectId));
-  }
-
-  void _selectFromRow(String objectId) {
-    _selectAndReveal(
-      objectId,
-      _visibilityKeyFor(_overlayVisibilityKeys, objectId),
-    );
-  }
-
-  void _selectAndReveal(String objectId, GlobalKey destinationKey) {
-    setState(() => _selectedObjectId = objectId);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final destinationContext = destinationKey.currentContext;
-      if (destinationContext == null) return;
-      Scrollable.ensureVisible(
-        destinationContext,
-        alignment: 0.5,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOutCubic,
-      );
-    });
-  }
+  void _selectObject(String objectId) =>
+      setState(() => _selectedObjectId = objectId);
 
   @override
   Widget build(BuildContext context) {
@@ -117,6 +101,7 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
         .where((draft) => !draft.isResolved)
         .length;
     final allResolved = unresolvedCount == 0;
+    final confirmedCount = widget.state.objectDrafts.length - unresolvedCount;
     final imagePath = widget.state.capturedEvidenceDisplayPath;
     final imageWidth = widget.state.capturedImageWidth;
     final imageHeight = widget.state.capturedImageHeight;
@@ -128,73 +113,81 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
         imageHeight > 0;
 
     return CheckoutScaffold(
-      title: '\uC0C1\uD488 \uD655\uC778',
+      title: '\uBE75 \uD655\uC778',
+      maxWidth: 1240,
+      scrollable: false,
       primaryAction: BakeryPrimaryButton(
-        label: allResolved ? '\uC8FC\uBB38 \uD655\uC778' : '\uB2E4\uC74C',
+        label: allResolved
+            ? '\uC8FC\uBB38 \uD655\uC778'
+            : '\uD655\uC778\uD560 \uBE75 $unresolvedCount\uAC1C \uB0A8\uC74C',
         onPressed: allResolved ? widget.onContinue : null,
       ),
       child: Padding(
-        padding: const EdgeInsets.only(top: 24),
+        padding: const EdgeInsets.only(top: 4, bottom: 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            BakeryStatusBanner(
-              status: unresolvedCount == 0
-                  ? BakeryStatus.ready
-                  : BakeryStatus.uncertain,
-              title: unresolvedCount == 0
-                  ? '\uD655\uC778 \uC644\uB8CC'
-                  : '\uC774 \uBE75\uC774 \uB9DE\uB098\uC694?',
-              message: unresolvedCount == 0
-                  ? '\uBAA8\uB4E0 \uC0C1\uD488\uC744 \uD655\uC778\uD588\uC5B4\uC694.'
-                  : '\uC9C4\uD589\uD558\uAE30 \uC804 \uBAA8\uB4E0 \uC0C1\uD488\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.',
+            _ReviewProgress(
+              totalCount: widget.state.objectDrafts.length,
+              confirmedCount: confirmedCount,
+              unresolvedCount: unresolvedCount,
             ),
-            const SizedBox(height: 16),
-            if (hasCaptureOverlay) ...[
-              CapturedReviewOverlay(
-                imagePath: imagePath,
-                imageWidth: imageWidth,
-                imageHeight: imageHeight,
-                objects: presentation.objects,
-                selectedObjectId: selectedObjectId,
-                onSelectObject: _selectFromOverlay,
-                imageProviderFactory: widget.imageProviderFactory,
-                objectVisibilityKeys: {
-                  for (final item in presentation.objects)
-                    item.objectId: _visibilityKeyFor(
-                      _overlayVisibilityKeys,
-                      item.objectId,
-                    ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final horizontal = constraints.maxWidth >= 760;
+                  final scene = _ReviewScenePane(
+                    hasCaptureOverlay: hasCaptureOverlay,
+                    imagePath: imagePath,
+                    imageWidth: imageWidth,
+                    imageHeight: imageHeight,
+                    presentation: presentation,
+                    selectedObjectId: selectedObjectId,
+                    onSelectObject: _selectObject,
+                    imageProviderFactory: widget.imageProviderFactory,
+                  );
+                  final tasks = _ReviewTaskPane(
+                    presentation: presentation,
+                    state: widget.state,
+                    selectedObjectId: selectedObjectId,
+                    selectedDraft: selectedDraft,
+                    onSelectObject: _selectObject,
+                    productForCandidate: widget.productForCandidate,
+                    onChooseTop3: widget.onChooseTop3,
+                    onOpenCatalog: widget.onOpenCatalog,
+                    onRetakeCapture: widget.onRetakeCapture,
+                    catalogDiscovery: widget.catalogDiscovery,
+                    catalogSearch: widget.catalogSearch,
+                    onCatalogSelected: widget.onCatalogSelected,
+                    onCloseCatalog: widget.onCloseCatalog,
+                  );
+                  if (!horizontal) {
+                    return Column(
+                      children: [
+                        Expanded(flex: 3, child: scene),
+                        const SizedBox(height: 12),
+                        Expanded(flex: 4, child: tasks),
+                      ],
+                    );
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(flex: 3, child: scene),
+                      const SizedBox(width: 20),
+                      VerticalDivider(
+                        key: const Key('customer-review-workspace-divider'),
+                        width: 1,
+                        thickness: 1,
+                      ),
+                      const SizedBox(width: 20),
+                      Expanded(flex: 2, child: tasks),
+                    ],
+                  );
                 },
               ),
-              const SizedBox(height: 20),
-            ],
-            if (!allResolved)
-              Text(
-                '\uD655\uC778\uC774 \uB05D\uB098\uC9C0 \uC54A\uC740 \uC0C1\uD488 $unresolvedCount\uAC1C\uAC00 \uC788\uC2B5\uB2C8\uB2E4.',
-              ),
-            if (!allResolved) const SizedBox(height: 12),
-            for (final item in presentation.objects) ...[
-              _ReviewLedgerRow(
-                visibilityKey: _visibilityKeyFor(
-                  _rowVisibilityKeys,
-                  item.objectId,
-                ),
-                item: item,
-                draft: _draftFor(widget.state, item.objectId),
-                selected: item.objectId == selectedObjectId,
-                onTap: () => _selectFromRow(item.objectId),
-              ),
-              if (item.objectId == selectedObjectId && selectedDraft != null)
-                _SelectedObjectActions(
-                  item: item,
-                  draft: selectedDraft,
-                  productForCandidate: widget.productForCandidate,
-                  onChooseTop3: widget.onChooseTop3,
-                  onOpenCatalog: widget.onOpenCatalog,
-                  onRetakeCapture: widget.onRetakeCapture,
-                ),
-            ],
+            ),
           ],
         ),
       ),
@@ -202,16 +195,291 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
   }
 }
 
+class _ReviewProgress extends StatelessWidget {
+  const _ReviewProgress({
+    required this.totalCount,
+    required this.confirmedCount,
+    required this.unresolvedCount,
+  });
+
+  final int totalCount;
+  final int confirmedCount;
+  final int unresolvedCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final allResolved = unresolvedCount == 0;
+    return Semantics(
+      key: const Key('customer-review-progress'),
+      container: true,
+      label: allResolved
+          ? '\uBE75 $totalCount\uAC1C \uD655\uC778 \uC644\uB8CC'
+          : '\uBE75 $totalCount\uAC1C \uC911 $confirmedCount\uAC1C \uD655\uC778, $unresolvedCount\uAC1C \uD655\uC778 \uD544\uC694',
+      child: ExcludeSemantics(
+        child: Row(
+          children: [
+            Icon(
+              allResolved
+                  ? Icons.check_circle
+                  : Icons.tips_and_updates_outlined,
+              color: allResolved
+                  ? BixolonThemeExtension.of(context).confirmed
+                  : BixolonThemeExtension.of(context).uncertainty,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                allResolved
+                    ? '\uBE75 $totalCount\uAC1C\uB97C \uBAA8\uB450 \uD655\uC778\uD588\uC5B4\uC694'
+                    : '\uBE75 $totalCount\uAC1C \uC911 $confirmedCount\uAC1C\uB97C \uCC3E\uC558\uC5B4\uC694. $unresolvedCount\uAC1C\uB9CC \uD655\uC778\uD574 \uC8FC\uC138\uC694.',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewScenePane extends StatelessWidget {
+  const _ReviewScenePane({
+    required this.hasCaptureOverlay,
+    required this.imagePath,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.presentation,
+    required this.selectedObjectId,
+    required this.onSelectObject,
+    required this.imageProviderFactory,
+  });
+
+  final bool hasCaptureOverlay;
+  final String? imagePath;
+  final int? imageWidth;
+  final int? imageHeight;
+  final CustomerReviewPresentation presentation;
+  final String? selectedObjectId;
+  final ValueChanged<String> onSelectObject;
+  final CustomerReviewImageProviderFactory imageProviderFactory;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      key: const Key('customer-review-scene-pane'),
+      padding: const EdgeInsets.only(right: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '\uCD2C\uC601\uD55C \uD2B8\uB808\uC774',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: Center(
+              child: hasCaptureOverlay
+                  ? CapturedReviewOverlay(
+                      imagePath: imagePath!,
+                      imageWidth: imageWidth!,
+                      imageHeight: imageHeight!,
+                      objects: presentation.objects,
+                      selectedObjectId: selectedObjectId,
+                      onSelectObject: onSelectObject,
+                      imageProviderFactory: imageProviderFactory,
+                    )
+                  : const _MissingCapture(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MissingCapture extends StatelessWidget {
+  const _MissingCapture();
+
+  @override
+  Widget build(BuildContext context) => const Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.image_not_supported_outlined),
+        SizedBox(height: 8),
+        Text(
+          '\uCD2C\uC601 \uC774\uBBF8\uC9C0\uB97C \uD45C\uC2DC\uD560 \uC218 \uC5C6\uC5B4\uC694.',
+        ),
+      ],
+    ),
+  );
+}
+
+class _ReviewTaskPane extends StatelessWidget {
+  const _ReviewTaskPane({
+    required this.presentation,
+    required this.state,
+    required this.selectedObjectId,
+    required this.selectedDraft,
+    required this.onSelectObject,
+    required this.productForCandidate,
+    required this.onChooseTop3,
+    required this.onOpenCatalog,
+    required this.onRetakeCapture,
+    required this.catalogDiscovery,
+    required this.catalogSearch,
+    required this.onCatalogSelected,
+    required this.onCloseCatalog,
+  });
+
+  final CustomerReviewPresentation presentation;
+  final CheckoutState state;
+  final String? selectedObjectId;
+  final ObjectDraft? selectedDraft;
+  final ValueChanged<String> onSelectObject;
+  final Product? Function(String objectId, int skuId) productForCandidate;
+  final void Function(String objectId, int skuId) onChooseTop3;
+  final ValueChanged<String> onOpenCatalog;
+  final VoidCallback? onRetakeCapture;
+  final CustomerCatalogDiscovery? catalogDiscovery;
+  final Future<List<Product>> Function(String query)? catalogSearch;
+  final ValueChanged<Product>? onCatalogSelected;
+  final VoidCallback? onCloseCatalog;
+
+  ObjectDraft? _draftFor(String objectId) {
+    for (final draft in state.objectDrafts) {
+      if (draft.inferenceObject.objectId == objectId) return draft;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = BixolonThemeExtension.of(context);
+    final selectedItems = presentation.objects
+        .where((item) => item.objectId == selectedObjectId)
+        .toList(growable: false);
+    final selectedItem = selectedItems.firstOrNull;
+    final catalog = catalogDiscovery;
+    final searchCatalog = catalogSearch;
+    final selectCatalog = onCatalogSelected;
+    return KeyedSubtree(
+      key: const Key('customer-review-task-pane'),
+      child: catalog != null && searchCatalog != null && selectCatalog != null
+          ? SingleChildScrollView(
+              padding: const EdgeInsets.only(left: 4),
+              child: CatalogPicker(
+                discovery: catalog,
+                search: searchCatalog,
+                onSelected: selectCatalog,
+                onClose: onCloseCatalog,
+              ),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                  child: Text(
+                    selectedDraft?.isResolved == false
+                        ? '${selectedItem?.numberLabel ?? ''}\uBC88 \uBE75\uB9CC \uD655\uC778\uD574 \uC8FC\uC138\uC694'
+                        : '\uC778\uC2DD\uD55C \uBE75',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                SizedBox(
+                  height: 64,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final objects = presentation.objects;
+                      if (objects.length <= 5) {
+                        const horizontalPadding = 8.0;
+                        const gap = 4.0;
+                        final width =
+                            (constraints.maxWidth -
+                                (horizontalPadding * 2) -
+                                (gap * (objects.length - 1))) /
+                            objects.length;
+                        return Padding(
+                          padding: const EdgeInsets.only(
+                            right: horizontalPadding,
+                          ),
+                          child: Row(
+                            children: [
+                              for (
+                                var index = 0;
+                                index < objects.length;
+                                index++
+                              ) ...[
+                                if (index > 0) const SizedBox(width: gap),
+                                _ReviewLedgerRow(
+                                  width: width,
+                                  item: objects[index],
+                                  draft: _draftFor(objects[index].objectId),
+                                  selected:
+                                      objects[index].objectId ==
+                                      selectedObjectId,
+                                  onTap: () =>
+                                      onSelectObject(objects[index].objectId),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+                      }
+                      return ListView.separated(
+                        padding: const EdgeInsets.only(right: 8),
+                        scrollDirection: Axis.horizontal,
+                        itemCount: objects.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 4),
+                        itemBuilder: (context, index) {
+                          final item = objects[index];
+                          return _ReviewLedgerRow(
+                            width: 96,
+                            item: item,
+                            draft: _draftFor(item.objectId),
+                            selected: item.objectId == selectedObjectId,
+                            onTap: () => onSelectObject(item.objectId),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                Divider(color: tokens.divider),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(4, 4, 0, 12),
+                    child: selectedItem == null || selectedDraft == null
+                        ? const SizedBox.shrink()
+                        : selectedDraft!.isResolved
+                        ? _ResolvedObjectSummary(draft: selectedDraft!)
+                        : _SelectedObjectActions(
+                            item: selectedItem,
+                            draft: selectedDraft!,
+                            productForCandidate: productForCandidate,
+                            onChooseTop3: onChooseTop3,
+                            onOpenCatalog: onOpenCatalog,
+                            onRetakeCapture: onRetakeCapture,
+                          ),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
 class _ReviewLedgerRow extends StatelessWidget {
   const _ReviewLedgerRow({
-    required this.visibilityKey,
+    required this.width,
     required this.item,
     required this.draft,
     required this.selected,
     required this.onTap,
   });
 
-  final GlobalKey visibilityKey;
+  final double width;
   final CustomerReviewObject item;
   final ObjectDraft? draft;
   final bool selected;
@@ -219,23 +487,69 @@ class _ReviewLedgerRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final product = draft?.product;
-    return KeyedSubtree(
-      key: visibilityKey,
+    final tokens = BixolonThemeExtension.of(context);
+    final confirmed = draft?.isResolved ?? false;
+    return SizedBox(
+      width: width,
       child: ListTile(
         key: Key('customer-review-row-${item.objectId}'),
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+        horizontalTitleGap: 4,
         selected: selected,
-        leading: Text(item.numberLabel),
-        title: Text(item.label),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('\uC0AC\uC9C4\uC5D0\uC11C ${item.numberLabel}\uBC88'),
-            const Text('\uC218\uB7C9 1\uAC1C'),
-          ],
+        selectedTileColor: tokens.action.withValues(alpha: 0.08),
+        leading: Icon(
+          confirmed ? Icons.check_circle : Icons.help_outline,
+          color: confirmed ? tokens.confirmed : tokens.uncertainty,
+          size: 20,
         ),
-        trailing: product == null ? null : PriceText(amount: product.unitPrice),
+        title: Text(
+          '${item.numberLabel}\uBC88',
+          maxLines: 1,
+          style: Theme.of(context).textTheme.labelLarge,
+        ),
+        subtitle: Text(
+          confirmed ? '\uD655\uC778' : '\uD655\uC778 \uD544\uC694',
+          maxLines: 1,
+        ),
         onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _ResolvedObjectSummary extends StatelessWidget {
+  const _ResolvedObjectSummary({required this.draft});
+
+  final ObjectDraft draft;
+
+  @override
+  Widget build(BuildContext context) {
+    final product = draft.product!;
+    final tokens = BixolonThemeExtension.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Icon(Icons.check_circle, color: tokens.confirmed),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '\uC790\uB3D9\uC73C\uB85C \uD655\uC778\uD588\uC5B4\uC694',
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  product.displayName,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ],
+            ),
+          ),
+          PriceText(amount: product.unitPrice),
+        ],
       ),
     );
   }
@@ -262,65 +576,54 @@ class _SelectedObjectActions extends StatelessWidget {
   Widget build(BuildContext context) {
     if (draft.isResolved) return const SizedBox.shrink();
     final objectId = draft.inferenceObject.objectId;
-    return Padding(
+    return Column(
       key: Key('customer-review-candidate-panel-$objectId'),
-      padding: const EdgeInsets.only(left: 16, right: 16, bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '\uC0AC\uC9C4\uC5D0\uC11C ${item.numberLabel}\uBC88 \uBE75\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694',
-          ),
-          const SizedBox(height: 8),
-          if (draft.requiresCatalogSelection)
-            const Text(
-              '\uBAA9\uB85D\uC5D0\uC11C \uC0C1\uD488\uC744 \uCC3E\uC544 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.',
-            )
-          else
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final candidate in draft.candidates)
-                  if (productForCandidate(objectId, candidate.skuId)
-                      case final product?)
-                    OutlinedButton(
-                      onPressed: () => onChooseTop3(objectId, candidate.skuId),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(product.displayName),
-                          PriceText(amount: product.unitPrice),
-                        ],
-                      ),
-                    ),
-              ],
-            ),
-          const SizedBox(height: 8),
-          if (onRetakeCapture != null) ...[
-            const Text(
-              '\uB2E4\uC2DC \uCD2C\uC601\uD558\uBA74 \uC774\uBC88 \uACC4\uC0B0\uC758 \uD604\uC7AC \uC0AC\uC9C4\uC774 \uC0C8 \uC0AC\uC9C4\uC73C\uB85C \uBC14\uB01D\uB2C8\uB2E4.',
-            ),
-            const SizedBox(height: 8),
-          ],
-          Wrap(
-            spacing: 8,
-            children: [
-              TextButton(
-                onPressed: () => onOpenCatalog(objectId),
-                child: const Text(
-                  '\uC804\uCCB4 \uC0C1\uD488\uC5D0\uC11C \uCC3E\uAE30',
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          draft.requiresCatalogSelection
+              ? '\uC774 \uBE75\uC740 \uCD94\uCC9C \uD6C4\uBCF4\uAC00 \uC5C6\uC5B4\uC694.'
+              : '\uAC00\uC7A5 \uBE44\uC2B7\uD55C \uC0C1\uD488\uC774\uC5D0\uC694.',
+        ),
+        const SizedBox(height: 12),
+        if (!draft.requiresCatalogSelection)
+          for (final candidate in draft.candidates)
+            if (productForCandidate(objectId, candidate.skuId)
+                case final product?) ...[
+              OutlinedButton(
+                onPressed: () => onChooseTop3(objectId, candidate.skuId),
+                style: OutlinedButton.styleFrom(
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(product.displayName)),
+                    PriceText(amount: product.unitPrice),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.chevron_right),
+                  ],
                 ),
               ),
-              if (onRetakeCapture != null)
-                TextButton(
-                  onPressed: onRetakeCapture,
-                  child: const Text('\uB2E4\uC2DC \uCD2C\uC601'),
-                ),
+              const SizedBox(height: 8),
             ],
+        TextButton.icon(
+          onPressed: () => onOpenCatalog(objectId),
+          icon: const Icon(Icons.search),
+          label: const Text('\uB2E4\uB978 \uC0C1\uD488 \uCC3E\uAE30'),
+        ),
+        if (onRetakeCapture != null)
+          TextButton.icon(
+            onPressed: onRetakeCapture,
+            icon: const Icon(Icons.camera_alt_outlined),
+            label: const Text(
+              '\uBE75\uC744 \uB2E4\uC2DC \uB193\uACE0 \uCD2C\uC601',
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 }

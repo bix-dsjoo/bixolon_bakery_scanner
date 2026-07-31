@@ -2,11 +2,13 @@ import 'package:bakery_camera_prototype/src/catalog/product.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_ports.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_state.dart';
+import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/catalog_picker.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_review_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/order_review_view.dart';
+import 'package:bakery_camera_prototype/src/ui/customer/ready_view.dart';
 import 'package:bakery_camera_prototype/src/ui/components/price_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,7 +43,7 @@ void main() {
     await tester.tap(
       find.descendant(
         of: find.byType(ChoiceChip),
-        matching: find.text('sweet'),
+        matching: find.text('달콤한 빵'),
       ),
     );
     await tester.pump();
@@ -86,6 +88,48 @@ void main() {
     },
   );
 
+  testWidgets('catalog has an explicit return and customer category labels', (
+    tester,
+  ) async {
+    final catalog = _Catalog([_product('donut', 'Walnut Donut', 'donut', 1)]);
+    final snapshot = await catalog.activeCatalog();
+    final discovery = await catalog.customerDiscoveryFor(snapshot);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: FilledButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => Scaffold(
+                    body: CatalogPicker(
+                      discovery: discovery,
+                      search: (query) async => snapshot.search(query),
+                      onSelected: (_) {},
+                    ),
+                  ),
+                ),
+              ),
+              child: const Text('Open catalog'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open catalog'));
+    await tester.pumpAndSettle();
+    expect(find.text('도넛'), findsWidgets);
+    expect(find.byKey(const Key('customer-catalog-close')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('customer-catalog-close')));
+    await tester.pumpAndSettle();
+    expect(find.text('Open catalog'), findsOneWidget);
+    expect(find.byType(CatalogPicker), findsNothing);
+  });
+
   testWidgets('review exposes exact top3 and the full catalog escape hatch', (
     tester,
   ) async {
@@ -112,9 +156,11 @@ void main() {
         onContinue: () {},
       ),
     );
+    await tester.ensureVisible(find.text('Top 2'));
     await tester.tap(find.text('Top 2'));
     expect(chosen, '11');
-    await tester.tap(find.text('전체 상품에서 찾기'));
+    await tester.ensureVisible(find.text('다른 상품 찾기'));
+    await tester.tap(find.text('다른 상품 찾기'));
     expect(catalogObject, unknown.objectId);
   });
 
@@ -146,18 +192,20 @@ void main() {
       ),
     );
 
+    final sceneBefore = tester.getRect(
+      find.byKey(const Key('captured-review-full-scene')),
+    );
     await tester.tap(find.byKey(const Key('customer-review-overlay-object-1')));
     await tester.pumpAndSettle();
     final firstRow = find.byKey(const Key('customer-review-row-object-1'));
-    _expectInsideReviewViewport(tester, firstRow);
     expect(tester.widget<ListTile>(firstRow).selected, isTrue);
 
     final secondRow = find.byKey(const Key('customer-review-row-object-2'));
     await tester.tap(secondRow);
     await tester.pumpAndSettle();
-    _expectInsideReviewViewport(
-      tester,
-      find.byKey(const Key('customer-review-overlay-object-2')),
+    expect(
+      tester.getRect(find.byKey(const Key('captured-review-full-scene'))),
+      sceneBefore,
     );
     expect(find.bySemanticsLabel('사진에서 02번, 확인이 필요해요 선택됨'), findsOneWidget);
     expect(
@@ -168,21 +216,138 @@ void main() {
       find.byKey(const Key('customer-review-candidate-panel-object-1')),
       findsNothing,
     );
-    final candidatePanel = find.byKey(
-      const Key('customer-review-candidate-panel-object-2'),
-    );
-    expect(
-      find.descendant(
-        of: candidatePanel,
-        matching: find.text('사진에서 02번 빵을 확인해 주세요'),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: secondRow, matching: find.text('수량 1개')),
-      findsOneWidget,
-    );
   });
+
+  testWidgets(
+    'review keeps the retained scene beside the selected exception at kiosk width',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 820);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final result = buildUiInferenceResult();
+      final accepted = ObjectDraft.accepted(
+        inferenceObject: result.objects.first,
+        product: _product('croissant', 'Croissant', 'sweet', 6),
+      );
+      final unresolved = ObjectDraft.unresolved(result.objects.last);
+
+      await _pump(
+        tester,
+        CustomerReviewView(
+          state: CheckoutState(
+            phase: CheckoutPhase.customerReview,
+            objectDrafts: [accepted, unresolved],
+            lines: const [],
+            capturedEvidenceDisplayPath: 'test/fixtures/missing-capture.jpg',
+            capturedImageWidth: 1920,
+            capturedImageHeight: 1080,
+          ),
+          productForCandidate: (_, sku) =>
+              _product('$sku', 'Top $sku', 'sweet', sku),
+          onChooseTop3: (_, _) {},
+          onOpenCatalog: (_) {},
+          onContinue: () {},
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final scenePane = find.byKey(const Key('customer-review-scene-pane'));
+      final taskPane = find.byKey(const Key('customer-review-task-pane'));
+      expect(scenePane, findsOneWidget);
+      expect(taskPane, findsOneWidget);
+      expect(
+        tester.getTopLeft(scenePane).dx,
+        lessThan(tester.getTopLeft(taskPane).dx),
+      );
+      expect(
+        tester.getSize(find.byType(FilledButton)).width,
+        greaterThan(1000),
+      );
+
+      final sceneBefore = tester.getRect(
+        find.byKey(const Key('captured-review-full-scene')),
+      );
+      await tester.tap(
+        find.byKey(const Key('customer-review-overlay-object-2')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('customer-review-candidate-panel-object-2')),
+        findsOneWidget,
+      );
+      expect(
+        tester.getRect(find.byKey(const Key('captured-review-full-scene'))),
+        sceneBefore,
+      );
+    },
+  );
+
+  testWidgets(
+    'review keeps five object selectors visible without strip scrolling',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 820);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final drafts = [
+        for (var index = 1; index <= 5; index++)
+          ObjectDraft.accepted(
+            inferenceObject: InferenceObject.fromJson(
+              buildInferenceObjectJson(
+                id: 'object-$index',
+                skuId: index,
+                name: 'Product $index',
+                confidence: 0.9,
+                decisionPath: 'repvit_direct',
+                box: [
+                  10.0 + ((index - 1) * 200),
+                  20.0,
+                  190.0 + ((index - 1) * 200),
+                  220.0,
+                ],
+              ),
+              index: index,
+              imageWidth: 1200,
+              imageHeight: 600,
+            ),
+            product: _product(
+              'product-$index',
+              'Product $index',
+              'bread',
+              index,
+            ),
+          ),
+      ];
+
+      await _pump(
+        tester,
+        CustomerReviewView(
+          state: CheckoutState(
+            phase: CheckoutPhase.customerReview,
+            objectDrafts: drafts,
+            lines: const [],
+          ),
+          productForCandidate: (_, _) => null,
+          onChooseTop3: (_, _) {},
+          onOpenCatalog: (_) {},
+          onContinue: () {},
+        ),
+      );
+
+      final taskRect = tester.getRect(
+        find.byKey(const Key('customer-review-task-pane')),
+      );
+      for (var index = 1; index <= 5; index++) {
+        final row = find.byKey(Key('customer-review-row-object-$index'));
+        expect(row, findsOneWidget);
+        final rowRect = tester.getRect(row);
+        expect(rowRect.left, greaterThanOrEqualTo(taskRect.left));
+        expect(rowRect.right, lessThanOrEqualTo(taskRect.right));
+      }
+    },
+  );
 
   testWidgets('preserves candidate order and routes catalog and retake', (
     tester,
@@ -207,12 +372,12 @@ void main() {
     );
 
     expect(
-      tester.getTopLeft(find.text('Top 1')).dx,
-      lessThan(tester.getTopLeft(find.text('Top 2')).dx),
+      tester.getTopLeft(find.text('Top 1')).dy,
+      lessThan(tester.getTopLeft(find.text('Top 2')).dy),
     );
     expect(
-      tester.getTopLeft(find.text('Top 2')).dx,
-      lessThan(tester.getTopLeft(find.text('Top 3')).dx),
+      tester.getTopLeft(find.text('Top 2')).dy,
+      lessThan(tester.getTopLeft(find.text('Top 3')).dy),
     );
     expect(
       find.descendant(
@@ -221,12 +386,12 @@ void main() {
       ),
       findsNWidgets(3),
     );
-    expect(find.text('다시 촬영하면 이번 계산의 현재 사진이 새 사진으로 바뀝니다.'), findsOneWidget);
+    await tester.ensureVisible(find.text('Top 2'));
     await tester.tap(find.text('Top 2'));
-    await tester.tap(
-      find.text('\uC804\uCCB4 \uC0C1\uD488\uC5D0\uC11C \uCC3E\uAE30'),
-    );
-    await tester.tap(find.text('\uB2E4\uC2DC \uCD2C\uC601'));
+    await tester.ensureVisible(find.text('다른 상품 찾기'));
+    await tester.tap(find.text('다른 상품 찾기'));
+    await tester.ensureVisible(find.text('빵을 다시 놓고 촬영'));
+    await tester.tap(find.text('빵을 다시 놓고 촬영'));
 
     expect(calls, ['candidate:11', 'catalog:object-2', 'retake']);
   });
@@ -312,6 +477,53 @@ void main() {
     },
   );
 
+  testWidgets('ready preview preserves a useful tray aspect ratio', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _pump(tester, const ReadyView(onScan: null));
+
+    final preview = tester.getRect(
+      find.byKey(const Key('live-tray-placement-guide')),
+    );
+    expect(preview.width / preview.height, closeTo(16 / 9, 0.02));
+  });
+
+  testWidgets('recognized order rows own their single correction action', (
+    tester,
+  ) async {
+    final result = buildUiInferenceResult();
+    final product = _product('croissant', 'Croissant', 'pastry', 6);
+    final accepted = ObjectDraft.accepted(
+      inferenceObject: result.objects.first,
+      product: product,
+    );
+
+    await _pump(
+      tester,
+      OrderReviewView(
+        state: CheckoutState(
+          phase: CheckoutPhase.orderReview,
+          objectDrafts: [accepted],
+          lines: [CheckoutLine(product: product, quantity: 1)],
+        ),
+        onSetQuantity: (_, _) {},
+        onAddProduct: () {},
+        onOverrideObject: (_) {},
+        onCountMismatch: () {},
+        onPay: () {},
+        onRemoveProduct: (_) {},
+      ),
+    );
+
+    expect(find.byTooltip('인식 상품 변경'), findsOneWidget);
+    expect(find.textContaining('상품 변경'), findsNothing);
+  });
+
   testWidgets('completion supports policy auto reset and manual continuation', (
     tester,
   ) async {
@@ -387,13 +599,6 @@ Future<void> _pump(WidgetTester tester, Widget child) => tester.pumpWidget(
     home: Scaffold(body: child),
   ),
 );
-
-void _expectInsideReviewViewport(WidgetTester tester, Finder finder) {
-  final viewport = tester.getRect(find.byType(SingleChildScrollView));
-  final target = tester.getRect(finder);
-  expect(target.top, greaterThanOrEqualTo(viewport.top));
-  expect(target.bottom, lessThanOrEqualTo(viewport.bottom));
-}
 
 CheckoutState _completeState() => CheckoutState(
   phase: CheckoutPhase.paymentComplete,

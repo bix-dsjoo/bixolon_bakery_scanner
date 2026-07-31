@@ -41,7 +41,7 @@ void main() {
       final result = await repository.search('크루아상');
 
       expect(result, isEmpty);
-      expect(await repository.productForRecognitionSku(3), isNull);
+      expect(await repository.productForRecognitionSku(6), isNull);
       expect(await repository.productForRecognitionSku(0), isNull);
     },
   );

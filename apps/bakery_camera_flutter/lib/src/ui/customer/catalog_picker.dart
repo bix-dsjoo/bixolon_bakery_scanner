@@ -10,12 +10,14 @@ class CatalogPicker extends StatefulWidget {
     required this.discovery,
     required this.search,
     required this.onSelected,
+    this.onClose,
     super.key,
   });
 
   final CustomerCatalogDiscovery discovery;
   final Future<List<Product>> Function(String query) search;
   final ValueChanged<Product> onSelected;
+  final VoidCallback? onClose;
 
   @override
   State<CatalogPicker> createState() => _CatalogPickerState();
@@ -54,6 +56,24 @@ class _CatalogPickerState extends State<CatalogPicker> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Row(
+          children: [
+            IconButton(
+              key: const Key('customer-catalog-close'),
+              tooltip:
+                  '\uC0C1\uD488 \uD655\uC778\uC73C\uB85C \uB3CC\uC544\uAC00\uAE30',
+              onPressed:
+                  widget.onClose ?? () => Navigator.of(context).maybePop(),
+              icon: const Icon(Icons.arrow_back),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '\uB2E4\uB978 \uC0C1\uD488 \uCC3E\uAE30',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
         TextField(
           controller: _search,
           onChanged: _searchProducts,
@@ -91,7 +111,7 @@ class _CatalogPickerState extends State<CatalogPicker> {
             ),
             for (final category in categories)
               ChoiceChip(
-                label: Text(category),
+                label: Text(_customerCategoryLabel(category)),
                 selected: _category == category,
                 onSelected: (_) => setState(() => _category = category),
               ),
@@ -119,8 +139,19 @@ class _CatalogRow extends StatelessWidget {
         ? const CircleAvatar(child: Icon(Icons.bakery_dining_outlined))
         : Image.asset(product.photoAssetPath!, fit: BoxFit.cover),
     title: Text(product.displayName),
-    subtitle: Text(product.categoryId),
+    subtitle: Text(_customerCategoryLabel(product.categoryId)),
     trailing: PriceText(amount: product.unitPrice),
     onTap: () => onSelected(product),
   );
 }
+
+String _customerCategoryLabel(String categoryId) => switch (categoryId) {
+  'donut' => '\uB3C4\uB11B',
+  'filled-bread' => '\uC18C\uAC00 \uB4E0 \uBE75',
+  'loaf' => '\uC2DD\uBE75',
+  'pastry' => '\uD398\uC774\uC2A4\uD2B8\uB9AC',
+  'rustic-bread' => '\uD558\uB4DC\uACC4 \uBE75',
+  'sweet' => '\uB2EC\uCF64\uD55C \uBE75',
+  'savory' => '\uC2DD\uC0AC\uBE75',
+  _ => categoryId,
+};

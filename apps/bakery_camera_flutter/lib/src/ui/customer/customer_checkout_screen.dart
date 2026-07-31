@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../catalog/product.dart';
 import '../../checkout/checkout_controller.dart';
 import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
@@ -74,6 +75,11 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
     _catalogAddsProduct = true;
   });
 
+  void _closeCatalog() => setState(() {
+    _catalogObjectId = null;
+    _catalogAddsProduct = false;
+  });
+
   Future<void> _selectCatalog(String productId) async {
     final objectId = _catalogObjectId;
     setState(() {
@@ -94,21 +100,21 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
   @override
   Widget build(BuildContext context) {
     final Widget content;
-    if (_catalogObjectId != null || _catalogAddsProduct) {
+    final state = widget.controller.state;
+    if (_catalogAddsProduct) {
       content = CheckoutScaffold(
         title: '상품 찾기',
-        primaryAction: const SizedBox(height: 56),
         child: Padding(
           padding: const EdgeInsets.only(top: 16),
           child: CatalogPicker(
             discovery: widget.controller.customerCatalogDiscovery,
             search: widget.controller.searchSessionCatalog,
             onSelected: (product) => _selectCatalog(product.productId),
+            onClose: _closeCatalog,
           ),
         ),
       );
     } else {
-      final state = widget.controller.state;
       content = switch (state.phase) {
         CheckoutPhase.ready => ReadyView(
           onScan: () => widget.controller.scan(),
@@ -129,17 +135,38 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
           onOpenCatalog: _showCatalogForObject,
           onRetakeCapture: () => widget.controller.reportCountMismatch(),
           onContinue: () => widget.controller.continueToOrderReview(),
+          catalogDiscovery: _catalogObjectId == null
+              ? null
+              : widget.controller.customerCatalogDiscovery,
+          catalogSearch: _catalogObjectId == null
+              ? null
+              : widget.controller.searchSessionCatalog,
+          onCatalogSelected: _catalogObjectId == null
+              ? null
+              : (product) => _selectCatalog(product.productId),
+          onCloseCatalog: _catalogObjectId == null ? null : _closeCatalog,
         ),
-        CheckoutPhase.orderReview => OrderReviewView(
-          state: state,
-          onSetQuantity: (productId, quantity) =>
-              widget.controller.setQuantity(productId, quantity),
-          onAddProduct: _showAddCatalog,
-          onOverrideObject: _showCatalogForObject,
-          onCountMismatch: () => widget.controller.reportCountMismatch(),
-          onPay: () => widget.controller.pay(),
-          onRemoveProduct: (productId) =>
-              widget.controller.removeProduct(productId),
+        CheckoutPhase.orderReview => Stack(
+          children: [
+            OrderReviewView(
+              state: state,
+              onSetQuantity: (productId, quantity) =>
+                  widget.controller.setQuantity(productId, quantity),
+              onAddProduct: _showAddCatalog,
+              onOverrideObject: _showCatalogForObject,
+              onCountMismatch: () => widget.controller.reportCountMismatch(),
+              onPay: () => widget.controller.pay(),
+              onRemoveProduct: (productId) =>
+                  widget.controller.removeProduct(productId),
+            ),
+            if (_catalogObjectId != null)
+              _OrderReviewCatalogPanel(
+                discovery: widget.controller.customerCatalogDiscovery,
+                search: widget.controller.searchSessionCatalog,
+                onSelected: (product) => _selectCatalog(product.productId),
+                onClose: _closeCatalog,
+              ),
+          ],
         ),
         CheckoutPhase.paying => PaymentView(state: state),
         CheckoutPhase.paymentComplete => PaymentCompleteView(
@@ -163,21 +190,78 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
       displayName: widget.controller.kioskDisplayName,
       child: content,
     );
-    if (widget.onEnterAdmin == null) return scopedContent;
-    return KioskDisplayNameScope(
-      displayName: widget.controller.kioskDisplayName,
+    if (widget.onEnterAdmin == null ||
+        _catalogObjectId != null ||
+        _catalogAddsProduct) {
+      return scopedContent;
+    }
+    return KioskHeaderActionScope(
+      action: CustomerAdminEntryControl(
+        requiresAdminEntryConfirmation: widget.requiresAdminEntryConfirmation,
+        onEnterAdmin: widget.onEnterAdmin!,
+      ),
+      child: scopedContent,
+    );
+  }
+}
+
+class _OrderReviewCatalogPanel extends StatelessWidget {
+  const _OrderReviewCatalogPanel({
+    required this.discovery,
+    required this.search,
+    required this.onSelected,
+    required this.onClose,
+  });
+
+  final CustomerCatalogDiscovery discovery;
+  final Future<List<Product>> Function(String query) search;
+  final ValueChanged<Product> onSelected;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = (MediaQuery.sizeOf(context).width - 32)
+        .clamp(0.0, 480.0)
+        .toDouble();
+    return Positioned.fill(
       child: Stack(
         children: [
-          content,
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topRight,
+          ModalBarrier(
+            color: Colors.black.withValues(alpha: 0.14),
+            dismissible: true,
+            semanticsLabel: '상품 변경 닫기',
+            onDismiss: onClose,
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: SafeArea(
               child: Padding(
-                padding: const EdgeInsets.only(top: 8, right: 16),
-                child: CustomerAdminEntryControl(
-                  requiresAdminEntryConfirmation:
-                      widget.requiresAdminEntryConfirmation,
-                  onEnterAdmin: widget.onEnterAdmin!,
+                padding: const EdgeInsets.all(16),
+                child: SizedBox(
+                  key: const Key('order-review-catalog-panel'),
+                  width: width,
+                  child: Material(
+                    elevation: 2,
+                    clipBehavior: Clip.antiAlias,
+                    borderRadius: BorderRadius.circular(8),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: Theme.of(context).dividerColor,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(16),
+                        child: CatalogPicker(
+                          discovery: discovery,
+                          search: search,
+                          onSelected: onSelected,
+                          onClose: onClose,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -319,29 +403,34 @@ class _PaymentCompleteViewState extends State<PaymentCompleteView> {
     final receipt = widget.state.paymentReceipt;
     return CheckoutScaffold(
       title: '결제 완료',
+      scrollable: false,
       primaryAction: BakeryPrimaryButton(
         label: '다음 고객 시작',
         onPressed: _startingNextCustomer ? null : _startNextCustomer,
       ),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const PaymentCompleteIllustration(),
-            const SizedBox(height: 12),
-            const BakeryStatusBanner(
-              status: BakeryStatus.ready,
-              title: '결제가 완료됐어요',
-              message: '이용해 주셔서 감사합니다.',
-            ),
-            const SizedBox(height: 20),
-            Text('결제 금액', style: Theme.of(context).textTheme.titleMedium),
-            PriceText(
-              amount: receipt?.amount ?? 0,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-          ],
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Column(
+            key: const Key('payment-complete-summary'),
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(child: PaymentCompleteIllustration()),
+              const SizedBox(height: 12),
+              const BakeryStatusBanner(
+                status: BakeryStatus.ready,
+                title: '결제가 완료됐어요',
+                message: '이용해 주셔서 감사합니다.',
+              ),
+              const SizedBox(height: 16),
+              Text('결제 금액', style: Theme.of(context).textTheme.titleMedium),
+              PriceText(
+                amount: receipt?.amount ?? 0,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ],
+          ),
         ),
       ),
     );

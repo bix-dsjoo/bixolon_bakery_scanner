@@ -82,11 +82,17 @@ void main() {
           find.byKey(const Key('captured-review-full-scene')),
           findsOneWidget,
         );
+        expect(
+          find.byKey(const Key('customer-review-workspace-divider')),
+          findsOneWidget,
+        );
+        final sceneBefore = tester.getRect(
+          find.byKey(const Key('captured-review-full-scene')),
+        );
         _expectMinimumTouchTarget(tester, overlayTwo);
 
         await tester.tap(overlayTwo);
         await tester.pumpAndSettle();
-        _expectInsideReviewViewport(tester, rowTwo);
         expect(tester.widget<ListTile>(rowTwo).selected, isTrue);
         final candidatePanelTwo = find.byKey(
           const Key('customer-review-candidate-panel-object-2'),
@@ -115,7 +121,10 @@ void main() {
           find.byKey(const Key('customer-review-candidate-panel-object-2')),
           findsNothing,
         );
-        _expectInsideReviewViewport(tester, overlayOne);
+        expect(
+          tester.getRect(find.byKey(const Key('captured-review-full-scene'))),
+          sceneBefore,
+        );
         expect(
           tester.getSemantics(overlayOne).flagsCollection.isSelected,
           Tristate.isTrue,
@@ -178,6 +187,60 @@ void main() {
       expect(scene.width / scene.height, closeTo(1, 0.001));
     },
   );
+
+  testWidgets('order keeps capture and selects its matching line from a box', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(
+      _app(
+        OrderReviewView(
+          state: _orderState,
+          onSetQuantity: (_, _) {},
+          onAddProduct: _noop,
+          onOverrideObject: (_) {},
+          onCountMismatch: _noop,
+          onPay: _noop,
+          onRemoveProduct: (_) {},
+          imageProviderFactory: (_) =>
+              const AssetImage(_reviewFixtureAssetPath),
+        ),
+      ),
+    );
+    await tester.runAsync(
+      () => precacheImage(
+        const AssetImage(_reviewFixtureAssetPath),
+        tester.element(find.byType(OrderReviewView)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('order-review-scene-pane')), findsOneWidget);
+    expect(find.byKey(const Key('order-review-task-pane')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('customer-review-overlay-object-1')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<ListTile>(
+            find.byKey(const Key('order-review-line-sugar-donut')),
+          )
+          .selected,
+      isTrue,
+    );
+
+    await tester.tap(find.byKey(const Key('order-review-line-sugar-donut')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const Key('customer-review-overlay-object-1')),
+          )
+          .flagsCollection
+          .isSelected,
+      Tristate.isTrue,
+    );
+    semantics.dispose();
+  });
 
   testWidgets(
     'seeded full catalog keeps Korean controls and touch targets accessible at kiosk sizes',
@@ -308,31 +371,13 @@ void main() {
   ) async {
     await _golden(
       tester,
-      Builder(
-        builder: (context) => ColoredBox(
-          color: Theme.of(context).scaffoldBackgroundColor,
-          // Fit the complete scroll extent into the fixed-size evidence image.
-          // The production review layout and its natural image height stay
-          // unchanged; actual kiosk reachability is exercised above.
-          child: FittedBox(
-            fit: BoxFit.contain,
-            alignment: Alignment.topCenter,
-            child: SizedBox(
-              width: 1280,
-              height: 1600,
-              child: CustomerReviewView(
-                state: _reviewState,
-                productForCandidate: (_, skuId) =>
-                    skuId == 10 ? _sugarDonut : null,
-                onChooseTop3: (_, _) {},
-                onOpenCatalog: (_) {},
-                onContinue: _noop,
-                imageProviderFactory: (_) =>
-                    const AssetImage(_reviewFixtureAssetPath),
-              ),
-            ),
-          ),
-        ),
+      CustomerReviewView(
+        state: _reviewState,
+        productForCandidate: (_, skuId) => skuId == 10 ? _sugarDonut : null,
+        onChooseTop3: (_, _) {},
+        onOpenCatalog: (_) {},
+        onContinue: _noop,
+        imageProviderFactory: (_) => const AssetImage(_reviewFixtureAssetPath),
       ),
       'customer_review_1280x820.png',
       fixtureImage: const AssetImage(_reviewFixtureAssetPath),
@@ -352,8 +397,10 @@ void main() {
         onCountMismatch: _noop,
         onPay: _noop,
         onRemoveProduct: (_) {},
+        imageProviderFactory: (_) => const AssetImage(_reviewFixtureAssetPath),
       ),
       'customer_order_1280x820.png',
+      fixtureImage: const AssetImage(_reviewFixtureAssetPath),
     );
   });
 
@@ -430,13 +477,6 @@ Future<void> _pumpReviewAt(
   addTearDown(tester.view.resetDevicePixelRatio);
   await _pumpReview(tester, scale: scale, highContrast: highContrast);
   await tester.pumpAndSettle();
-}
-
-void _expectInsideReviewViewport(WidgetTester tester, Finder finder) {
-  final viewport = tester.getRect(find.byType(SingleChildScrollView));
-  final rect = tester.getRect(finder);
-  expect(rect.top, greaterThanOrEqualTo(viewport.top));
-  expect(rect.bottom, lessThanOrEqualTo(viewport.bottom));
 }
 
 Future<void> _golden(
@@ -612,8 +652,11 @@ final _retakeState = CheckoutState(
 
 final _orderState = CheckoutState(
   phase: CheckoutPhase.orderReview,
-  objectDrafts: const [],
+  objectDrafts: [_reviewState.objectDrafts.first],
   lines: [CheckoutLine(product: _sugarDonut, quantity: 2)],
+  capturedEvidenceDisplayPath: _reviewFixtureDisplayPath,
+  capturedImageWidth: 1254,
+  capturedImageHeight: 1254,
 );
 
 final _completeState = CheckoutState(
@@ -656,6 +699,7 @@ final _screens = <Widget>[
     onCountMismatch: _noop,
     onPay: _noop,
     onRemoveProduct: (_) {},
+    imageProviderFactory: (_) => const AssetImage(_reviewFixtureAssetPath),
   ),
   PaymentCompleteView(
     state: _completeState,

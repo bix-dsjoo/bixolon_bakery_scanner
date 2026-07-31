@@ -26,45 +26,51 @@ class BakeryStatusBanner extends StatelessWidget {
       BakeryStatus.uncertain => (Icons.help_outline, tokens.uncertainty),
       BakeryStatus.error => (Icons.error_outline, tokens.error),
     };
+    final routine =
+        status == BakeryStatus.ready || status == BakeryStatus.loading;
+    final content = Padding(
+      key: routine ? const Key('routine-status-row') : null,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(presentation.$1, color: presentation.$2, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Text(message, style: Theme.of(context).textTheme.bodyMedium),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
 
     return Semantics(
       key: const ValueKey('status-message'),
       container: true,
       label: '$title. $message',
       child: ExcludeSemantics(
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: presentation.$2.withValues(alpha: 0.045),
-            border: Border.all(color: tokens.divider),
-            borderRadius: BorderRadius.circular(tokens.surfaceRadius),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(presentation.$1, color: presentation.$2, size: 24),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        message,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                    ],
-                  ),
+        child: routine
+            ? content
+            : DecoratedBox(
+                decoration: BoxDecoration(
+                  color: presentation.$2.withValues(alpha: 0.045),
+                  border: Border.all(color: tokens.divider),
+                  borderRadius: BorderRadius.circular(tokens.surfaceRadius),
                 ),
-              ],
-            ),
-          ),
-        ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: content,
+                ),
+              ),
       ),
     );
   }

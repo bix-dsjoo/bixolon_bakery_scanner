@@ -12,11 +12,14 @@ import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen
 import 'package:bakery_camera_prototype/src/ui/customer/payment_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/ready_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/retake_required_view.dart';
+import 'package:bakery_camera_prototype/src/ui/components/bakery_status_banner.dart';
 import 'package:bakery_camera_prototype/src/ui/components/checkout_scaffold.dart';
 import 'package:flutter/foundation.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/customer_checkout_journey_fixture.dart';
 
 void main() {
   test(
@@ -90,6 +93,109 @@ void main() {
   });
 
   testWidgets(
+    'catalog search keeps the retained scene visible and returns to the same exception',
+    (tester) async {
+      final fixture = (await tester.runAsync(() async {
+        final fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+        await fixture.controller.scan();
+        return fixture;
+      }))!;
+      addTearDown(() => tester.runAsync(fixture.dispose));
+
+      await _pump(
+        tester,
+        CustomerCheckoutScreen(controller: fixture.controller),
+      );
+      await tester.ensureVisible(find.text('다른 상품 찾기'));
+      await tester.tap(find.text('다른 상품 찾기'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('captured-review-full-scene')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('customer-catalog-close')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('customer-catalog-close')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('customer-review-candidate-panel-object-2')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'order correction keeps the order visible beside the catalog panel',
+    (tester) async {
+      final fixture = (await tester.runAsync(() async {
+        final fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+        await fixture.controller.scan();
+        await fixture.controller.chooseTop3('object-2', 10);
+        await fixture.controller.continueToOrderReview();
+        return fixture;
+      }))!;
+      addTearDown(() => tester.runAsync(fixture.dispose));
+
+      await _pump(
+        tester,
+        CustomerCheckoutScreen(controller: fixture.controller),
+      );
+      expect(find.text('주문 확인'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('인식 상품 변경').first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('주문 확인'), findsOneWidget);
+      expect(
+        find.byKey(const Key('order-review-catalog-panel')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('order-review-scene-pane')), findsOneWidget);
+      expect(find.byKey(const Key('order-review-task-pane')), findsOneWidget);
+      final panelMaterial = tester.widget<Material>(
+        find
+            .descendant(
+              of: find.byKey(const Key('order-review-catalog-panel')),
+              matching: find.byType(Material),
+            )
+            .first,
+      );
+      expect(panelMaterial.elevation, 2);
+      expect(panelMaterial.borderRadius, BorderRadius.circular(8));
+      expect(find.byKey(const Key('customer-catalog-close')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('customer-catalog-close')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('order-review-catalog-panel')), findsNothing);
+      expect(find.text('주문 확인'), findsOneWidget);
+    },
+  );
+
+  testWidgets('manual catalog does not reserve an empty action rail', (
+    tester,
+  ) async {
+    final fixture = (await tester.runAsync(() async {
+      final fixture = await CustomerCheckoutJourneyFixture.create();
+      await fixture.controller.initialize();
+      await fixture.controller.scan();
+      await fixture.controller.chooseTop3('object-2', 10);
+      await fixture.controller.continueToOrderReview();
+      return fixture;
+    }))!;
+    addTearDown(() => tester.runAsync(fixture.dispose));
+
+    await _pump(tester, CustomerCheckoutScreen(controller: fixture.controller));
+    await tester.tap(find.text('상품 추가'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('상품 찾기'), findsOneWidget);
+    expect(find.byKey(const Key('customer-action-rail')), findsNothing);
+  });
+
+  testWidgets(
     'manual next customer wins the auto-reset race without surfacing StateError',
     (tester) async {
       final gate = Completer<void>();
@@ -140,6 +246,46 @@ void main() {
     expect(find.text('결제를 기록하고 있어요'), findsOneWidget);
   });
 
+  testWidgets('payment completion centers one concise receipt summary', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1024, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _pump(
+      tester,
+      PaymentCompleteView(
+        state: CheckoutState(
+          phase: CheckoutPhase.paymentComplete,
+          objectDrafts: const [],
+          lines: const [],
+          paymentReceipt: PaymentReceipt(
+            paymentId: 'payment-1',
+            orderId: 'order-1',
+            sessionId: 'session-1',
+            amount: 5000,
+            currency: 'KRW',
+            provider: 'simulated',
+            status: 'approved',
+            paidAt: DateTime.utc(2026, 7, 31),
+          ),
+        ),
+        policy: const CustomerCompletionPolicy(
+          duration: Duration(hours: 1),
+          autoReset: false,
+        ),
+        onNext: () async {},
+      ),
+    );
+
+    final summary = tester.getRect(
+      find.byKey(const Key('payment-complete-summary')),
+    );
+    expect(summary.center.dx, closeTo(512, 1));
+  });
+
   testWidgets('ready explains placement and exposes one scan action', (
     tester,
   ) async {
@@ -149,6 +295,170 @@ void main() {
     expect(find.text('빵 확인하기'), findsOneWidget);
     expect(find.byType(FilledButton), findsOneWidget);
     expect(find.byKey(const Key('live-tray-placement-guide')), findsOneWidget);
+  });
+
+  testWidgets('ready keeps the complete camera scene above the action rail', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1024, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _pump(tester, ReadyView(onScan: () {}));
+
+    final scene = tester.getRect(
+      find.byKey(const Key('live-tray-placement-guide')),
+    );
+    final rail = tester.getRect(find.byKey(const Key('customer-action-rail')));
+    expect(scene.bottom, lessThanOrEqualTo(rail.top));
+    expect(scene.width / scene.height, closeTo(16 / 9, 0.02));
+  });
+
+  testWidgets('ready does not require page scrolling at kiosk height', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1024, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _pump(tester, ReadyView(onScan: () {}));
+
+    expect(find.byType(SingleChildScrollView), findsNothing);
+  });
+
+  testWidgets('analyzing and paying do not render an empty action rail', (
+    tester,
+  ) async {
+    await _pump(tester, const AnalyzingView());
+    expect(find.byKey(const Key('customer-action-rail')), findsNothing);
+
+    await _pump(
+      tester,
+      PaymentView(
+        state: CheckoutState(
+          phase: CheckoutPhase.paying,
+          objectDrafts: const [],
+          lines: const [],
+        ),
+      ),
+    );
+    expect(find.byKey(const Key('customer-action-rail')), findsNothing);
+  });
+
+  testWidgets(
+    'analyzing centers its factual status in the available workspace',
+    (tester) async {
+      tester.view.physicalSize = const Size(1024, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await _pump(tester, const AnalyzingView());
+
+      final header = tester.getRect(find.byKey(const Key('customer-header')));
+      final scaffold = tester.getRect(find.byType(Scaffold).last);
+      final status = tester.getRect(
+        find.byKey(const ValueKey('status-message')),
+      );
+      expect(
+        status.center.dy,
+        closeTo((header.bottom + scaffold.bottom) / 2, 44),
+      );
+      expect(status.center.dx, closeTo(scaffold.center.dx, 1));
+      expect(status.width, lessThanOrEqualTo(440));
+    },
+  );
+
+  testWidgets('routine status is a compact row rather than a bordered panel', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      const BakeryStatusBanner(
+        status: BakeryStatus.ready,
+        title: '빵을 올려주세요',
+        message: '트레이를 확인합니다.',
+      ),
+    );
+
+    final row = find.byKey(const Key('routine-status-row'));
+    expect(row, findsOneWidget);
+    expect(
+      find.descendant(of: row, matching: find.byType(DecoratedBox)),
+      findsNothing,
+    );
+  });
+
+  testWidgets('customer shell keeps header and action rail full width', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1024, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _pump(
+      tester,
+      CheckoutScaffold(
+        title: '셀프 계산',
+        primaryAction: const SizedBox(
+          key: Key('customer-shell-action'),
+          height: 52,
+        ),
+        child: const SizedBox(),
+      ),
+    );
+
+    expect(
+      tester.getRect(find.byKey(const Key('customer-header'))).width,
+      1024,
+    );
+    expect(tester.getSize(find.byKey(const Key('customer-header'))).height, 60);
+    expect(
+      tester.getRect(find.byKey(const Key('customer-action-rail'))).width,
+      1024,
+    );
+  });
+
+  testWidgets(
+    'customer shell omits the action rail when no action is supplied',
+    (tester) async {
+      await _pump(
+        tester,
+        const CheckoutScaffold(title: '빵 확인', child: SizedBox()),
+      );
+
+      expect(find.byKey(const Key('customer-action-rail')), findsNothing);
+    },
+  );
+
+  testWidgets('administrator entry is aligned inside the customer header', (
+    tester,
+  ) async {
+    final fixture = (await tester.runAsync(() async {
+      final fixture = await CustomerCheckoutJourneyFixture.create();
+      await fixture.controller.initialize();
+      return fixture;
+    }))!;
+    addTearDown(() => tester.runAsync(fixture.dispose));
+
+    await _pump(
+      tester,
+      CustomerCheckoutScreen(
+        controller: fixture.controller,
+        onEnterAdmin: ({required abandonConfirmed}) async => true,
+      ),
+    );
+
+    final header = tester.getRect(find.byKey(const Key('customer-header')));
+    final adminAction = tester.getRect(
+      find.byKey(const Key('customer-header-action')),
+    );
+    expect(adminAction.top, greaterThanOrEqualTo(header.top));
+    expect(adminAction.bottom, lessThanOrEqualTo(header.bottom));
+    expect(adminAction.center.dy, closeTo(header.center.dy, 0.1));
   });
 
   testWidgets('customer header renders the session-snapshotted kiosk name', (
