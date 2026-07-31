@@ -21,7 +21,11 @@ class BakeryPrimaryButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = BixolonThemeExtension.of(context);
     final style = ButtonStyle(
-      backgroundColor: WidgetStatePropertyAll(tokens.action),
+      backgroundColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled)
+            ? tokens.disabledAction
+            : tokens.action,
+      ),
       foregroundColor: const WidgetStatePropertyAll(Colors.white),
       minimumSize: const WidgetStatePropertyAll(Size(48, 56)),
       shape: WidgetStatePropertyAll(
@@ -34,7 +38,7 @@ class BakeryPrimaryButton extends StatelessWidget {
           color: states.contains(WidgetState.focused)
               ? tokens.focus
               : Colors.transparent,
-          width: states.contains(WidgetState.focused) ? 3 : 0,
+          width: states.contains(WidgetState.focused) ? 2 : 0,
         ),
       ),
     );

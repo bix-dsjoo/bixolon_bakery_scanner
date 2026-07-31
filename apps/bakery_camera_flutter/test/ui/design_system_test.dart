@@ -273,7 +273,27 @@ void main() {
       WidgetState.focused,
     });
     expect(side!.color, const Color(0xFF184C9F));
-    expect(side.width, greaterThanOrEqualTo(2));
+    expect(side.width, 2);
+  });
+
+  testWidgets('disabled primary action uses the POS disabled action color', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: const Scaffold(
+          body: BakeryPrimaryButton(label: '결제하기', onPressed: null),
+        ),
+      ),
+    );
+
+    final button = tester.widget<FilledButton>(find.byType(FilledButton));
+    final background = button.style!.backgroundColor!.resolve(<WidgetState>{
+      WidgetState.disabled,
+    });
+    expect(background, const Color(0xFFFAD5B3));
+    expect(background, isNot(const Color(0xFFEE7203)));
   });
 
   testWidgets(

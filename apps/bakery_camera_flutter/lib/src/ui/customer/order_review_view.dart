@@ -263,26 +263,33 @@ class _OrderTaskPane extends StatelessWidget {
           child: Text('주문 내역', style: Theme.of(context).textTheme.titleMedium),
         ),
         Expanded(
-          child: ListView(
+          child: ListView.separated(
             padding: const EdgeInsets.only(left: 4),
-            children: [
-              for (final line in state.lines)
-                _OrderLine(
-                  line: line,
-                  selectedObjectId: selectedObjectId,
-                  onSetQuantity: onSetQuantity,
-                  recognizedObjectIds: _recognizedObjectIds(line),
-                  onSelectLine: onSelectLine,
-                  onOverrideObject: onOverrideObject,
-                  onRemove:
-                      state.objectDrafts.any(
-                        (draft) =>
-                            draft.product?.productId == line.product.productId,
-                      )
-                      ? null
-                      : () => onRemoveProduct(line.product.productId),
-                ),
-            ],
+            itemCount: state.lines.length,
+            itemBuilder: (context, index) {
+              final line = state.lines[index];
+              return _OrderLine(
+                line: line,
+                selectedObjectId: selectedObjectId,
+                onSetQuantity: onSetQuantity,
+                recognizedObjectIds: _recognizedObjectIds(line),
+                onSelectLine: onSelectLine,
+                onOverrideObject: onOverrideObject,
+                onRemove:
+                    state.objectDrafts.any(
+                      (draft) =>
+                          draft.product?.productId == line.product.productId,
+                    )
+                    ? null
+                    : () => onRemoveProduct(line.product.productId),
+              );
+            },
+            separatorBuilder: (context, index) => Divider(
+              key: Key('order-review-line-divider-$index'),
+              color: BixolonThemeExtension.of(context).divider,
+              height: 1,
+              thickness: 1,
+            ),
           ),
         ),
         const Divider(height: 24),

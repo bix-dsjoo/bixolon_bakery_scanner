@@ -245,6 +245,52 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('order separates adjacent lines with one neutral divider', (
+    tester,
+  ) async {
+    final multiLineState = CheckoutState(
+      phase: CheckoutPhase.orderReview,
+      objectDrafts: _orderState.objectDrafts,
+      lines: [
+        _orderState.lines.single,
+        CheckoutLine(product: _almondCroissant, quantity: 1),
+      ],
+      capturedEvidenceDisplayPath: _reviewFixtureDisplayPath,
+      capturedImageWidth: 1254,
+      capturedImageHeight: 1254,
+    );
+    await tester.pumpWidget(
+      _app(
+        OrderReviewView(
+          state: multiLineState,
+          onSetQuantity: (_, _) {},
+          onAddProduct: _noop,
+          onOverrideObject: (_) {},
+          onCountMismatch: _noop,
+          onPay: _noop,
+          onRemoveProduct: (_) {},
+          imageProviderFactory: (_) =>
+              const AssetImage(_reviewFixtureAssetPath),
+        ),
+      ),
+    );
+    await tester.runAsync(
+      () => precacheImage(
+        const AssetImage(_reviewFixtureAssetPath),
+        tester.element(find.byType(OrderReviewView)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final divider = find.byKey(const Key('order-review-line-divider-0'));
+    expect(divider, findsOneWidget);
+    expect(find.byKey(const Key('order-review-line-divider-1')), findsNothing);
+    final widget = tester.widget<Divider>(divider);
+    expect(widget.thickness, 1);
+    expect(widget.height, 1);
+    expect(widget.color, const Color(0xFFE8E8E8));
+  });
+
   testWidgets(
     'seeded full catalog keeps Korean controls and touch targets accessible at kiosk sizes',
     (tester) async {
@@ -627,6 +673,17 @@ final _sugarDonut = Product(
   photoAssetPath: null,
   active: true,
   sortOrder: 1,
+);
+
+final _almondCroissant = Product(
+  productId: 'almond-croissant',
+  displayName: '아몬드 크루아상',
+  unitPrice: 3200,
+  recognitionSkuId: 11,
+  categoryId: 'croissant',
+  photoAssetPath: null,
+  active: true,
+  sortOrder: 2,
 );
 
 final _photoNumberTwoSemantics = RegExp(
