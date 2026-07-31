@@ -195,6 +195,20 @@ def load_support_bank(path: Path) -> SupportBank:
     return SupportBank.from_dict(value)
 
 
+def validate_support_bank_for_condition(
+    bank: SupportBank, *, support_sha256: str, selector: str, support_seed: int,
+    category_ids: Iterable[int],
+) -> SupportBank:
+    """Bind an immutable condition to the exact pre-materialized support bank."""
+    if not isinstance(bank, SupportBank) or bank.sha256 != support_sha256:
+        raise ValueError("condition support_sha256 does not resolve to support bank")
+    if bank.method != selector or support_seed not in bank.seeds:
+        raise ValueError("condition selector/seed does not match support bank")
+    for category_id in category_ids:
+        bank.order_for(category_id, support_seed)
+    return bank
+
+
 def parse_train_capture_stratum(file_name: str, category_id: int) -> CaptureStratum:
     """Parse the exact RPC train naming convention into its coverage stratum."""
     if type(category_id) is not int or category_id <= 0:

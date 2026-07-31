@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Literal, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
+from bakery_scanner.experiments.rpc_metrics import ResearchEvidenceRow
 
 
 _STAGE_ONE_PAIRS = (("m0", "div"), ("m1", "div"), ("m2", "div"), ("m2", "rnd"))
@@ -1377,7 +1378,45 @@ def _stage_one_score_metrics(receipt: Mapping[str, object]) -> tuple[float, floa
             raise ValueError("Stage-1 score receipt has invalid global Top-1 agreement")
     # The selection contract orders evidence as RepViT accuracy, DINO accuracy,
     # RepViT wrong-SKU, DINO wrong-SKU rather than branch-field traversal.
-    return result[0], result[2], result[1], result[3]
+    reported = (result[0], result[2], result[1], result[3])
+    derived = _rederive_stage_one_metrics(receipt)
+    if any(abs(left - right) > 1e-12 for left, right in zip(reported, derived, strict=True)):
+        raise ValueError("Stage-1 score receipt branch metrics do not reproduce raw evidence")
+    return reported
+
+
+def _rederive_stage_one_metrics(receipt: Mapping[str, object]) -> tuple[float, float, float, float]:
+    raw = receipt["raw_evidence"]
+    candidate = raw["candidate"]  # validated by caller
+    path, digest = Path(candidate["path"]), candidate["sha256"]  # type: ignore[index]
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ValueError("Stage-1 raw evidence cannot be resolved") from exc
+    if hashlib.sha256(content).hexdigest() != digest:
+        raise ValueError("Stage-1 raw evidence SHA-256 mismatch")
+    rows = tuple(
+        ResearchEvidenceRow.from_dict(json.loads(line.decode("utf-8"), object_pairs_hook=_unique_json_object))
+        for line in content.splitlines()
+    )
+    cohort = receipt.get("cohort")
+    if not rows or not isinstance(cohort, Mapping) or not isinstance(cohort.get("novel_category_ids"), list):
+        raise ValueError("Stage-1 raw evidence lacks cohort")
+    novel = set(cohort["novel_category_ids"])
+    if not novel:
+        raise ValueError("Stage-1 raw evidence lacks novel cohort")
+    def metrics(branch: str) -> tuple[float, float]:
+        per = []
+        wrong = []
+        for category in novel:
+            selected = [row for row in rows if row.truth_category_id == category]
+            if not selected: raise ValueError("Stage-1 raw evidence omits novel category")
+            per.append(sum(row.branch_top1_category_id(branch) == category for row in selected) / len(selected))
+            wrong.extend(row.branch_top1_category_id(branch) != category for row in selected)
+        return sum(per) / len(per), sum(wrong) / len(wrong)
+    rep, rep_wrong = metrics("repvit_global")
+    dino, dino_wrong = metrics("dinov3_global")
+    return rep, dino, rep_wrong, dino_wrong
 
 
 def select_stage_one_methods(

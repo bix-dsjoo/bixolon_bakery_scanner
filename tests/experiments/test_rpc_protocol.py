@@ -35,6 +35,7 @@ from bakery_scanner.experiments.rpc_protocol import (
     _condition_id,
 )
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
+from bakery_scanner.experiments.rpc_metrics import ResearchEvidenceRow
 from bakery_scanner.experiments import rpc_scoring
 from bakery_scanner.experiments import rpc_protocol as _rpc_protocol
 
@@ -91,7 +92,27 @@ def _stage_one_score_artifacts(
         fold_base_artifacts=(FoldBaseArtifact(0, "2" * 64, "3" * 64),),
     )
     for index, condition in enumerate(cells):
-        method_score = {"m0": 0.91, "m1": 0.88, "m2": 0.90}[condition.method]
+        method_score = 0.0 if condition.method == "m1" else 1.0
+        candidate_rows = (
+            ResearchEvidenceRow(
+                sample_id=f"novel-{index}", object_id=index * 2 + 1,
+                condition_id=condition.condition_id, fold=0, difficulty="E", burst_id=f"burst-{index}",
+                truth_category_id=1, predicted_category_id=1, score_category_ids=(1, 2),
+                repvit_global_scores=(method_score, 1.0 - method_score),
+                dinov3_global_scores=(method_score, 1.0 - method_score), dinov3_local_scores=(method_score, 1.0 - method_score),
+                conditional_dino_executed=False, **{name: "a" * 64 for name in ("condition_manifest_sha256", "model_sha256", "support_sha256", "calibration_sha256", "policy_sha256", "preprocessing_sha256", "code_sha256")},
+            ),
+            ResearchEvidenceRow(
+                sample_id=f"base-{index}", object_id=index * 2 + 2,
+                condition_id=condition.condition_id, fold=0, difficulty="E", burst_id=f"burst-{index}",
+                truth_category_id=2, predicted_category_id=2, score_category_ids=(1, 2),
+                repvit_global_scores=(0.0, 1.0), dinov3_global_scores=(0.0, 1.0), dinov3_local_scores=(0.0, 1.0),
+                conditional_dino_executed=False, **{name: "a" * 64 for name in ("condition_manifest_sha256", "model_sha256", "support_sha256", "calibration_sha256", "policy_sha256", "preprocessing_sha256", "code_sha256")},
+            ),
+        )
+        raw_path = tmp_path / f"stage1-{index}.jsonl"
+        raw_path.write_bytes(b"\n".join(canonical_json_bytes(row.to_dict()) for row in candidate_rows) + b"\n")
+        raw_sha = hashlib.sha256(raw_path.read_bytes()).hexdigest()
         payload = {
             "schema_version": 2,
             "kind": "rpc-fewshot-score-receipt",
@@ -103,18 +124,19 @@ def _stage_one_score_artifacts(
             "reference_condition": condition.to_dict(),
             "candidate_scoring_plan": plan.to_dict(),
             "reference_scoring_plan": plan.to_dict(),
+            "cohort": {"novel_category_ids": [1], "base_category_ids": [2]},
             "candidate_branch_top1": {
                 "repvit_global": {
                     "novel_macro_recall": method_score,
                     "wrong_registered_sku_rate": 1.0 - method_score,
                 },
                 "dinov3_global": {
-                    "novel_macro_recall": method_score - 0.01,
-                    "wrong_registered_sku_rate": 1.0 - method_score + 0.01,
+                    "novel_macro_recall": method_score,
+                    "wrong_registered_sku_rate": 1.0 - method_score,
                 },
                 "dinov3_local": {
-                    "novel_macro_recall": method_score - 0.02,
-                    "wrong_registered_sku_rate": 1.0 - method_score + 0.02,
+                    "novel_macro_recall": method_score,
+                    "wrong_registered_sku_rate": 1.0 - method_score,
                 },
             },
             "candidate_full_system": {},
@@ -122,8 +144,8 @@ def _stage_one_score_artifacts(
             "candidate_provenance": {},
             "reference_provenance": {},
             "raw_evidence": {
-                "candidate": {"path": f"file:///candidate/{index}.jsonl", "sha256": "a" * 64},
-                "reference": {"path": f"file:///reference/{index}.jsonl", "sha256": "b" * 64},
+                "candidate": {"path": str(raw_path), "sha256": raw_sha},
+                "reference": {"path": str(raw_path), "sha256": raw_sha},
             },
             "stage1_global_top1_agreement": {"candidate": 0.5, "reference": 0.5},
         }
