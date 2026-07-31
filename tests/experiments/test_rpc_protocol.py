@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from bakery_scanner.experiments.rpc_protocol import (
     stage_one_conditions,
     write_experiment_receipt,
 )
+from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
 
 
 _HASH = "a" * 64
@@ -91,15 +93,17 @@ def test_ascending_extended_shots_require_explicit_opt_in():
     assert {item.shot_count for item in extended} == {1, 3, 5, 10, 20, 40, 80, 150}
 
 
-def test_confirmation_and_locked_conditions_bind_the_150_shot_reference():
+def test_confirmation_and_locked_conditions_bind_the_150_shot_reference(tmp_path: Path):
     confirmation = confirmation_conditions(
         ("m0", "div"),
         shot_counts=(3, 5, 10, 150),
         seeds=(101,),
         folds=(0,),
     )
-    selected = _stage_four_selection()
-    locked = locked_conditions(selected)
+    selected, paths = _stage_four_selection_artifacts(tmp_path)
+    locked = locked_conditions(
+        selected, confirmation_score_receipt_paths=paths
+    )
 
     assert {condition.stage for condition in confirmation} == {"confirmation"}
     assert {condition.shot_count for condition in confirmation} == {3, 5, 10, 150}
@@ -126,15 +130,150 @@ def _stage_four_selection() -> StageFourSelection:
     )
 
 
-def test_locked_scheduler_requires_four_hash_bound_stage_four_receipts():
-    selection = _stage_four_selection()
+def _stage_four_selection_artifacts(
+    tmp_path: Path,
+) -> tuple[StageFourSelection, tuple[Path, ...]]:
+    conditions = confirmation_conditions(
+        ("m0", "div"),
+        shot_counts=(3, 5, 10, 150),
+        seeds=(101,),
+        folds=(0,),
+    )
+    paths: list[Path] = []
+    claims: list[StageFourConfirmationReceipt] = []
+    for index, condition in enumerate(conditions):
+        reference = next(item for item in conditions if item.shot_count == 150)
+        candidate_plan = _confirmation_plan(condition)
+        reference_plan = _confirmation_plan(reference)
+        value = {
+            "schema_version": 2,
+            "kind": "rpc-fewshot-confirmation-score-receipt",
+            "status": "completed",
+            "decision_status": "provisional",
+            "aggregate_stage": "confirmation",
+            "decision_scope": "complete_confirmation_fold_seed_aggregate",
+            "provisional_pass": condition.shot_count != 3,
+            "condition_count": 1,
+            "candidate_conditions": [condition.to_dict()],
+            "reference_conditions": [reference.to_dict()],
+            "candidate_condition_ids": [condition.condition_id],
+            "reference_condition_ids": [reference.condition_id],
+            "candidate_scoring_plan": candidate_plan.to_dict(),
+            "reference_scoring_plan": reference_plan.to_dict(),
+            "cohort": {"base_category_ids": [2], "novel_category_ids": [1]},
+        }
+        path = tmp_path / f"confirmation-{index}.json"
+        content = canonical_json_bytes(value)
+        path.write_bytes(content)
+        paths.append(path)
+        claims.append(
+            StageFourConfirmationReceipt(
+                condition=condition,
+                score_receipt_sha256=hashlib.sha256(content).hexdigest(),
+                provisional_pass=condition.shot_count != 3,
+            )
+        )
+    return StageFourSelection(tuple(claims)), tuple(paths)
+
+
+def _confirmation_plan(condition: ExperimentCondition) -> ScoringPlan:
+    return ScoringPlan(
+        bootstrap_seed=7,
+        bootstrap_replicates=10,
+        folds=(condition.fold,),
+        support_seeds=(condition.support_seed,),
+        expected_condition_ids=(condition.condition_id,),
+        cohort_id="rpc-test",
+        registered_category_ids=(1, 2),
+        fold_base_artifacts=(
+            FoldBaseArtifact(
+                fold=condition.fold,
+                checkpoint_sha256="2" * 64,
+                evidence_sha256="3" * 64,
+            ),
+        ),
+    )
+
+
+def test_locked_scheduler_requires_four_hash_bound_stage_four_receipts(tmp_path: Path):
+    selection, paths = _stage_four_selection_artifacts(tmp_path)
     assert selection.provisional_minimum_shot_count == 5
-    assert {(cell.method, cell.selector) for cell in locked_conditions(selection)} == {
+    assert {(cell.method, cell.selector) for cell in locked_conditions(
+        selection, confirmation_score_receipt_paths=paths
+    )} == {
         ("m0", "div")
     }
 
     with pytest.raises(TypeError):
         locked_conditions(("m0", "div"), candidate_shot_count=5, seeds=(101,), folds=(0,))  # type: ignore[call-arg]
+
+
+def test_locked_scheduler_rejects_unresolved_stage_four_receipt_hashes(
+    tmp_path: Path,
+):
+    """Four plausible hex strings cannot authorize a Stage-5 schedule."""
+    selection = _stage_four_selection()
+
+    with pytest.raises(ValueError, match="Stage-4 confirmation score receipt"):
+        locked_conditions(
+            selection,
+            confirmation_score_receipt_paths=tuple(
+                tmp_path / f"confirmation-{index}.json" for index in range(4)
+            ),
+        )
+
+
+def test_locked_scheduler_rejects_tampered_stage_four_confirmation_receipt(
+    tmp_path: Path,
+):
+    """Even a re-hashed file is rejected when its decision contradicts the claim."""
+    selection, paths = _stage_four_selection_artifacts(tmp_path)
+    value = json.loads(paths[1].read_text(encoding="utf-8"))
+    value["provisional_pass"] = False
+    content = canonical_json_bytes(value)
+    paths[1].write_bytes(content)
+    tampered = StageFourSelection(
+        tuple(
+            replace(
+                claim,
+                score_receipt_sha256=hashlib.sha256(content).hexdigest(),
+            )
+            if index == 1
+            else claim
+            for index, claim in enumerate(selection.confirmation_receipts)
+        )
+    )
+
+    with pytest.raises(ValueError, match="invalid Stage-4 confirmation score receipt decision"):
+        locked_conditions(
+            tampered, confirmation_score_receipt_paths=paths
+        )
+
+
+def test_locked_scheduler_rejects_mismatched_stage_four_cohort(
+    tmp_path: Path,
+):
+    selection, paths = _stage_four_selection_artifacts(tmp_path)
+    value = json.loads(paths[0].read_text(encoding="utf-8"))
+    value["cohort"] = {"base_category_ids": [1], "novel_category_ids": [2]}
+    content = canonical_json_bytes(value)
+    paths[0].write_bytes(content)
+    mismatched = StageFourSelection(
+        tuple(
+            replace(
+                claim,
+                score_receipt_sha256=hashlib.sha256(content).hexdigest(),
+            )
+            if index == 0
+            else claim
+            for index, claim in enumerate(selection.confirmation_receipts)
+        )
+    )
+
+    with pytest.raises(ValueError, match="do not share cohort and scoring plan"):
+        locked_conditions(
+            mismatched, confirmation_score_receipt_paths=paths
+        )
 
 
 @pytest.mark.parametrize("last_failure, first_pass, expected", [(3, 5, (4,)), (5, 10, (6, 8)), (10, 20, (12, 15, 18))])

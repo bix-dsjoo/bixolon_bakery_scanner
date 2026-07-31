@@ -32,6 +32,7 @@ from bakery_scanner.experiments.rpc_protocol import (
     ExperimentCondition,
     ScoringPlan,
     StageFourSelection,
+    validate_stage_four_confirmation_score_receipts,
 )
 
 
@@ -260,6 +261,9 @@ def score(
     }
     if stage_four_selection is not None:
         score_receipt["stage_four_selection"] = stage_four_selection.to_dict()
+        score_receipt["stage_four_confirmation_score_receipt_paths"] = list(
+            str(path) for path in _stage_four_receipt_paths(condition)
+        )
     stage = paired_stage
     if stage == "stage1":
         score_receipt["stage1_global_top1_agreement"] = {
@@ -572,6 +576,20 @@ def aggregate_score_receipts(
             "minimum_rule_inputs": minimum_rule_inputs,
             **decision,
         }
+    if aggregate_stage == "confirmation" and len(receipts) == 1:
+        aggregate_novel, aggregate_base = _score_receipt_cohort(
+            receipts[0], candidate_plan
+        )
+        output_receipt.update(
+            {
+                "candidate_conditions": list(candidate_conditions),
+                "reference_conditions": list(reference_conditions),
+                "cohort": {
+                    "base_category_ids": sorted(aggregate_base),
+                    "novel_category_ids": sorted(aggregate_novel),
+                },
+            }
+        )
     if locked_selections:
         output_receipt["stage_four_selections"] = [
             selection.to_dict()
@@ -980,6 +998,9 @@ def _validate_condition_stage_four_selection(
     if not isinstance(selection_value, Mapping):
         raise ValueError("locked condition lacks Stage-4 selection")
     selection = StageFourSelection.from_dict(selection_value)
+    validate_stage_four_confirmation_score_receipts(
+        selection, _stage_four_receipt_paths(receipt)
+    )
     _validate_locked_condition_against_selection(condition, selection)
 
 
@@ -1100,6 +1121,19 @@ def _locked_selection_from_value(value: object) -> StageFourSelection:
     return StageFourSelection.from_dict(value)
 
 
+def _stage_four_receipt_paths(receipt: Mapping[str, object]) -> tuple[Path, ...]:
+    value = receipt.get("stage_four_confirmation_score_receipt_paths")
+    if isinstance(value, (str, bytes)):
+        raise ValueError("locked condition lacks Stage-4 confirmation score receipt paths")
+    try:
+        paths = tuple(Path(item) for item in value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("locked condition lacks Stage-4 confirmation score receipt paths") from exc
+    if len(paths) != 4 or any(not str(path) for path in paths):
+        raise ValueError("locked condition requires four Stage-4 confirmation score receipt paths")
+    return paths
+
+
 def _validate_locked_pair_against_selection(
     candidate_value: Mapping[str, object],
     reference_value: Mapping[str, object],
@@ -1128,6 +1162,11 @@ def _validate_locked_condition_receipt_pair(
     )
     if candidate_selection != reference_selection:
         raise ValueError("candidate/reference locked conditions bind different Stage-4 selections")
+    candidate_paths = _stage_four_receipt_paths(candidate_receipt)
+    reference_paths = _stage_four_receipt_paths(reference_receipt)
+    if candidate_paths != reference_paths:
+        raise ValueError("candidate/reference locked conditions bind different Stage-4 receipt paths")
+    validate_stage_four_confirmation_score_receipts(candidate_selection, candidate_paths)
     _validate_locked_pair_against_selection(candidate, reference, candidate_selection)
     return candidate_selection
 
@@ -1136,6 +1175,9 @@ def _validate_locked_score_receipt_pair(receipt: Mapping[str, object]) -> StageF
     candidate = _score_receipt_condition(receipt, "candidate_condition")
     reference = _score_receipt_condition(receipt, "reference_condition")
     selection = _locked_selection_from_value(receipt.get("stage_four_selection"))
+    validate_stage_four_confirmation_score_receipts(
+        selection, _stage_four_receipt_paths(receipt)
+    )
     _validate_locked_pair_against_selection(candidate, reference, selection)
     return selection
 

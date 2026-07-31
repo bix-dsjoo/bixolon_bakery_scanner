@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal, Mapping
@@ -234,6 +235,199 @@ class StageFourSelection:
             raise ValueError("invalid Stage-4 selection") from exc
 
 
+def validate_stage_four_confirmation_score_receipts(
+    selection: StageFourSelection,
+    receipt_paths: Iterable[Path],
+) -> None:
+    """Resolve every Stage-4 claim to its canonical, immutable score receipt.
+
+    A selection deliberately records digests rather than copying large score
+    receipts.  It is therefore not an authorization by itself: every Stage-5
+    entry point must resolve the four external paths and verify their exact
+    bytes and confirmation decision before accepting the selection.
+    """
+    if not isinstance(selection, StageFourSelection):
+        raise TypeError("Stage-4 receipt validation requires a StageFourSelection")
+    try:
+        paths = tuple(Path(path) for path in receipt_paths)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Stage-4 confirmation score receipt paths are invalid") from exc
+    if len(paths) != 4 or len(set(paths)) != 4:
+        raise ValueError("Stage-4 selection requires four distinct confirmation score receipt paths")
+    loaded: dict[str, Mapping[str, object]] = {}
+    for path in paths:
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"cannot read Stage-4 confirmation score receipt: {path}") from exc
+        try:
+            value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"invalid Stage-4 confirmation score receipt: {path}") from exc
+        if not isinstance(value, dict) or canonical_json_bytes(value) != content:
+            raise ValueError(f"Stage-4 confirmation score receipt is not canonical: {path}")
+        digest = hashlib.sha256(content).hexdigest()
+        if digest in loaded:
+            raise ValueError("Stage-4 confirmation score receipt paths have duplicate bytes")
+        loaded[digest] = value
+    expected_digests = {
+        item.score_receipt_sha256 for item in selection.confirmation_receipts
+    }
+    if set(loaded) != expected_digests:
+        raise ValueError("Stage-4 confirmation score receipt SHA-256 does not match selection")
+
+    fingerprints: set[tuple[object, ...]] = set()
+    for claim in selection.confirmation_receipts:
+        receipt = loaded[claim.score_receipt_sha256]
+        fingerprints.add(_validate_stage_four_confirmation_score_receipt(receipt, claim))
+    if len(fingerprints) != 1:
+        raise ValueError("Stage-4 confirmation score receipts do not share cohort and scoring plan")
+
+
+def _validate_stage_four_confirmation_score_receipt(
+    receipt: Mapping[str, object], claim: StageFourConfirmationReceipt
+) -> tuple[object, ...]:
+    required = {
+        "schema_version",
+        "kind",
+        "status",
+        "decision_status",
+        "aggregate_stage",
+        "decision_scope",
+        "provisional_pass",
+        "condition_count",
+        "candidate_conditions",
+        "reference_conditions",
+        "candidate_condition_ids",
+        "reference_condition_ids",
+        "candidate_scoring_plan",
+        "reference_scoring_plan",
+        "cohort",
+    }
+    missing = required - set(receipt)
+    if missing:
+        raise ValueError("Stage-4 confirmation score receipt lacks required provenance")
+    if (
+        receipt.get("schema_version") != 2
+        or receipt.get("kind") != "rpc-fewshot-confirmation-score-receipt"
+        or receipt.get("status") != "completed"
+        or receipt.get("decision_status") != "provisional"
+        or receipt.get("aggregate_stage") != "confirmation"
+        or receipt.get("decision_scope") != "complete_confirmation_fold_seed_aggregate"
+        or type(receipt.get("provisional_pass")) is not bool
+        or receipt.get("provisional_pass") is not claim.provisional_pass
+        or receipt.get("condition_count") != 1
+    ):
+        raise ValueError("invalid Stage-4 confirmation score receipt decision")
+    candidate = _one_stage_four_condition(
+        receipt.get("candidate_conditions"), "candidate", claim.condition
+    )
+    reference = _one_stage_four_condition(
+        receipt.get("reference_conditions"), "reference", None
+    )
+    if (
+        reference.stage != "confirmation"
+        or reference.shot_count != 150
+        or (
+            reference.method,
+            reference.selector,
+            reference.fold,
+            reference.support_seed,
+        )
+        != (
+            candidate.method,
+            candidate.selector,
+            candidate.fold,
+            candidate.support_seed,
+        )
+    ):
+        raise ValueError("Stage-4 confirmation score receipt has mismatched reference condition")
+    if receipt.get("candidate_condition_ids") != [candidate.condition_id] or receipt.get(
+        "reference_condition_ids"
+    ) != [reference.condition_id]:
+        raise ValueError("Stage-4 confirmation score receipt condition IDs do not match conditions")
+    candidate_plan = _stage_four_scoring_plan(
+        receipt.get("candidate_scoring_plan"), "candidate", candidate
+    )
+    reference_plan = _stage_four_scoring_plan(
+        receipt.get("reference_scoring_plan"), "reference", reference
+    )
+    candidate_fingerprint = _stage_four_plan_fingerprint(candidate_plan)
+    if candidate_fingerprint != _stage_four_plan_fingerprint(reference_plan):
+        raise ValueError("Stage-4 confirmation receipt candidate/reference scoring plan mismatch")
+    cohort = receipt.get("cohort")
+    if not isinstance(cohort, Mapping) or set(cohort) != {
+        "base_category_ids", "novel_category_ids"
+    }:
+        raise ValueError("Stage-4 confirmation score receipt lacks immutable cohort")
+    base = _stage_four_category_ids(cohort.get("base_category_ids"), "base")
+    novel = _stage_four_category_ids(cohort.get("novel_category_ids"), "novel")
+    if base & novel or base | novel != set(candidate_plan.registered_category_ids):
+        raise ValueError("Stage-4 confirmation score receipt cohort does not match scoring plan")
+    return candidate_fingerprint + (tuple(sorted(base)), tuple(sorted(novel)))
+
+
+def _one_stage_four_condition(
+    value: object,
+    name: str,
+    expected: ExperimentCondition | None,
+) -> ExperimentCondition:
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], Mapping):
+        raise ValueError(f"Stage-4 confirmation score receipt requires one {name} condition")
+    condition = ExperimentCondition.from_dict(value[0])
+    if condition.to_dict() != dict(value[0]) or (expected is not None and condition != expected):
+        raise ValueError(f"Stage-4 confirmation score receipt {name} condition does not match selection")
+    return condition
+
+
+def _stage_four_scoring_plan(
+    value: object, name: str, condition: ExperimentCondition
+) -> "ScoringPlan":
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Stage-4 confirmation score receipt lacks {name} scoring plan")
+    plan = ScoringPlan.from_dict(value)
+    if plan.to_dict() != dict(value) or plan.expected_condition_ids != (condition.condition_id,):
+        raise ValueError(f"Stage-4 confirmation score receipt {name} scoring plan does not bind condition")
+    if plan.folds != (condition.fold,) or plan.support_seeds != (condition.support_seed,):
+        raise ValueError(f"Stage-4 confirmation score receipt {name} scoring plan does not bind fold/seed")
+    return plan
+
+
+def _stage_four_plan_fingerprint(plan: "ScoringPlan") -> tuple[object, ...]:
+    return (
+        plan.bootstrap_seed,
+        plan.bootstrap_replicates,
+        plan.folds,
+        plan.support_seeds,
+        plan.cohort_id,
+        plan.registered_category_ids,
+        plan.fold_base_artifacts,
+    )
+
+
+def _stage_four_category_ids(value: object, name: str) -> set[int]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"Stage-4 {name} cohort is invalid")
+    try:
+        categories = tuple(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"Stage-4 {name} cohort is invalid") from exc
+    if not categories or len(categories) != len(set(categories)) or any(
+        type(category) is not int or category <= 0 for category in categories
+    ):
+        raise ValueError(f"Stage-4 {name} cohort is invalid")
+    return set(categories)
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def stage_one_conditions(*, seeds: Iterable[int] = (101,), folds: Iterable[int] = range(5)) -> tuple[ExperimentCondition, ...]:
     """Return the complete preregistered Stage-1 matrix, never a Cartesian expansion."""
     return _conditions(_STAGE_ONE_PAIRS, _STAGE_ONE_SHOTS, seeds, folds, "stage1")
@@ -279,10 +473,17 @@ def confirmation_conditions(
     return _conditions((pair,), shots, seeds, folds, "confirmation")
 
 
-def locked_conditions(selection: StageFourSelection) -> tuple[ExperimentCondition, ...]:
-    """Materialize only the Stage-5 pair proven by four frozen Stage-4 receipts."""
+def locked_conditions(
+    selection: StageFourSelection,
+    *,
+    confirmation_score_receipt_paths: Iterable[Path],
+) -> tuple[ExperimentCondition, ...]:
+    """Materialize only the Stage-5 pair proven by four immutable Stage-4 files."""
     if not isinstance(selection, StageFourSelection):
         raise TypeError("locked conditions require a StageFourSelection")
+    validate_stage_four_confirmation_score_receipts(
+        selection, confirmation_score_receipt_paths
+    )
     return _conditions(
         ((selection.method, selection.selector),),
         (selection.provisional_minimum_shot_count, 150),
@@ -462,6 +663,7 @@ class ExperimentReceipt:
     status: Literal["completed", "failed", "unavailable"]
     reason: str = ""
     stage_four_selection: StageFourSelection | None = None
+    stage_four_confirmation_score_receipt_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.condition, ExperimentCondition):
@@ -520,8 +722,13 @@ class ExperimentReceipt:
                 150,
             }:
                 raise ValueError("locked receipt condition does not match its Stage-4 selection")
+            validate_stage_four_confirmation_score_receipts(
+                selection, self.stage_four_confirmation_score_receipt_paths
+            )
         elif self.stage_four_selection is not None:
             raise ValueError("only locked receipts may bind a Stage-4 selection")
+        elif self.stage_four_confirmation_score_receipt_paths:
+            raise ValueError("only locked receipts may bind Stage-4 receipt paths")
 
     @classmethod
     def completed(cls, condition: ExperimentCondition, **values: object) -> "ExperimentReceipt":
@@ -569,6 +776,9 @@ class ExperimentReceipt:
                 self.stage_four_selection.to_dict()
                 if self.stage_four_selection is not None
                 else None
+            ),
+            "stage_four_confirmation_score_receipt_paths": list(
+                self.stage_four_confirmation_score_receipt_paths
             ),
             "support_sha256": self.support_sha256,
         }
