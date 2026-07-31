@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Produce one kiosk-ready illustration that shows a fixed camera and one bread item rotated through six capture views.
+**Goal:** Produce one kiosk-ready illustration that maps six numbered capture directions directly to the six faces surrounding one bread item.
 
-**Architecture:** Generate a single 16:9 raster illustration from the approved design specification, then inspect the result against an explicit visual checklist. Iterate only when a checklist requirement fails, and retain one approved PNG as the deliverable.
+**Architecture:** Generate a single 16:9 raster illustration from the revised face-mapping specification, then inspect the result against an explicit visual checklist. Iterate only when a checklist requirement fails, and retain one approved PNG as the deliverable.
 
 **Tech Stack:** OpenAI ImageGen, local image inspection, PNG
 
@@ -12,11 +12,10 @@
 
 - The primary surface is a landscape POS/kiosk display.
 - The final composition ratio is 16:9, with a preferred working size of 1920 × 1080 pixels.
-- The camera appears once in one fixed position.
-- The bread, not the camera, is shown rotating or flipping.
 - The main diagram uses one bread inside a transparent dotted-line cuboid.
-- The lower strip contains six distinct views numbered 1 through 6 exactly once.
-- The only Korean copy is `빵을 돌려 6면을 촬영해 주세요`.
+- Six numbered straight arrows map one-to-one to the cuboid's six faces.
+- No camera icon, circular rotation arrow, or thumbnail strip appears.
+- The only Korean copy is `빵의 6면이 보이도록 돌려 촬영해 주세요`.
 - The final image contains no hands, counters, trays, multiple breads, decorative props, or busy environmental detail.
 - The final repository destination is `docs/assets/guides/bread-six-view-capture-guide.png`.
 
@@ -39,19 +38,19 @@ Use ImageGen with the approved specification and explicitly request:
 ```text
 Create a polished 16:9 Korean POS/kiosk instructional illustration.
 One appetizing generic golden-brown bread sits inside a transparent
-dotted-line cuboid at the center. Show exactly one stationary camera icon
-in front of the cuboid. Thick curved arrows act on the bread and clearly
-show that the bread rotates while the camera remains fixed. Along the
-bottom, show six clean, evenly spaced thumbnails of the same bread, with
-large orange number badges 1, 2, 3, 4, 5, 6: front, right, back, left,
-top, bottom. Keep the bread upright in views 1-4; clearly tilt or flip it
-for views 5-6. Add only this Korean heading at the top:
-"빵을 돌려 6면을 촬영해 주세요". Use a white or very light warm-gray
-background, deep navy guide lines, warm orange accents, natural bread
-color, clean vector-like instructional styling, generous whitespace, and
-strong kiosk readability. Do not show hands, people, counters, trays,
-extra breads, multiple cameras, orbiting camera paths, small explanatory
-copy, or decorative scenery.
+dotted-line isometric cuboid at the center. Around the cuboid, place
+exactly six thick straight deep-navy arrows, each perpendicular to and
+terminating at the center of one distinct face: front, back, left, right,
+top, and bottom. At the outer tail of each arrow place one large warm-
+orange circular number badge, using 1, 2, 3, 4, 5, and 6 exactly once.
+Use a dotted treatment for hidden rear-direction geometry so all six
+directions remain readable in two dimensions. Add only this Korean heading
+at the top: "빵의 6면이 보이도록 돌려 촬영해 주세요". Use a white or very
+light warm-gray background, precise navy guide lines, natural bread color,
+clean vector-like instructional styling, generous whitespace, and strong
+kiosk readability. Do not show any camera icon, circular rotation arrow,
+thumbnail strip, hands, people, counters, trays, extra breads, explanatory
+copy, watermark, logo, or decorative scenery.
 ```
 
 - [ ] **Step 2: Inspect the generated image**
@@ -60,15 +59,15 @@ Open the raster at original detail and verify all of the following:
 
 ```text
 [ ] 16:9 landscape composition
-[ ] Korean heading is correct and legible
+[ ] Korean heading is exact and legible
 [ ] one dominant bread is inside a dotted cuboid
-[ ] exactly one fixed camera icon is visible
-[ ] rotation arrows visually belong to the bread
-[ ] badges 1-6 each appear exactly once
-[ ] six lower thumbnails are distinct
-[ ] views 1-4 communicate horizontal rotation
-[ ] views 5-6 clearly communicate top and bottom
-[ ] no extra bread, camera, hand, label, or arrow creates ambiguity
+[ ] exactly six straight arrows are visible
+[ ] arrows map one-to-one to front, back, left, right, top, and bottom faces
+[ ] each arrow terminates at its intended face center
+[ ] badges 1-6 each appear exactly once and belong to one arrow
+[ ] hidden rear directions remain distinguishable
+[ ] top and bottom are unmistakably opposite
+[ ] no camera, circular arrow, thumbnail strip, extra bread, hand, or label appears
 ```
 
 - [ ] **Step 3: Correct any failed checklist item**

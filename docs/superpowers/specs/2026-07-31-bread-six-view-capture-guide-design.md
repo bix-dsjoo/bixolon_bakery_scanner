@@ -6,16 +6,16 @@
 ## 1. Responsibility and acceptance test
 
 Create one landscape, illustration-led guide for a POS/kiosk screen. A first-time
-operator must understand within a few seconds that the camera stays fixed while
-one bread item is rotated and photographed from six sides.
+operator must understand within a few seconds that one bread item must be
+rotated so each of its six sides can be photographed.
 
 The guide passes when an unfamiliar viewer can correctly infer all of the
 following without additional instruction:
 
-1. keep the camera in one place;
-2. place one bread item at the center of the implied six-sided volume;
-3. rotate or flip the bread rather than moving the camera; and
-4. capture six images, one for each indicated view.
+1. place one bread item at the center of the implied six-sided volume;
+2. recognize six distinct capture directions mapped to the volume's faces;
+3. rotate or flip the bread to expose each indicated face; and
+4. capture six images, one for each numbered direction.
 
 ## 2. Intended display
 
@@ -28,44 +28,32 @@ following without additional instruction:
 
 ## 3. Recommended composition
 
-Use a hybrid composition with one dominant spatial diagram and one compact
-six-step sequence.
+Use one dominant spatial diagram. Do not split attention between the main
+diagram and a separate thumbnail sequence.
 
 ### 3.1 Main diagram
 
 - Place one generic, appetizing bakery bread at the visual center.
 - Enclose it in a transparent dotted-line cuboid.
-- Show one camera icon in a fixed position in front of the cuboid.
-- Use curved rotation arrows around the bread, not an orbiting path around the
-  camera.
-- The camera icon must not be repeated at multiple locations.
+- Place six thick directional arrows outside the cuboid, each perpendicular to
+  and terminating at the center of one face: front, back, left, right, top, and
+  bottom.
+- Place one large orange number badge, `1` through `6`, at the outer tail of
+  each arrow.
+- Render arrows or segments belonging to hidden rear geometry with a dotted
+  treatment so the three-dimensional mapping remains readable.
+- Do not show a camera icon or a curved rotation arrow.
 - The cuboid is a spatial guide only; it must not look like a physical box,
   package, oven, or cage.
 
-### 3.2 Six-step strip
-
-Place six compact, evenly spaced direction thumbnails along the lower portion
-of the guide. Use large, high-contrast numerals:
-
-1. front;
-2. right side;
-3. back;
-4. left side;
-5. top;
-6. bottom.
-
-Steps 1-4 communicate horizontal rotation. Steps 5-6 communicate tilting or
-flipping the bread. The exact sequence is instructional rather than a required
-dataset constraint; its purpose is to make completion easy to track.
-
-### 3.3 Minimal copy
+### 3.2 Minimal copy
 
 Use only one short Korean heading:
 
-> 빵을 돌려 6면을 촬영해 주세요
+> 빵의 6면이 보이도록 돌려 촬영해 주세요
 
 Do not add explanatory paragraphs, technical terms, or small-print notes.
-Numbers and arrows carry the operational instruction.
+The six face arrows and their number badges carry the operational instruction.
 
 ## 4. Visual language
 
@@ -77,20 +65,23 @@ Numbers and arrows carry the operational instruction.
 - Bread color: natural golden brown, visually distinct from the orange step
   markers.
 - Dotted cuboid: clearly visible but subordinate to the bread and arrows.
-- Arrows: thick enough for kiosk viewing and consistent in shape.
+- Arrows: thick, straight, consistent, and visually attached to individual
+  cuboid faces rather than to the bread as a generic rotation gesture.
 - Avoid photorealistic environmental details, hands, counters, trays, multiple
   breads, decorative props, or busy shadows.
 
 ## 5. Misinterpretation controls
 
-- Do not draw an arrow that makes the camera appear to move.
-- Do not place six camera icons around the cuboid.
-- Do not point all six face arrows toward the fixed camera simultaneously.
-- Do not imply six breads; the thumbnails are views of the same bread.
-- Keep the bread upright for steps 1-4 and visibly change its pose only for the
-  top and bottom views.
-- Make the bottom view unmistakable through the thumbnail pose, while keeping
-  the overall handling clean and food-safe in tone.
+- Do not show a camera icon; it adds visual weight without clarifying which
+  faces must be captured.
+- Do not use circular arrows; they communicate generic rotation but do not map
+  the six required views.
+- Do not add a six-thumbnail strip; it competes with the spatial diagram.
+- Each number must belong unambiguously to one arrow and one cuboid face.
+- Arrowheads terminate at face centers and never appear to pierce the bread.
+- Keep visible and hidden directions distinguishable through solid versus
+  dotted treatment.
+- Do not imply six breads; the diagram contains one bread only.
 
 ## 6. Output
 
@@ -104,12 +95,13 @@ Numbers and arrows carry the operational instruction.
 ## 7. Visual review checklist
 
 - The Korean heading is spelled correctly and fully legible.
-- Numerals 1-6 each appear exactly once in the step strip.
-- All six views are distinct.
-- The camera appears exactly once and remains fixed.
-- Rotation arrows belong visually to the bread.
+- Numerals 1-6 each appear exactly once.
+- Six arrows map one-to-one to the cuboid's six faces.
+- No camera icon or circular rotation arrow appears.
+- Each straight arrow terminates at its intended face center.
 - The dotted cuboid remains visible at kiosk scale.
-- No unintended extra bread, face, hand, camera, label, or arrow appears.
-- The bottom-view instruction cannot be mistaken for another top view.
+- Hidden rear geometry is distinguishable without becoming cluttered.
+- No unintended extra bread, face, hand, label, or arrow appears.
+- Top and bottom directions are unmistakably opposite.
 - The composition remains clear at both full-screen and reduced kiosk-panel
   sizes.
