@@ -134,7 +134,7 @@ git commit -m "feat: add immutable RPC experiment input contract"
 **Interfaces:**
 - Consumes `RpcIndex` (including the source COCO category/supercategory metadata) and returns `ClassFoldAssignment` and `SceneRoleAssignment`.
 - Produces `build_class_folds(index, *, split_version, seed)` and `build_scene_roles(index, *, split_version)`.
-- `ClassFoldAssignment` guarantees five folds of 40 novel and 160 base categories; `SceneRoleAssignment` guarantees exactly one of `calibration`, `development_selection`, or `locked_acceptance` for every checkout burst.
+- `ClassFoldAssignment` guarantees five folds of 40 novel and 160 base categories; `SceneRoleAssignment` guarantees exactly one of `calibration`, `development_selection`, or `locked_acceptance` for every checkout burst. Checkout difficulty is read from the RPC COCO image `level` field, never inferred from filename suffix. The two validation role image counts must differ by no more than the largest validation burst; otherwise the split fails closed.
 
 - [ ] **Step 1: Write failing split tests**
 
