@@ -391,6 +391,22 @@ def test_full_system_summary_reports_wrong_registered_rates_per_cohort():
     assert summary.base_wrong_registered_sku_rate == 1.0
 
 
+def test_full_system_summary_reports_conditional_dino_rate_per_difficulty():
+    summary = full_system_summary(
+        (
+            _row("novel-e", truth=1, predicted=1, difficulty="E", conditional_dino_executed=True),
+            _row("base-m", truth=2, predicted=2, difficulty="M", conditional_dino_executed=False),
+            _row("base-h", truth=2, predicted=2, difficulty="H", conditional_dino_executed=True),
+        ),
+        novel_category_ids={1},
+    )
+
+    assert summary.conditional_dino_execution_rate == pytest.approx(2 / 3)
+    assert summary.by_difficulty["E"].conditional_dino_execution_rate == 1.0
+    assert summary.by_difficulty["M"].conditional_dino_execution_rate == 0.0
+    assert summary.by_difficulty["H"].conditional_dino_execution_rate == 1.0
+
+
 def test_condition_binding_requires_the_complete_receipt_score_category_order():
     condition = {
         "condition": {"condition_id": "candidate", "fold": 0},

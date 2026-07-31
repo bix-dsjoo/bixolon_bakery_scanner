@@ -1242,6 +1242,12 @@ def test_complete_locked_aggregate_is_the_only_final_boolean(tmp_path: Path):
     assert aggregate["decision_status"] == "final"
     assert aggregate["final_pass"] is True
     assert "provisional_pass" not in aggregate
+    for side in ("candidate_full_system", "reference_full_system"):
+        report = aggregate[side]
+        assert "conditional_dino_execution_rate" in report
+        assert set(report["by_difficulty"]) == {"E", "M", "H"}
+        for difficulty in ("E", "M", "H"):
+            assert "conditional_dino_execution_rate" in report["by_difficulty"][difficulty]
 
 
 def test_locked_aggregate_rejects_receipts_without_stage_four_confirmation_binding(

@@ -19,6 +19,7 @@ from bakery_scanner.experiments.rpc_manifest import (
 )
 from bakery_scanner.experiments.rpc_metrics import (
     BranchName,
+    DifficultySummary,
     FullSystemSummary,
     LockedGroundTruthRow,
     PairedConditionEvidence,
@@ -810,6 +811,8 @@ def aggregate_score_receipts(
         ),
     }
     passes = _minimum_rule_inputs_pass(minimum_rule_inputs)
+    aggregate_candidate_summary = _aggregate_full_system_summary(candidate_summaries)
+    aggregate_reference_summary = _aggregate_full_system_summary(reference_summaries)
     decision_scope = (
         "complete_locked_fold_seed_aggregate"
         if aggregate_stage == "locked"
@@ -857,6 +860,8 @@ def aggregate_score_receipts(
                 branch_reports,
                 key=lambda item: item["candidate_condition_id"],
             ),
+            "candidate_full_system": asdict(aggregate_candidate_summary),
+            "reference_full_system": asdict(aggregate_reference_summary),
             "locked_ground_truth": _locked_ground_truth_summary(ground_truth),
             "paired_bootstrap_95": asdict(interval),
             "minimum_rule_inputs": minimum_rule_inputs,
@@ -894,8 +899,6 @@ def aggregate_score_receipts(
                     "base_category_ids": sorted(aggregate_base),
                     "novel_category_ids": sorted(aggregate_novel),
                 },
-                "candidate_full_system": asdict(candidate_summaries[0]),
-                "reference_full_system": asdict(reference_summaries[0]),
                 "fold_base_checkpoint": {
                     "base_macro_final_correct_recall": base_recall,
                     "checkpoint_sha256": checkpoint_sha256,
@@ -912,6 +915,84 @@ def aggregate_score_receipts(
             )
         ]
     write_new_json(output, output_receipt)
+
+
+def _aggregate_full_system_summary(
+    summaries: Iterable[FullSystemSummary],
+) -> FullSystemSummary:
+    """Recompute one report across complete fold/seed raw-evidence cells.
+
+    Individual condition summaries are already rebuilt from immutable JSONL in
+    `_load_aggregate_evidence`.  Weighting each scalar by its observed object
+    count preserves the exact all-cell rate while retaining per-category and
+    difficulty reporting without pretending duplicated support-seed objects are
+    one physical evaluation row.
+    """
+    rows = tuple(summaries)
+    if not rows:
+        raise ValueError("aggregate full-system report requires summaries")
+    total = sum(row.sample_count for row in rows)
+    if total <= 0:
+        raise ValueError("aggregate full-system report has no observations")
+
+    def weighted(name: str) -> float:
+        return sum(getattr(row, name) * row.sample_count for row in rows) / total
+
+    categories = set().union(*(row.per_category_final_correct_recall for row in rows))
+    if not categories or any(
+        category not in row.per_category_final_correct_recall
+        for category in categories
+        for row in rows
+    ):
+        raise ValueError("aggregate full-system report lacks per-category evidence")
+    per_category = {
+        category: _average(
+            row.per_category_final_correct_recall[category] for row in rows
+        )
+        for category in sorted(categories)
+    }
+    difficulties = {"E", "M", "H"}
+    if any(set(row.by_difficulty) != difficulties for row in rows):
+        raise ValueError("aggregate full-system report lacks E/M/H evidence")
+    by_difficulty: dict[str, object] = {}
+    for difficulty in sorted(difficulties):
+        pieces = tuple(row.by_difficulty[difficulty] for row in rows)
+        count = sum(piece.sample_count for piece in pieces)
+
+        def difficulty_weighted(name: str) -> float:
+            if count == 0:
+                return 0.0
+            return sum(getattr(piece, name) * piece.sample_count for piece in pieces) / count
+
+        by_difficulty[difficulty] = DifficultySummary(
+            sample_count=count,
+            unknown_rate=difficulty_weighted("unknown_rate"),
+            registered_coverage=difficulty_weighted("registered_coverage"),
+            wrong_registered_sku_rate=difficulty_weighted("wrong_registered_sku_rate"),
+            novel_macro_final_correct_recall=difficulty_weighted(
+                "novel_macro_final_correct_recall"
+            ),
+            base_macro_final_correct_recall=difficulty_weighted(
+                "base_macro_final_correct_recall"
+            ),
+            conditional_dino_execution_rate=difficulty_weighted(
+                "conditional_dino_execution_rate"
+            ),
+        )
+    return FullSystemSummary(
+        sample_count=total,
+        wrong_registered_sku_rate=weighted("wrong_registered_sku_rate"),
+        novel_wrong_registered_sku_rate=weighted("novel_wrong_registered_sku_rate"),
+        base_wrong_registered_sku_rate=weighted("base_wrong_registered_sku_rate"),
+        unknown_rate=weighted("unknown_rate"),
+        registered_coverage=weighted("registered_coverage"),
+        novel_macro_final_correct_recall=weighted("novel_macro_final_correct_recall"),
+        base_macro_final_correct_recall=weighted("base_macro_final_correct_recall"),
+        per_category_final_correct_recall=per_category,
+        novel_loss_over_10pp_fraction=weighted("novel_loss_over_10pp_fraction"),
+        conditional_dino_execution_rate=weighted("conditional_dino_execution_rate"),
+        by_difficulty=by_difficulty,  # type: ignore[arg-type]
+    )
 
 
 def _aggregate_upstream_artifact(

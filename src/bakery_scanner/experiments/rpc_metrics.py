@@ -263,6 +263,7 @@ class DifficultySummary:
     wrong_registered_sku_rate: float
     novel_macro_final_correct_recall: float
     base_macro_final_correct_recall: float
+    conditional_dino_execution_rate: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -684,7 +685,7 @@ def _full_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int], re
 
 def _difficulty_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int]) -> DifficultySummary:
     if not rows:
-        return DifficultySummary(0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return DifficultySummary(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     recalls = _category_recalls(rows, _final_correct)
     return DifficultySummary(
         sample_count=len(rows),
@@ -693,6 +694,9 @@ def _difficulty_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[in
         wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows),
         novel_macro_final_correct_recall=_macro(recalls, novel),
         base_macro_final_correct_recall=_macro(recalls, _base_categories(rows, novel)),
+        conditional_dino_execution_rate=_mean(
+            row.conditional_dino_executed for row in rows
+        ),
     )
 
 

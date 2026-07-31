@@ -649,7 +649,7 @@ def _validate_stage_four_full_system(
         value.get("per_category_final_correct_recall"), expected=plan.registered_category_ids
     )
     difficulties = value.get("by_difficulty")
-    if not isinstance(difficulties, Mapping) or not difficulties:
+    if not isinstance(difficulties, Mapping) or set(difficulties) != {"E", "M", "H"}:
         raise ValueError(f"Stage-4 {name} difficulty summary is invalid")
     for difficulty, summary in difficulties.items():
         if not isinstance(difficulty, str) or not difficulty:
@@ -661,6 +661,7 @@ def _validate_stage_four_difficulty_summary(value: object, name: str) -> None:
     required = {
         "sample_count", "unknown_rate", "registered_coverage", "wrong_registered_sku_rate",
         "novel_macro_final_correct_recall", "base_macro_final_correct_recall",
+        "conditional_dino_execution_rate",
     }
     if not isinstance(value, Mapping) or set(value) != required:
         raise ValueError(f"Stage-4 {name} difficulty summary is invalid")
@@ -909,16 +910,30 @@ def stage_one_conditions(*, seeds: Iterable[int] = (101,), folds: Iterable[int] 
 
 
 def ascending_conditions(
-    methods: Iterable[str | tuple[str, str]], *, seeds: Iterable[int], folds: Iterable[int], extended: bool = False
+    methods: Iterable[str | tuple[str, str]],
+    *,
+    seeds: Iterable[int],
+    folds: Iterable[int],
+    stage_one_selection_receipt_path: Path,
+    stage_one_score_receipt_paths: Iterable[Path],
+    extended: bool = False,
 ) -> tuple[ExperimentCondition, ...]:
-    """Return a preregistered ascending-shot comparison for one or two methods."""
+    """Return only the method pairs authorized by immutable Stage-1 bytes."""
     pairs = tuple(_method_pair(method) for method in methods)
     if not pairs or len(pairs) > 2:
         raise ValueError("ascending conditions require one or two selected methods")
-    if len({method for method, _ in pairs}) != len(pairs):
-        raise ValueError("ascending conditions cannot duplicate methods")
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("ascending conditions cannot duplicate method/selector pairs")
     if any(pair not in _STAGE_ONE_PAIRS for pair in pairs):
         raise ValueError("unsupported method/selector combination")
+    selection = load_stage_one_selection_receipt(
+        stage_one_selection_receipt_path,
+        score_receipt_paths=stage_one_score_receipt_paths,
+    )
+    if set(pairs) != set(selection.decision.retained_methods):
+        raise ValueError(
+            "ascending conditions require exactly the Stage-1 retained method/selector pairs"
+        )
     shots = _ASCENDING_SHOTS + (_EXTENDED_ASCENDING_SHOTS if extended else ())
     return _conditions(pairs, shots, seeds, folds, "ascending")
 
@@ -1039,6 +1054,46 @@ class StageOneSelectionDecision:
             "seed_expansion_rule": "within 1pp of best branch or non-dominated error trade-off expands to ten seeds",
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "StageOneSelectionDecision":
+        expected = {
+            "retained_methods", "removed_methods", "expand_to_ten_seeds",
+            "dominance_rule", "seed_expansion_rule",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("invalid Stage-1 selection decision")
+        if (
+            value.get("dominance_rule")
+            != "both branches >2pp lower and no branch wrong-SKU improvement"
+            or value.get("seed_expansion_rule")
+            != "within 1pp of best branch or non-dominated error trade-off expands to ten seeds"
+        ):
+            raise ValueError("unrecognized Stage-1 selection rules")
+
+        def pairs(name: str) -> tuple[tuple[str, str], ...]:
+            raw = value.get(name)
+            if not isinstance(raw, list):
+                raise ValueError("invalid Stage-1 selection decision")
+            parsed: list[tuple[str, str]] = []
+            for item in raw:
+                if (
+                    not isinstance(item, list)
+                    or len(item) != 2
+                    or not all(isinstance(part, str) for part in item)
+                    or tuple(item) not in _STAGE_ONE_PAIRS
+                ):
+                    raise ValueError("invalid Stage-1 selection decision")
+                parsed.append((item[0], item[1]))
+            if len(set(parsed)) != len(parsed):
+                raise ValueError("invalid Stage-1 selection decision")
+            return tuple(parsed)
+
+        return cls(
+            retained_methods=pairs("retained_methods"),
+            removed_methods=pairs("removed_methods"),
+            expand_to_ten_seeds=pairs("expand_to_ten_seeds"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class StageOneSelectionReceipt:
@@ -1062,7 +1117,7 @@ class StageOneSelectionReceipt:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "rpc-fewshot-stage1-selection-receipt",
             "decision_scope": "method_screen_only_not_a_minimum",
             "score_receipt_sha256s": list(self.score_receipt_sha256s),
@@ -1079,6 +1134,230 @@ class StageOneSelectionReceipt:
             ],
             "decision": self.decision.to_dict(),
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "StageOneSelectionReceipt":
+        expected = {
+            "schema_version", "kind", "decision_scope", "score_receipt_sha256s",
+            "evidence", "decision",
+        }
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected
+            or value.get("schema_version") != 2
+            or value.get("kind") != "rpc-fewshot-stage1-selection-receipt"
+            or value.get("decision_scope") != "method_screen_only_not_a_minimum"
+            or not isinstance(value.get("score_receipt_sha256s"), list)
+            or not isinstance(value.get("evidence"), list)
+            or not isinstance(value.get("decision"), Mapping)
+        ):
+            raise ValueError("invalid Stage-1 selection receipt")
+        try:
+            evidence = tuple(
+                StageOneMethodEvidence(
+                    method=item["method"],  # type: ignore[index]
+                    selector=item["selector"],  # type: ignore[index]
+                    repvit_novel_macro_top1=item["repvit_novel_macro_top1"],  # type: ignore[index]
+                    dinov3_novel_macro_top1=item["dinov3_novel_macro_top1"],  # type: ignore[index]
+                    repvit_wrong_sku_rate=item["repvit_wrong_sku_rate"],  # type: ignore[index]
+                    dinov3_wrong_sku_rate=item["dinov3_wrong_sku_rate"],  # type: ignore[index]
+                )
+                for item in value["evidence"]  # type: ignore[union-attr]
+                if isinstance(item, Mapping)
+            )
+            if len(evidence) != len(value["evidence"]):  # type: ignore[arg-type]
+                raise ValueError("invalid Stage-1 selection evidence")
+            return cls(
+                evidence=evidence,
+                score_receipt_sha256s=tuple(value["score_receipt_sha256s"]),  # type: ignore[arg-type]
+                decision=StageOneSelectionDecision.from_dict(value["decision"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid Stage-1 selection receipt") from exc
+
+
+def write_stage_one_selection_receipt(
+    output: Path, score_receipt_paths: Iterable[Path]
+) -> None:
+    """Write the only schedulable Stage-1 choice from canonical score receipts."""
+    if output.exists():
+        raise FileExistsError(f"output already exists: {output}")
+    receipt = _stage_one_selection_from_score_receipts(score_receipt_paths)
+    write_new_json(output, receipt.to_dict())
+
+
+def load_stage_one_selection_receipt(
+    path: Path,
+    *,
+    score_receipt_paths: Iterable[Path],
+) -> StageOneSelectionReceipt:
+    """Resolve and re-derive a Stage-1 selection before it can schedule runs."""
+    try:
+        content = Path(path).read_bytes()
+        value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("cannot read canonical Stage-1 selection receipt") from exc
+    if not isinstance(value, dict) or canonical_json_bytes(value) != content:
+        raise ValueError("Stage-1 selection receipt is not canonical")
+    parsed = StageOneSelectionReceipt.from_dict(value)
+    derived = _stage_one_selection_from_score_receipts(score_receipt_paths)
+    if parsed != derived:
+        raise ValueError("Stage-1 selection receipt does not reproduce score receipt artifacts")
+    return parsed
+
+
+def _stage_one_selection_from_score_receipts(
+    score_receipt_paths: Iterable[Path],
+) -> StageOneSelectionReceipt:
+    """Derive Stage-1 evidence from the complete 12-cell raw score matrix."""
+    try:
+        paths = tuple(Path(path) for path in score_receipt_paths)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Stage-1 score receipt paths are invalid") from exc
+    if not paths or len(paths) != len(set(paths)):
+        raise ValueError("Stage-1 selection requires distinct score receipt paths")
+    loaded: list[tuple[ExperimentCondition, Mapping[str, object], str]] = []
+    plans: list[ScoringPlan] = []
+    digests: set[str] = set()
+    for path in paths:
+        try:
+            content = path.read_bytes()
+            value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("cannot read canonical Stage-1 score receipt") from exc
+        if not isinstance(value, dict) or canonical_json_bytes(value) != content:
+            raise ValueError("Stage-1 score receipt is not canonical")
+        digest = hashlib.sha256(content).hexdigest()
+        if digest in digests:
+            raise ValueError("Stage-1 score receipt paths have duplicate bytes")
+        digests.add(digest)
+        if (
+            value.get("schema_version") != 2
+            or value.get("kind") != "rpc-fewshot-score-receipt"
+            or value.get("status") != "completed"
+            or value.get("decision_status") != "non_final"
+        ):
+            raise ValueError("Stage-1 selection requires completed non-final score receipts")
+        candidate_raw = value.get("candidate_condition")
+        reference_raw = value.get("reference_condition")
+        if not isinstance(candidate_raw, Mapping) or not isinstance(reference_raw, Mapping):
+            raise ValueError("Stage-1 score receipt lacks paired conditions")
+        candidate = ExperimentCondition.from_dict(candidate_raw)
+        reference = ExperimentCondition.from_dict(reference_raw)
+        if (
+            candidate.stage != "stage1"
+            or reference.stage != "stage1"
+            or candidate != reference
+            or value.get("candidate_condition_id") != candidate.condition_id
+            or value.get("reference_condition_id") != reference.condition_id
+        ):
+            raise ValueError("Stage-1 score receipt has invalid paired condition")
+        candidate_plan_raw = value.get("candidate_scoring_plan")
+        reference_plan_raw = value.get("reference_scoring_plan")
+        if (
+            not isinstance(candidate_plan_raw, Mapping)
+            or not isinstance(reference_plan_raw, Mapping)
+        ):
+            raise ValueError("Stage-1 score receipt lacks immutable scoring plans")
+        try:
+            candidate_plan = ScoringPlan.from_dict(candidate_plan_raw)
+            reference_plan = ScoringPlan.from_dict(reference_plan_raw)
+        except ValueError as exc:
+            raise ValueError("Stage-1 score receipt has invalid scoring plans") from exc
+        if (
+            candidate_plan != reference_plan
+            or candidate.condition_id not in candidate_plan.expected_condition_ids
+        ):
+            raise ValueError("Stage-1 score receipt scoring plans do not bind condition")
+        plans.append(candidate_plan)
+        _stage_one_score_metrics(value)
+        loaded.append((candidate, value, digest))
+    if len(set(plans)) != 1:
+        raise ValueError("Stage-1 score receipts do not share one declared scoring plan")
+    plan = plans[0]
+    coordinates = {(condition.fold, condition.support_seed) for condition, _, _ in loaded}
+    declared_coordinates = {
+        (fold, seed) for fold in plan.folds for seed in plan.support_seeds
+    }
+    if coordinates != declared_coordinates:
+        raise ValueError("Stage-1 score receipts do not cover declared fold/seed cells")
+    expected_cells = {
+        (method, selector, shot, fold, seed)
+        for method, selector in _STAGE_ONE_PAIRS
+        for shot in _STAGE_ONE_SHOTS
+        for fold, seed in declared_coordinates
+    }
+    observed_cells = {
+        (
+            condition.method, condition.selector, condition.shot_count,
+            condition.fold, condition.support_seed,
+        )
+        for condition, _, _ in loaded
+    }
+    expected_condition_ids = {
+        condition.condition_id
+        for condition in stage_one_conditions(
+            seeds=plan.support_seeds, folds=plan.folds
+        )
+    }
+    if (
+        observed_cells != expected_cells
+        or len(loaded) != len(expected_cells)
+        or set(plan.expected_condition_ids) != expected_condition_ids
+    ):
+        raise ValueError("Stage-1 selection requires every preregistered 12-cell fold/seed score")
+    evidence: list[StageOneMethodEvidence] = []
+    for method, selector in _STAGE_ONE_PAIRS:
+        values = [
+            _stage_one_score_metrics(receipt)
+            for condition, receipt, _ in loaded
+            if (condition.method, condition.selector) == (method, selector)
+        ]
+        evidence.append(
+            StageOneMethodEvidence(
+                method=method,
+                selector=selector,
+                repvit_novel_macro_top1=sum(item[0] for item in values) / len(values),
+                dinov3_novel_macro_top1=sum(item[1] for item in values) / len(values),
+                repvit_wrong_sku_rate=sum(item[2] for item in values) / len(values),
+                dinov3_wrong_sku_rate=sum(item[3] for item in values) / len(values),
+            )
+        )
+    frozen_evidence = tuple(evidence)
+    return StageOneSelectionReceipt(
+        evidence=frozen_evidence,
+        score_receipt_sha256s=tuple(
+            digest
+            for _, _, digest in sorted(
+                loaded, key=lambda item: item[0].condition_id
+            )
+        ),
+        decision=select_stage_one_methods(frozen_evidence),
+    )
+
+
+def _stage_one_score_metrics(receipt: Mapping[str, object]) -> tuple[float, float, float, float]:
+    branches = receipt.get("candidate_branch_top1")
+    agreement = receipt.get("stage1_global_top1_agreement")
+    if not isinstance(branches, Mapping) or not isinstance(agreement, Mapping):
+        raise ValueError("Stage-1 score receipt lacks branch-level evidence")
+    result: list[float] = []
+    for branch in ("repvit_global", "dinov3_global"):
+        summary = branches.get(branch)
+        if not isinstance(summary, Mapping):
+            raise ValueError("Stage-1 score receipt lacks required global branch evidence")
+        for name in ("novel_macro_recall", "wrong_registered_sku_rate"):
+            value = summary.get(name)
+            if type(value) not in {int, float} or not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
+                raise ValueError("Stage-1 score receipt has invalid branch metric")
+            result.append(float(value))
+    for name in ("candidate", "reference"):
+        value = agreement.get(name)
+        if type(value) not in {int, float} or not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
+            raise ValueError("Stage-1 score receipt has invalid global Top-1 agreement")
+    # The selection contract orders evidence as RepViT accuracy, DINO accuracy,
+    # RepViT wrong-SKU, DINO wrong-SKU rather than branch-field traversal.
+    return result[0], result[2], result[1], result[3]
 
 
 def select_stage_one_methods(

@@ -157,6 +157,41 @@ def support_prefix(order: SupportOrder, shot_count: int) -> tuple[SupportCandida
     return order.candidates[:shot_count]
 
 
+def validate_unique_div_support_draws(
+    orders: Iterable[SupportOrder],
+) -> tuple[SupportOrder, ...]:
+    """Reject nominal DIV support seeds that materialize the same draw.
+
+    A support-manifest planner must call this once it has materialized every
+    declared seed for a category.  Hashes alone are insufficient here: their
+    seed field changes even when constrained candidate data produces the same
+    ordered bank.  The observable ordered source identities are therefore the
+    equality contract.
+    """
+    frozen = tuple(orders)
+    if not frozen or not all(isinstance(order, SupportOrder) for order in frozen):
+        raise ValueError("DIV support draws must be nonempty SupportOrder instances")
+    coordinates = [(order.category_id, order.seed) for order in frozen]
+    if len(coordinates) != len(set(coordinates)):
+        raise ValueError("duplicate DIV support category/seed draw")
+    by_category: dict[int, list[SupportOrder]] = {}
+    for order in frozen:
+        if order.method != "div":
+            raise ValueError("DIV support draw verifier accepts only div orders")
+        by_category.setdefault(order.category_id, []).append(order)
+    for category_orders in by_category.values():
+        if len(category_orders) < 2:
+            continue
+        observed: dict[tuple[str, ...], int] = {}
+        for order in category_orders:
+            prior_seed = observed.setdefault(order.source_identities, order.seed)
+            if prior_seed != order.seed:
+                raise ValueError(
+                    "distinct DIV support seeds produced the same ordered support draw"
+                )
+    return frozen
+
+
 def _validate_capture_stratum(value: object, category_id: int) -> None:
     if not isinstance(value, tuple) or len(value) != 4:
         raise ValueError("candidate capture stratum is invalid")

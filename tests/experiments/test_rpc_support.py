@@ -11,6 +11,7 @@ from bakery_scanner.experiments.rpc_support import (
     materialize_support_order,
     parse_train_capture_stratum,
     support_prefix,
+    validate_unique_div_support_draws,
 )
 
 
@@ -157,6 +158,37 @@ def test_diversity_support_draws_are_seeded_but_reproducible():
     assert first == repeat
     assert first.source_identities[:5] != second.source_identities[:5]
     assert first.source_identities[:10] != second.source_identities[:10]
+
+
+def test_div_seed_batch_rejects_identical_ordered_support_draws():
+    """Distinct declared seeds must be observationally distinct for DIV."""
+    candidates = (
+        _candidate("only", "roll_camera1-top.jpg", (1.0, 0.0)),
+    )
+    with pytest.raises(ValueError, match="same ordered support draw"):
+        validate_unique_div_support_draws(
+            (
+                materialize_support_order(candidates, method="div", seed=5),
+                materialize_support_order(candidates, method="div", seed=10),
+            )
+        )
+
+
+def test_div_seed_batch_accepts_varied_draws_and_is_reproducible():
+    candidates = tuple(
+        _candidate(
+            f"source-{index}",
+            f"roll_camera{(index % 4) + 1}-{'top' if index % 2 else 'bottom'}.jpg",
+            (float(index + 1), float((index * 3) % 7 + 1)),
+        )
+        for index in range(12)
+    )
+    orders = tuple(
+        materialize_support_order(candidates, method="div", seed=seed)
+        for seed in (5, 10)
+    )
+
+    assert validate_unique_div_support_draws(orders) == orders
 
 
 def test_candidate_rejects_capture_stratum_that_disagrees_with_source_file_name():
