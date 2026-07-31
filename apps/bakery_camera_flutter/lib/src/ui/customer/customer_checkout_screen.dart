@@ -191,6 +191,7 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
       child: content,
     );
     if (widget.onEnterAdmin == null ||
+        state.phase != CheckoutPhase.ready ||
         _catalogObjectId != null ||
         _catalogAddsProduct) {
       return scopedContent;

@@ -70,7 +70,7 @@ class CheckoutScaffold extends StatelessWidget {
           children: [
             SizedBox(
               key: const Key('customer-header'),
-              height: 60,
+              height: 61,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: tokens.paper,
@@ -81,7 +81,10 @@ class CheckoutScaffold extends StatelessWidget {
                 child: Center(
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: maxWidth),
-                    child: _CustomerHeader(title: title),
+                    child: SizedBox(
+                      width: maxWidth,
+                      child: _CustomerHeader(title: title),
+                    ),
                   ),
                 ),
               ),
@@ -136,7 +139,6 @@ class _CustomerHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final displayName = KioskDisplayNameScope.maybeOf(context);
     final headerAction = KioskHeaderActionScope.maybeOf(context);
     final textTheme = Theme.of(context).textTheme;
     return Padding(
@@ -144,14 +146,9 @@ class _CustomerHeader extends StatelessWidget {
       child: Row(
         children: [
           const BixolonWordmark(style: TextStyle(fontSize: 16, height: 1.2)),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 12),
-            child: SizedBox(
-              height: 16,
-              child: VerticalDivider(width: 1, thickness: 1),
-            ),
-          ),
+          const SizedBox(width: 16),
           Flexible(
+            fit: FlexFit.tight,
             child: Text(
               title,
               key: const Key('customer-page-title'),
@@ -160,27 +157,13 @@ class _CustomerHeader extends StatelessWidget {
               style: textTheme.titleMedium,
             ),
           ),
-          if (displayName != null) ...[
-            const SizedBox(width: 12),
-            Flexible(
-              child: Text(
-                displayName,
-                key: const Key('kiosk-display-name'),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.end,
-                style: textTheme.labelMedium,
-              ),
-            ),
-          ],
-          if (headerAction != null) ...[
-            const SizedBox(width: 8),
+          const Spacer(),
+          if (headerAction != null)
             SizedBox(
               key: const Key('customer-header-action'),
               height: 48,
               child: headerAction,
             ),
-          ],
         ],
       ),
     );

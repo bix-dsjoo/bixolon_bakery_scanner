@@ -415,7 +415,7 @@ void main() {
       tester.getRect(find.byKey(const Key('customer-header'))).width,
       1024,
     );
-    expect(tester.getSize(find.byKey(const Key('customer-header'))).height, 60);
+    expect(tester.getSize(find.byKey(const Key('customer-header'))).height, 61);
     expect(
       tester.getRect(find.byKey(const Key('customer-action-rail'))).width,
       1024,
@@ -459,25 +459,32 @@ void main() {
     expect(adminAction.top, greaterThanOrEqualTo(header.top));
     expect(adminAction.bottom, lessThanOrEqualTo(header.bottom));
     expect(adminAction.center.dy, closeTo(header.center.dy, 0.1));
+    expect(adminAction.right, closeTo(header.right - 24, 1));
+
+    await tester.runAsync(fixture.controller.scan);
+    await tester.pumpAndSettle();
+
+    expect(fixture.controller.state.phase, isNot(CheckoutPhase.ready));
+    expect(find.byKey(const Key('customer-header-action')), findsNothing);
+    expect(find.text('愿由ъ옄'), findsNothing);
   });
 
-  testWidgets('customer header renders the session-snapshotted kiosk name', (
+  testWidgets('customer header omits redundant kiosk display name', (
     tester,
   ) async {
     await _pump(
       tester,
       KioskDisplayNameScope(
         displayName: 'BIXOLON Seongsu',
-        child: CheckoutScaffold(
-          title: 'Self checkout',
-          primaryAction: const SizedBox(height: 56),
+        child: const CheckoutScaffold(
+          title: '???怨꾩궛',
           child: const SizedBox(),
         ),
       ),
     );
 
-    expect(find.byKey(const Key('kiosk-display-name')), findsOneWidget);
-    expect(find.text('BIXOLON Seongsu'), findsOneWidget);
+    expect(find.byKey(const Key('kiosk-display-name')), findsNothing);
+    expect(find.text('BIXOLON Seongsu'), findsNothing);
   });
 
   testWidgets('analyzing is factual and does not expose navigation', (
