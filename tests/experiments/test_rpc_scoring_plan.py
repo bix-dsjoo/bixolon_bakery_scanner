@@ -44,6 +44,16 @@ ROOT = Path(__file__).parents[2]
 _TEST_TRUSTED_ROOT = Path("C:/rpc-test-trusted-root")
 _public_load_locked_ground_truth = load_locked_ground_truth
 _public_materialize_locked_ground_truth = materialize_locked_ground_truth
+
+@lru_cache(maxsize=1)
+def _fixture_bank():
+    root = Path(tempfile.mkdtemp(prefix="rpc-support-bank-test-"))
+    bank = materialize_support_bank({
+        1: tuple(SupportCandidate(1, f"novel{i}", f"novel{i}_camera{i}-top.jpg", f"{i:x}" * 64, 1, parse_train_capture_stratum(f"novel{i}_camera{i}-top.jpg", 1), (float(i), 1.0)) for i in (1,2,3)),
+        2: tuple(SupportCandidate(2, f"base{i}", f"base{i}_camera{i}-top.jpg", f"{i+3:x}" * 64, 1, parse_train_capture_stratum(f"base{i}_camera{i}-top.jpg", 2), (float(i), 1.0)) for i in (1,2,3)),
+    }, method="div", seeds=(101, 102))
+    path = root / "bank.json"; write_support_bank(path, bank)
+    return path, bank.sha256
 _public_locked_conditions = locked_conditions
 
 
@@ -478,6 +488,7 @@ def _write_evidence(
     base_prediction: int | None = 2,
     support_sha256: str | None = None,
 ) -> str:
+    support_sha256 = support_sha256 or _fixture_bank()[1]
     rows = (
         {
             "sample_id": "novel",
@@ -826,6 +837,8 @@ def _non_final_score(
     support_bank_path: Path | None = None,
     support_bank_sha256: str | None = None,
 ) -> dict[str, object]:
+    if support_bank_path is None:
+        support_bank_path, support_bank_sha256 = _fixture_bank()
     candidate_base = next(
         item for item in candidate_plan.fold_base_artifacts if item.fold == candidate.fold
     )
