@@ -708,6 +708,10 @@ def score(
         },
         "candidate_provenance": _provenance(condition, candidate_evidence.sha256),
         "reference_provenance": _provenance(reference_condition, reference_evidence.sha256),
+        "raw_evidence": {
+            "candidate": {"path": str(evidence_path), "sha256": candidate_evidence.sha256},
+            "reference": {"path": str(reference_path), "sha256": reference_evidence.sha256},
+        },
         "candidate_branch_top1": candidate_branches,
         "reference_branch_top1": reference_branches,
         "candidate_full_system": asdict(candidate_summary),

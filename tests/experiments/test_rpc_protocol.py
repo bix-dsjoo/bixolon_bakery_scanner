@@ -112,6 +112,18 @@ def _stage_one_score_artifacts(
                     "novel_macro_recall": method_score - 0.01,
                     "wrong_registered_sku_rate": 1.0 - method_score + 0.01,
                 },
+                "dinov3_local": {
+                    "novel_macro_recall": method_score - 0.02,
+                    "wrong_registered_sku_rate": 1.0 - method_score + 0.02,
+                },
+            },
+            "candidate_full_system": {},
+            "reference_full_system": {},
+            "candidate_provenance": {},
+            "reference_provenance": {},
+            "raw_evidence": {
+                "candidate": {"path": f"file:///candidate/{index}.jsonl", "sha256": "a" * 64},
+                "reference": {"path": f"file:///reference/{index}.jsonl", "sha256": "b" * 64},
             },
             "stage1_global_top1_agreement": {"candidate": 0.5, "reference": 0.5},
         }

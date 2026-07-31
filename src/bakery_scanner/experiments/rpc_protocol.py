@@ -1337,11 +1337,31 @@ def _stage_one_selection_from_score_receipts(
 
 
 def _stage_one_score_metrics(receipt: Mapping[str, object]) -> tuple[float, float, float, float]:
+    # Stage-1 selection is authorized only by a full scorer receipt.  Compact
+    # hand-authored scalar summaries cannot cross this boundary: they lack the
+    # independently hashed raw-evidence and final-system provenance needed for
+    # a reviewer to reproduce the branch report.
+    for name in (
+        "candidate_full_system", "reference_full_system", "candidate_provenance",
+        "reference_provenance", "raw_evidence",
+    ):
+        if not isinstance(receipt.get(name), Mapping):
+            raise ValueError("Stage-1 selection requires a full scorer score receipt")
+    raw_evidence = receipt["raw_evidence"]
+    for side in ("candidate", "reference"):
+        record = raw_evidence.get(side)
+        if not isinstance(record, Mapping) or set(record) != {"path", "sha256"}:
+            raise ValueError("Stage-1 score receipt lacks raw evidence provenance")
+        _validate_sha256("Stage-1 raw evidence SHA-256", record.get("sha256"))
+        if not isinstance(record.get("path"), str) or not record["path"]:
+            raise ValueError("Stage-1 score receipt has invalid raw evidence path")
     branches = receipt.get("candidate_branch_top1")
     agreement = receipt.get("stage1_global_top1_agreement")
     if not isinstance(branches, Mapping) or not isinstance(agreement, Mapping):
         raise ValueError("Stage-1 score receipt lacks branch-level evidence")
     result: list[float] = []
+    if set(branches) != {"repvit_global", "dinov3_global", "dinov3_local"}:
+        raise ValueError("Stage-1 score receipt lacks all three branch reports")
     for branch in ("repvit_global", "dinov3_global"):
         summary = branches.get(branch)
         if not isinstance(summary, Mapping):

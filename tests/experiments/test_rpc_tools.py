@@ -17,6 +17,7 @@ from bakery_scanner.experiments.rpc_manifest import (
     RpcImage,
     RpcIndex,
     RpcObject,
+    canonical_json_bytes,
 )
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
@@ -110,6 +111,50 @@ def test_stage_ground_truth_dispatch_never_uses_locked_truth_before_stage5(monke
     _rpc_scoring.load_stage_ground_truth(Path("locked.json"), stage="locked", trusted_source_root=_TEST_TRUSTED_ROOT)
 
     assert calls == ["development", "locked"]
+
+
+def test_development_ground_truth_is_materialized_from_val_selection_not_locked_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = dict(LOCKED_SOURCE_MANIFEST)
+    source["images"] = [
+        ({"split": "val2019", "image_id": 1, "source_identity": "dev", "level": "easy"}
+         if item["split"] == "val2019" and item["image_id"] == 1 else item)
+        for item in LOCKED_SOURCE_MANIFEST["images"]
+        if item["split"] != "val2019" or item["image_id"] == 1
+    ]
+    source["objects"] = [
+        *LOCKED_SOURCE_MANIFEST["objects"],
+        {"split": "val2019", "annotation_id": 3, "image_id": 1, "category_id": 1},
+    ]
+    source_path = tmp_path / "source.json"
+    source_path.write_bytes(canonical_json_bytes(source))
+    source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    roles = {
+        "schema_version": 1,
+        "kind": "rpc-fewshot-scene-roles",
+        "source_manifest_sha256": source_sha,
+        "assignments": [{"split": "val2019", "image_id": 1, "role": "development_selection", "burst_id": "dev-burst", "difficulty": "easy"}],
+    }
+    roles_path = tmp_path / "roles.json"
+    roles_path.write_bytes(canonical_json_bytes(roles))
+    trusted = RpcIndex(
+        RpcDatasetContract.default(),
+        (RpcImage("val2019", 1, "dev", Path("C:/trusted/dev.jpg"), 1, "0" * 64, "easy"),),
+        (RpcObject("val2019", 3, 1, 1, (0.0, 0.0, 1.0, 1.0)),),
+    )
+    monkeypatch.setattr(_rpc_scoring, "_load_verified_default_rpc_index", lambda _root: trusted)
+    monkeypatch.setattr(
+        _rpc_scoring,
+        "_build_canonical_scene_roles",
+        lambda _index: (type("Role", (), {"split": "val2019", "image_id": 1, "role": "development_selection", "burst_id": "dev-burst", "difficulty": "easy"})(),),
+    )
+    output = tmp_path / "development.json"
+
+    _rpc_scoring.materialize_development_ground_truth(source_path, roles_path, output, trusted_source_root=_TEST_TRUSTED_ROOT)
+
+    loaded = _rpc_scoring.load_development_ground_truth(output, trusted_source_root=_TEST_TRUSTED_ROOT)
+    assert [row.sample_id for row in loaded.rows] == ["dev"]
 
 
 LOCKED_SOURCE_MANIFEST = {
