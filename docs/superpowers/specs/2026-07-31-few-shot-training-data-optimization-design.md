@@ -334,6 +334,12 @@ Its preregistered special case therefore confirms exactly `k=1`, the next
 passing anchor `k=3`, and `k=150`; it must not invent a lower failure. The
 Stage-5 pair remains `k=1` and `k=150` and retains the same artifact binding.
 
+When `k=80` is the provisional minimum, `k=150` is both its preregistered next
+larger anchor and the balanced reference. Its confirmation therefore contains
+exactly three receipts: failing `k=40`, passing `k=80`, and passing/reference
+`k=150`. It must not add a duplicate `k=150` receipt or substitute a later
+anchor; the Stage-5 pair remains `k=80` and `k=150`.
+
 For every condition, rebuild and hash:
 
 ```text
@@ -363,17 +369,19 @@ Evaluate exactly two frozen conditions on `test2019`:
 
 The Stage-5 scheduler accepts no free method, selector, or shot-count input.
 For each fold and support seed it consumes a canonical Stage-4 selection
-certificate containing exactly four distinct confirmation-score receipt
-SHA-256 values: last failure, provisional minimum, next passing anchor, and
-the balanced 150-shot reference. The certificate requires one common
-method/selector/fold/seed, a failing last-lower point, a passing provisional
+certificate containing four distinct confirmation-score receipt SHA-256 values:
+last failure, provisional minimum, next passing anchor, and the balanced
+150-shot reference. The only preregistered three-receipt exceptions are
+`k=1/3/150` (no lower failure) and `k=40/80/150` (`k=150` serves as both next
+anchor and reference). The certificate requires one common method/selector/
+fold/seed, a failing last-lower point where one exists, a passing provisional
 minimum and next anchor, and a passing 150-shot reference. Both locked
 conditions must reproduce that certificate exactly; their candidate/reference
 method and selector must match, and their reference is exactly `k=150`.
 
 The certificate is not authorized by digest strings alone. Before scheduling,
-scoring, or aggregating a locked condition, resolve all four declared external
-receipt paths, require canonical bytes whose SHA-256 values equal the claims,
+scoring, or aggregating a locked condition, resolve every declared external
+receipt path, require canonical bytes whose SHA-256 values equal the claims,
 and verify each is a completed provisional Stage-4 confirmation receipt for
 the declared condition, cohort, scoring plan, method, selector, fold, and
 support seed.

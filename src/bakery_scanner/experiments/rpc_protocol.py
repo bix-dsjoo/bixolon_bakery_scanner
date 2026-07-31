@@ -59,9 +59,14 @@ def _confirmation_anchor_lineage(shot_counts: Iterable[int]) -> tuple[int, int]:
     non_reference = tuple(sorted(shot for shot in shots if shot != 150))
     if len(shots) == 3 and set(shots) == {1, 3, 150}:
         return (1, 3)
+    # k=80 has no anchor strictly below the balanced reference: k=150 is
+    # simultaneously the next-larger confirmation anchor and the reference.
+    if len(shots) == 3 and set(shots) == {40, 80, 150}:
+        return (80, 150)
     if len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots:
         raise ValueError(
-            "confirmation requires four unique shots including the 150-shot reference, or k1/3/150"
+            "confirmation requires four unique shots including the 150-shot reference, "
+            "or the k1/3/150 or k40/80/150 special case"
         )
     if len(non_reference) != 3:
         raise ValueError("Stage-4 confirmation requires three non-reference conditions")
@@ -206,7 +211,9 @@ class StageFourSelection:
 
     def __post_init__(self) -> None:
         if not isinstance(self.confirmation_receipts, tuple) or len(self.confirmation_receipts) not in {3, 4}:
-            raise ValueError("Stage-4 selection requires four receipts, or the k=1 three-receipt special case")
+            raise ValueError(
+                "Stage-4 selection requires four receipts, or a preregistered three-receipt special case"
+            )
         if any(not isinstance(item, StageFourConfirmationReceipt) for item in self.confirmation_receipts):
             raise ValueError("Stage-4 selection contains an invalid confirmation receipt")
         if len({item.score_receipt_sha256 for item in self.confirmation_receipts}) != len(self.confirmation_receipts):
@@ -1003,12 +1010,15 @@ def confirmation_conditions(
     seeds: Iterable[int],
     folds: Iterable[int],
 ) -> tuple[ExperimentCondition, ...]:
-    """Materialize the frozen Stage-4 full-subsystem confirmation quartet.
+    """Materialize the frozen Stage-4 full-subsystem confirmation set.
 
     The caller supplies the already selected last failure, provisional minimum,
-    next passing anchor, and balanced reference.  Requiring exactly four unique
-    values with a 150-shot reference prevents this scheduler being used as a
-    second exploratory learning-curve sweep.
+    next passing anchor, and balanced reference.  The k=1 and k=80 boundary
+    cases use their preregistered three-receipt forms: respectively
+    ``{1, 3, 150}`` and ``{40, 80, 150}``, with k=150 doing double duty as
+    k=80's next anchor and balanced reference.  Every other selection requires
+    exactly four unique values including k=150, preventing this scheduler from
+    being used as a second exploratory learning-curve sweep.
     """
     pair = _method_pair(method)
     if pair not in _STAGE_ONE_PAIRS:

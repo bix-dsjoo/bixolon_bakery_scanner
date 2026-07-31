@@ -634,6 +634,58 @@ def test_k1_stage_four_selection_has_no_imaginary_lower_failure(monkeypatch: pyt
         StageFourSelection(tuple(replace(item, provisional_pass=item.condition.shot_count != 3) for item in selection.confirmation_receipts))
 
 
+def test_k80_stage_four_selection_reuses_150_as_next_anchor_and_reference(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Rejecting the three-receipt k=80 certificate would leave k=80 unconfirmable."""
+    conditions = confirmation_conditions(
+        ("m0", "div"), shot_counts=(40, 80, 150), seeds=(101,), folds=(0,)
+    )
+    selection = StageFourSelection(
+        tuple(
+            StageFourConfirmationReceipt(
+                condition=condition,
+                score_receipt_sha256=f"{index + 1:x}" * 64,
+                provisional_pass=condition.shot_count != 40,
+            )
+            for index, condition in enumerate(conditions)
+        )
+    )
+
+    assert selection.provisional_minimum_shot_count == 80
+    assert not selection.is_lowest_shot_special_case
+    monkeypatch.setattr(
+        _rpc_protocol,
+        "validate_stage_four_confirmation_score_receipts",
+        lambda *args, **kwargs: None,
+    )
+    locked = locked_conditions(
+        selection,
+        confirmation_score_receipt_paths=(Path("forty"), Path("eighty"), Path("reference")),
+        trusted_index=_trusted_index(),
+    )
+    assert {item.shot_count for item in locked} == {80, 150}
+
+
+def test_k80_three_receipt_exception_still_requires_the_40_shot_failure():
+    """Accepting a passing k=40 would turn the fixed exception into a bypass."""
+    conditions = confirmation_conditions(
+        ("m0", "div"), shot_counts=(40, 80, 150), seeds=(101,), folds=(0,)
+    )
+
+    with pytest.raises(ValueError, match="last failure"):
+        StageFourSelection(
+            tuple(
+                StageFourConfirmationReceipt(
+                    condition=condition,
+                    score_receipt_sha256=f"{index + 1:x}" * 64,
+                    provisional_pass=True,
+                )
+                for index, condition in enumerate(conditions)
+            )
+        )
+
+
 def test_stage_four_requires_the_preregistered_adjacent_larger_anchor():
     """A certificate cannot skip k=10 and call a later k the confirmation anchor."""
     skipped_anchor = tuple(

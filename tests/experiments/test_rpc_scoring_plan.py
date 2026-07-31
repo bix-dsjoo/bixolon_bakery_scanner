@@ -397,14 +397,18 @@ def _locked_selection(*, fold: int, seed: int) -> StageFourSelection:
 
 @lru_cache(maxsize=None)
 def _locked_selection_artifacts(
-    fold: int, seed: int
+    fold: int,
+    seed: int,
+    *,
+    shot_counts: tuple[int, ...] = (3, 5, 10, 150),
+    failing_shot: int = 3,
 ) -> tuple[StageFourSelection, tuple[Path, ...]]:
     """Build Stage-4 inputs through the real confirmation aggregate writer."""
     module = _score_module()
     _install_trusted_index_for_test(_trusted_index())
     confirmations = confirmation_conditions(
         ("m0", "div"),
-        shot_counts=(3, 5, 10, 150),
+        shot_counts=shot_counts,
         seeds=(seed,),
         folds=(fold,),
     )
@@ -464,7 +468,7 @@ def _locked_selection_artifacts(
         _write_evidence(
             candidate_evidence,
             condition,
-            novel_prediction=None if condition.shot_count == 3 else 1,
+            novel_prediction=None if condition.shot_count == failing_shot else 1,
             support_sha256=bank.sha256,
         )
         _write_evidence(reference_evidence, reference, support_sha256=bank.sha256)
@@ -519,6 +523,24 @@ def _locked_selection_artifacts(
             )
         )
     return StageFourSelection(tuple(claims)), tuple(paths)
+
+
+def test_k80_locked_schedule_validates_three_real_stage_four_receipts():
+    """A real k=80 certificate must not need a duplicate 150-shot receipt."""
+    selection, paths = _locked_selection_artifacts(
+        0, 808, shot_counts=(40, 80, 150), failing_shot=40
+    )
+
+    assert selection.provisional_minimum_shot_count == 80
+    assert len(paths) == 3
+    assert {
+        condition.shot_count
+        for condition in locked_conditions(
+            selection,
+            confirmation_score_receipt_paths=paths,
+            trusted_index=_trusted_index(),
+        )
+    } == {80, 150}
 
 
 def _confirmation_cells(
