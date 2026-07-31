@@ -16,6 +16,8 @@ from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
     ScoringPlan,
+    StageFourConfirmationReceipt,
+    StageFourSelection,
     confirmation_conditions,
     locked_conditions,
     stage_one_conditions,
@@ -81,13 +83,10 @@ def _locked_candidate_cells(
 ):
     return tuple(
         condition
-        for condition in locked_conditions(
-            ("m0", "div"),
-            candidate_shot_count=1,
-            seeds=seeds,
-            folds=folds,
-        )
-        if condition.shot_count == 1
+        for fold in folds
+        for seed in seeds
+        for condition in locked_conditions(_locked_selection(fold=fold, seed=seed))
+        if condition.shot_count == 5
     )
 
 
@@ -96,13 +95,29 @@ def _locked_reference_cells(
 ):
     return tuple(
         condition
-        for condition in locked_conditions(
-            ("m1", "div"),
-            candidate_shot_count=1,
-            seeds=seeds,
-            folds=folds,
-        )
+        for fold in folds
+        for seed in seeds
+        for condition in locked_conditions(_locked_selection(fold=fold, seed=seed))
         if condition.shot_count == 150
+    )
+
+
+def _locked_selection(*, fold: int, seed: int) -> StageFourSelection:
+    confirmations = confirmation_conditions(
+        ("m0", "div"),
+        shot_counts=(3, 5, 10, 150),
+        seeds=(seed,),
+        folds=(fold,),
+    )
+    return StageFourSelection(
+        confirmation_receipts=tuple(
+            StageFourConfirmationReceipt(
+                condition=condition,
+                score_receipt_sha256=f"{index + 1:x}" * 64,
+                provisional_pass=condition.shot_count != 3,
+            )
+            for index, condition in enumerate(confirmations)
+        )
     )
 
 
@@ -229,7 +244,7 @@ def _non_final_score(
     reference_base = next(
         item for item in reference_plan.fold_base_artifacts if item.fold == reference.fold
     )
-    return {
+    result = {
         "schema_version": 2,
         "kind": "rpc-fewshot-score-receipt",
         "status": "completed",
@@ -285,6 +300,11 @@ def _non_final_score(
             "fold_base_checkpoint_macro_final_correct_recall": 1.0,
         },
     }
+    if candidate.stage == reference.stage == "locked":
+        result["stage_four_selection"] = _locked_selection(
+            fold=candidate.fold, seed=candidate.support_seed
+        ).to_dict()
+    return result
 
 
 def test_scoring_plan_is_immutable_and_receipt_binds_all_decision_inputs():
@@ -435,6 +455,33 @@ def test_scorer_rejects_an_unversioned_condition_receipt():
         module._condition_scoring_plan({**receipt, "schema_version": 1})
 
 
+def test_condition_receipt_rejects_nested_condition_fields_that_do_not_match_its_id():
+    module = _score_module()
+    condition = _cell_conditions()[0]
+    receipt = _receipt(_plan((condition.condition_id,))).to_dict()
+    receipt["condition"]["method"] = "m1"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="deterministic"):
+        module._condition_scoring_plan(receipt)
+
+
+def test_score_receipt_rejects_nested_condition_fields_that_do_not_match_its_id():
+    module = _score_module()
+    candidate = _cell_conditions()[0]
+    score_receipt = _non_final_score(
+        candidate,
+        candidate,
+        _plan((candidate.condition_id,)),
+        _plan((candidate.condition_id,)),
+        candidate_evidence_sha256="1" * 64,
+        reference_evidence_sha256="2" * 64,
+    )
+    score_receipt["candidate_condition"]["stage"] = "locked"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="deterministic"):
+        module._score_receipt_condition(score_receipt, "candidate_condition")
+
+
 def test_incomplete_fold_seed_aggregate_cannot_emit_final_pass(tmp_path: Path):
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
@@ -478,7 +525,7 @@ def test_stage_one_aggregate_cannot_establish_a_final_minimum(tmp_path: Path):
     references = tuple(
         condition
         for condition in stage_one_conditions(seeds=(101, 102), folds=(0,))
-        if (condition.method, condition.selector, condition.shot_count) == ("m1", "div", 1)
+        if (condition.method, condition.selector, condition.shot_count) == ("m0", "div", 1)
     )
     candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
     reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
@@ -576,13 +623,55 @@ def test_complete_locked_aggregate_is_the_only_final_boolean(tmp_path: Path):
     assert "provisional_pass" not in aggregate
 
 
+def test_locked_aggregate_rejects_receipts_without_stage_four_confirmation_binding(
+    tmp_path: Path,
+):
+    module = _score_module()
+    candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
+    references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
+    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    paths = []
+    evidence_paths = []
+    reference_evidence_paths = []
+    for index, (candidate, reference) in enumerate(zip(candidates, references, strict=True)):
+        path = tmp_path / f"unbound-score-{index}.json"
+        evidence_path = tmp_path / f"unbound-candidate-{index}.jsonl"
+        reference_evidence_path = tmp_path / f"unbound-reference-{index}.jsonl"
+        score = _non_final_score(
+            candidate,
+            reference,
+            candidate_plan,
+            reference_plan,
+            candidate_evidence_sha256=_write_evidence(evidence_path, candidate),
+            reference_evidence_sha256=_write_evidence(reference_evidence_path, reference),
+        )
+        if index == 0:
+            del score["stage_four_selection"]
+        _write_canonical(path, score)
+        paths.append(path)
+        evidence_paths.append(evidence_path)
+        reference_evidence_paths.append(reference_evidence_path)
+    ground_truth_path = tmp_path / "locked-ground-truth.json"
+    _write_ground_truth(ground_truth_path)
+
+    with pytest.raises(ValueError, match="Stage-4 selection"):
+        module.aggregate_score_receipts(
+            tuple(paths),
+            tmp_path / "aggregate.json",
+            evidence_paths=tuple(evidence_paths),
+            reference_evidence_paths=tuple(reference_evidence_paths),
+            ground_truth_manifest_path=ground_truth_path,
+        )
+
+
 def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
     module = _score_module()
     candidates = _confirmation_cells(
         ("m0", "div"), 5, seeds=(101, 102), folds=(0,)
     )
     references = _confirmation_cells(
-        ("m1", "div"), 150, seeds=(101, 102), folds=(0,)
+        ("m0", "div"), 150, seeds=(101, 102), folds=(0,)
     )
     candidate_plan = _plan(
         tuple(row.condition_id for row in candidates), seeds=(101, 102)
@@ -639,16 +728,7 @@ def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
 def test_aggregate_rejects_a_non_150_shot_locked_reference(tmp_path: Path):
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
-    references = tuple(
-        condition
-        for condition in locked_conditions(
-            ("m1", "div"),
-            candidate_shot_count=1,
-            seeds=(101, 102),
-            folds=(0,),
-        )
-        if condition.shot_count == 1
-    )
+    references = candidates
     candidate_plan = _plan(
         tuple(row.condition_id for row in candidates), seeds=(101, 102)
     )

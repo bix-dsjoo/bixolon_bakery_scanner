@@ -264,12 +264,20 @@ def test_score_cli_fails_closed_for_provenance_mismatch(tmp_path: Path):
     reference_condition = tmp_path / "reference-condition.json"
     ground_truth = tmp_path / "locked-ground-truth.json"
     base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
+    candidate_receipt = _task4_receipt(
+        condition_index=0, output_uri="file:///candidate"
+    )
+    reference_receipt = _task4_receipt(
+        condition_index=0, output_uri="file:///reference"
+    )
+    candidate_id = candidate_receipt["condition"]["condition_id"]  # type: ignore[index]
+    reference_id = reference_receipt["condition"]["condition_id"]  # type: ignore[index]
     evidence.write_text(
-        _canonical(_evidence("candidate", policy_sha256="1" * 64))
+        _canonical(_evidence(candidate_id, policy_sha256="1" * 64))
         + "\n"
         + _canonical(
             _evidence(
-                "candidate",
+                candidate_id,
                 sample_id="base",
                 truth_category_id=2,
                 predicted_category_id=2,
@@ -280,11 +288,11 @@ def test_score_cli_fails_closed_for_provenance_mismatch(tmp_path: Path):
         encoding="utf-8",
     )
     reference.write_text(
-        _canonical(_evidence("reference"))
+        _canonical(_evidence(reference_id))
         + "\n"
         + _canonical(
             _evidence(
-                "reference",
+                reference_id,
                 sample_id="base",
                 truth_category_id=2,
                 predicted_category_id=2,
@@ -293,8 +301,8 @@ def test_score_cli_fails_closed_for_provenance_mismatch(tmp_path: Path):
         + "\n",
         encoding="utf-8",
     )
-    condition.write_text(_canonical(_receipt("candidate")), encoding="utf-8")
-    reference_condition.write_text(_canonical(_receipt("reference")), encoding="utf-8")
+    condition.write_text(_canonical(candidate_receipt), encoding="utf-8")
+    reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
     _write_locked_ground_truth(ground_truth)
     _write_base_checkpoint_evidence(base_checkpoint_evidence)
     output = tmp_path / "receipt.json"

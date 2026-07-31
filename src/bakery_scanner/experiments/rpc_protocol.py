@@ -78,6 +78,161 @@ class ExperimentCondition:
             "support_seed": self.support_seed,
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ExperimentCondition":
+        """Parse one canonical condition; an ID never authorizes altered fields."""
+        expected = {
+            "condition_id",
+            "fold",
+            "method",
+            "selector",
+            "shot_count",
+            "stage",
+            "support_seed",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("condition has missing or unrecognized fields")
+        try:
+            return cls(
+                method=value["method"],  # type: ignore[arg-type]
+                selector=value["selector"],  # type: ignore[arg-type]
+                shot_count=value["shot_count"],  # type: ignore[arg-type]
+                fold=value["fold"],  # type: ignore[arg-type]
+                support_seed=value["support_seed"],  # type: ignore[arg-type]
+                stage=value["stage"],  # type: ignore[arg-type]
+                condition_id=value["condition_id"],  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid deterministic condition") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class StageFourConfirmationReceipt:
+    """One immutable Stage-4 score receipt used to select the locked pair."""
+
+    condition: ExperimentCondition
+    score_receipt_sha256: str
+    provisional_pass: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.condition, ExperimentCondition) or self.condition.stage != "confirmation":
+            raise ValueError("Stage-4 receipt requires a confirmation condition")
+        _validate_sha256("Stage-4 score receipt SHA-256", self.score_receipt_sha256)
+        if type(self.provisional_pass) is not bool:
+            raise ValueError("Stage-4 provisional_pass must be boolean")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "condition": self.condition.to_dict(),
+            "provisional_pass": self.provisional_pass,
+            "score_receipt_sha256": self.score_receipt_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "StageFourConfirmationReceipt":
+        if not isinstance(value, Mapping) or set(value) != {
+            "condition", "provisional_pass", "score_receipt_sha256"
+        }:
+            raise ValueError("invalid Stage-4 confirmation receipt")
+        condition = value["condition"]
+        if not isinstance(condition, Mapping):
+            raise ValueError("invalid Stage-4 confirmation receipt")
+        return cls(
+            condition=ExperimentCondition.from_dict(condition),
+            provisional_pass=value["provisional_pass"],  # type: ignore[arg-type]
+            score_receipt_sha256=value["score_receipt_sha256"],  # type: ignore[arg-type]
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StageFourSelection:
+    """The only schedulable Stage-5 source: four frozen Stage-4 confirmations."""
+
+    confirmation_receipts: tuple[StageFourConfirmationReceipt, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.confirmation_receipts, tuple) or len(self.confirmation_receipts) != 4:
+            raise ValueError("Stage-4 selection requires exactly four frozen confirmation receipts")
+        if any(not isinstance(item, StageFourConfirmationReceipt) for item in self.confirmation_receipts):
+            raise ValueError("Stage-4 selection contains an invalid confirmation receipt")
+        if len({item.score_receipt_sha256 for item in self.confirmation_receipts}) != 4:
+            raise ValueError("Stage-4 selection requires four distinct confirmation receipt hashes")
+        conditions = tuple(item.condition for item in self.confirmation_receipts)
+        first = conditions[0]
+        if any(
+            (condition.method, condition.selector, condition.fold, condition.support_seed)
+            != (first.method, first.selector, first.fold, first.support_seed)
+            for condition in conditions
+        ):
+            raise ValueError("Stage-4 confirmation receipts must share method, selector, fold, and seed")
+        shots = tuple(condition.shot_count for condition in conditions)
+        if len(set(shots)) != 4 or 150 not in shots:
+            raise ValueError("Stage-4 selection requires four unique shots including the 150-shot reference")
+        non_reference = tuple(sorted(shot for shot in shots if shot != 150))
+        passed = {
+            item.condition.shot_count: item.provisional_pass
+            for item in self.confirmation_receipts
+        }
+        provisional = min(shot for shot in non_reference if passed[shot]) if any(
+            passed[shot] for shot in non_reference
+        ) else None
+        if provisional is None:
+            raise ValueError("Stage-4 selection has no provisional minimum")
+        prior = tuple(shot for shot in non_reference if shot < provisional)
+        later = tuple(shot for shot in non_reference if shot > provisional)
+        if not prior or not later or passed[max(prior)] or not passed[min(later)]:
+            raise ValueError("Stage-4 selection requires last failure and next passing anchor")
+        if not passed[150]:
+            raise ValueError("Stage-4 balanced 150-shot reference must pass")
+
+    @property
+    def method(self) -> str:
+        return self.confirmation_receipts[0].condition.method
+
+    @property
+    def selector(self) -> str:
+        return self.confirmation_receipts[0].condition.selector
+
+    @property
+    def fold(self) -> int:
+        return self.confirmation_receipts[0].condition.fold
+
+    @property
+    def support_seed(self) -> int:
+        return self.confirmation_receipts[0].condition.support_seed
+
+    @property
+    def provisional_minimum_shot_count(self) -> int:
+        return min(
+            item.condition.shot_count
+            for item in self.confirmation_receipts
+            if item.condition.shot_count != 150 and item.provisional_pass
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "confirmation_receipts": [
+                item.to_dict() for item in self.confirmation_receipts
+            ],
+            "schema_version": 1,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "StageFourSelection":
+        if not isinstance(value, Mapping) or set(value) != {
+            "confirmation_receipts", "schema_version"
+        } or value.get("schema_version") != 1 or not isinstance(value.get("confirmation_receipts"), list):
+            raise ValueError("invalid Stage-4 selection")
+        try:
+            return cls(
+                confirmation_receipts=tuple(
+                    StageFourConfirmationReceipt.from_dict(item)
+                    for item in value["confirmation_receipts"]  # type: ignore[union-attr]
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid Stage-4 selection") from exc
+
 
 def stage_one_conditions(*, seeds: Iterable[int] = (101,), folds: Iterable[int] = range(5)) -> tuple[ExperimentCondition, ...]:
     """Return the complete preregistered Stage-1 matrix, never a Cartesian expansion."""
@@ -124,24 +279,17 @@ def confirmation_conditions(
     return _conditions((pair,), shots, seeds, folds, "confirmation")
 
 
-def locked_conditions(
-    method: str | tuple[str, str],
-    *,
-    candidate_shot_count: int,
-    seeds: Iterable[int],
-    folds: Iterable[int],
-) -> tuple[ExperimentCondition, ...]:
-    """Materialize the Stage-5 provisional-minimum versus 150-shot comparison."""
-    pair = _method_pair(method)
-    if pair not in _STAGE_ONE_PAIRS:
-        raise ValueError("unsupported method/selector combination")
-    if candidate_shot_count not in _CONFIRMATION_SHOTS:
-        raise ValueError("unsupported locked candidate condition")
-    shots = (candidate_shot_count,) if candidate_shot_count == 150 else (
-        candidate_shot_count,
-        150,
+def locked_conditions(selection: StageFourSelection) -> tuple[ExperimentCondition, ...]:
+    """Materialize only the Stage-5 pair proven by four frozen Stage-4 receipts."""
+    if not isinstance(selection, StageFourSelection):
+        raise TypeError("locked conditions require a StageFourSelection")
+    return _conditions(
+        ((selection.method, selection.selector),),
+        (selection.provisional_minimum_shot_count, 150),
+        (selection.support_seed,),
+        (selection.fold,),
+        "locked",
     )
-    return _conditions((pair,), shots, seeds, folds, "locked")
 
 
 def refinement_shots(last_failure: int, first_pass: int) -> tuple[int, ...]:
@@ -313,6 +461,7 @@ class ExperimentReceipt:
     output_uri: str
     status: Literal["completed", "failed", "unavailable"]
     reason: str = ""
+    stage_four_selection: StageFourSelection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.condition, ExperimentCondition):
@@ -352,6 +501,27 @@ class ExperimentReceipt:
             raise ValueError("status must be completed, failed, or unavailable")
         if self.status == "unavailable" and not self.reason:
             raise ValueError("unavailable receipt requires a reason")
+        if self.condition.stage == "locked":
+            if not isinstance(self.stage_four_selection, StageFourSelection):
+                raise ValueError("locked receipt requires a Stage-4 selection")
+            selection = self.stage_four_selection
+            if (
+                self.condition.method,
+                self.condition.selector,
+                self.condition.fold,
+                self.condition.support_seed,
+            ) != (
+                selection.method,
+                selection.selector,
+                selection.fold,
+                selection.support_seed,
+            ) or self.condition.shot_count not in {
+                selection.provisional_minimum_shot_count,
+                150,
+            }:
+                raise ValueError("locked receipt condition does not match its Stage-4 selection")
+        elif self.stage_four_selection is not None:
+            raise ValueError("only locked receipts may bind a Stage-4 selection")
 
     @classmethod
     def completed(cls, condition: ExperimentCondition, **values: object) -> "ExperimentReceipt":
@@ -395,6 +565,11 @@ class ExperimentReceipt:
             "preprocessing_sha256": self.preprocessing_sha256,
             "reason": self.reason,
             "status": self.status,
+            "stage_four_selection": (
+                self.stage_four_selection.to_dict()
+                if self.stage_four_selection is not None
+                else None
+            ),
             "support_sha256": self.support_sha256,
         }
 

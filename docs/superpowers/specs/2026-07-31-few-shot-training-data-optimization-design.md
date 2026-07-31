@@ -345,6 +345,16 @@ Evaluate exactly two frozen conditions on `test2019`:
 - the provisional minimum;
 - the balanced 150-shot reference.
 
+The Stage-5 scheduler accepts no free method, selector, or shot-count input.
+For each fold and support seed it consumes a canonical Stage-4 selection
+certificate containing exactly four distinct confirmation-score receipt
+SHA-256 values: last failure, provisional minimum, next passing anchor, and
+the balanced 150-shot reference. The certificate requires one common
+method/selector/fold/seed, a failing last-lower point, a passing provisional
+minimum and next anchor, and a passing 150-shot reference. Both locked
+conditions must reproduce that certificate exactly; their candidate/reference
+method and selector must match, and their reference is exactly `k=150`.
+
 If the provisional minimum passes, it is the RPC minimum for this model and
 capture contract. If it fails, no larger count is selected from the same locked
 evidence.

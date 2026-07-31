@@ -13,6 +13,8 @@ from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
     ScoringPlan,
+    StageFourConfirmationReceipt,
+    StageFourSelection,
     ascending_conditions,
     confirmation_conditions,
     locked_conditions,
@@ -96,17 +98,43 @@ def test_confirmation_and_locked_conditions_bind_the_150_shot_reference():
         seeds=(101,),
         folds=(0,),
     )
-    locked = locked_conditions(
-        ("m0", "div"),
-        candidate_shot_count=5,
-        seeds=(101,),
-        folds=(0,),
-    )
+    selected = _stage_four_selection()
+    locked = locked_conditions(selected)
 
     assert {condition.stage for condition in confirmation} == {"confirmation"}
     assert {condition.shot_count for condition in confirmation} == {3, 5, 10, 150}
     assert {condition.stage for condition in locked} == {"locked"}
     assert {condition.shot_count for condition in locked} == {5, 150}
+
+
+def _stage_four_selection() -> StageFourSelection:
+    conditions = confirmation_conditions(
+        ("m0", "div"),
+        shot_counts=(3, 5, 10, 150),
+        seeds=(101,),
+        folds=(0,),
+    )
+    return StageFourSelection(
+        confirmation_receipts=tuple(
+            StageFourConfirmationReceipt(
+                condition=condition,
+                score_receipt_sha256=f"{index + 1:x}" * 64,
+                provisional_pass=condition.shot_count != 3,
+            )
+            for index, condition in enumerate(conditions)
+        )
+    )
+
+
+def test_locked_scheduler_requires_four_hash_bound_stage_four_receipts():
+    selection = _stage_four_selection()
+    assert selection.provisional_minimum_shot_count == 5
+    assert {(cell.method, cell.selector) for cell in locked_conditions(selection)} == {
+        ("m0", "div")
+    }
+
+    with pytest.raises(TypeError):
+        locked_conditions(("m0", "div"), candidate_shot_count=5, seeds=(101,), folds=(0,))  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("last_failure, first_pass, expected", [(3, 5, (4,)), (5, 10, (6, 8)), (10, 20, (12, 15, 18))])

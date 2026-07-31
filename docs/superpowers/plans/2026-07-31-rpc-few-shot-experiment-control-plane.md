@@ -14,6 +14,7 @@
 - Use only `C:\workspace\archive` as the RPC source root; reject the duplicate `C:\workspace\archive\retail_product_checkout` root.
 - Verify source annotations and every materialized image by lowercase SHA-256 before a run can proceed.
 - Record source/split/selection/preprocess/model/calibration/policy/code/environment/output provenance in canonical JSON; never overwrite an existing manifest or receipt.
+- A Stage-5 schedule is derived only from four hash-bound Stage-4 confirmation receipts for the same method, selector, fold, and support seed; the certificate proves last failure, provisional minimum, next passing anchor, and the balanced 150-shot reference. Nested JSON condition fields are re-parsed against their deterministic `condition_id` before either a condition or score receipt is trusted.
 - Keep image pixels, crops, embeddings, raw predictions, checkpoints, and full run output external to Git.
 - Treat missing model adapters, model artifacts, GPU suites, and retail detector evidence as `unavailable` or `unverified`, never as passing results.
 - Apply the canonical EXIF-transposed RGB crop contract and fail closed on malformed or out-of-bounds boxes.

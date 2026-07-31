@@ -28,7 +28,11 @@ from bakery_scanner.experiments.rpc_metrics import (
     validate_evidence_completeness,
     validate_paired_evidence,
 )
-from bakery_scanner.experiments.rpc_protocol import ScoringPlan
+from bakery_scanner.experiments.rpc_protocol import (
+    ExperimentCondition,
+    ScoringPlan,
+    StageFourSelection,
+)
 
 
 _SCORE_BRANCHES: tuple[BranchName, ...] = (
@@ -143,6 +147,12 @@ def score(
         (_score_receipt_condition(condition, "condition"),),
         (_score_receipt_condition(reference_condition, "condition"),),
     )
+    paired_stage = _paired_condition_stage(condition, reference_condition)
+    stage_four_selection = None
+    if paired_stage == "locked":
+        stage_four_selection = _validate_locked_condition_receipt_pair(
+            condition, reference_condition
+        )
     candidate_id, _ = condition_provenance(condition)
     reference_id, _ = condition_provenance(reference_condition)
     candidate_novel, candidate_base = condition_cohort(condition)
@@ -248,7 +258,9 @@ def score(
             "fold_base_checkpoint_macro_final_correct_recall": base_checkpoint_recall,
         },
     }
-    stage = _paired_condition_stage(condition, reference_condition)
+    if stage_four_selection is not None:
+        score_receipt["stage_four_selection"] = stage_four_selection.to_dict()
+    stage = paired_stage
     if stage == "stage1":
         score_receipt["stage1_global_top1_agreement"] = {
             "candidate": branch_top1_agreement(
@@ -437,6 +449,12 @@ def aggregate_score_receipts(
     )
     _validate_complete_condition_set(candidate_conditions, candidate_plan)
     _validate_complete_condition_set(reference_conditions, reference_plan)
+    locked_selections: tuple[StageFourSelection, ...] = ()
+    if aggregate_stage == "locked":
+        locked_selections = tuple(
+            _validate_locked_score_receipt_pair(receipt) for receipt in receipts
+        )
+        _validate_comparable_locked_selections(locked_selections, candidate_plan)
     aggregate_conditions: list[PairedConditionEvidence] = []
     candidate_summaries = []
     reference_summaries = []
@@ -512,9 +530,7 @@ def aggregate_score_receipts(
         if aggregate_stage == "locked"
         else {"decision_status": "provisional", "provisional_pass": passes}
     )
-    write_new_json(
-        output,
-        {
+    output_receipt: dict[str, object] = {
             "schema_version": 2,
             "kind": (
                 "rpc-fewshot-final-score-receipt"
@@ -555,8 +571,15 @@ def aggregate_score_receipts(
             "paired_bootstrap_95": asdict(interval),
             "minimum_rule_inputs": minimum_rule_inputs,
             **decision,
-        },
-    )
+        }
+    if locked_selections:
+        output_receipt["stage_four_selections"] = [
+            selection.to_dict()
+            for selection in sorted(
+                locked_selections, key=lambda item: (item.fold, item.support_seed)
+            )
+        ]
+    write_new_json(output, output_receipt)
 
 
 def _load_aggregate_evidence(
@@ -909,13 +932,10 @@ def _condition_scoring_plan(condition: Mapping[str, object]) -> ScoringPlan:
     plan = ScoringPlan.from_dict(raw)
     if condition.get("scoring_plan_sha256") != plan.sha256:
         raise ValueError("condition scoring plan SHA-256 mismatch")
-    nested = condition.get("condition")
-    if not isinstance(nested, Mapping):
-        raise ValueError("condition receipt lacks condition")
-    condition_id = nested.get("condition_id")
-    if condition_id not in plan.expected_condition_ids:
+    parsed = _parse_nested_condition(condition, "condition")
+    if parsed.condition_id not in plan.expected_condition_ids:
         raise ValueError("condition ID is not declared by the scoring plan")
-    if nested.get("fold") not in plan.folds or nested.get("support_seed") not in plan.support_seeds:
+    if parsed.fold not in plan.folds or parsed.support_seed not in plan.support_seeds:
         raise ValueError("condition fold/seed is not declared by the scoring plan")
     scoring = condition.get("scoring")
     if not isinstance(scoring, Mapping) or scoring.get("registered_category_ids") != list(
@@ -923,16 +943,58 @@ def _condition_scoring_plan(condition: Mapping[str, object]) -> ScoringPlan:
     ):
         raise ValueError("condition scoring cohort does not match the scoring plan")
     binding = condition.get("fold_base_checkpoint")
-    artifact = next(item for item in plan.fold_base_artifacts if item.fold == nested.get("fold"))
+    artifact = next(item for item in plan.fold_base_artifacts if item.fold == parsed.fold)
     if (
         not isinstance(binding, Mapping)
         or set(binding) != {"checkpoint_sha256", "evidence_sha256", "fold"}
-        or binding.get("fold") != nested.get("fold")
+        or binding.get("fold") != parsed.fold
         or binding.get("checkpoint_sha256") != artifact.checkpoint_sha256
         or binding.get("evidence_sha256") != artifact.evidence_sha256
     ):
         raise ValueError("condition fold base checkpoint does not match the scoring plan")
+    _validate_condition_stage_four_selection(condition, parsed)
     return plan
+
+
+def _parse_nested_condition(
+    receipt: Mapping[str, object], name: str
+) -> ExperimentCondition:
+    """Treat a condition ID as a digest of every declared condition field."""
+    nested = receipt.get(name)
+    if not isinstance(nested, Mapping):
+        raise ValueError(f"receipt lacks {name}")
+    parsed = ExperimentCondition.from_dict(nested)
+    if dict(nested) != parsed.to_dict():
+        raise ValueError("receipt condition is not canonical")
+    return parsed
+
+
+def _validate_condition_stage_four_selection(
+    receipt: Mapping[str, object], condition: ExperimentCondition
+) -> None:
+    selection_value = receipt.get("stage_four_selection")
+    if condition.stage != "locked":
+        if selection_value is not None:
+            raise ValueError("only locked conditions may bind a Stage-4 selection")
+        return
+    if not isinstance(selection_value, Mapping):
+        raise ValueError("locked condition lacks Stage-4 selection")
+    selection = StageFourSelection.from_dict(selection_value)
+    _validate_locked_condition_against_selection(condition, selection)
+
+
+def _validate_locked_condition_against_selection(
+    condition: ExperimentCondition, selection: StageFourSelection
+) -> None:
+    if (condition.method, condition.selector, condition.fold, condition.support_seed) != (
+        selection.method,
+        selection.selector,
+        selection.fold,
+        selection.support_seed,
+    ):
+        raise ValueError("locked condition does not match its Stage-4 selection")
+    if condition.shot_count not in {selection.provisional_minimum_shot_count, 150}:
+        raise ValueError("locked condition is not the selected provisional minimum or 150-shot reference")
 
 
 def _validate_comparable_scoring_plans(candidate: ScoringPlan, reference: ScoringPlan) -> None:
@@ -959,7 +1021,10 @@ def _score_receipt_condition(receipt: Mapping[str, object], name: str) -> Mappin
     value = receipt.get(name)
     if not isinstance(value, Mapping):
         raise ValueError(f"score receipt lacks {name}")
-    return value
+    parsed = ExperimentCondition.from_dict(value)
+    if dict(value) != parsed.to_dict():
+        raise ValueError("score receipt condition is not canonical")
+    return parsed.to_dict()
 
 
 def _validate_complete_condition_set(
@@ -997,6 +1062,14 @@ def _validate_paired_condition_axes(
         )
     ):
         raise ValueError("candidate/reference score receipts must have paired fold/seed axes")
+    if any(
+        (candidate.get("method"), candidate.get("selector"))
+        != (reference.get("method"), reference.get("selector"))
+        for candidate, reference in zip(
+            candidate_conditions, reference_conditions, strict=True
+        )
+    ):
+        raise ValueError("candidate/reference conditions must share method and selector")
 
 
 def _validated_aggregate_stage(
@@ -1019,6 +1092,85 @@ def _validated_aggregate_stage(
     if any(reference.get("shot_count") != 150 for reference in reference_conditions):
         raise ValueError("aggregate requires an exact 150-shot reference condition")
     return stages.pop()
+
+
+def _locked_selection_from_value(value: object) -> StageFourSelection:
+    if not isinstance(value, Mapping):
+        raise ValueError("locked score receipt lacks Stage-4 selection")
+    return StageFourSelection.from_dict(value)
+
+
+def _validate_locked_pair_against_selection(
+    candidate_value: Mapping[str, object],
+    reference_value: Mapping[str, object],
+    selection: StageFourSelection,
+) -> None:
+    candidate = ExperimentCondition.from_dict(candidate_value)
+    reference = ExperimentCondition.from_dict(reference_value)
+    _validate_locked_condition_against_selection(candidate, selection)
+    _validate_locked_condition_against_selection(reference, selection)
+    if candidate.shot_count != selection.provisional_minimum_shot_count:
+        raise ValueError("locked candidate is not the Stage-4 provisional minimum")
+    if reference.shot_count != 150:
+        raise ValueError("locked reference is not the balanced 150-shot condition")
+
+
+def _validate_locked_condition_receipt_pair(
+    candidate_receipt: Mapping[str, object], reference_receipt: Mapping[str, object]
+) -> StageFourSelection:
+    candidate = _score_receipt_condition(candidate_receipt, "condition")
+    reference = _score_receipt_condition(reference_receipt, "condition")
+    candidate_selection = _locked_selection_from_value(
+        candidate_receipt.get("stage_four_selection")
+    )
+    reference_selection = _locked_selection_from_value(
+        reference_receipt.get("stage_four_selection")
+    )
+    if candidate_selection != reference_selection:
+        raise ValueError("candidate/reference locked conditions bind different Stage-4 selections")
+    _validate_locked_pair_against_selection(candidate, reference, candidate_selection)
+    return candidate_selection
+
+
+def _validate_locked_score_receipt_pair(receipt: Mapping[str, object]) -> StageFourSelection:
+    candidate = _score_receipt_condition(receipt, "candidate_condition")
+    reference = _score_receipt_condition(receipt, "reference_condition")
+    selection = _locked_selection_from_value(receipt.get("stage_four_selection"))
+    _validate_locked_pair_against_selection(candidate, reference, selection)
+    return selection
+
+
+def _validate_comparable_locked_selections(
+    selections: tuple[StageFourSelection, ...], plan: ScoringPlan
+) -> None:
+    """All fold/seed certificates must select the same frozen method and minimum."""
+    if not selections:
+        raise ValueError("locked aggregate lacks Stage-4 selections")
+    coordinates = {(selection.fold, selection.support_seed) for selection in selections}
+    if len(coordinates) != len(selections):
+        raise ValueError("locked aggregate repeats a Stage-4 selection coordinate")
+    if coordinates != {
+        (fold, seed) for fold in plan.folds for seed in plan.support_seeds
+    }:
+        raise ValueError("locked Stage-4 selections do not cover the scoring plan matrix")
+    first = selections[0]
+    signature = (
+        first.method,
+        first.selector,
+        first.provisional_minimum_shot_count,
+        tuple(sorted(item.condition.shot_count for item in first.confirmation_receipts)),
+    )
+    if any(
+        (
+            selection.method,
+            selection.selector,
+            selection.provisional_minimum_shot_count,
+            tuple(sorted(item.condition.shot_count for item in selection.confirmation_receipts)),
+        )
+        != signature
+        for selection in selections[1:]
+    ):
+        raise ValueError("locked aggregate mixes incompatible Stage-4 selections")
 
 
 def _minimum_rule_inputs_pass(value: object) -> bool:
