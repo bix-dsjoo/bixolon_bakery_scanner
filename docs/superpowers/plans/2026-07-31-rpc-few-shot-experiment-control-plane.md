@@ -93,7 +93,7 @@ def load_rpc_index(contract: RpcDatasetContract, root: Path) -> RpcIndex:
     root = Path(root).resolve()
     if root.name == "retail_product_checkout":
         raise ValueError("duplicate extracted RPC root is not an experiment source")
-    annotations = {split: root / split / "instances.json" for split in contract.annotation_sha256}
+    annotations = {split: root / f"instances_{split}.json" for split in contract.annotation_sha256}
     for split, path in annotations.items():
         require_sha256(path, contract.annotation_sha256[split])
     return RpcIndex.from_coco(annotations, expected_image_counts=contract.image_counts)
