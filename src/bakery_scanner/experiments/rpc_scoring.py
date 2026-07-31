@@ -43,6 +43,7 @@ from bakery_scanner.experiments.rpc_protocol import (
     validate_stage_four_confirmation_score_receipts,
 )
 from bakery_scanner.experiments.rpc_splits import build_scene_roles
+from bakery_scanner.experiments.rpc_support import load_support_bank, validate_support_bank_for_condition
 
 
 _SCORE_BRANCHES: tuple[BranchName, ...] = (
@@ -598,6 +599,7 @@ def score(
     output: Path,
     *,
     trusted_source_root: Path,
+    support_bank_path: Path | None = None,
 ) -> None:
     """Write one non-final condition score; only complete aggregation can pass."""
     if output.exists():
@@ -618,6 +620,9 @@ def score(
         (_score_receipt_condition(reference_condition, "condition"),),
     )
     paired_stage = _paired_condition_stage(condition, reference_condition)
+    if support_bank_path is None:
+        raise ValueError("scoring requires a hash-bound support bank")
+    support_bank = load_support_bank(support_bank_path)
     stage_four_selection = None
     if paired_stage == "locked":
         stage_four_selection = _validate_locked_condition_receipt_pair(
@@ -633,6 +638,11 @@ def score(
         raise ValueError("candidate/reference condition cohort mismatch")
     if _cohort_manifest_sha256(condition) != _cohort_manifest_sha256(reference_condition):
         raise ValueError("candidate/reference cohort manifest mismatch")
+    for receipt, parsed in ((condition, _parse_nested_condition(condition, "condition")), (reference_condition, _parse_nested_condition(reference_condition, "condition"))):
+        validate_support_bank_for_condition(
+            support_bank, support_sha256=receipt["support_sha256"], selector=parsed.selector,
+            support_seed=parsed.support_seed, category_ids=(*candidate_novel, *candidate_base),
+        )
     ground_truth = load_stage_ground_truth(
         ground_truth_manifest_path, stage=paired_stage,
         trusted_source_root=trusted_source_root,
@@ -712,6 +722,7 @@ def score(
             "candidate": {"path": str(evidence_path), "sha256": candidate_evidence.sha256},
             "reference": {"path": str(reference_path), "sha256": reference_evidence.sha256},
         },
+        "support_bank": {"path": str(support_bank_path), "sha256": support_bank.sha256},
         "candidate_branch_top1": candidate_branches,
         "reference_branch_top1": reference_branches,
         "candidate_full_system": asdict(candidate_summary),
@@ -2144,6 +2155,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reference-condition", type=Path)
     parser.add_argument("--ground-truth-manifest", type=Path)
     parser.add_argument("--base-checkpoint-evidence", type=Path)
+    parser.add_argument("--support-bank", type=Path)
     parser.add_argument("--aggregate-score-receipt", action="append", type=Path)
     parser.add_argument("--aggregate-evidence", action="append", type=Path)
     parser.add_argument("--aggregate-reference-evidence", action="append", type=Path)
@@ -2206,10 +2218,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.trusted_rpc_root is None:
                 raise ValueError("single-condition scoring requires --trusted-rpc-root")
+            if args.support_bank is None:
+                raise ValueError("single-condition scoring requires --support-bank")
             score(  # type: ignore[arg-type]
                 *single,
                 args.output,
                 trusted_source_root=args.trusted_rpc_root,
+                support_bank_path=args.support_bank,
             )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
