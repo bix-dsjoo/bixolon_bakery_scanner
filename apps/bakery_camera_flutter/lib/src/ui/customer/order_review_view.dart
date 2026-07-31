@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
+import '../bixolon_theme_extension.dart';
 import '../components/bakery_primary_button.dart';
+import '../components/bakery_secondary_button.dart';
 import '../components/checkout_scaffold.dart';
 import '../components/price_text.dart';
 import '../components/quantity_stepper.dart';
@@ -137,13 +139,13 @@ class _OrderReviewViewState extends State<OrderReviewView> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Expanded(flex: 3, child: scene),
-                const SizedBox(width: 20),
+                const SizedBox(width: 12),
                 const VerticalDivider(
                   key: Key('order-review-workspace-divider'),
                   width: 1,
                   thickness: 1,
                 ),
-                const SizedBox(width: 20),
+                const SizedBox(width: 12),
                 Expanded(flex: 2, child: task),
               ],
             );
@@ -299,12 +301,17 @@ class _OrderTaskPane extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Wrap(
-          spacing: 4,
+          key: const Key('order-exception-actions'),
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            TextButton(onPressed: onAddProduct, child: const Text('상품 추가')),
-            TextButton(
+            BakerySecondaryButton(
+              label: '\uC0C1\uD488 \uCD94\uAC00',
+              onPressed: onAddProduct,
+            ),
+            BakerySecondaryButton(
+              label: '\uC2E4\uC81C \uBE75 \uC218\uAC00 \uB2EC\uB77C\uC694',
               onPressed: onCountMismatch,
-              child: const Text('실제 빵 수가 달라요'),
             ),
           ],
         ),
@@ -333,51 +340,56 @@ class _OrderLine extends StatelessWidget {
   final VoidCallback? onRemove;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    key: Key('order-review-line-${line.product.productId}'),
-    selected: recognizedObjectIds.contains(selectedObjectId),
-    selectedTileColor: Theme.of(
-      context,
-    ).colorScheme.primary.withValues(alpha: 0.08),
-    onTap: recognizedObjectIds.isEmpty
-        ? null
-        : () => onSelectLine(recognizedObjectIds),
-    title: Text(line.product.displayName),
-    subtitle: Text('개당 ${PriceText.formatKrw(line.product.unitPrice)}'),
-    trailing: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        QuantityStepper(
-          quantity: line.quantity,
-          onChanged: (quantity) =>
-              onSetQuantity(line.product.productId, quantity),
-        ),
-        if (recognizedObjectIds.length == 1)
-          IconButton(
-            tooltip: '인식 상품 변경',
-            onPressed: () => onOverrideObject(recognizedObjectIds.single),
-            icon: const Icon(Icons.edit_outlined),
-          )
-        else if (recognizedObjectIds.length > 1)
-          PopupMenuButton<String>(
-            tooltip: '인식 상품 변경',
-            onSelected: onOverrideObject,
-            itemBuilder: (context) => [
-              for (var index = 0; index < recognizedObjectIds.length; index++)
-                PopupMenuItem(
-                  value: recognizedObjectIds[index],
-                  child: Text('${index + 1}번째 상품 변경'),
-                ),
-            ],
-            icon: const Icon(Icons.edit_outlined),
+  Widget build(BuildContext context) {
+    final selected = recognizedObjectIds.contains(selectedObjectId);
+    return ListTile(
+      key: selected
+          ? const Key('order-review-selected-line')
+          : Key('order-review-line-${line.product.productId}'),
+      selected: selected,
+      selectedTileColor: BixolonThemeExtension.of(context).selectedSurface,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      minTileHeight: 64,
+      onTap: recognizedObjectIds.isEmpty
+          ? null
+          : () => onSelectLine(recognizedObjectIds),
+      title: Text(line.product.displayName),
+      subtitle: Text('개당 ${PriceText.formatKrw(line.product.unitPrice)}'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          QuantityStepper(
+            quantity: line.quantity,
+            onChanged: (quantity) =>
+                onSetQuantity(line.product.productId, quantity),
           ),
-        if (onRemove != null)
-          IconButton(
-            tooltip: '상품 삭제',
-            onPressed: onRemove,
-            icon: const Icon(Icons.delete_outline),
-          ),
-      ],
-    ),
-  );
+          if (recognizedObjectIds.length == 1)
+            IconButton(
+              tooltip: '인식 상품 변경',
+              onPressed: () => onOverrideObject(recognizedObjectIds.single),
+              icon: const Icon(Icons.edit_outlined),
+            )
+          else if (recognizedObjectIds.length > 1)
+            PopupMenuButton<String>(
+              tooltip: '인식 상품 변경',
+              onSelected: onOverrideObject,
+              itemBuilder: (context) => [
+                for (var index = 0; index < recognizedObjectIds.length; index++)
+                  PopupMenuItem(
+                    value: recognizedObjectIds[index],
+                    child: Text('${index + 1}번째 상품 변경'),
+                  ),
+              ],
+              icon: const Icon(Icons.edit_outlined),
+            ),
+          if (onRemove != null)
+            IconButton(
+              tooltip: '상품 삭제',
+              onPressed: onRemove,
+              icon: const Icon(Icons.delete_outline),
+            ),
+        ],
+      ),
+    );
+  }
 }

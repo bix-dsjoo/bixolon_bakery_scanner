@@ -129,6 +129,10 @@ void main() {
   testWidgets(
     'order correction keeps the order visible beside the catalog panel',
     (tester) async {
+      tester.view.physicalSize = const Size(1280, 820);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final fixture = (await tester.runAsync(() async {
         final fixture = await CustomerCheckoutJourneyFixture.create();
         await fixture.controller.initialize();
@@ -155,6 +159,18 @@ void main() {
       );
       expect(find.byKey(const Key('order-review-scene-pane')), findsOneWidget);
       expect(find.byKey(const Key('order-review-task-pane')), findsOneWidget);
+      final divider = tester.getRect(
+        find.byKey(const Key('order-review-workspace-divider')),
+      );
+      final scene = tester.getRect(
+        find.byKey(const Key('order-review-scene-pane')),
+      );
+      final task = tester.getRect(
+        find.byKey(const Key('order-review-task-pane')),
+      );
+      expect(divider.width, 1);
+      expect(divider.left - scene.right, closeTo(12, 1));
+      expect(task.left - divider.right, closeTo(12, 1));
       final panelMaterial = tester.widget<Material>(
         find
             .descendant(
@@ -164,7 +180,7 @@ void main() {
             .first,
       );
       expect(panelMaterial.elevation, 2);
-      expect(panelMaterial.borderRadius, BorderRadius.circular(8));
+      expect(panelMaterial.borderRadius, BorderRadius.circular(10));
       expect(find.byKey(const Key('customer-catalog-close')), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('customer-catalog-close')));
@@ -483,10 +499,7 @@ void main() {
       tester,
       KioskDisplayNameScope(
         displayName: 'BIXOLON Seongsu',
-        child: const CheckoutScaffold(
-          title: '???怨꾩궛',
-          child: const SizedBox(),
-        ),
+        child: const CheckoutScaffold(title: '???怨꾩궛', child: SizedBox()),
       ),
     );
 

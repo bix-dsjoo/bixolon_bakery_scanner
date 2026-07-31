@@ -465,13 +465,24 @@ void main() {
           onRemoveProduct: (_) => actions.add('remove'),
         ),
       );
+      final exceptions = find.byKey(const Key('order-exception-actions'));
+      expect(exceptions, findsOneWidget);
+      expect(
+        find.descendant(of: exceptions, matching: find.byType(OutlinedButton)),
+        findsNWidgets(2),
+      );
+      expect(
+        find.descendant(of: exceptions, matching: find.byType(TextButton)),
+        findsNothing,
+      );
       await tester.tap(find.byIcon(Icons.add).first);
       await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.tap(find.text('상품 추가'));
       await tester.tap(find.text('실제 빵 수가 달라요'));
       await tester.tap(find.byType(FilledButton));
       expect(
         actions,
-        containsAll(<String>['quantity:2', 'remove', 'mismatch', 'pay']),
+        containsAll(<String>['quantity:2', 'remove', 'add', 'mismatch', 'pay']),
       );
       expect(find.bySemanticsLabel('직접 담기 안내 그림'), findsOneWidget);
     },

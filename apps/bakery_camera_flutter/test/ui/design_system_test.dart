@@ -2,6 +2,7 @@ import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:bakery_camera_prototype/src/ui/bixolon_brand.dart';
 import 'package:bakery_camera_prototype/src/ui/bixolon_theme_extension.dart';
 import 'package:bakery_camera_prototype/src/ui/components/bakery_primary_button.dart';
+import 'package:bakery_camera_prototype/src/ui/components/bakery_secondary_button.dart';
 import 'package:bakery_camera_prototype/src/ui/components/bakery_status_banner.dart';
 import 'package:bakery_camera_prototype/src/ui/components/checkout_scaffold.dart';
 import 'package:bakery_camera_prototype/src/ui/components/price_text.dart';
@@ -120,6 +121,29 @@ void main() {
     expect(tester.getSize(find.byType(BakeryPrimaryButton)).height, 56);
     expect(tester.getSize(find.byTooltip('수량 줄이기')).shortestSide, 48);
     expect(tester.getSize(find.byTooltip('수량 늘리기')).shortestSide, 48);
+  });
+
+  testWidgets('secondary action is neutral and keeps a kiosk touch target', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildBakeryTheme(),
+        home: Scaffold(
+          body: BakerySecondaryButton(
+            label: '\uC0C1\uD488 \uCD94\uAC00',
+            onPressed: () {},
+          ),
+        ),
+      ),
+    );
+
+    final button = tester.widget<OutlinedButton>(find.byType(OutlinedButton));
+    final foreground = button.style!.foregroundColor!.resolve(<WidgetState>{});
+    final side = button.style!.side!.resolve(<WidgetState>{});
+    expect(foreground, const Color(0xFF424242));
+    expect(side?.color, const Color(0xFFD8D8D8));
+    expect(tester.getSize(find.byType(BakerySecondaryButton)).height, 48);
   });
 
   testWidgets('price has tabular numerals and status is never color-only', (

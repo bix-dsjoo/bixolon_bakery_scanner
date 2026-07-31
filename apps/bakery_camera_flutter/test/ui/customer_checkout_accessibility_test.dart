@@ -219,16 +219,18 @@ void main() {
     expect(find.byKey(const Key('order-review-task-pane')), findsOneWidget);
     await tester.tap(find.byKey(const Key('customer-review-overlay-object-1')));
     await tester.pumpAndSettle();
+    final selectedLine = tester.widget<ListTile>(
+      find.byKey(const Key('order-review-selected-line')),
+    );
+    expect(selectedLine.selectedTileColor, const Color(0xFFFCEAD9));
     expect(
       tester
-          .widget<ListTile>(
-            find.byKey(const Key('order-review-line-sugar-donut')),
-          )
+          .widget<ListTile>(find.byKey(const Key('order-review-selected-line')))
           .selected,
       isTrue,
     );
 
-    await tester.tap(find.byKey(const Key('order-review-line-sugar-donut')));
+    await tester.tap(find.byKey(const Key('order-review-selected-line')));
     await tester.pumpAndSettle();
     expect(
       tester
@@ -336,7 +338,7 @@ void main() {
 
       final button = tester.widget<FilledButton>(find.byType(FilledButton));
       final side = button.style!.side!.resolve({WidgetState.focused});
-      expect(side!.color, const Color(0xFF176BFF));
+      expect(side!.color, const Color(0xFF184C9F));
       expect(side.width, greaterThanOrEqualTo(2));
     },
   );

@@ -23,7 +23,7 @@ class QuantityStepper extends StatelessWidget {
           color: states.contains(WidgetState.focused)
               ? tokens.focus
               : Colors.transparent,
-          width: states.contains(WidgetState.focused) ? 3 : 0,
+          width: states.contains(WidgetState.focused) ? 2 : 0,
         ),
       ),
     );
@@ -31,7 +31,7 @@ class QuantityStepper extends StatelessWidget {
       label: '수량 $quantity',
       child: DecoratedBox(
         decoration: BoxDecoration(
-          border: Border.all(color: tokens.divider),
+          border: Border.all(color: tokens.controlBorder),
           borderRadius: BorderRadius.circular(tokens.controlRadius),
         ),
         child: Row(

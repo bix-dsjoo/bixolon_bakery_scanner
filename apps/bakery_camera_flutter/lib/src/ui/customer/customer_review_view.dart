@@ -497,7 +497,7 @@ class _ReviewLedgerRow extends StatelessWidget {
         contentPadding: const EdgeInsets.symmetric(horizontal: 6),
         horizontalTitleGap: 4,
         selected: selected,
-        selectedTileColor: tokens.action.withValues(alpha: 0.08),
+        selectedTileColor: tokens.selectedSurface,
         leading: Icon(
           confirmed ? Icons.check_circle : Icons.help_outline,
           color: confirmed ? tokens.confirmed : tokens.uncertainty,

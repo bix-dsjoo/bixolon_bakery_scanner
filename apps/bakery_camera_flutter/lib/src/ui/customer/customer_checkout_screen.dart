@@ -8,6 +8,7 @@ import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
 import '../components/bakery_primary_button.dart';
 import '../components/bakery_status_banner.dart';
+import '../bixolon_theme_extension.dart';
 import '../components/checkout_scaffold.dart';
 import '../components/price_text.dart';
 import 'analyzing_view.dart';
@@ -221,6 +222,7 @@ class _OrderReviewCatalogPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = BixolonThemeExtension.of(context);
     final width = (MediaQuery.sizeOf(context).width - 32)
         .clamp(0.0, 480.0)
         .toDouble();
@@ -244,13 +246,13 @@ class _OrderReviewCatalogPanel extends StatelessWidget {
                   child: Material(
                     elevation: 2,
                     clipBehavior: Clip.antiAlias,
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(tokens.modalRadius),
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         border: Border.all(
                           color: Theme.of(context).dividerColor,
                         ),
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(tokens.modalRadius),
                       ),
                       child: SingleChildScrollView(
                         padding: const EdgeInsets.all(16),
