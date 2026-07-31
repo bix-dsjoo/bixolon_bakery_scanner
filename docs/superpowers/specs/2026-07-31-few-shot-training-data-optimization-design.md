@@ -244,6 +244,12 @@ Use frozen DINOv3 embeddings from eligible train images:
 - above that point, add images round-robin across strata before adding another
   image from an already overrepresented stratum.
 
+The declared DIV support seeds are independent deterministic draws: after the
+centroid-medoid first shot, seed-bound SHA-256 ranking chooses the next eligible
+capture stratum, while farthest-first still chooses the image within that
+stratum. A repeated seed must reproduce exactly the same ordered list; distinct
+declared seeds must not silently reuse one support draw.
+
 For every seed, support sets are nested:
 
 ```text
@@ -285,7 +291,9 @@ For the surviving methods, evaluate:
 ```
 
 Continue to `40 -> 80 -> 150` only if no smaller count passes. Always train the
-balanced 150-shot reference and all-available diagnostic once.
+balanced 150-shot reference and all-available diagnostic once. The
+all-available run is an ascending-stage, upper-bound diagnostic only (not a
+shot count and never a minimum-selection candidate).
 
 Each point starts with five support seeds. Clearly failing points do not receive
 more seeds. A point within three percentage points of the provisional
@@ -317,6 +325,11 @@ Only these frozen conditions enter the expensive confirmation:
 2. the provisional minimum;
 3. the next larger passing anchor;
 4. the balanced 150-shot reference.
+
+When `k=1` is itself the provisional minimum, there is no lower failing shot.
+Its preregistered special case therefore confirms exactly `k=1`, the next
+passing anchor `k=3`, and `k=150`; it must not invent a lower failure. The
+Stage-5 pair remains `k=1` and `k=150` and retains the same artifact binding.
 
 For every condition, rebuild and hash:
 

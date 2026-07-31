@@ -140,6 +140,25 @@ def test_diversity_uses_source_identity_after_equal_digest_and_distance_ties():
     assert order == materialize_support_order(tuple(reversed(candidates)), method="div", seed=11)
 
 
+def test_diversity_support_draws_are_seeded_but_reproducible():
+    """Changing a declared DIV seed must not silently reuse its support draw."""
+    candidates = tuple(
+        _candidate(
+            f"source-{index}",
+            f"roll_camera{(index % 4) + 1}-{'top' if index % 2 else 'bottom'}.jpg",
+            (float(index + 1), float((index * 3) % 7 + 1)),
+        )
+        for index in range(12)
+    )
+    first = materialize_support_order(candidates, method="div", seed=5)
+    repeat = materialize_support_order(candidates, method="div", seed=5)
+    second = materialize_support_order(candidates, method="div", seed=10)
+
+    assert first == repeat
+    assert first.source_identities[:5] != second.source_identities[:5]
+    assert first.source_identities[:10] != second.source_identities[:10]
+
+
 def test_candidate_rejects_capture_stratum_that_disagrees_with_source_file_name():
     with pytest.raises(ValueError, match="capture stratum mismatch"):
         SupportCandidate(

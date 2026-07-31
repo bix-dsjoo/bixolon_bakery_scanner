@@ -46,6 +46,7 @@ def _row(
     difficulty: str = "E",
     burst_id: str = "burst-a",
     condition_id: str = "candidate",
+    conditional_dino_executed: bool = False,
 ) -> ResearchEvidenceRow:
     resolved_object_id = object_id
     if resolved_object_id is None:
@@ -72,6 +73,7 @@ def _row(
         dinov3_local_scores=(
             repvit_global_scores if dinov3_local_scores is None else dinov3_local_scores
         ),
+        conditional_dino_executed=conditional_dino_executed,
         **_HASHES,
     )
 
@@ -90,6 +92,32 @@ def test_unknown_only_candidate_cannot_pass_despite_safety_gain():
         interval,
         base_checkpoint_macro_recall=1.0,
     )
+
+
+def test_branch_and_full_summaries_report_selection_and_conditional_dino_metrics():
+    rows = (
+        _row("novel-ok", truth=1, predicted=1, conditional_dino_executed=True),
+        _row("base-wrong", truth=2, predicted=1, conditional_dino_executed=False),
+    )
+
+    branch = branch_top1_summary(rows, branch="repvit_global", novel_category_ids={1})
+    full = full_system_summary(rows, novel_category_ids={1})
+
+    assert branch.confusion_matrix == {1: {1: 1}, 2: {1: 1}}
+    assert branch.fifth_percentile_sku_accuracy == 0.05
+    assert branch.wrong_registered_sku_rate == 0.5
+    assert full.conditional_dino_execution_rate == 0.5
+
+
+def test_evidence_row_requires_a_boolean_conditional_dino_execution_value():
+    payload = _row("dino").to_dict()
+    payload.pop("conditional_dino_executed")
+    with pytest.raises(ValueError, match="missing or unrecognized"):
+        ResearchEvidenceRow.from_dict(payload)
+    payload = _row("dino-two").to_dict()
+    payload["conditional_dino_executed"] = "yes"
+    with pytest.raises(ValueError, match="invalid evidence row"):
+        ResearchEvidenceRow.from_dict(payload)
 
 
 def test_minimum_rule_accepts_exact_boundaries():

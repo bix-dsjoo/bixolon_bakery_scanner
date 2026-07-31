@@ -320,6 +320,7 @@ def _evidence(condition_id: str, **overrides: object) -> dict[str, object]:
             "dinov3_global_scores", default_scores
         ),
         "dinov3_local_scores": overrides.pop("dinov3_local_scores", default_scores),
+        "conditional_dino_executed": overrides.pop("conditional_dino_executed", False),
         **HASHES,
         **overrides,
     }

@@ -117,6 +117,7 @@ class ResearchEvidenceRow:
     repvit_global_scores: tuple[float, ...]
     dinov3_global_scores: tuple[float, ...]
     dinov3_local_scores: tuple[float, ...]
+    conditional_dino_executed: bool
     condition_manifest_sha256: str
     model_sha256: str
     support_sha256: str
@@ -155,6 +156,8 @@ class ResearchEvidenceRow:
             raise ValueError("truth category ID is missing from scores")
         if self.predicted_category_id is not None and self.predicted_category_id not in category_ids:
             raise ValueError("predicted category ID is missing from scores")
+        if type(self.conditional_dino_executed) is not bool:
+            raise ValueError("conditional_dino_executed must be boolean")
         object.__setattr__(self, "score_category_ids", category_ids)
         for name in _HASH_NAMES:
             _validate_hash(name, getattr(self, name))
@@ -203,6 +206,7 @@ class ResearchEvidenceRow:
             "repvit_global_scores": list(self.repvit_global_scores),
             "dinov3_global_scores": list(self.dinov3_global_scores),
             "dinov3_local_scores": list(self.dinov3_local_scores),
+            "conditional_dino_executed": self.conditional_dino_executed,
             **{name: getattr(self, name) for name in _HASH_NAMES},
         }
 
@@ -213,7 +217,7 @@ class ResearchEvidenceRow:
         required = {
             "sample_id", "object_id", "condition_id", "fold", "difficulty", "burst_id", "truth_category_id",
             "predicted_category_id", "score_category_ids", "repvit_global_scores",
-            "dinov3_global_scores", "dinov3_local_scores", *_HASH_NAMES,
+            "dinov3_global_scores", "dinov3_local_scores", "conditional_dino_executed", *_HASH_NAMES,
         }
         missing = required - set(value)
         extra = set(value) - required
@@ -233,6 +237,7 @@ class ResearchEvidenceRow:
                 repvit_global_scores=tuple(value["repvit_global_scores"]),  # type: ignore[arg-type]
                 dinov3_global_scores=tuple(value["dinov3_global_scores"]),  # type: ignore[arg-type]
                 dinov3_local_scores=tuple(value["dinov3_local_scores"]),  # type: ignore[arg-type]
+                conditional_dino_executed=value["conditional_dino_executed"],  # type: ignore[arg-type]
                 **{name: value[name] for name in _HASH_NAMES},  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -245,6 +250,9 @@ class BranchTop1Summary:
     novel_macro_recall: float
     base_macro_recall: float
     per_category_recall: Mapping[int, float]
+    confusion_matrix: Mapping[int, Mapping[int, int]]
+    fifth_percentile_sku_accuracy: float
+    wrong_registered_sku_rate: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +277,7 @@ class FullSystemSummary:
     base_macro_final_correct_recall: float
     per_category_final_correct_recall: Mapping[int, float]
     novel_loss_over_10pp_fraction: float
+    conditional_dino_execution_rate: float
     by_difficulty: Mapping[str, DifficultySummary]
 
 
@@ -449,6 +458,11 @@ def branch_top1_summary(
         novel_macro_recall=_macro(recalls, novel_category_ids),
         base_macro_recall=_macro(recalls, _base_categories(frozen, novel_category_ids)),
         per_category_recall=recalls,
+        confusion_matrix=_branch_confusion_matrix(frozen, branch),
+        fifth_percentile_sku_accuracy=_percentile(tuple(recalls.values()), 0.05),
+        wrong_registered_sku_rate=_mean(
+            row.branch_top1_category_id(branch) != row.truth_category_id for row in frozen
+        ),
     )
 
 
@@ -663,6 +677,7 @@ def _full_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int], re
         base_macro_final_correct_recall=_macro(recalls, _base_categories(rows, novel)),
         per_category_final_correct_recall=recalls,
         novel_loss_over_10pp_fraction=(len(losses) / len(novel)) if novel else 0.0,
+        conditional_dino_execution_rate=_mean(row.conditional_dino_executed for row in rows),
         by_difficulty=by_difficulty,
     )
 
@@ -768,6 +783,22 @@ def _bootstrap_metrics(
         novel_wrong_rate,
         _macro(recalls, _base_categories(rows, novel)),
     )
+
+
+def _branch_confusion_matrix(
+    rows: Sequence[ResearchEvidenceRow], branch: BranchName
+) -> dict[int, dict[int, int]]:
+    """Count forced branch predictions by truth SKU in stable numeric order."""
+    result: dict[int, dict[int, int]] = {}
+    for row in rows:
+        truth = row.truth_category_id
+        predicted = row.branch_top1_category_id(branch)
+        counts = result.setdefault(truth, {})
+        counts[predicted] = counts.get(predicted, 0) + 1
+    return {
+        truth: {predicted: counts[predicted] for predicted in sorted(counts)}
+        for truth, counts in sorted(result.items())
+    }
 
 
 def _category_recalls(rows: Sequence[ResearchEvidenceRow], predicate: Any) -> dict[int, float]:

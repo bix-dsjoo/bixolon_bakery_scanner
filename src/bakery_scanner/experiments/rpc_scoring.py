@@ -1591,8 +1591,8 @@ def _stage_four_receipt_paths(receipt: Mapping[str, object]) -> tuple[Path, ...]
         paths = tuple(Path(item) for item in value)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise ValueError("locked condition lacks Stage-4 confirmation score receipt paths") from exc
-    if len(paths) != 4 or any(not str(path) for path in paths):
-        raise ValueError("locked condition requires four Stage-4 confirmation score receipt paths")
+    if len(paths) not in {3, 4} or any(not str(path) for path in paths):
+        raise ValueError("locked condition requires three or four Stage-4 confirmation score receipt paths")
     return paths
 
 

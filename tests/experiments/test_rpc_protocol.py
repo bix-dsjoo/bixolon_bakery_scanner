@@ -21,6 +21,10 @@ from bakery_scanner.experiments.rpc_protocol import (
     StageFourSelection,
     ascending_conditions,
     confirmation_conditions,
+    all_available_diagnostic_conditions,
+    StageOneMethodEvidence,
+    select_stage_one_methods,
+    StageOneSelectionReceipt,
     locked_conditions,
     refinement_shots,
     stage_one_conditions,
@@ -134,6 +138,100 @@ def test_confirmation_and_locked_conditions_bind_the_150_shot_reference(tmp_path
     assert {condition.shot_count for condition in locked} == {5, 150}
 
 
+def test_k1_stage_four_selection_has_no_imaginary_lower_failure(monkeypatch: pytest.MonkeyPatch):
+    conditions = confirmation_conditions(
+        ("m0", "div"), shot_counts=(1, 3, 150), seeds=(101,), folds=(0,)
+    )
+    selection = StageFourSelection(
+        tuple(
+            StageFourConfirmationReceipt(
+                condition=condition,
+                score_receipt_sha256=f"{index + 1:x}" * 64,
+                provisional_pass=True,
+            )
+            for index, condition in enumerate(conditions)
+        )
+    )
+
+    assert selection.provisional_minimum_shot_count == 1
+    assert selection.is_lowest_shot_special_case
+    monkeypatch.setattr(
+        _rpc_protocol,
+        "validate_stage_four_confirmation_score_receipts",
+        lambda *args, **kwargs: None,
+    )
+    locked = locked_conditions(
+        selection,
+        confirmation_score_receipt_paths=(Path("one"), Path("three"), Path("reference")),
+        trusted_index=_trusted_index(),
+    )
+    assert {item.shot_count for item in locked} == {1, 150}
+    with pytest.raises(ValueError, match="next passing anchor"):
+        StageFourSelection(tuple(replace(item, provisional_pass=item.condition.shot_count != 3) for item in selection.confirmation_receipts))
+
+
+def test_all_available_is_an_ascending_diagnostic_not_a_shot_condition():
+    conditions = all_available_diagnostic_conditions(("m0", "div"), folds=(0,))
+
+    assert len(conditions) == 1
+    assert conditions[0].support_scope == "all_available"
+    assert conditions[0].shot_count == 0
+    assert conditions[0].stage == "ascending"
+    with pytest.raises(ValueError, match="all_available"):
+        replace(conditions[0], stage="confirmation")
+
+
+def test_all_available_receipt_is_labeled_as_diagnostic_only():
+    condition = all_available_diagnostic_conditions(("m0", "div"), folds=(0,))[0]
+    plan = ScoringPlan(
+        bootstrap_seed=7,
+        bootstrap_replicates=10,
+        folds=(0,),
+        support_seeds=(0,),
+        expected_condition_ids=(condition.condition_id,),
+        cohort_id="rpc-test",
+        registered_category_ids=(1, 2),
+        fold_base_artifacts=(FoldBaseArtifact(0, "2" * 64, "3" * 64),),
+    )
+    receipt = ExperimentReceipt.completed(
+        condition,
+        condition_manifest_sha256=_HASH,
+        model_sha256="b" * 64,
+        support_sha256="c" * 64,
+        calibration_sha256="d" * 64,
+        policy_sha256="e" * 64,
+        preprocessing_sha256="f" * 64,
+        code_sha256="0" * 64,
+        **_COHORT,
+        scoring_plan=plan,
+        base_checkpoint_sha256="2" * 64,
+        base_checkpoint_evidence_sha256="3" * 64,
+        environment_lock_digest="sha256:environment",
+        output_uri="file:///external/run",
+    )
+    assert receipt.to_dict()["decision_scope"] == "upper_bound_diagnostic_not_a_minimum"
+
+
+def test_stage_one_selection_preregisters_dominance_and_seed_expansion():
+    result = select_stage_one_methods(
+        (
+            StageOneMethodEvidence("m0", "div", 0.91, 0.90, 0.10, 0.10),
+            StageOneMethodEvidence("m1", "div", 0.88, 0.87, 0.11, 0.11),
+            StageOneMethodEvidence("m2", "div", 0.905, 0.87, 0.08, 0.09),
+        )
+    )
+
+    assert result.removed_methods == (("m1", "div"),)
+    assert result.retained_methods == (("m0", "div"), ("m2", "div"))
+    assert result.expand_to_ten_seeds == (("m0", "div"), ("m2", "div"))
+    receipt = StageOneSelectionReceipt(evidence=(
+        StageOneMethodEvidence("m0", "div", 0.91, 0.90, 0.10, 0.10),
+        StageOneMethodEvidence("m1", "div", 0.88, 0.87, 0.11, 0.11),
+        StageOneMethodEvidence("m2", "div", 0.905, 0.87, 0.08, 0.09),
+    ), decision=result)
+    assert receipt.to_dict()["decision"]["retained_methods"] == [["m0", "div"], ["m2", "div"]]
+
+
 def _stage_four_selection() -> StageFourSelection:
     conditions = confirmation_conditions(
         ("m0", "div"),
@@ -205,6 +303,9 @@ def _branch_summaries() -> dict[str, object]:
             "novel_macro_recall": 1.0,
             "base_macro_recall": 1.0,
             "per_category_recall": {"1": 1.0, "2": 1.0},
+            "confusion_matrix": {"1": {"1": 1}, "2": {"2": 1}},
+            "fifth_percentile_sku_accuracy": 1.0,
+            "wrong_registered_sku_rate": 0.0,
         }
         for branch in ("repvit_global", "dinov3_global", "dinov3_local")
     }
@@ -222,6 +323,7 @@ def _full_system_summary() -> dict[str, object]:
         "base_macro_final_correct_recall": 1.0,
         "per_category_final_correct_recall": {"1": 1.0, "2": 1.0},
         "novel_loss_over_10pp_fraction": 0.0,
+        "conditional_dino_execution_rate": 0.5,
         "by_difficulty": {
             "E": {
                 "sample_count": 2,

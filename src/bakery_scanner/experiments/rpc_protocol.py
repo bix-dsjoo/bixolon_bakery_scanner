@@ -43,34 +43,41 @@ class ExperimentCondition:
     support_seed: int
     stage: str
     condition_id: str
+    support_scope: Literal["fixed_k", "all_available"] = "fixed_k"
 
     def __post_init__(self) -> None:
         if (self.method, self.selector) not in _STAGE_ONE_PAIRS:
             raise ValueError("unsupported method/selector combination")
-        if type(self.shot_count) is not int or self.shot_count <= 0:
+        if self.support_scope not in {"fixed_k", "all_available"}:
+            raise ValueError("unsupported support scope")
+        if self.support_scope == "fixed_k" and (type(self.shot_count) is not int or self.shot_count <= 0):
             raise ValueError("shot_count must be a positive integer")
+        if self.support_scope == "all_available" and self.shot_count != 0:
+            raise ValueError("all_available is not a normal shot count")
         if type(self.fold) is not int or self.fold < 0:
             raise ValueError("fold must be a non-negative integer")
         if type(self.support_seed) is not int:
             raise ValueError("support_seed must be an integer")
-        if self.stage == "stage1" and self.shot_count not in _STAGE_ONE_SHOTS:
+        if self.support_scope == "all_available" and self.stage != "ascending":
+            raise ValueError("all_available diagnostic is allowed only in ascending stage")
+        if self.support_scope == "fixed_k" and self.stage == "stage1" and self.shot_count not in _STAGE_ONE_SHOTS:
             raise ValueError("unsupported Stage-1 condition")
-        if self.stage == "ascending" and self.shot_count not in (
+        if self.support_scope == "fixed_k" and self.stage == "ascending" and self.shot_count not in (
             _ASCENDING_SHOTS + _EXTENDED_ASCENDING_SHOTS
         ):
             raise ValueError("unsupported ascending condition")
-        if self.stage in {"confirmation", "locked"} and self.shot_count not in _CONFIRMATION_SHOTS:
+        if self.support_scope == "fixed_k" and self.stage in {"confirmation", "locked"} and self.shot_count not in _CONFIRMATION_SHOTS:
             raise ValueError("unsupported confirmation or locked condition")
         if self.stage not in {"stage1", "ascending", "confirmation", "locked"}:
             raise ValueError("unsupported stage")
         expected = _condition_id(
-            self.method, self.selector, self.shot_count, self.fold, self.support_seed, self.stage
+            self.method, self.selector, self.shot_count, self.fold, self.support_seed, self.stage, self.support_scope
         )
         if self.condition_id != expected:
             raise ValueError("condition_id is not deterministic for condition contents")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "condition_id": self.condition_id,
             "fold": self.fold,
             "method": self.method,
@@ -79,6 +86,9 @@ class ExperimentCondition:
             "stage": self.stage,
             "support_seed": self.support_seed,
         }
+        if self.support_scope == "all_available":
+            result["support_scope"] = self.support_scope
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ExperimentCondition":
@@ -92,7 +102,7 @@ class ExperimentCondition:
             "stage",
             "support_seed",
         }
-        if not isinstance(value, Mapping) or set(value) != expected:
+        if not isinstance(value, Mapping) or set(value) not in (expected, expected | {"support_scope"}):
             raise ValueError("condition has missing or unrecognized fields")
         try:
             return cls(
@@ -103,6 +113,7 @@ class ExperimentCondition:
                 support_seed=value["support_seed"],  # type: ignore[arg-type]
                 stage=value["stage"],  # type: ignore[arg-type]
                 condition_id=value["condition_id"],  # type: ignore[arg-type]
+                support_scope=value.get("support_scope", "fixed_k"),  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid deterministic condition") from exc
@@ -124,11 +135,12 @@ class StageFourConfirmationReceipt:
             raise ValueError("Stage-4 provisional_pass must be boolean")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "condition": self.condition.to_dict(),
             "provisional_pass": self.provisional_pass,
             "score_receipt_sha256": self.score_receipt_sha256,
         }
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "StageFourConfirmationReceipt":
@@ -148,17 +160,17 @@ class StageFourConfirmationReceipt:
 
 @dataclass(frozen=True, slots=True)
 class StageFourSelection:
-    """The only schedulable Stage-5 source: four frozen Stage-4 confirmations."""
+    """The only schedulable Stage-5 source: a frozen Stage-4 confirmation set."""
 
     confirmation_receipts: tuple[StageFourConfirmationReceipt, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.confirmation_receipts, tuple) or len(self.confirmation_receipts) != 4:
-            raise ValueError("Stage-4 selection requires exactly four frozen confirmation receipts")
+        if not isinstance(self.confirmation_receipts, tuple) or len(self.confirmation_receipts) not in {3, 4}:
+            raise ValueError("Stage-4 selection requires four receipts, or the k=1 three-receipt special case")
         if any(not isinstance(item, StageFourConfirmationReceipt) for item in self.confirmation_receipts):
             raise ValueError("Stage-4 selection contains an invalid confirmation receipt")
-        if len({item.score_receipt_sha256 for item in self.confirmation_receipts}) != 4:
-            raise ValueError("Stage-4 selection requires four distinct confirmation receipt hashes")
+        if len({item.score_receipt_sha256 for item in self.confirmation_receipts}) != len(self.confirmation_receipts):
+            raise ValueError("Stage-4 selection requires distinct confirmation receipt hashes")
         conditions = tuple(item.condition for item in self.confirmation_receipts)
         first = conditions[0]
         if any(
@@ -168,8 +180,9 @@ class StageFourSelection:
         ):
             raise ValueError("Stage-4 confirmation receipts must share method, selector, fold, and seed")
         shots = tuple(condition.shot_count for condition in conditions)
-        if len(set(shots)) != 4 or 150 not in shots:
-            raise ValueError("Stage-4 selection requires four unique shots including the 150-shot reference")
+        k1_special = len(shots) == 3 and set(shots) == {1, 3, 150}
+        if (len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots) and not k1_special:
+            raise ValueError("Stage-4 selection requires four unique shots including 150, or k1/3/150")
         non_reference = tuple(sorted(shot for shot in shots if shot != 150))
         passed = {
             item.condition.shot_count: item.provisional_pass
@@ -182,7 +195,10 @@ class StageFourSelection:
             raise ValueError("Stage-4 selection has no provisional minimum")
         prior = tuple(shot for shot in non_reference if shot < provisional)
         later = tuple(shot for shot in non_reference if shot > provisional)
-        if not prior or not later or passed[max(prior)] or not passed[min(later)]:
+        if provisional == 1 and k1_special:
+            if not passed[3]:
+                raise ValueError("Stage-4 k=1 selection requires the next passing anchor")
+        elif not prior or not later or passed[max(prior)] or not passed[min(later)]:
             raise ValueError("Stage-4 selection requires last failure and next passing anchor")
         if not passed[150]:
             raise ValueError("Stage-4 balanced 150-shot reference must pass")
@@ -210,6 +226,10 @@ class StageFourSelection:
             for item in self.confirmation_receipts
             if item.condition.shot_count != 150 and item.provisional_pass
         )
+
+    @property
+    def is_lowest_shot_special_case(self) -> bool:
+        return tuple(sorted(item.condition.shot_count for item in self.confirmation_receipts)) == (1, 3, 150)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -298,8 +318,8 @@ def validate_stage_four_confirmation_score_receipts(
         paths = tuple(Path(path) for path in receipt_paths)
     except (TypeError, ValueError) as exc:
         raise ValueError("Stage-4 confirmation score receipt paths are invalid") from exc
-    if len(paths) != 4 or len(set(paths)) != 4:
-        raise ValueError("Stage-4 selection requires four distinct confirmation score receipt paths")
+    if len(paths) != len(selection.confirmation_receipts) or len(set(paths)) != len(paths):
+        raise ValueError("Stage-4 selection requires one distinct confirmation score receipt path per receipt")
     loaded: dict[str, Mapping[str, object]] = {}
     for path in paths:
         try:
@@ -590,13 +610,17 @@ def _validate_stage_four_branch_reports(
 
 def _validate_stage_four_branch_summary(value: object) -> None:
     if not isinstance(value, Mapping) or set(value) != {
-        "sample_count", "novel_macro_recall", "base_macro_recall", "per_category_recall"
+        "sample_count", "novel_macro_recall", "base_macro_recall", "per_category_recall",
+        "confusion_matrix", "fifth_percentile_sku_accuracy", "wrong_registered_sku_rate",
     }:
         raise ValueError("Stage-4 branch summary is invalid")
     _validate_positive_integer("Stage-4 branch sample_count", value.get("sample_count"))
     _validate_stage_four_metric("Stage-4 branch novel macro recall", value.get("novel_macro_recall"))
     _validate_stage_four_metric("Stage-4 branch base macro recall", value.get("base_macro_recall"))
     _validate_stage_four_category_metrics(value.get("per_category_recall"))
+    _validate_stage_four_confusion_matrix(value.get("confusion_matrix"))
+    _validate_stage_four_metric("Stage-4 branch fifth percentile SKU accuracy", value.get("fifth_percentile_sku_accuracy"))
+    _validate_stage_four_metric("Stage-4 branch wrong registered-SKU rate", value.get("wrong_registered_sku_rate"))
 
 
 def _validate_stage_four_full_system(
@@ -613,6 +637,7 @@ def _validate_stage_four_full_system(
         "base_macro_final_correct_recall",
         "per_category_final_correct_recall",
         "novel_loss_over_10pp_fraction",
+        "conditional_dino_execution_rate",
         "by_difficulty",
     }
     if not isinstance(value, Mapping) or set(value) != required:
@@ -661,6 +686,26 @@ def _validate_stage_four_category_metrics(value: object, *, expected: tuple[int,
         _validate_stage_four_metric("Stage-4 category metric", metric)
     if expected is not None and categories != set(expected):
         raise ValueError("Stage-4 category metrics do not match the scoring plan")
+
+
+def _validate_stage_four_confusion_matrix(value: object) -> None:
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("Stage-4 branch confusion matrix is invalid")
+    for truth, predictions in value.items():
+        try:
+            truth_id = int(truth)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Stage-4 branch confusion matrix is invalid") from exc
+        if truth_id <= 0 or str(truth_id) != str(truth) or not isinstance(predictions, Mapping) or not predictions:
+            raise ValueError("Stage-4 branch confusion matrix is invalid")
+        for predicted, count in predictions.items():
+            try:
+                predicted_id = int(predicted)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Stage-4 branch confusion matrix is invalid") from exc
+            if predicted_id <= 0 or str(predicted_id) != str(predicted):
+                raise ValueError("Stage-4 branch confusion matrix is invalid")
+            _validate_positive_integer("Stage-4 branch confusion count", count)
 
 
 def _validate_stage_four_locked_ground_truth(value: object) -> str:
@@ -896,8 +941,9 @@ def confirmation_conditions(
     if pair not in _STAGE_ONE_PAIRS:
         raise ValueError("unsupported method/selector combination")
     shots = tuple(shot_counts)
-    if len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots:
-        raise ValueError("confirmation requires four unique shots including the 150-shot reference")
+    k1_special = len(shots) == 3 and set(shots) == {1, 3, 150}
+    if (len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots) and not k1_special:
+        raise ValueError("confirmation requires four unique shots including the 150-shot reference, or k1/3/150")
     if any(shot not in _CONFIRMATION_SHOTS for shot in shots):
         raise ValueError("unsupported confirmation condition")
     return _conditions((pair,), shots, seeds, folds, "confirmation")
@@ -931,6 +977,167 @@ def refinement_shots(last_failure: int, first_pass: int) -> tuple[int, ...]:
         return _REFINEMENTS[(last_failure, first_pass)]
     except KeyError as exc:
         raise ValueError("refinement interval is not preregistered") from exc
+
+
+def all_available_diagnostic_conditions(
+    method: str | tuple[str, str], *, folds: Iterable[int]
+) -> tuple[ExperimentCondition, ...]:
+    """Schedule the one-time upper-bound diagnostic outside the minimum funnel."""
+    pair = _method_pair(method)
+    if pair not in _STAGE_ONE_PAIRS:
+        raise ValueError("unsupported method/selector combination")
+    frozen_folds = tuple(folds)
+    if not frozen_folds or not all(type(fold) is int and fold >= 0 for fold in frozen_folds):
+        raise ValueError("all_available diagnostic requires nonempty integer folds")
+    return tuple(
+        _new_condition(pair[0], pair[1], 0, fold, 0, "ascending", support_scope="all_available")
+        for fold in frozen_folds
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StageOneMethodEvidence:
+    """Aggregate forced-Top-1 evidence for one preregistered method cell."""
+
+    method: str
+    selector: str
+    repvit_novel_macro_top1: float
+    dinov3_novel_macro_top1: float
+    repvit_wrong_sku_rate: float
+    dinov3_wrong_sku_rate: float
+
+    def __post_init__(self) -> None:
+        if (self.method, self.selector) not in _STAGE_ONE_PAIRS:
+            raise ValueError("unsupported Stage-1 method/selector evidence")
+        for name in (
+            "repvit_novel_macro_top1", "dinov3_novel_macro_top1",
+            "repvit_wrong_sku_rate", "dinov3_wrong_sku_rate",
+        ):
+            value = getattr(self, name)
+            if type(value) not in {int, float} or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and in [0, 1]")
+
+    @property
+    def method_selector(self) -> tuple[str, str]:
+        return self.method, self.selector
+
+
+@dataclass(frozen=True, slots=True)
+class StageOneSelectionDecision:
+    """Frozen Stage-1 choice and declared seed-expansion evidence."""
+
+    retained_methods: tuple[tuple[str, str], ...]
+    removed_methods: tuple[tuple[str, str], ...]
+    expand_to_ten_seeds: tuple[tuple[str, str], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "retained_methods": [list(item) for item in self.retained_methods],
+            "removed_methods": [list(item) for item in self.removed_methods],
+            "expand_to_ten_seeds": [list(item) for item in self.expand_to_ten_seeds],
+            "dominance_rule": "both branches >2pp lower and no branch wrong-SKU improvement",
+            "seed_expansion_rule": "within 1pp of best branch or non-dominated error trade-off expands to ten seeds",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StageOneSelectionReceipt:
+    """Immutable screen-decision artifact; it cannot claim a minimum result."""
+
+    evidence: tuple[StageOneMethodEvidence, ...]
+    decision: StageOneSelectionDecision
+
+    def __post_init__(self) -> None:
+        if not self.evidence or any(not isinstance(item, StageOneMethodEvidence) for item in self.evidence):
+            raise ValueError("Stage-1 selection receipt requires method evidence")
+        if not isinstance(self.decision, StageOneSelectionDecision):
+            raise ValueError("Stage-1 selection receipt requires a decision")
+        if self.decision != select_stage_one_methods(self.evidence):
+            raise ValueError("Stage-1 selection receipt decision does not reproduce frozen evidence")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "kind": "rpc-fewshot-stage1-selection-receipt",
+            "decision_scope": "method_screen_only_not_a_minimum",
+            "evidence": [
+                {
+                    "method": item.method,
+                    "selector": item.selector,
+                    "repvit_novel_macro_top1": item.repvit_novel_macro_top1,
+                    "dinov3_novel_macro_top1": item.dinov3_novel_macro_top1,
+                    "repvit_wrong_sku_rate": item.repvit_wrong_sku_rate,
+                    "dinov3_wrong_sku_rate": item.dinov3_wrong_sku_rate,
+                }
+                for item in self.evidence
+            ],
+            "decision": self.decision.to_dict(),
+        }
+
+
+def select_stage_one_methods(
+    evidence: Iterable[StageOneMethodEvidence],
+) -> StageOneSelectionDecision:
+    """Apply the declared two-branch dominance and seed-expansion rule.
+
+    A method is removed only if another method beats it by >2pp on both
+    branch macro Top-1 values while not worsening either branch wrong-SKU
+    rate.  Surviving accuracy/error trade-offs are ranked deterministically;
+    at most two continue.  Any non-dominated contender within 1pp of either
+    best branch (or presenting an accuracy/error trade-off) expands from five
+    to ten support seeds before the continuation decision is frozen.
+    """
+    rows = tuple(evidence)
+    if not rows or any(not isinstance(item, StageOneMethodEvidence) for item in rows):
+        raise ValueError("Stage-1 selection requires method evidence")
+    if len({item.method_selector for item in rows}) != len(rows):
+        raise ValueError("Stage-1 selection has duplicate method evidence")
+    def dominates(left: StageOneMethodEvidence, right: StageOneMethodEvidence) -> bool:
+        return (
+            left.repvit_novel_macro_top1 > right.repvit_novel_macro_top1 + 0.02
+            and left.dinov3_novel_macro_top1 > right.dinov3_novel_macro_top1 + 0.02
+            and left.repvit_wrong_sku_rate <= right.repvit_wrong_sku_rate
+            and left.dinov3_wrong_sku_rate <= right.dinov3_wrong_sku_rate
+        )
+    survivors = tuple(item for item in rows if not any(dominates(other, item) for other in rows if other != item))
+    ranked = tuple(sorted(
+        survivors,
+        key=lambda item: (
+            -(item.repvit_novel_macro_top1 + item.dinov3_novel_macro_top1),
+            item.repvit_wrong_sku_rate + item.dinov3_wrong_sku_rate,
+            item.method,
+            item.selector,
+        ),
+    ))[:2]
+    best_repvit = max(item.repvit_novel_macro_top1 for item in rows)
+    best_dinov3 = max(item.dinov3_novel_macro_top1 for item in rows)
+    def has_accuracy_error_tradeoff(item: StageOneMethodEvidence) -> bool:
+        return any(
+            (
+                item.repvit_wrong_sku_rate < other.repvit_wrong_sku_rate
+                or item.dinov3_wrong_sku_rate < other.dinov3_wrong_sku_rate
+            )
+            and (
+                item.repvit_novel_macro_top1 < other.repvit_novel_macro_top1
+                or item.dinov3_novel_macro_top1 < other.dinov3_novel_macro_top1
+            )
+            for other in rows
+            if other != item
+        )
+    expanded = tuple(
+        item.method_selector
+        for item in survivors
+        if (
+            item.repvit_novel_macro_top1 >= best_repvit - 0.01
+            or item.dinov3_novel_macro_top1 >= best_dinov3 - 0.01
+            or has_accuracy_error_tradeoff(item)
+        )
+    )
+    return StageOneSelectionDecision(
+        retained_methods=tuple(item.method_selector for item in ranked),
+        removed_methods=tuple(sorted(item.method_selector for item in rows if item not in survivors)),
+        expand_to_ten_seeds=expanded,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1176,7 +1383,7 @@ class ExperimentReceipt:
         return cls(condition=condition, status="unavailable", reason=reason, **values)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "kind": "rpc-fewshot-experiment-receipt",
             "schema_version": 2,
             "calibration_sha256": self.calibration_sha256,
@@ -1216,6 +1423,9 @@ class ExperimentReceipt:
             ),
             "support_sha256": self.support_sha256,
         }
+        if self.condition.support_scope == "all_available":
+            result["decision_scope"] = "upper_bound_diagnostic_not_a_minimum"
+        return result
 
 
 def write_experiment_receipt(path: Path, receipt: ExperimentReceipt) -> None:
@@ -1243,12 +1453,14 @@ def _conditions(
     )
 
 
-def _new_condition(method: str, selector: str, shot: int, fold: int, seed: int, stage: str) -> ExperimentCondition:
-    return ExperimentCondition(method, selector, shot, fold, seed, stage, _condition_id(method, selector, shot, fold, seed, stage))
+def _new_condition(method: str, selector: str, shot: int, fold: int, seed: int, stage: str, *, support_scope: Literal["fixed_k", "all_available"] = "fixed_k") -> ExperimentCondition:
+    return ExperimentCondition(method, selector, shot, fold, seed, stage, _condition_id(method, selector, shot, fold, seed, stage, support_scope), support_scope)
 
 
-def _condition_id(method: str, selector: str, shot: int, fold: int, seed: int, stage: str) -> str:
+def _condition_id(method: str, selector: str, shot: int, fold: int, seed: int, stage: str, support_scope: str = "fixed_k") -> str:
     payload = {"fold": fold, "method": method, "selector": selector, "shot_count": shot, "stage": stage, "support_seed": seed}
+    if support_scope != "fixed_k":
+        payload["support_scope"] = support_scope
     return "rpc-" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 

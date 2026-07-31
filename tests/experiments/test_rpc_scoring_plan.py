@@ -478,6 +478,7 @@ def _write_evidence(
             "repvit_global_scores": [0.9, 0.1],
             "dinov3_global_scores": [0.9, 0.1],
             "dinov3_local_scores": [0.9, 0.1],
+            "conditional_dino_executed": True,
             **HASHES,
         },
         {
@@ -493,6 +494,7 @@ def _write_evidence(
             "repvit_global_scores": [0.1, 0.9],
             "dinov3_global_scores": [0.1, 0.9],
             "dinov3_local_scores": [0.1, 0.9],
+            "conditional_dino_executed": False,
             **HASHES,
         },
     )

@@ -120,7 +120,7 @@ def materialize_support_order(
             sorted(rows, key=lambda row: (_seeded_digest(seed, row.source_identity), row.source_identity))
         )
     else:
-        ordered = _diversity_order(rows, normalized)
+        ordered = _diversity_order(rows, normalized, seed=seed)
     ordered_sources = tuple(row.source_identity for row in ordered)
     covered_count = len({row.capture_stratum for row in ordered})
     manifest_sha256 = hashlib.sha256(
@@ -182,7 +182,10 @@ def _normalized_embedding(values: tuple[float, ...]) -> tuple[float, ...]:
 
 
 def _diversity_order(
-    rows: tuple[SupportCandidate, ...], normalized: dict[str, tuple[float, ...]]
+    rows: tuple[SupportCandidate, ...],
+    normalized: dict[str, tuple[float, ...]],
+    *,
+    seed: int,
 ) -> tuple[SupportCandidate, ...]:
     dimensions = len(rows[0].embedding)
     centroid = tuple(sum(normalized[row.source_identity][index] for row in rows) / len(rows) for index in range(dimensions))
@@ -203,7 +206,16 @@ def _diversity_order(
         unrepresented = all_strata - represented
         pool = tuple(remaining.values())
         if unrepresented:
-            pool = tuple(row for row in pool if row.capture_stratum in unrepresented)
+            # A seed must select an independent, reproducible diversity draw.
+            # Pick the next unrepresented stratum by a seed-bound digest, then
+            # retain farthest-first coverage inside that stratum.  This keeps
+            # the one-stratum-before-repeat invariant while avoiding five
+            # nominal support seeds that are actually the same support bank.
+            next_stratum = min(
+                unrepresented,
+                key=lambda stratum: _seeded_digest(seed, repr(stratum)),
+            )
+            pool = tuple(row for row in pool if row.capture_stratum == next_stratum)
         else:
             least_count = min(stratum_counts.get(row.capture_stratum, 0) for row in pool)
             pool = tuple(row for row in pool if stratum_counts.get(row.capture_stratum, 0) == least_count)
