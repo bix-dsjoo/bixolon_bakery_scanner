@@ -140,12 +140,26 @@ def _locked_selection_artifacts(
     reference = next(item for item in confirmations if item.shot_count == 150)
     ground_truth_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ground-truth-{fold}-{seed}.json"
     _write_ground_truth(ground_truth_path)
+    base_evidence_path = _STAGE_FOUR_ARTIFACT_ROOT / f"base-{fold}-{seed}.json"
+    base_checkpoint_sha256 = "e" * 64
+    base_evidence_sha256 = _write_fold_base_evidence(
+        base_evidence_path,
+        fold=fold,
+        checkpoint_sha256=base_checkpoint_sha256,
+    )
+    base_artifact = FoldBaseArtifact(
+        fold=fold,
+        checkpoint_sha256=base_checkpoint_sha256,
+        evidence_sha256=base_evidence_sha256,
+    )
     for index, condition in enumerate(confirmations):
-        candidate_plan = _plan(
-            (condition.condition_id,), folds=(fold,), seeds=(seed,)
+        candidate_plan = replace(
+            _plan((condition.condition_id,), folds=(fold,), seeds=(seed,)),
+            fold_base_artifacts=(base_artifact,),
         )
-        reference_plan = _plan(
-            (reference.condition_id,), folds=(fold,), seeds=(seed,)
+        reference_plan = replace(
+            _plan((reference.condition_id,), folds=(fold,), seeds=(seed,)),
+            fold_base_artifacts=(base_artifact,),
         )
         candidate_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"candidate-{fold}-{seed}-{index}.jsonl"
         reference_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"reference-{fold}-{seed}-{index}.jsonl"
@@ -163,6 +177,7 @@ def _locked_selection_artifacts(
                     novel_prediction=None if condition.shot_count == 3 else 1,
                 ),
                 reference_evidence_sha256=_write_evidence(reference_evidence, reference),
+                base_checkpoint_evidence_path=base_evidence_path,
             ),
         )
         path = _STAGE_FOUR_ARTIFACT_ROOT / f"confirmation-{fold}-{seed}-{index}.json"
@@ -221,6 +236,19 @@ def _plan(condition_ids: tuple[str, ...], *, folds=(0,), seeds=(101,)) -> Scorin
             )
             for fold in folds
         ),
+    )
+
+
+def _locked_plan(
+    condition_ids: tuple[str, ...], *, folds=(0,), seeds=(101,)
+) -> ScoringPlan:
+    """Use the immutable fold-base artifact selected by genuine Stage-4."""
+    selection, paths = _locked_selection_artifacts(0, 101)
+    stage_four = json.loads(paths[0].read_text(encoding="utf-8"))
+    source = ScoringPlan.from_dict(stage_four["candidate_scoring_plan"])
+    return replace(
+        _plan(condition_ids, folds=folds, seeds=seeds),
+        fold_base_artifacts=source.fold_base_artifacts,
     )
 
 
@@ -293,6 +321,24 @@ def _write_ground_truth(path: Path) -> None:
     path.write_bytes(LOCKED_GROUND_TRUTH_BYTES)
 
 
+def _write_fold_base_evidence(
+    path: Path, *, fold: int, checkpoint_sha256: str
+) -> str:
+    value = {
+        "schema_version": 1,
+        "kind": "rpc-fewshot-fold-base-checkpoint-evidence",
+        "fold": fold,
+        "checkpoint_sha256": checkpoint_sha256,
+        "cohort_manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
+        "base_category_ids": [2],
+        "sample_count": 1,
+        "base_macro_final_correct_recall": 1.0,
+    }
+    content = canonical_json_bytes(value)
+    path.write_bytes(content)
+    return hashlib.sha256(content).hexdigest()
+
+
 def _non_final_score(
     candidate,
     reference,
@@ -301,6 +347,7 @@ def _non_final_score(
     *,
     candidate_evidence_sha256: str,
     reference_evidence_sha256: str,
+    base_checkpoint_evidence_path: Path | None = None,
 ) -> dict[str, object]:
     candidate_base = next(
         item for item in candidate_plan.fold_base_artifacts if item.fold == candidate.fold
@@ -346,6 +393,11 @@ def _non_final_score(
             "checkpoint_sha256": candidate_base.checkpoint_sha256,
             "evidence_sha256": candidate_base.evidence_sha256,
             "fold": candidate.fold,
+            **(
+                {"evidence_path": str(base_checkpoint_evidence_path)}
+                if base_checkpoint_evidence_path is not None
+                else {}
+            ),
         },
         "locked_ground_truth": {
             "burst_count": 1,
@@ -466,7 +518,11 @@ def test_single_scorer_rejects_a_foreign_stage_four_target_binding():
         )
         if item.shot_count == 5
     )
-    plan = _plan((condition.condition_id,))
+    stage_four = json.loads(paths[0].read_text(encoding="utf-8"))
+    plan = replace(
+        ScoringPlan.from_dict(stage_four["candidate_scoring_plan"]),
+        expected_condition_ids=(condition.condition_id,),
+    )
     base = plan.fold_base_artifacts[0]
     receipt = ExperimentReceipt.completed(
         condition,
@@ -587,8 +643,8 @@ def test_incomplete_fold_seed_aggregate_cannot_emit_final_pass(tmp_path: Path):
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     receipt_path = tmp_path / "one.json"
     evidence_path = tmp_path / "one-candidate.jsonl"
     reference_evidence_path = tmp_path / "one-reference.jsonl"
@@ -672,10 +728,10 @@ def test_complete_locked_aggregate_is_the_only_final_boolean(tmp_path: Path):
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(
+    candidate_plan = _locked_plan(
         tuple(row.condition_id for row in candidates), seeds=(101, 102)
     )
-    reference_plan = _plan(
+    reference_plan = _locked_plan(
         tuple(row.condition_id for row in references), seeds=(101, 102)
     )
     paths = []
@@ -730,8 +786,8 @@ def test_locked_aggregate_rejects_receipts_without_stage_four_confirmation_bindi
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     paths = []
     evidence_paths = []
     reference_evidence_paths = []
@@ -773,8 +829,8 @@ def test_locked_aggregate_rejects_unresolvable_stage_four_confirmation_artifact(
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     paths = []
     evidence_paths = []
     reference_evidence_paths = []
@@ -819,8 +875,8 @@ def test_locked_aggregate_rejects_foreign_stage_four_ground_truth_binding(
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(item.condition_id for item in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(item.condition_id for item in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(item.condition_id for item in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(item.condition_id for item in references), seeds=(101, 102))
     paths = []
     evidence_paths = []
     reference_evidence_paths = []
@@ -866,7 +922,7 @@ def test_locked_aggregate_rejects_foreign_stage_four_ground_truth_binding(
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="locked target cohort does not match Stage-4 cohort"):
+    with pytest.raises(ValueError, match="not derivable from upstream artifacts"):
         module.aggregate_score_receipts(
             tuple(paths),
             tmp_path / "foreign-aggregate.json",
@@ -940,54 +996,7 @@ def test_single_confirmation_aggregate_is_a_genuine_stage_four_artifact(
     tmp_path: Path,
 ):
     """Only the real aggregate writer may produce a schedulable Stage-4 file."""
-    module = _score_module()
-    ground_truth = tmp_path / "locked-ground-truth.json"
-    _write_ground_truth(ground_truth)
-    conditions = confirmation_conditions(
-        ("m0", "div"), shot_counts=(3, 5, 10, 150), seeds=(101,), folds=(0,)
-    )
-    reference = next(item for item in conditions if item.shot_count == 150)
-    paths: list[Path] = []
-    claims: list[StageFourConfirmationReceipt] = []
-    for index, candidate in enumerate(conditions):
-        candidate_plan = _plan((candidate.condition_id,))
-        reference_plan = _plan((reference.condition_id,))
-        candidate_evidence = tmp_path / f"stage-four-candidate-{index}.jsonl"
-        reference_evidence = tmp_path / f"stage-four-reference-{index}.jsonl"
-        score_path = tmp_path / f"stage-four-score-{index}.json"
-        _write_canonical(
-            score_path,
-            _non_final_score(
-                candidate,
-                reference,
-                candidate_plan,
-                reference_plan,
-                candidate_evidence_sha256=_write_evidence(
-                    candidate_evidence,
-                    candidate,
-                    novel_prediction=None if candidate.shot_count == 3 else 1,
-                ),
-                reference_evidence_sha256=_write_evidence(reference_evidence, reference),
-            ),
-        )
-        confirmation = tmp_path / f"confirmation-{index}.json"
-        module.aggregate_score_receipts(
-            (score_path,),
-            confirmation,
-            evidence_paths=(candidate_evidence,),
-            reference_evidence_paths=(reference_evidence,),
-            ground_truth_manifest_path=ground_truth,
-        )
-        content = confirmation.read_bytes()
-        paths.append(confirmation)
-        claims.append(
-            StageFourConfirmationReceipt(
-                condition=candidate,
-                score_receipt_sha256=hashlib.sha256(content).hexdigest(),
-                provisional_pass=candidate.shot_count != 3,
-            )
-        )
-    selection = StageFourSelection(tuple(claims))
+    selection, paths = _locked_selection_artifacts(0, 101)
     assert {
         condition.shot_count
         for condition in locked_conditions(
@@ -996,14 +1005,93 @@ def test_single_confirmation_aggregate_is_a_genuine_stage_four_artifact(
     } == {5, 150}
 
 
+def test_locked_scheduler_rejects_a_self_consistent_forged_stage_four_aggregate(
+    tmp_path: Path,
+):
+    """Stage-5 must derive, rather than merely schema-check, Stage-4 outputs."""
+    selection, paths = _locked_selection_artifacts(0, 101)
+    forged = json.loads(paths[1].read_text(encoding="utf-8"))
+    forged["candidate_full_system"]["unknown_rate"] = 0.5
+    content = canonical_json_bytes(forged)
+    forged_path = tmp_path / "forged-confirmation.json"
+    forged_path.write_bytes(content)
+    selection = StageFourSelection(
+        tuple(
+            replace(claim, score_receipt_sha256=hashlib.sha256(content).hexdigest())
+            if index == 1
+            else claim
+            for index, claim in enumerate(selection.confirmation_receipts)
+        )
+    )
+    replacement_paths = tuple(
+        forged_path if index == 1 else path for index, path in enumerate(paths)
+    )
+
+    with pytest.raises(ValueError, match="Stage-4 confirmation score receipt is not derivable"):
+        locked_conditions(selection, confirmation_score_receipt_paths=replacement_paths)
+
+
+def test_final_aggregate_rejects_forged_lower_fold_base_recall(
+    tmp_path: Path,
+):
+    """A cached lower baseline cannot weaken the final base-regression guardrail."""
+    module = _score_module()
+    selection, stage_four_paths = _locked_selection_artifacts(0, 101)
+    stage_four = json.loads(stage_four_paths[0].read_text(encoding="utf-8"))
+    base_path = Path(
+        stage_four["upstream_artifacts"][0]["fold_base_checkpoint_evidence_path"]
+    )
+    candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
+    references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
+    candidate_plan = _locked_plan(
+        tuple(item.condition_id for item in candidates), seeds=(101, 102)
+    )
+    reference_plan = _locked_plan(
+        tuple(item.condition_id for item in references), seeds=(101, 102)
+    )
+    score_paths: list[Path] = []
+    candidate_evidence_paths: list[Path] = []
+    reference_evidence_paths: list[Path] = []
+    for index, (candidate, reference) in enumerate(zip(candidates, references, strict=True)):
+        score_path = tmp_path / f"lower-baseline-score-{index}.json"
+        candidate_path = tmp_path / f"lower-baseline-candidate-{index}.jsonl"
+        reference_path = tmp_path / f"lower-baseline-reference-{index}.jsonl"
+        score = _non_final_score(
+            candidate,
+            reference,
+            candidate_plan,
+            reference_plan,
+            candidate_evidence_sha256=_write_evidence(candidate_path, candidate),
+            reference_evidence_sha256=_write_evidence(reference_path, reference),
+            base_checkpoint_evidence_path=base_path,
+        )
+        if index == 0:
+            score["fold_base_checkpoint"]["base_macro_final_correct_recall"] = 0.5  # type: ignore[index]
+        _write_canonical(score_path, score)
+        score_paths.append(score_path)
+        candidate_evidence_paths.append(candidate_path)
+        reference_evidence_paths.append(reference_path)
+    ground_truth_path = tmp_path / "lower-baseline-ground-truth.json"
+    _write_ground_truth(ground_truth_path)
+
+    with pytest.raises(ValueError, match="does not reproduce score receipt"):
+        module.aggregate_score_receipts(
+            tuple(score_paths),
+            tmp_path / "lower-baseline-final.json",
+            evidence_paths=tuple(candidate_evidence_paths),
+            reference_evidence_paths=tuple(reference_evidence_paths),
+            ground_truth_manifest_path=ground_truth_path,
+        )
+
+
 def test_aggregate_rejects_a_non_150_shot_locked_reference(tmp_path: Path):
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = candidates
-    candidate_plan = _plan(
+    candidate_plan = _locked_plan(
         tuple(row.condition_id for row in candidates), seeds=(101, 102)
     )
-    reference_plan = _plan(
+    reference_plan = _locked_plan(
         tuple(row.condition_id for row in references), seeds=(101, 102)
     )
     paths = []
@@ -1052,10 +1140,10 @@ def test_aggregate_rejects_a_receipt_without_locked_ground_truth_provenance(
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(
+    candidate_plan = _locked_plan(
         tuple(row.condition_id for row in candidates), seeds=(101, 102)
     )
-    reference_plan = _plan(
+    reference_plan = _locked_plan(
         tuple(row.condition_id for row in references), seeds=(101, 102)
     )
     score_paths = []
@@ -1102,8 +1190,8 @@ def test_aggregate_combines_per_sku_loss_across_declared_support_seeds(
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     score_paths = []
     evidence_paths = []
     reference_evidence_paths = []
@@ -1156,8 +1244,8 @@ def test_aggregate_rejects_candidate_reference_cross_seed_pairing(tmp_path: Path
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     paths = []
     evidence_paths = []
     reference_evidence_paths = []
@@ -1202,8 +1290,8 @@ def test_aggregate_rejects_raw_evidence_that_does_not_match_receipt_digest(
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     score_paths = []
     evidence_paths = []
     reference_evidence_paths = []
@@ -1246,8 +1334,8 @@ def test_aggregate_rejects_inconsistent_same_fold_base_artifacts(tmp_path: Path)
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _locked_plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
+    reference_plan = _locked_plan(tuple(row.condition_id for row in references), seeds=(101, 102))
     score_paths = []
     evidence_paths = []
     reference_evidence_paths = []

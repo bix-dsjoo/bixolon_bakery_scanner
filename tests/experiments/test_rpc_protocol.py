@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -133,99 +135,30 @@ def _stage_four_selection() -> StageFourSelection:
 def _stage_four_selection_artifacts(
     tmp_path: Path,
 ) -> tuple[StageFourSelection, tuple[Path, ...]]:
-    conditions = confirmation_conditions(
-        ("m0", "div"),
-        shot_counts=(3, 5, 10, 150),
-        seeds=(101,),
-        folds=(0,),
+    """Copy genuine scorer aggregates; never hand-author schedulable Stage-4 JSON."""
+    specification = importlib.util.spec_from_file_location(
+        "rpc_scoring_plan_stage_four_fixture",
+        Path(__file__).with_name("test_rpc_scoring_plan.py"),
     )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    selection, source_paths = module._locked_selection_artifacts(0, 101)
     paths: list[Path] = []
     claims: list[StageFourConfirmationReceipt] = []
-    for index, condition in enumerate(conditions):
-        reference = next(item for item in conditions if item.shot_count == 150)
-        candidate_plan = _confirmation_plan(condition)
-        reference_plan = _confirmation_plan(reference)
-        provisional_pass = condition.shot_count != 3
-        lower_delta = 0.0 if provisional_pass else -0.03
-        value = {
-            "schema_version": 2,
-            "kind": "rpc-fewshot-confirmation-score-receipt",
-            "status": "completed",
-            "decision_status": "provisional",
-            "aggregate_stage": "confirmation",
-            "decision_scope": "complete_confirmation_fold_seed_aggregate",
-            "provisional_pass": provisional_pass,
-            "condition_count": 1,
-            "candidate_conditions": [condition.to_dict()],
-            "reference_conditions": [reference.to_dict()],
-            "candidate_condition_ids": [condition.condition_id],
-            "reference_condition_ids": [reference.condition_id],
-            "candidate_scoring_plan": candidate_plan.to_dict(),
-            "reference_scoring_plan": reference_plan.to_dict(),
-            "candidate_scoring_plan_sha256": candidate_plan.sha256,
-            "reference_scoring_plan_sha256": reference_plan.sha256,
-            "cohort": {"base_category_ids": [2], "novel_category_ids": [1]},
-            "score_receipts": [
-                {"candidate_condition_id": condition.condition_id, "sha256": "4" * 64}
-            ],
-            "raw_evidence": [
-                {
-                    "candidate_condition_id": condition.condition_id,
-                    "candidate_evidence_sha256": "5" * 64,
-                    "reference_condition_id": reference.condition_id,
-                    "reference_evidence_sha256": "6" * 64,
-                }
-            ],
-            "condition_branch_top1": [
-                {
-                    "candidate_condition_id": condition.condition_id,
-                    "reference_condition_id": reference.condition_id,
-                    "candidate": _branch_summaries(),
-                    "reference": _branch_summaries(),
-                }
-            ],
-            "candidate_full_system": _full_system_summary(),
-            "reference_full_system": _full_system_summary(),
-            "fold_base_checkpoint": {
-                "base_macro_final_correct_recall": 1.0,
-                "checkpoint_sha256": "2" * 64,
-                "evidence_sha256": "3" * 64,
-                "fold": 0,
-            },
-            "locked_ground_truth": {
-                "burst_count": 1,
-                "manifest_sha256": "1" * 64,
-                "object_count": 2,
-                "sample_count": 2,
-            },
-            "paired_bootstrap_95": {
-                "replicates": 10,
-                "seed": 7,
-                "novel_macro_recall_lower_delta": lower_delta,
-                "novel_macro_recall_upper_delta": 0.0,
-                "novel_wrong_registered_sku_rate_lower_delta": 0.0,
-                "novel_wrong_registered_sku_rate_upper_delta": 0.0,
-                "base_macro_recall_lower_delta": 0.0,
-                "base_macro_recall_upper_delta": 0.0,
-            },
-            "minimum_rule_inputs": {
-                "registered_coverage": 1.0,
-                "novel_macro_recall_lower_delta": lower_delta,
-                "novel_wrong_registered_sku_rate_upper_delta": 0.0,
-                "novel_loss_over_10pp_fraction": 0.0,
-                "candidate_base_macro_final_correct_recall": 1.0,
-                "fold_base_checkpoint_macro_final_correct_recall": 1.0,
-            },
-        }
+    for index, (claim, source_path) in enumerate(
+        zip(selection.confirmation_receipts, source_paths, strict=True)
+    ):
         path = tmp_path / f"confirmation-{index}.json"
-        content = canonical_json_bytes(value)
+        content = source_path.read_bytes()
         path.write_bytes(content)
         paths.append(path)
         claims.append(
             StageFourConfirmationReceipt(
-                condition=condition,
+                condition=claim.condition,
                 score_receipt_sha256=hashlib.sha256(content).hexdigest(),
-                provisional_pass=condition.shot_count != 3,
+                provisional_pass=claim.provisional_pass,
             )
         )
     return StageFourSelection(tuple(claims)), tuple(paths)
@@ -362,7 +295,7 @@ def test_locked_scheduler_rejects_mismatched_stage_four_cohort(
         )
     )
 
-    with pytest.raises(ValueError, match="do not share cohort and scoring plan"):
+    with pytest.raises(ValueError, match="not derivable from upstream artifacts"):
         locked_conditions(
             mismatched, confirmation_score_receipt_paths=paths
         )

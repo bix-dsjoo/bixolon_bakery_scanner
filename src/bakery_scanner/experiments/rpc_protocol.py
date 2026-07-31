@@ -385,6 +385,7 @@ def _validate_stage_four_confirmation_score_receipt(
         "locked_ground_truth",
         "paired_bootstrap_95",
         "minimum_rule_inputs",
+        "upstream_artifacts",
     }
     if set(receipt) != required:
         raise ValueError("Stage-4 confirmation score receipt does not use the strict aggregate schema")
@@ -473,6 +474,7 @@ def _validate_stage_four_confirmation_score_receipt(
         candidate,
         receipt.get("provisional_pass"),
     )
+    _validate_stage_four_confirmation_derivation(receipt)
     return StageFourConfirmationBinding(
         cohort_manifest_sha256=locked_ground_truth,
         novel_category_ids=tuple(sorted(novel)),
@@ -482,6 +484,24 @@ def _validate_stage_four_confirmation_score_receipt(
             item for item in candidate_plan.fold_base_artifacts if item.fold == candidate.fold
         ),
     )
+
+
+def _validate_stage_four_confirmation_derivation(receipt: Mapping[str, object]) -> None:
+    """Delegate byte-level Stage-4 reconstruction to the score-artifact verifier.
+
+    The source-owned scorer owns metric aggregation; keeping this thin bridge
+    avoids a duplicate implementation with subtly different safety semantics
+    in the scheduler.  The import is intentionally delayed because that scorer
+    also consumes this immutable protocol module.
+    """
+    try:
+        from bakery_scanner.experiments.rpc_scoring import (
+            validate_stage_four_confirmation_derivation,
+        )
+
+        validate_stage_four_confirmation_derivation(receipt)
+    except (ImportError, OSError, ValueError) as exc:
+        raise ValueError("Stage-4 confirmation score receipt is not derivable from upstream artifacts") from exc
 
 
 def _validate_stage_four_score_receipts(
