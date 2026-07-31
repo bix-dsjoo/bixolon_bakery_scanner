@@ -8,6 +8,10 @@ import pytest
 
 from bakery_scanner.experiments.rpc_support import (
     SupportCandidate,
+    SupportBank,
+    materialize_support_bank,
+    write_support_bank,
+    load_support_bank,
     materialize_support_order,
     parse_train_capture_stratum,
     support_prefix,
@@ -189,6 +193,48 @@ def test_div_seed_batch_accepts_varied_draws_and_is_reproducible():
     )
 
     assert validate_unique_div_support_draws(orders) == orders
+
+
+def test_support_bank_binds_every_declared_div_category_seed_and_rejects_duplicate_draws():
+    """The condition boundary consumes a materialized bank, never selector knobs."""
+    candidates = tuple(
+        _candidate(
+            f"source-{index}",
+            f"roll_camera{(index % 4) + 1}-{'top' if index % 2 else 'bottom'}.jpg",
+            (float(index + 1), float((index * 3) % 7 + 1)),
+        )
+        for index in range(12)
+    )
+
+    bank = materialize_support_bank({7: candidates}, method="div", seeds=(5, 10))
+
+    assert isinstance(bank, SupportBank)
+    assert bank.order_for(7, 5).source_identities != bank.order_for(7, 10).source_identities
+    assert len(bank.sha256) == 64
+
+
+def test_support_bank_fails_closed_when_declared_div_seeds_reuse_a_draw():
+    candidates = (_candidate("only", "roll_camera1-top.jpg", (1.0, 0.0)),)
+
+    with pytest.raises(ValueError, match="same ordered support draw"):
+        materialize_support_bank({7: candidates}, method="div", seeds=(5, 10))
+
+
+def test_support_bank_serialization_rechecks_the_hash_bound_orders(tmp_path):
+    candidates = tuple(
+        _candidate(
+            f"source-{index}",
+            f"roll_camera{(index % 4) + 1}-{'top' if index % 2 else 'bottom'}.jpg",
+            (float(index + 1), float((index * 3) % 7 + 1)),
+        )
+        for index in range(12)
+    )
+    path = tmp_path / "support-bank.json"
+    bank = materialize_support_bank({7: candidates}, method="div", seeds=(5, 10))
+
+    write_support_bank(path, bank)
+
+    assert load_support_bank(path) == bank
 
 
 def test_candidate_rejects_capture_stratum_that_disagrees_with_source_file_name():

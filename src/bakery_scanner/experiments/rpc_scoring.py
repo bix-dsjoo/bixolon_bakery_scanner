@@ -166,6 +166,35 @@ def load_locked_ground_truth(
     return LoadedGroundTruth(rows, digest, source_digest, roles_digest)
 
 
+def load_development_ground_truth(
+    path: Path, *, trusted_source_root: Path
+) -> LoadedGroundTruth:
+    """Load only the authenticated development-selection cohort.
+
+    Development is an independently derived role, not a filtered locked
+    manifest.  This deliberately gives the pre-Stage-5 scorer no code path
+    that can accept test2019 truth.
+    """
+    return _load_role_ground_truth(
+        path,
+        trusted_source_root=trusted_source_root,
+        expected_kind="rpc-fewshot-development-ground-truth",
+        split="val2019",
+        role="development_selection",
+    )
+
+
+def load_stage_ground_truth(
+    path: Path, *, stage: str, trusted_source_root: Path
+) -> LoadedGroundTruth:
+    """Route stage roles before any evidence is read; no pre-lock fallback exists."""
+    if stage == "locked":
+        return load_locked_ground_truth(path, trusted_source_root=trusted_source_root)
+    if stage in {"stage1", "ascending", "confirmation"}:
+        return load_development_ground_truth(path, trusted_source_root=trusted_source_root)
+    raise ValueError("unsupported experiment stage for ground truth")
+
+
 def materialize_locked_ground_truth(
     source_manifest_path: Path,
     scene_role_manifest_path: Path,
@@ -206,6 +235,25 @@ def materialize_locked_ground_truth(
     )
 
 
+def materialize_development_ground_truth(
+    source_manifest_path: Path,
+    scene_role_manifest_path: Path,
+    output: Path,
+    *,
+    trusted_source_root: Path,
+) -> None:
+    """Materialize the trusted val2019 development-selection cohort only."""
+    _materialize_role_ground_truth(
+        source_manifest_path,
+        scene_role_manifest_path,
+        output,
+        trusted_source_root=trusted_source_root,
+        kind="rpc-fewshot-development-ground-truth",
+        split="val2019",
+        role="development_selection",
+    )
+
+
 def _lineage_path(ground_truth_path: Path, value: object) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError("locked ground-truth lineage path is invalid")
@@ -215,6 +263,77 @@ def _lineage_path(ground_truth_path: Path, value: object) -> Path:
     except ValueError as exc:
         raise ValueError("locked ground-truth lineage path escapes manifest directory") from exc
     return candidate
+
+
+def _load_role_ground_truth(
+    path: Path,
+    *,
+    trusted_source_root: Path,
+    expected_kind: str,
+    split: str,
+    role: str,
+) -> LoadedGroundTruth:
+    content = Path(path).read_bytes()
+    try:
+        value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("invalid role ground-truth manifest") from exc
+    if not isinstance(value, dict) or canonical_json_bytes(value) != content:
+        raise ValueError("role ground-truth manifest is not canonical")
+    digest = hashlib.sha256(content).hexdigest()
+    if (
+        value.get("schema_version") != 2
+        or value.get("kind") != expected_kind
+        or not isinstance(value.get("objects"), list)
+        or not value["objects"]
+    ):
+        raise ValueError("invalid role ground-truth manifest")
+    try:
+        rows = tuple(LockedGroundTruthRow.from_dict(item) for item in value["objects"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid role ground-truth manifest") from exc
+    source_path = _lineage_path(Path(path), value.get("source_manifest_path"))
+    roles_path = _lineage_path(Path(path), value.get("scene_role_manifest_path"))
+    source, source_digest = _load_canonical_json_with_digest(source_path)
+    roles, roles_digest = _load_canonical_json_with_digest(roles_path)
+    if source_digest != value.get("source_manifest_sha256") or roles_digest != value.get("scene_role_manifest_sha256"):
+        raise ValueError("role ground-truth lineage SHA-256 mismatch")
+    expected = _checkout_cohort_from_lineage(
+        source, source_digest, roles, trusted_index=_trusted_rpc_index(trusted_source_root), split=split, role=role
+    )
+    if len(rows) != len(expected) or {row.identity for row in rows} != {row.identity for row in expected}:
+        raise ValueError("role ground-truth must exactly match trusted cohort")
+    return LoadedGroundTruth(rows, digest, source_digest, roles_digest)
+
+
+def _materialize_role_ground_truth(
+    source_manifest_path: Path,
+    scene_role_manifest_path: Path,
+    output: Path,
+    *,
+    trusted_source_root: Path,
+    kind: str,
+    split: str,
+    role: str,
+) -> None:
+    if output.exists():
+        raise FileExistsError(f"output already exists: {output}")
+    source_path, roles_path, output_parent = Path(source_manifest_path).resolve(), Path(scene_role_manifest_path).resolve(), Path(output).parent.resolve()
+    try:
+        source_relative, roles_relative = source_path.relative_to(output_parent), roles_path.relative_to(output_parent)
+    except ValueError as exc:
+        raise ValueError("role ground-truth lineage artifacts must be below the output directory") from exc
+    source, source_digest = _load_canonical_json_with_digest(source_path)
+    roles, roles_digest = _load_canonical_json_with_digest(roles_path)
+    rows = _checkout_cohort_from_lineage(
+        source, source_digest, roles, trusted_index=_trusted_rpc_index(trusted_source_root), split=split, role=role
+    )
+    write_new_json(output, {
+        "schema_version": 2, "kind": kind,
+        "source_manifest_path": source_relative.as_posix(), "source_manifest_sha256": source_digest,
+        "scene_role_manifest_path": roles_relative.as_posix(), "scene_role_manifest_sha256": roles_digest,
+        "objects": [row.to_dict() for row in rows],
+    })
 
 
 def _trusted_rpc_index(trusted_source_root: Path) -> RpcIndex:
@@ -328,6 +447,63 @@ def _locked_test_cohort_from_lineage(
     return tuple(sorted(expected, key=lambda row: row.object_id))
 
 
+def _checkout_cohort_from_lineage(
+    source: Mapping[str, object], source_digest: str, roles: Mapping[str, object], *,
+    trusted_index: RpcIndex, split: str, role: str,
+) -> tuple[LockedGroundTruthRow, ...]:
+    """Derive a complete, role-specific checkout cohort from authenticated RPC lineage."""
+    if (split, role) == ("test2019", "locked_acceptance"):
+        return _locked_test_cohort_from_lineage(source, source_digest, roles, trusted_index=trusted_index)
+    if (split, role) != ("val2019", "development_selection"):
+        raise ValueError("unsupported trusted checkout cohort")
+    if (
+        source.get("schema_version") != 1 or source.get("kind") != "rpc-fewshot-resolved-inputs"
+        or source.get("source") != "RPC 2019" or not isinstance(source.get("images"), list)
+        or not isinstance(source.get("objects"), list)
+    ):
+        raise ValueError("invalid development ground-truth source manifest")
+    contract = trusted_index.contract
+    if source.get("annotation_sha256") != dict(contract.annotation_sha256) or source.get("image_counts") != dict(contract.image_counts):
+        raise ValueError("development ground-truth source does not match RPC 2019 contract")
+    _validate_resolved_source_against_trusted_split(source, trusted_index, split)
+    if (
+        roles.get("schema_version") != 1 or roles.get("kind") != "rpc-fewshot-scene-roles"
+        or roles.get("source_manifest_sha256") != source_digest or not isinstance(roles.get("assignments"), list)
+    ):
+        raise ValueError("invalid development ground-truth scene-role manifest")
+    expected_roles = {(row.split, row.image_id, row.role, row.burst_id, row.difficulty) for row in _build_canonical_scene_roles(trusted_index)}
+    assignments: set[tuple[str, int, str, str, str]] = set()
+    for item in roles["assignments"]:
+        if not isinstance(item, Mapping):
+            raise ValueError("invalid development ground-truth scene-role assignment")
+        row = (item.get("split"), item.get("image_id"), item.get("role"), item.get("burst_id"), item.get("difficulty"))
+        if not isinstance(row[0], str) or type(row[1]) is not int or not isinstance(row[2], str) or not isinstance(row[3], str) or not isinstance(row[4], str):
+            raise ValueError("invalid development ground-truth scene-role assignment")
+        assignments.add(row)  # type: ignore[arg-type]
+    if len(assignments) != len(roles["assignments"]) or assignments != expected_roles:
+        raise ValueError("scene-role manifest does not exactly equal canonical trusted val/test roles")
+    image_rows = {
+        item["image_id"]: (item["source_identity"], item["level"])
+        for item in source["images"]
+        if isinstance(item, Mapping) and item.get("split") == split
+    }
+    role_by_image = {image_id: (burst_id, difficulty) for assigned_split, image_id, assigned_role, burst_id, difficulty in assignments if assigned_split == split and assigned_role == role}
+    expected: list[LockedGroundTruthRow] = []
+    for item in trusted_index.objects:
+        if item.split != split:
+            continue
+        if item.image_id not in image_rows or item.image_id not in role_by_image:
+            continue
+        sample_id, _ = image_rows[item.image_id]
+        burst_id, difficulty = role_by_image[item.image_id]
+        if not isinstance(sample_id, str) or difficulty not in {"easy", "medium", "hard"}:
+            raise ValueError("invalid trusted development source identity")
+        expected.append(LockedGroundTruthRow(sample_id, item.annotation_id, burst_id, {"easy":"E", "medium":"M", "hard":"H"}[difficulty], item.category_id))
+    if not expected:
+        raise ValueError("development role has no trusted objects")
+    return tuple(sorted(expected, key=lambda row: row.object_id))
+
+
 def _build_canonical_scene_roles(index: RpcIndex):
     """Private test seam around the canonical raw-index role builder."""
     return build_scene_roles(index, split_version=_CANONICAL_SCENE_SPLIT_VERSION)
@@ -389,6 +565,29 @@ def _validate_resolved_source_against_trusted(
         raise ValueError("resolved source does not exactly match trusted RPC source objects")
 
 
+def _validate_resolved_source_against_trusted_split(
+    source: Mapping[str, object], trusted_index: RpcIndex, split: str
+) -> None:
+    """Exact raw-source comparison for the requested non-locked role split."""
+    if split == "test2019":
+        _validate_resolved_source_against_trusted(source, trusted_index)
+        return
+    trusted_images = {(item.image_id, item.source_identity, item.level) for item in trusted_index.images if item.split == split}
+    declared_images = {
+        (item.get("image_id"), item.get("source_identity"), item.get("level"))
+        for item in source.get("images", [])
+        if isinstance(item, Mapping) and item.get("split") == split
+    }
+    trusted_objects = {(item.annotation_id, item.image_id, item.category_id) for item in trusted_index.objects if item.split == split}
+    declared_objects = {
+        (item.get("annotation_id"), item.get("image_id"), item.get("category_id"))
+        for item in source.get("objects", [])
+        if isinstance(item, Mapping) and item.get("split") == split
+    }
+    if declared_images != trusted_images or declared_objects != trusted_objects:
+        raise ValueError("resolved source does not exactly match trusted RPC source split")
+
+
 def score(
     evidence_path: Path,
     reference_path: Path,
@@ -434,12 +633,12 @@ def score(
         raise ValueError("candidate/reference condition cohort mismatch")
     if _cohort_manifest_sha256(condition) != _cohort_manifest_sha256(reference_condition):
         raise ValueError("candidate/reference cohort manifest mismatch")
-    ground_truth = load_locked_ground_truth(
-        ground_truth_manifest_path,
+    ground_truth = load_stage_ground_truth(
+        ground_truth_manifest_path, stage=paired_stage,
         trusted_source_root=trusted_source_root,
     )
     if ground_truth.sha256 != _cohort_manifest_sha256(condition):
-        raise ValueError("locked ground-truth manifest SHA-256 mismatch")
+        raise ValueError("ground-truth manifest SHA-256 mismatch")
     statuses = (condition.get("status"), reference_condition.get("status"))
     if statuses != ("completed", "completed"):
         write_new_json(output, {

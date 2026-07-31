@@ -93,6 +93,25 @@ def _trusted_index() -> RpcIndex:
     )
 
 
+def test_stage_ground_truth_dispatch_never_uses_locked_truth_before_stage5(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        _rpc_scoring,
+        "load_development_ground_truth",
+        lambda *_args, **_kwargs: calls.append("development") or object(),
+    )
+    monkeypatch.setattr(
+        _rpc_scoring,
+        "load_locked_ground_truth",
+        lambda *_args, **_kwargs: calls.append("locked") or object(),
+    )
+
+    _rpc_scoring.load_stage_ground_truth(Path("dev.json"), stage="stage1", trusted_source_root=_TEST_TRUSTED_ROOT)
+    _rpc_scoring.load_stage_ground_truth(Path("locked.json"), stage="locked", trusted_source_root=_TEST_TRUSTED_ROOT)
+
+    assert calls == ["development", "locked"]
+
+
 LOCKED_SOURCE_MANIFEST = {
     "schema_version": 1,
     "kind": "rpc-fewshot-resolved-inputs",
@@ -691,6 +710,16 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
         return loaded
 
     monkeypatch.setattr(module, "load_canonical_jsonl", replace_after_parse)
+    # This regression isolates read-once evidence bytes; role routing is
+    # covered separately and this legacy fixture intentionally contains only
+    # test2019 lineage.
+    monkeypatch.setattr(
+        _rpc_scoring,
+        "load_stage_ground_truth",
+        lambda path, *, stage, trusted_source_root: _rpc_scoring.load_locked_ground_truth(
+            path, trusted_source_root=trusted_source_root
+        ),
+    )
     module.score(
         evidence,
         reference,

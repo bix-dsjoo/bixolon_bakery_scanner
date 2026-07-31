@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentCondition,
@@ -154,6 +155,19 @@ def test_stage_one_has_exactly_twelve_cells_before_fold_seed_expansion():
         (method, selector, shot)
         for method, selector in (("m0", "div"), ("m1", "div"), ("m2", "div"), ("m2", "rnd"))
         for shot in (1, 3, 5)
+    }
+
+
+def test_committed_stage_one_plan_binds_all_300_pair_shot_fold_seed_cells():
+    plan = yaml.safe_load(
+        (Path(__file__).parents[2] / "experiments/20260731-rpc-fewshot/experiment.yaml").read_text(encoding="utf-8")
+    )
+    declared = plan["scoring_plan"]["expected_condition_ids"]
+
+    assert len(declared) == 300
+    assert set(declared) == {
+        item.condition_id
+        for item in stage_one_conditions(seeds=(101, 102, 103, 104, 105), folds=range(5))
     }
 
 

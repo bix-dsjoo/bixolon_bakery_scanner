@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from numbers import Real
-from typing import Iterable
+from typing import Iterable, Mapping
 
-from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
+from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
 
 
 _TRAIN_CAPTURE_NAME = re.compile(
@@ -70,6 +72,127 @@ class SupportOrder:
     source_identities: tuple[str, ...]
     covered_capture_stratum_count: int
     manifest_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class SupportBank:
+    """Hash-bound complete support orders for every declared category and seed."""
+
+    method: str
+    seeds: tuple[int, ...]
+    orders: tuple[SupportOrder, ...]
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.method not in {"rnd", "div"}:
+            raise ValueError("unsupported support bank method")
+        if not self.seeds or len(set(self.seeds)) != len(self.seeds) or any(type(seed) is not int for seed in self.seeds):
+            raise ValueError("support bank seeds must be distinct integers")
+        if not self.orders or any(not isinstance(order, SupportOrder) for order in self.orders):
+            raise ValueError("support bank requires materialized orders")
+        coordinates = {(order.category_id, order.seed) for order in self.orders}
+        categories = {order.category_id for order in self.orders}
+        expected = {(category, seed) for category in categories for seed in self.seeds}
+        if coordinates != expected:
+            raise ValueError("support bank must cover every declared category and seed")
+        if any(order.method != self.method for order in self.orders):
+            raise ValueError("support bank order method mismatch")
+        if self.sha256 != _support_bank_digest(self.method, self.seeds, self.orders):
+            raise ValueError("support bank SHA-256 mismatch")
+
+    def order_for(self, category_id: int, seed: int) -> SupportOrder:
+        for order in self.orders:
+            if order.category_id == category_id and order.seed == seed:
+                return order
+        raise ValueError("support bank lacks declared category/seed order")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "kind": "rpc-fewshot-support-bank",
+            "method": self.method,
+            "seeds": list(self.seeds),
+            "orders": [
+                {
+                    "category_id": order.category_id,
+                    "method": order.method,
+                    "seed": order.seed,
+                    "candidates": [_manifest_candidate(row) for row in order.candidates],
+                    "source_identities": list(order.source_identities),
+                    "covered_capture_stratum_count": order.covered_capture_stratum_count,
+                    "manifest_sha256": order.manifest_sha256,
+                }
+                for order in sorted(self.orders, key=lambda item: (item.category_id, item.seed))
+            ],
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "SupportBank":
+        required = {"schema_version", "kind", "method", "seeds", "orders", "sha256"}
+        if not isinstance(value, Mapping) or set(value) != required or value.get("schema_version") != 1 or value.get("kind") != "rpc-fewshot-support-bank":
+            raise ValueError("invalid support bank manifest")
+        if not isinstance(value.get("seeds"), list) or not isinstance(value.get("orders"), list):
+            raise ValueError("invalid support bank manifest")
+        orders: list[SupportOrder] = []
+        for raw in value["orders"]:
+            if not isinstance(raw, Mapping) or set(raw) != {"category_id", "method", "seed", "candidates", "source_identities", "covered_capture_stratum_count", "manifest_sha256"}:
+                raise ValueError("invalid support bank order")
+            candidates = raw.get("candidates")
+            if not isinstance(candidates, list):
+                raise ValueError("invalid support bank order")
+            rows = tuple(_candidate_from_manifest(item) for item in candidates)
+            rebuilt = materialize_support_order(rows, method=raw["method"], seed=raw["seed"])  # type: ignore[arg-type]
+            if (
+                rebuilt.category_id != raw.get("category_id")
+                or list(rebuilt.source_identities) != raw.get("source_identities")
+                or rebuilt.covered_capture_stratum_count != raw.get("covered_capture_stratum_count")
+                or rebuilt.manifest_sha256 != raw.get("manifest_sha256")
+            ):
+                raise ValueError("support bank order is not reproducible")
+            orders.append(rebuilt)
+        bank = cls(value["method"], tuple(value["seeds"]), tuple(orders), value["sha256"])  # type: ignore[arg-type]
+        if bank.method == "div":
+            validate_unique_div_support_draws(bank.orders)
+        return bank
+
+
+def materialize_support_bank(
+    candidates_by_category: Mapping[int, Iterable[SupportCandidate]], *, method: str, seeds: Iterable[int]
+) -> SupportBank:
+    """Materialize and validate every support draw before any condition runs."""
+    frozen_seeds = tuple(seeds)
+    if not isinstance(candidates_by_category, Mapping) or not candidates_by_category:
+        raise ValueError("support bank requires category candidates")
+    if not frozen_seeds or len(set(frozen_seeds)) != len(frozen_seeds) or any(type(seed) is not int for seed in frozen_seeds):
+        raise ValueError("support bank seeds must be distinct integers")
+    if any(type(category) is not int or category <= 0 for category in candidates_by_category):
+        raise ValueError("support bank category IDs must be positive integers")
+    orders = tuple(
+        materialize_support_order(tuple(candidates), method=method, seed=seed)
+        for _, candidates in sorted(candidates_by_category.items())
+        for seed in frozen_seeds
+    )
+    if method == "div":
+        validate_unique_div_support_draws(orders)
+    return SupportBank(method, frozen_seeds, orders, _support_bank_digest(method, frozen_seeds, orders))
+
+
+def write_support_bank(path: Path, bank: SupportBank) -> None:
+    if not isinstance(bank, SupportBank):
+        raise ValueError("support bank must be a SupportBank")
+    write_new_json(path, bank.to_dict())
+
+
+def load_support_bank(path: Path) -> SupportBank:
+    try:
+        content = Path(path).read_bytes()
+        value = json.loads(content.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot read canonical support bank") from exc
+    if not isinstance(value, dict) or canonical_json_bytes(value) != content:
+        raise ValueError("support bank is not canonical")
+    return SupportBank.from_dict(value)
 
 
 def parse_train_capture_stratum(file_name: str, category_id: int) -> CaptureStratum:
@@ -286,3 +409,52 @@ def _manifest_candidate(row: SupportCandidate) -> dict[str, object]:
         "capture_stratum": row.capture_stratum,
         "embedding": row.embedding,
     }
+
+
+def _candidate_from_manifest(value: object) -> SupportCandidate:
+    expected = {
+        "category_id", "source_identity", "source_file_name", "image_sha256",
+        "source_byte_size", "capture_stratum", "embedding",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError("invalid support bank candidate")
+    stratum = value["capture_stratum"]
+    if not isinstance(stratum, (list, tuple)):
+        raise ValueError("invalid support bank candidate")
+    try:
+        return SupportCandidate(
+            category_id=value["category_id"],  # type: ignore[arg-type]
+            source_identity=value["source_identity"],  # type: ignore[arg-type]
+            source_file_name=value["source_file_name"],  # type: ignore[arg-type]
+            image_sha256=value["image_sha256"],  # type: ignore[arg-type]
+            source_byte_size=value["source_byte_size"],  # type: ignore[arg-type]
+            capture_stratum=tuple(stratum),  # type: ignore[arg-type]
+            embedding=tuple(value["embedding"]),  # type: ignore[arg-type]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid support bank candidate") from exc
+
+
+def _support_bank_digest(
+    method: str, seeds: tuple[int, ...], orders: tuple[SupportOrder, ...]
+) -> str:
+    """Digest the full observable bank, not merely a selector configuration."""
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "schema_version": 1,
+                "method": method,
+                "seeds": list(seeds),
+                "orders": [
+                    {
+                        "category_id": order.category_id,
+                        "method": order.method,
+                        "seed": order.seed,
+                        "source_identities": list(order.source_identities),
+                        "manifest_sha256": order.manifest_sha256,
+                    }
+                    for order in sorted(orders, key=lambda item: (item.category_id, item.seed))
+                ],
+            }
+        )
+    ).hexdigest()
