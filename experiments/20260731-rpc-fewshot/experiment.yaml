@@ -1,0 +1,11 @@
+experiment_id: 20260731-rpc-fewshot-stage1
+status: planned
+stage: stage1
+support_seeds: [101, 102, 103, 104, 105]
+folds: [0, 1, 2, 3, 4]
+conditions:
+  method_selector_pairs: [[m0, div], [m1, div], [m2, div], [m2, rnd]]
+  shot_counts: [1, 3, 5]
+hypothesis: >-
+  Frozen visual support representations can preserve novel-SKU Top-1 with at
+  most five labeled images.
