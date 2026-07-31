@@ -65,7 +65,6 @@ class RpcImage:
     image_id: int
     source_identity: str
     source_path: Path
-    category_id: int
     byte_size: int
     sha256: str
     level: str = ""
@@ -262,16 +261,14 @@ def _index_split(
             level,
         )
 
-    for item in objects:
-        record = image_records[item.image_id]
-        source_path, byte_size, source_sha256, level = source_details[item.image_id]
+    for image_id, record in image_records.items():
+        source_path, byte_size, source_sha256, level = source_details[image_id]
         indexed.append(
             RpcImage(
                 split=split,
-                image_id=item.image_id,
-                source_identity=f"{split}:{item.image_id}:{record['file_name']}",
+                image_id=image_id,
+                source_identity=f"{split}:{image_id}:{record['file_name']}",
                 source_path=source_path,
-                category_id=item.category_id,
                 byte_size=byte_size,
                 sha256=source_sha256,
                 level=level,

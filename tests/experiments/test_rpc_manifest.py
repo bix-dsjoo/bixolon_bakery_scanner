@@ -37,7 +37,10 @@ def _write_coco(root: Path, split: str, *, bbox: list[float] | None = None) -> b
                 "bbox": bbox if bbox is not None else [1, 2, 3, 4],
             }
         ],
-        "categories": [{"id": 7, "name": "bread"}],
+        "categories": [
+            {"id": 7, "name": "bread"},
+            {"id": 8, "name": "cake"},
+        ],
     }
     content = canonical_json_bytes(payload)
     (root / f"instances_{split}.json").write_bytes(content)
@@ -117,7 +120,7 @@ def test_load_rpc_index_accepts_and_indexes_multiple_val_and_test_annotations(
         annotation_path = tmp_path / f"instances_{split}.json"
         payload = json.loads(annotation_path.read_text(encoding="utf-8"))
         payload["annotations"].append(
-            {"id": 2, "image_id": 1, "category_id": 7, "bbox": [5, 2, 3, 4]}
+                {"id": 2, "image_id": 1, "category_id": 8, "bbox": [5, 2, 3, 4]}
         )
         content = canonical_json_bytes(payload)
         annotation_path.write_bytes(content)
@@ -129,19 +132,17 @@ def test_load_rpc_index_accepts_and_indexes_multiple_val_and_test_annotations(
 
     index = load_rpc_index(multi_object_contract, tmp_path)
 
-    assert [(item.split, item.annotation_id) for item in index.objects] == [
+    assert [(item.split, item.annotation_id, item.category_id) for item in index.objects] == [
+        ("train2019", 1, 7),
+        ("val2019", 1, 7),
+        ("val2019", 2, 8),
+        ("test2019", 1, 7),
+        ("test2019", 2, 8),
+    ]
+    assert [(item.split, item.image_id) for item in index.images] == [
         ("train2019", 1),
         ("val2019", 1),
-        ("val2019", 2),
         ("test2019", 1),
-        ("test2019", 2),
-    ]
-    assert [(item.split, item.category_id) for item in index.images] == [
-        ("train2019", 7),
-        ("val2019", 7),
-        ("val2019", 7),
-        ("test2019", 7),
-        ("test2019", 7),
     ]
 
 
@@ -153,7 +154,6 @@ def test_load_rpc_index_indexes_source_file_identity_and_digest(tmp_path: Path):
     image = next(item for item in index.images if item.split == "train2019")
     assert image.source_path == tmp_path / "train2019.jpg"
     assert image.source_identity == "train2019:1:train2019.jpg"
-    assert image.category_id == 7
     assert image.byte_size == len(b"pixels:train2019")
     assert image.sha256 == hashlib.sha256(b"pixels:train2019").hexdigest()
     assert next(item for item in index.images if item.split == "val2019").level == "easy"

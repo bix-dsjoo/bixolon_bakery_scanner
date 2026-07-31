@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Iterable
 
-from bakery_scanner.experiments.rpc_manifest import RpcImage, RpcIndex, canonical_json_bytes
+from bakery_scanner.experiments.rpc_manifest import RpcImage, RpcIndex, RpcObject, canonical_json_bytes
 
 
 _CHECKOUT_NAME = re.compile(r"^(?P<date>\d{8})-(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})-(?P<suffix>.+)\.jpg$")
@@ -29,7 +29,7 @@ class ClassFoldAssignment:
 class SceneRoleAssignment:
     split: str
     image_id: int
-    category_id: int
+    category_ids: tuple[int, ...]
     role: str
     burst_id: str
     timestamp: datetime
@@ -54,11 +54,11 @@ class _Burst:
     date: str
     suffix: str
     difficulty: str
-    images: tuple[tuple[RpcImage, _CheckoutName], ...]
+    images: tuple[tuple[RpcImage, _CheckoutName, frozenset[int]], ...]
 
     @property
     def category_ids(self) -> frozenset[int]:
-        return frozenset(image.category_id for image, _ in self.images)
+        return frozenset(category_id for _, _, categories in self.images for category_id in categories)
 
     @property
     def image_count(self) -> int:
@@ -109,7 +109,9 @@ def build_scene_roles(index: RpcIndex, *, split_version: str) -> tuple[SceneRole
     categories = _categories(index)
     if not isinstance(split_version, str) or not split_version:
         raise ValueError("split_version must be a non-empty string")
-    bursts = _build_bursts(image for image in index.images if image.split in {"val2019", "test2019"})
+    bursts = _build_bursts(
+        (image for image in index.images if image.split in {"val2019", "test2019"}), index.objects
+    )
     val_bursts = tuple(item for item in bursts if item.split == "val2019")
     test_bursts = tuple(item for item in bursts if item.split == "test2019")
     roles = _assign_val_roles(val_bursts, tuple(categories), split_version)
@@ -119,7 +121,7 @@ def build_scene_roles(index: RpcIndex, *, split_version: str) -> tuple[SceneRole
         SceneRoleAssignment(
             split=burst.split,
             image_id=image.image_id,
-            category_id=image.category_id,
+            category_ids=tuple(sorted(category_ids)),
             role=roles[burst.burst_id],
             burst_id=burst.burst_id,
             timestamp=name.timestamp,
@@ -130,7 +132,7 @@ def build_scene_roles(index: RpcIndex, *, split_version: str) -> tuple[SceneRole
             manifest_sha256="",
         )
         for burst in bursts
-        for image, name in burst.images
+        for image, name, category_ids in burst.images
     )
     digest = _manifest_digest(provisional)
     return tuple(replace(item, manifest_sha256=digest) for item in provisional)
@@ -145,17 +147,24 @@ def _categories(index: RpcIndex) -> dict[int, object]:
     return categories
 
 
-def _build_bursts(images: Iterable[RpcImage]) -> tuple[_Burst, ...]:
-    grouped: dict[tuple[str, str, str, str], list[tuple[RpcImage, _CheckoutName]]] = {}
+def _build_bursts(images: Iterable[RpcImage], objects: Iterable[RpcObject]) -> tuple[_Burst, ...]:
+    image_categories: dict[tuple[str, int], set[int]] = {}
+    for item in objects:
+        if item.split in {"val2019", "test2019"}:
+            image_categories.setdefault((item.split, item.image_id), set()).add(item.category_id)
+    grouped: dict[tuple[str, str, str, str], list[tuple[RpcImage, _CheckoutName, frozenset[int]]]] = {}
     for image in images:
         name = _parse_checkout_name(image.source_path.name)
         if image.level not in {"easy", "medium", "hard"}:
             raise ValueError("validation and test images require a valid COCO level")
-        grouped.setdefault((image.split, name.date, name.suffix, image.level), []).append((image, name))
+        categories = frozenset(image_categories.get((image.split, image.image_id), set()))
+        if not categories:
+            raise ValueError("impossible validation category coverage: source image is missing incidence")
+        grouped.setdefault((image.split, name.date, name.suffix, image.level), []).append((image, name, categories))
     bursts: list[_Burst] = []
     for key in sorted(grouped):
         records = sorted(grouped[key], key=lambda item: (item[1].timestamp, item[0].image_id, item[0].source_identity))
-        current: list[tuple[RpcImage, _CheckoutName]] = []
+        current: list[tuple[RpcImage, _CheckoutName, frozenset[int]]] = []
         for record in records:
             if current and (record[1].timestamp - current[-1][1].timestamp).total_seconds() > 120:
                 bursts.append(_make_burst(key, len(bursts), current))
@@ -166,7 +175,7 @@ def _build_bursts(images: Iterable[RpcImage]) -> tuple[_Burst, ...]:
     return tuple(bursts)
 
 
-def _make_burst(key: tuple[str, str, str, str], position: int, records: list[tuple[RpcImage, _CheckoutName]]) -> _Burst:
+def _make_burst(key: tuple[str, str, str, str], position: int, records: list[tuple[RpcImage, _CheckoutName, frozenset[int]]]) -> _Burst:
     split, date, suffix, difficulty = key
     identity = f"{split}:{date}:{suffix}:{difficulty}:{position:05d}"
     return _Burst(identity, split, date, suffix, difficulty, tuple(records))
