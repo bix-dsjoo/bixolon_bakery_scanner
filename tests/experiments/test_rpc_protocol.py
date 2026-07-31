@@ -224,12 +224,17 @@ def test_stage_one_selection_preregisters_dominance_and_seed_expansion():
     assert result.removed_methods == (("m1", "div"),)
     assert result.retained_methods == (("m0", "div"), ("m2", "div"))
     assert result.expand_to_ten_seeds == (("m0", "div"), ("m2", "div"))
-    receipt = StageOneSelectionReceipt(evidence=(
-        StageOneMethodEvidence("m0", "div", 0.91, 0.90, 0.10, 0.10),
-        StageOneMethodEvidence("m1", "div", 0.88, 0.87, 0.11, 0.11),
-        StageOneMethodEvidence("m2", "div", 0.905, 0.87, 0.08, 0.09),
-    ), decision=result)
+    receipt = StageOneSelectionReceipt(
+        evidence=(
+            StageOneMethodEvidence("m0", "div", 0.91, 0.90, 0.10, 0.10),
+            StageOneMethodEvidence("m1", "div", 0.88, 0.87, 0.11, 0.11),
+            StageOneMethodEvidence("m2", "div", 0.905, 0.87, 0.08, 0.09),
+        ),
+        score_receipt_sha256s=("1" * 64, "2" * 64, "3" * 64),
+        decision=result,
+    )
     assert receipt.to_dict()["decision"]["retained_methods"] == [["m0", "div"], ["m2", "div"]]
+    assert receipt.to_dict()["score_receipt_sha256s"] == ["1" * 64, "2" * 64, "3" * 64]
 
 
 def _stage_four_selection() -> StageFourSelection:

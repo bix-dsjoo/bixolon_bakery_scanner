@@ -1045,11 +1045,16 @@ class StageOneSelectionReceipt:
     """Immutable screen-decision artifact; it cannot claim a minimum result."""
 
     evidence: tuple[StageOneMethodEvidence, ...]
+    score_receipt_sha256s: tuple[str, ...]
     decision: StageOneSelectionDecision
 
     def __post_init__(self) -> None:
         if not self.evidence or any(not isinstance(item, StageOneMethodEvidence) for item in self.evidence):
             raise ValueError("Stage-1 selection receipt requires method evidence")
+        if not self.score_receipt_sha256s or len(set(self.score_receipt_sha256s)) != len(self.score_receipt_sha256s):
+            raise ValueError("Stage-1 selection receipt requires distinct score receipt hashes")
+        for value in self.score_receipt_sha256s:
+            _validate_sha256("Stage-1 score receipt SHA-256", value)
         if not isinstance(self.decision, StageOneSelectionDecision):
             raise ValueError("Stage-1 selection receipt requires a decision")
         if self.decision != select_stage_one_methods(self.evidence):
@@ -1060,6 +1065,7 @@ class StageOneSelectionReceipt:
             "schema_version": 1,
             "kind": "rpc-fewshot-stage1-selection-receipt",
             "decision_scope": "method_screen_only_not_a_minimum",
+            "score_receipt_sha256s": list(self.score_receipt_sha256s),
             "evidence": [
                 {
                     "method": item.method,
