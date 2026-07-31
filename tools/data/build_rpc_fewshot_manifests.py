@@ -71,7 +71,12 @@ def build_manifest(
             source_manifest_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
         )
     if locked_ground_truth_output is not None:
-        materialize_locked_ground_truth(output, scene_role_output, locked_ground_truth_output)
+        materialize_locked_ground_truth(
+            output,
+            scene_role_output,
+            locked_ground_truth_output,
+            trusted_source_root=rpc_root,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -346,7 +346,13 @@ Locked oracle-box ground truth is a materialized research artifact, never an
 ad-hoc object list: it records relative source-input and scene-role artifacts
 with SHA-256 digests, and its object identities must exactly equal every
 `test2019` object derived from the verified RPC source and its
-`locked_acceptance` roles. Scorers and score receipts retain all three digests.
+`locked_acceptance` roles. The source manifest digest is provenance only, not
+an authority: materialization and all real scoring commands require an explicit
+trusted RPC root, re-read and hash the raw annotations against
+`RpcDatasetContract.default()`, and compare resolved test images/objects to the
+independently parsed index. Scene roles must exactly cover raw `val2019` and
+`test2019` images once; foreign/train rows fail closed. Scorers and score
+receipts retain all three digests.
 
 **Files:**
 - Create: `src/bakery_scanner/experiments/rpc_metrics.py`

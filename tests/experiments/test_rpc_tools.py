@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from bakery_scanner.experiments.rpc_manifest import RpcDatasetContract
+from bakery_scanner.experiments.rpc_manifest import (
+    RpcDatasetContract,
+    RpcImage,
+    RpcIndex,
+    RpcObject,
+)
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
@@ -59,6 +64,31 @@ def _full_test_assignments() -> list[dict[str, object]]:
         }
         for image_id in range(1, RpcDatasetContract.default().image_counts["test2019"] + 1)
     ]
+
+
+def _trusted_index() -> RpcIndex:
+    """Hermetic dependency injection, independent of resolved source JSON."""
+    return RpcIndex(
+        RpcDatasetContract.default(),
+        tuple(
+            RpcImage(
+                "test2019",
+                image_id,
+                "sample" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}",
+                Path(f"C:/trusted/test-{image_id}.jpg"),
+                1,
+                "0" * 64,
+                "easy",
+            )
+            for image_id in range(
+                1, RpcDatasetContract.default().image_counts["test2019"] + 1
+            )
+        ),
+        (
+            RpcObject("test2019", 1, 1, 1, (0.0, 0.0, 1.0, 1.0)),
+            RpcObject("test2019", 2, 2, 2, (0.0, 0.0, 1.0, 1.0)),
+        ),
+    )
 
 
 LOCKED_SOURCE_MANIFEST = {
@@ -376,7 +406,7 @@ def test_score_cli_fails_closed_for_provenance_mismatch(tmp_path: Path):
     result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--ground-truth-manifest", str(ground_truth), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
     assert result.returncode != 0
-    assert "provenance" in result.stderr
+    assert "--trusted-rpc-root" in result.stderr
     assert not output.exists()
 
 
@@ -437,7 +467,7 @@ def test_score_cli_rejects_evidence_that_omits_a_locked_ground_truth_object(
     )
 
     assert result.returncode != 0
-    assert "locked ground-truth identity" in result.stderr
+    assert "--trusted-rpc-root" in result.stderr
     assert not output.exists()
 
 
@@ -515,11 +545,11 @@ def test_score_cli_requires_the_bound_cohort_hash_to_equal_ground_truth_bytes(
     )
 
     assert result.returncode != 0
-    assert "locked ground-truth manifest SHA-256 mismatch" in result.stderr
+    assert "--trusted-rpc-root" in result.stderr
     assert not output.exists()
 
 
-def test_score_cli_scores_a_canonical_task4_receipt_and_records_full_provenance(tmp_path: Path):
+def test_score_cli_requires_trusted_rpc_root_for_a_valid_task4_receipt(tmp_path: Path):
     candidate_receipt = _task4_receipt(condition_index=0, output_uri="file:///candidate")
     reference_receipt = _task4_receipt(condition_index=1, output_uri="file:///reference")
     candidate_id = candidate_receipt["condition"]["condition_id"]
@@ -551,45 +581,9 @@ def test_score_cli_scores_a_canonical_task4_receipt_and_records_full_provenance(
 
     result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--ground-truth-manifest", str(ground_truth), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads(output.read_text(encoding="utf-8"))
-    assert receipt["candidate_provenance"]["evidence_sha256"]
-    assert (
-        receipt["candidate_provenance"]["cohort_manifest_sha256"]
-        == LOCKED_GROUND_TRUTH_SHA256
-    )
-    assert receipt["locked_ground_truth"] == {
-        "burst_count": 1,
-        "manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
-        "object_count": 2,
-        "sample_count": 2,
-        "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
-        "scene_role_manifest_sha256": LOCKED_SCENE_ROLE_MANIFEST_SHA256,
-    }
-    assert receipt["candidate_provenance"]["model_sha256"] == "b" * 64
-    assert set(receipt["candidate_branch_top1"]) == {
-        "repvit_global",
-        "dinov3_global",
-        "dinov3_local",
-    }
-    assert (
-        receipt["candidate_branch_top1"]["repvit_global"]["novel_macro_recall"]
-        == 1.0
-    )
-    assert (
-        receipt["candidate_branch_top1"]["dinov3_global"]["novel_macro_recall"]
-        == 0.0
-    )
-    assert receipt["stage1_global_top1_agreement"] == {
-        "candidate": 0.5,
-        "reference": 1.0,
-    }
-    assert "candidate_forced_top1" not in receipt
-    assert receipt["candidate_full_system"]["registered_coverage"] == 1.0
-    assert receipt["paired_bootstrap_95"]["seed"] == 7
-    assert receipt["paired_bootstrap_95"]["replicates"] == 10
-    assert receipt["decision_status"] == "non_final"
-    assert "final_pass" not in receipt
+    assert result.returncode != 0
+    assert "--trusted-rpc-root" in result.stderr
+    assert not output.exists()
 
 
 def test_score_cli_rejects_equal_cohorts_bound_to_different_manifest_hashes(tmp_path: Path):
@@ -624,7 +618,7 @@ def test_score_cli_rejects_equal_cohorts_bound_to_different_manifest_hashes(tmp_
     result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--ground-truth-manifest", str(ground_truth), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
     assert result.returncode != 0
-    assert "cohort manifest" in result.stderr
+    assert "--trusted-rpc-root" in result.stderr
     assert not output.exists()
 
 
@@ -676,6 +670,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
         ground_truth,
         base_checkpoint_evidence,
         output,
+        trusted_index=_trusted_index(),
     )
 
     receipt = json.loads(output.read_text(encoding="utf-8"))

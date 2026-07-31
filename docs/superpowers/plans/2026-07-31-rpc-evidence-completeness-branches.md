@@ -13,6 +13,17 @@
 - Missing, duplicate, or extra locked objects fail closed before any score is emitted.
 - Completeness identity is exactly `(sample_id, object_id, burst_id, difficulty, truth_category_id)`.
 - Candidate and reference conditions must bind the same canonical ground-truth manifest SHA-256.
+- A locked ground-truth manifest is only a materialized view: real materialization,
+  single scoring, aggregation, and Stage-4 reconstruction require an explicit
+  trusted RPC root. The verifier re-runs `load_rpc_index` with the immutable
+  `RpcDatasetContract.default()` annotation hashes/counts and compares the
+  resolved `test2019` image/object identities exactly. Hermetic tests may inject
+  a separately constructed trusted `RpcIndex`; the resolved manifest is never a
+  trusted resolver.
+- Scene-role assignments must be an exact, duplicate-free domain match for all
+  trusted `val2019` and `test2019` image identities. Test rows are
+  `locked_acceptance`; validation rows are only calibration or development
+  selection. Foreign, train, omitted, and non-test role rows fail closed.
 - All three branch vectors are finite, equal in length to the complete registered category order, and have deterministic first-maximum Top-1 behavior.
 - Stage-1 output reports RepViT-global and DINOv3-global summaries plus their Top-1 agreement.
 - Full scoring output retains RepViT-global, DINOv3-global, and DINOv3-local summaries.
@@ -52,6 +63,25 @@ Add validated immutable ground-truth rows, canonical manifest loading/digest che
 Run: `python -m pytest tests/experiments/test_rpc_metrics.py tests/experiments/test_rpc_tools.py tests/experiments/test_rpc_scoring_plan.py -q`
 
 Expected: all selected tests pass.
+
+### Task 1a: Authenticate source lineage independently
+
+**Files:**
+- Modify: `src/bakery_scanner/experiments/rpc_scoring.py`
+- Modify: `src/bakery_scanner/experiments/rpc_protocol.py`
+- Modify: `tools/data/build_rpc_fewshot_manifests.py`
+- Test: `tests/experiments/test_rpc_scoring_plan.py`
+- Test: `tests/experiments/test_rpc_tools.py`
+
+- [x] Require a trusted RPC root for real source/role/ground-truth materialization
+  and scoring, re-read the raw annotation files with `RpcDatasetContract.default()`,
+  and compare the resolved locked test images and object identities to that raw
+  index before accepting ground truth.
+- [x] Keep only explicit dependency injection of a separately created
+  `RpcIndex` for hermetic tests; do not permit a resolved source JSON route.
+- [x] Require the scene-role manifest to assign exactly every raw validation and
+  test image once, with valid split-specific roles; reject foreign rows.
+- [x] Add forged source and foreign validation-role regressions.
 
 ### Task 2: Three independent model branches
 

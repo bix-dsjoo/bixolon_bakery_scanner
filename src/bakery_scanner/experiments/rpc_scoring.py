@@ -12,7 +12,9 @@ from typing import Any, Iterable, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import (
     RpcDatasetContract,
+    RpcIndex,
     canonical_json_bytes,
+    load_rpc_index,
     write_new_json,
 )
 from bakery_scanner.experiments.rpc_metrics import (
@@ -107,7 +109,21 @@ def load_canonical_jsonl(path: Path) -> LoadedEvidence:
     return LoadedEvidence(tuple(rows), hashlib.sha256(content).hexdigest())
 
 
-def load_locked_ground_truth(path: Path) -> LoadedGroundTruth:
+def load_locked_ground_truth(
+    path: Path,
+    *,
+    trusted_source_root: Path | None = None,
+    trusted_index: RpcIndex | None = None,
+) -> LoadedGroundTruth:
+    """Load locked truth only after independently authenticating raw RPC input.
+
+    Real scoring must provide ``trusted_source_root``.  ``trusted_index`` is
+    deliberately dependency-injected for hermetic unit fixtures; callers must
+    never construct it from the resolved source manifest being verified.
+    """
+    index = _trusted_rpc_index(
+        trusted_source_root=trusted_source_root, trusted_index=trusted_index
+    )
     value, digest = _load_canonical_json_with_digest(path)
     if (
         set(value) != {
@@ -147,7 +163,9 @@ def load_locked_ground_truth(path: Path) -> LoadedGroundTruth:
         raise ValueError("locked ground-truth source manifest SHA-256 mismatch")
     if roles_digest != value.get("scene_role_manifest_sha256"):
         raise ValueError("locked ground-truth scene-role manifest SHA-256 mismatch")
-    expected = _locked_test_cohort_from_lineage(source, source_digest, roles)
+    expected = _locked_test_cohort_from_lineage(
+        source, source_digest, roles, trusted_index=index
+    )
     if {row.identity for row in rows} != {row.identity for row in expected}:
         raise ValueError("locked ground-truth must exactly match test2019 locked cohort")
     return LoadedGroundTruth(rows, digest, source_digest, roles_digest)
@@ -157,6 +175,9 @@ def materialize_locked_ground_truth(
     source_manifest_path: Path,
     scene_role_manifest_path: Path,
     output: Path,
+    *,
+    trusted_source_root: Path | None = None,
+    trusted_index: RpcIndex | None = None,
 ) -> None:
     """Derive the complete locked test2019 cohort from verified lineage artifacts."""
     if output.exists():
@@ -173,7 +194,12 @@ def materialize_locked_ground_truth(
         ) from exc
     source, source_digest = _load_canonical_json_with_digest(source_path)
     roles, roles_digest = _load_canonical_json_with_digest(roles_path)
-    rows = _locked_test_cohort_from_lineage(source, source_digest, roles)
+    index = _trusted_rpc_index(
+        trusted_source_root=trusted_source_root, trusted_index=trusted_index
+    )
+    rows = _locked_test_cohort_from_lineage(
+        source, source_digest, roles, trusted_index=index
+    )
     write_new_json(
         output,
         {
@@ -199,8 +225,31 @@ def _lineage_path(ground_truth_path: Path, value: object) -> Path:
     return candidate
 
 
+def _trusted_rpc_index(
+    *,
+    trusted_source_root: Path | None,
+    trusted_index: RpcIndex | None,
+) -> RpcIndex:
+    """Return an independently authenticated index, never resolved JSON data."""
+    if (trusted_source_root is None) == (trusted_index is None):
+        raise ValueError(
+            "locked ground-truth verification requires exactly one trusted RPC source root or trusted index"
+        )
+    if trusted_index is not None:
+        if not isinstance(trusted_index, RpcIndex):
+            raise ValueError("trusted RPC index is invalid")
+        if not isinstance(trusted_index.contract, RpcDatasetContract):
+            raise ValueError("trusted RPC index contract is invalid")
+        return trusted_index
+    return load_rpc_index(RpcDatasetContract.default(), Path(trusted_source_root))
+
+
 def _locked_test_cohort_from_lineage(
-    source: Mapping[str, object], source_digest: str, roles: Mapping[str, object]
+    source: Mapping[str, object],
+    source_digest: str,
+    roles: Mapping[str, object],
+    *,
+    trusted_index: RpcIndex,
 ) -> tuple[LockedGroundTruthRow, ...]:
     if (
         source.get("schema_version") != 1
@@ -210,23 +259,14 @@ def _locked_test_cohort_from_lineage(
         or not isinstance(source.get("objects"), list)
     ):
         raise ValueError("invalid locked ground-truth source manifest")
-    contract = RpcDatasetContract.default()
+    contract = trusted_index.contract
     if (
         source.get("annotation_sha256") != dict(contract.annotation_sha256)
         or source.get("image_counts") != dict(contract.image_counts)
         or not isinstance(source.get("categories"), list)
     ):
         raise ValueError("locked ground-truth source does not match RPC 2019 contract")
-    source_images = source["images"]
-    observed_counts = {
-        split: sum(
-            isinstance(image, Mapping) and image.get("split") == split
-            for image in source_images
-        )
-        for split in contract.image_counts
-    }
-    if observed_counts != dict(contract.image_counts):
-        raise ValueError("locked ground-truth source image coverage does not match RPC 2019 contract")
+    _validate_resolved_source_against_trusted(source, trusted_index)
     if (
         roles.get("schema_version") != 1
         or roles.get("kind") != "rpc-fewshot-scene-roles"
@@ -248,31 +288,42 @@ def _locked_test_cohort_from_lineage(
         images[image_id] = (sample_id, level)
     if not images:
         raise ValueError("locked ground-truth source lacks test2019 images")
-    assignments: dict[int, tuple[str, str]] = {}
+    trusted_role_levels = {
+        (image.split, image.image_id): image.level
+        for image in trusted_index.images
+        if image.split in {"val2019", "test2019"}
+    }
+    assignments: dict[tuple[str, int], tuple[str, str]] = {}
     for assignment in roles["assignments"]:
-        if not isinstance(assignment, Mapping) or assignment.get("split") != "test2019":
-            continue
+        if not isinstance(assignment, Mapping):
+            raise ValueError("invalid locked ground-truth scene-role assignment")
         image_id, role, burst_id, difficulty = (
             assignment.get("image_id"), assignment.get("role"), assignment.get("burst_id"), assignment.get("difficulty")
         )
+        split = assignment.get("split")
         if (
-            type(image_id) is not int or image_id not in images or role != "locked_acceptance"
-            or not isinstance(burst_id, str) or not burst_id or difficulty not in {"easy", "medium", "hard"}
-            or difficulty != images[image_id][1] or image_id in assignments
+            split not in {"val2019", "test2019"}
+            or type(image_id) is not int
+            or not isinstance(burst_id, str)
+            or not burst_id
+            or difficulty not in {"easy", "medium", "hard"}
+            or (split == "test2019" and role != "locked_acceptance")
+            or (split == "val2019" and role not in {"calibration", "development_selection"})
+            or (split, image_id) not in trusted_role_levels
+            or difficulty != trusted_role_levels[(split, image_id)]
+            or (split, image_id) in assignments
         ):
-            raise ValueError("invalid locked test2019 scene-role assignment")
-        assignments[image_id] = (burst_id, difficulty)
-    if set(assignments) != set(images):
-        raise ValueError("scene-role manifest does not cover exact test2019 source images")
+            raise ValueError("invalid locked ground-truth scene-role assignment")
+        assignments[(split, image_id)] = (burst_id, difficulty)
+    if set(assignments) != set(trusted_role_levels):
+        raise ValueError("scene-role manifest does not exactly cover trusted validation/test images")
     difficulty_code = {"easy": "E", "medium": "M", "hard": "H"}
     expected: list[LockedGroundTruthRow] = []
     object_ids: set[int] = set()
-    for item in source["objects"]:
-        if not isinstance(item, Mapping) or item.get("split") != "test2019":
+    for item in trusted_index.objects:
+        if item.split != "test2019":
             continue
-        object_id, image_id, category_id = (
-            item.get("annotation_id"), item.get("image_id"), item.get("category_id")
-        )
+        object_id, image_id, category_id = item.annotation_id, item.image_id, item.category_id
         if (
             type(object_id) is not int or object_id <= 0 or object_id in object_ids
             or type(image_id) is not int or image_id not in images
@@ -281,11 +332,67 @@ def _locked_test_cohort_from_lineage(
             raise ValueError("invalid test2019 source object")
         object_ids.add(object_id)
         sample_id, _ = images[image_id]
-        burst_id, difficulty = assignments[image_id]
+        burst_id, difficulty = assignments[("test2019", image_id)]
         expected.append(LockedGroundTruthRow(sample_id, object_id, burst_id, difficulty_code[difficulty], category_id))
     if not expected:
         raise ValueError("locked ground-truth source lacks test2019 objects")
     return tuple(sorted(expected, key=lambda row: row.object_id))
+
+
+def _validate_resolved_source_against_trusted(
+    source: Mapping[str, object], trusted_index: RpcIndex
+) -> None:
+    """Check resolved source identities against independently parsed raw RPC data."""
+    trusted_test_images = {
+        (item.image_id, item.source_identity, item.level)
+        for item in trusted_index.images
+        if item.split == "test2019"
+    }
+    declared_test_images: set[tuple[int, str, str]] = set()
+    declared_test_image_count = 0
+    for item in source["images"]:  # validated list shape by caller
+        if not isinstance(item, Mapping) or item.get("split") != "test2019":
+            continue
+        declared_test_image_count += 1
+        image_id, identity, level = (
+            item.get("image_id"), item.get("source_identity"), item.get("level")
+        )
+        if (
+            type(image_id) is not int
+            or image_id <= 0
+            or not isinstance(identity, str)
+            or not identity
+            or level not in {"easy", "medium", "hard"}
+        ):
+            raise ValueError("invalid trusted RPC source image identity")
+        declared_test_images.add((image_id, identity, level))
+    if (
+        declared_test_image_count != len(declared_test_images)
+        or declared_test_images != trusted_test_images
+    ):
+        raise ValueError("resolved source does not exactly match trusted RPC source images")
+    trusted_test_objects = {
+        (item.annotation_id, item.image_id, item.category_id)
+        for item in trusted_index.objects
+        if item.split == "test2019"
+    }
+    declared_test_objects: set[tuple[int, int, int]] = set()
+    declared_test_object_count = 0
+    for item in source["objects"]:  # validated list shape by caller
+        if not isinstance(item, Mapping) or item.get("split") != "test2019":
+            continue
+        declared_test_object_count += 1
+        object_id, image_id, category_id = (
+            item.get("annotation_id"), item.get("image_id"), item.get("category_id")
+        )
+        if any(type(value) is not int or value <= 0 for value in (object_id, image_id, category_id)):
+            raise ValueError("invalid trusted RPC source object identity")
+        declared_test_objects.add((object_id, image_id, category_id))
+    if (
+        declared_test_object_count != len(declared_test_objects)
+        or declared_test_objects != trusted_test_objects
+    ):
+        raise ValueError("resolved source does not exactly match trusted RPC source objects")
 
 
 def score(
@@ -296,14 +403,25 @@ def score(
     ground_truth_manifest_path: Path,
     base_checkpoint_evidence_path: Path,
     output: Path,
+    *,
+    trusted_source_root: Path | None = None,
+    trusted_index: RpcIndex | None = None,
 ) -> None:
     """Write one non-final condition score; only complete aggregation can pass."""
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
     condition = load_canonical_json(condition_path)
     reference_condition = load_canonical_json(reference_condition_path)
-    candidate_plan = _condition_scoring_plan(condition)
-    reference_plan = _condition_scoring_plan(reference_condition)
+    candidate_plan = _condition_scoring_plan(
+        condition,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
+    )
+    reference_plan = _condition_scoring_plan(
+        reference_condition,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
+    )
     _validate_comparable_scoring_plans(candidate_plan, reference_plan)
     _validate_paired_condition_axes(
         (_score_receipt_condition(condition, "condition"),),
@@ -313,7 +431,10 @@ def score(
     stage_four_selection = None
     if paired_stage == "locked":
         stage_four_selection = _validate_locked_condition_receipt_pair(
-            condition, reference_condition
+            condition,
+            reference_condition,
+            trusted_source_root=trusted_source_root,
+            trusted_index=trusted_index,
         )
     candidate_id, _ = condition_provenance(condition)
     reference_id, _ = condition_provenance(reference_condition)
@@ -323,7 +444,11 @@ def score(
         raise ValueError("candidate/reference condition cohort mismatch")
     if _cohort_manifest_sha256(condition) != _cohort_manifest_sha256(reference_condition):
         raise ValueError("candidate/reference cohort manifest mismatch")
-    ground_truth = load_locked_ground_truth(ground_truth_manifest_path)
+    ground_truth = load_locked_ground_truth(
+        ground_truth_manifest_path,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
+    )
     if ground_truth.sha256 != _cohort_manifest_sha256(condition):
         raise ValueError("locked ground-truth manifest SHA-256 mismatch")
     statuses = (condition.get("status"), reference_condition.get("status"))
@@ -568,6 +693,8 @@ def aggregate_score_receipts(
     evidence_paths: Iterable[Path],
     reference_evidence_paths: Iterable[Path],
     ground_truth_manifest_path: Path,
+    trusted_source_root: Path | None = None,
+    trusted_index: RpcIndex | None = None,
 ) -> None:
     """Recompute one final decision from every declared raw evidence pair."""
     if output.exists():
@@ -588,7 +715,11 @@ def aggregate_score_receipts(
         raise ValueError(
             "aggregate requires one candidate/reference evidence file per score receipt"
         )
-    ground_truth = load_locked_ground_truth(ground_truth_manifest_path)
+    ground_truth = load_locked_ground_truth(
+        ground_truth_manifest_path,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
+    )
     candidate_plan = _score_receipt_plan(receipts[0], "candidate_scoring_plan")
     reference_plan = _score_receipt_plan(receipts[0], "reference_scoring_plan")
     _validate_comparable_scoring_plans(candidate_plan, reference_plan)
@@ -621,7 +752,12 @@ def aggregate_score_receipts(
     locked_selections: tuple[StageFourSelection, ...] = ()
     if aggregate_stage == "locked":
         locked_selections = tuple(
-            _validate_locked_score_receipt_pair(receipt) for receipt in receipts
+            _validate_locked_score_receipt_pair(
+                receipt,
+                trusted_source_root=trusted_source_root,
+                trusted_index=trusted_index,
+            )
+            for receipt in receipts
         )
         _validate_comparable_locked_selections(locked_selections, candidate_plan)
     aggregate_conditions: list[PairedConditionEvidence] = []
@@ -813,7 +949,12 @@ def _aggregate_upstream_artifact(
     return artifact
 
 
-def validate_stage_four_confirmation_derivation(receipt: Mapping[str, object]) -> None:
+def validate_stage_four_confirmation_derivation(
+    receipt: Mapping[str, object],
+    *,
+    trusted_source_root: Path | None = None,
+    trusted_index: RpcIndex | None = None,
+) -> None:
     """Rebuild a Stage-4 aggregate from its declared immutable upstream files.
 
     Stage-4 JSON is a compact conclusion, not an authority in its own right.
@@ -852,6 +993,8 @@ def validate_stage_four_confirmation_derivation(receipt: Mapping[str, object]) -
                 evidence_paths=(candidate_path,),
                 reference_evidence_paths=(reference_path,),
                 ground_truth_manifest_path=ground_truth_path,
+                trusted_source_root=trusted_source_root,
+                trusted_index=trusted_index,
             )
             rebuilt = load_canonical_json(rebuilt_path)
         except (OSError, ValueError) as exc:
@@ -1241,7 +1384,12 @@ def _cohort_manifest_sha256(condition: Mapping[str, object]) -> str:
     return cohort["manifest_sha256"]
 
 
-def _condition_scoring_plan(condition: Mapping[str, object]) -> ScoringPlan:
+def _condition_scoring_plan(
+    condition: Mapping[str, object],
+    *,
+    trusted_source_root: Path | None = None,
+    trusted_index: RpcIndex | None = None,
+) -> ScoringPlan:
     if (
         condition.get("schema_version") != 2
         or condition.get("kind") != "rpc-fewshot-experiment-receipt"
@@ -1273,7 +1421,13 @@ def _condition_scoring_plan(condition: Mapping[str, object]) -> ScoringPlan:
         or binding.get("evidence_sha256") != artifact.evidence_sha256
     ):
         raise ValueError("condition fold base checkpoint does not match the scoring plan")
-    _validate_condition_stage_four_selection(condition, parsed, plan)
+    _validate_condition_stage_four_selection(
+        condition,
+        parsed,
+        plan,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
+    )
     return plan
 
 
@@ -1291,7 +1445,12 @@ def _parse_nested_condition(
 
 
 def _validate_condition_stage_four_selection(
-    receipt: Mapping[str, object], condition: ExperimentCondition, plan: ScoringPlan
+    receipt: Mapping[str, object],
+    condition: ExperimentCondition,
+    plan: ScoringPlan,
+    *,
+    trusted_source_root: Path | None,
+    trusted_index: RpcIndex | None,
 ) -> None:
     selection_value = receipt.get("stage_four_selection")
     if condition.stage != "locked":
@@ -1322,6 +1481,8 @@ def _validate_condition_stage_four_selection(
         scoring_plan=plan,
         base_checkpoint_sha256=binding["checkpoint_sha256"],
         base_checkpoint_evidence_sha256=binding["evidence_sha256"],
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
     )
     _validate_locked_condition_against_selection(condition, selection)
 
@@ -1472,7 +1633,11 @@ def _validate_locked_pair_against_selection(
 
 
 def _validate_locked_condition_receipt_pair(
-    candidate_receipt: Mapping[str, object], reference_receipt: Mapping[str, object]
+    candidate_receipt: Mapping[str, object],
+    reference_receipt: Mapping[str, object],
+    *,
+    trusted_source_root: Path | None,
+    trusted_index: RpcIndex | None,
 ) -> StageFourSelection:
     candidate = _score_receipt_condition(candidate_receipt, "condition")
     reference = _score_receipt_condition(reference_receipt, "condition")
@@ -1488,12 +1653,22 @@ def _validate_locked_condition_receipt_pair(
     reference_paths = _stage_four_receipt_paths(reference_receipt)
     if candidate_paths != reference_paths:
         raise ValueError("candidate/reference locked conditions bind different Stage-4 receipt paths")
-    validate_stage_four_confirmation_score_receipts(candidate_selection, candidate_paths)
+    validate_stage_four_confirmation_score_receipts(
+        candidate_selection,
+        candidate_paths,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
+    )
     _validate_locked_pair_against_selection(candidate, reference, candidate_selection)
     return candidate_selection
 
 
-def _validate_locked_score_receipt_pair(receipt: Mapping[str, object]) -> StageFourSelection:
+def _validate_locked_score_receipt_pair(
+    receipt: Mapping[str, object],
+    *,
+    trusted_source_root: Path | None,
+    trusted_index: RpcIndex | None,
+) -> StageFourSelection:
     candidate = _score_receipt_condition(receipt, "candidate_condition")
     reference = _score_receipt_condition(receipt, "reference_condition")
     selection = _locked_selection_from_value(receipt.get("stage_four_selection"))
@@ -1542,6 +1717,8 @@ def _validate_locked_score_receipt_pair(receipt: Mapping[str, object]) -> StageF
         scoring_plan=candidate_plan,
         base_checkpoint_sha256=candidate_checkpoint,
         base_checkpoint_evidence_sha256=candidate_evidence,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
     )
     validate_stage_four_binding_for_locked_target(
         selection,
@@ -1553,6 +1730,8 @@ def _validate_locked_score_receipt_pair(receipt: Mapping[str, object]) -> StageF
         scoring_plan=reference_plan,
         base_checkpoint_sha256=reference_checkpoint,
         base_checkpoint_evidence_sha256=reference_evidence,
+        trusted_source_root=trusted_source_root,
+        trusted_index=trusted_index,
     )
     _validate_locked_pair_against_selection(candidate, reference, selection)
     return selection
@@ -1710,9 +1889,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--aggregate-score-receipt", action="append", type=Path)
     parser.add_argument("--aggregate-evidence", action="append", type=Path)
     parser.add_argument("--aggregate-reference-evidence", action="append", type=Path)
+    parser.add_argument(
+        "--trusted-rpc-root",
+        type=Path,
+        help="verified RPC 2019 root; required to authenticate locked truth",
+    )
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.output.exists():
+            raise FileExistsError(f"output already exists: {args.output}")
         if args.aggregate_score_receipt:
             if any(
                 value is not None
@@ -1731,12 +1917,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.ground_truth_manifest is None:
                 raise ValueError("aggregate mode requires locked ground truth")
+            if args.trusted_rpc_root is None:
+                raise ValueError("aggregate mode requires --trusted-rpc-root")
             aggregate_score_receipts(
                 tuple(args.aggregate_score_receipt),
                 args.output,
                 evidence_paths=tuple(args.aggregate_evidence),
                 reference_evidence_paths=tuple(args.aggregate_reference_evidence),
                 ground_truth_manifest_path=args.ground_truth_manifest,
+                trusted_source_root=args.trusted_rpc_root,
             )
         else:
             if args.aggregate_evidence or args.aggregate_reference_evidence:
@@ -1757,7 +1946,13 @@ def main(argv: list[str] | None = None) -> int:
                     "condition, reference condition, locked ground truth, and fold "
                     "base checkpoint evidence"
                 )
-            score(*single, args.output)  # type: ignore[arg-type]
+            if args.trusted_rpc_root is None:
+                raise ValueError("single-condition scoring requires --trusted-rpc-root")
+            score(  # type: ignore[arg-type]
+                *single,
+                args.output,
+                trusted_source_root=args.trusted_rpc_root,
+            )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     return 0

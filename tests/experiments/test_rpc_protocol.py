@@ -104,7 +104,7 @@ def test_confirmation_and_locked_conditions_bind_the_150_shot_reference(tmp_path
     )
     selected, paths = _stage_four_selection_artifacts(tmp_path)
     locked = locked_conditions(
-        selected, confirmation_score_receipt_paths=paths
+        selected, confirmation_score_receipt_paths=paths, trusted_index=_trusted_index()
     )
 
     assert {condition.stage for condition in confirmation} == {"confirmation"}
@@ -162,6 +162,19 @@ def _stage_four_selection_artifacts(
             )
         )
     return StageFourSelection(tuple(claims)), tuple(paths)
+
+
+def _trusted_index():
+    """Load the independent hermetic resolver from the score fixture module."""
+    specification = importlib.util.spec_from_file_location(
+        "rpc_scoring_plan_trusted_index_fixture",
+        Path(__file__).with_name("test_rpc_scoring_plan.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module._trusted_index()
 
 
 def _branch_summaries() -> dict[str, object]:
@@ -224,7 +237,7 @@ def test_locked_scheduler_requires_four_hash_bound_stage_four_receipts(tmp_path:
     selection, paths = _stage_four_selection_artifacts(tmp_path)
     assert selection.provisional_minimum_shot_count == 5
     assert {(cell.method, cell.selector) for cell in locked_conditions(
-        selection, confirmation_score_receipt_paths=paths
+        selection, confirmation_score_receipt_paths=paths, trusted_index=_trusted_index()
     )} == {
         ("m0", "div")
     }
@@ -245,6 +258,7 @@ def test_locked_scheduler_rejects_unresolved_stage_four_receipt_hashes(
             confirmation_score_receipt_paths=tuple(
                 tmp_path / f"confirmation-{index}.json" for index in range(4)
             ),
+            trusted_index=_trusted_index(),
         )
 
 
@@ -271,7 +285,7 @@ def test_locked_scheduler_rejects_tampered_stage_four_confirmation_receipt(
 
     with pytest.raises(ValueError, match="invalid Stage-4 confirmation score receipt decision"):
         locked_conditions(
-            tampered, confirmation_score_receipt_paths=paths
+            tampered, confirmation_score_receipt_paths=paths, trusted_index=_trusted_index()
         )
 
 
@@ -297,7 +311,7 @@ def test_locked_scheduler_rejects_mismatched_stage_four_cohort(
 
     with pytest.raises(ValueError, match="not derivable from upstream artifacts"):
         locked_conditions(
-            mismatched, confirmation_score_receipt_paths=paths
+            mismatched, confirmation_score_receipt_paths=paths, trusted_index=_trusted_index()
         )
 
 
@@ -320,7 +334,9 @@ def test_locked_scheduler_rejects_a_minimal_forged_stage_four_receipt(
     )
 
     with pytest.raises(ValueError, match="strict aggregate schema"):
-        locked_conditions(selection, confirmation_score_receipt_paths=paths)
+        locked_conditions(
+            selection, confirmation_score_receipt_paths=paths, trusted_index=_trusted_index()
+        )
 
 
 def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
@@ -330,7 +346,9 @@ def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
     selection, paths = _stage_four_selection_artifacts(tmp_path)
     condition = next(
         item
-        for item in locked_conditions(selection, confirmation_score_receipt_paths=paths)
+        for item in locked_conditions(
+            selection, confirmation_score_receipt_paths=paths, trusted_index=_trusted_index()
+        )
         if item.shot_count == 5
     )
     plan = ScoringPlan(

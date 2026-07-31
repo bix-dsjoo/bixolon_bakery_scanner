@@ -14,7 +14,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bakery_scanner.experiments.rpc_manifest import RpcDatasetContract, canonical_json_bytes
+from bakery_scanner.experiments.rpc_manifest import (
+    RpcDatasetContract,
+    RpcImage,
+    RpcIndex,
+    RpcObject,
+    canonical_json_bytes,
+)
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
@@ -67,6 +73,33 @@ def _full_test_assignments() -> list[dict[str, object]]:
         }
         for image_id in range(1, RpcDatasetContract.default().image_counts["test2019"] + 1)
     ]
+
+
+@lru_cache(maxsize=1)
+def _trusted_index() -> RpcIndex:
+    """Independent hermetic raw-source resolver; never read the manifest."""
+    images = tuple(
+        RpcImage(
+            "test2019",
+            image_id,
+            "novel" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}",
+            Path(f"C:/trusted/test-{image_id}.jpg"),
+            1,
+            "0" * 64,
+            "easy",
+        )
+        for image_id in range(
+            1, RpcDatasetContract.default().image_counts["test2019"] + 1
+        )
+    )
+    return RpcIndex(
+        RpcDatasetContract.default(),
+        images,
+        (
+            RpcObject("test2019", 1, 1, 1, (0.0, 0.0, 1.0, 1.0)),
+            RpcObject("test2019", 2, 2, 2, (0.0, 0.0, 1.0, 1.0)),
+        ),
+    )
 
 
 LOCKED_SOURCE_MANIFEST = {
@@ -156,6 +189,7 @@ def _locked_candidate_cells(
             confirmation_score_receipt_paths=_locked_selection_artifacts(
                 fold, seed
             )[1],
+            trusted_index=_trusted_index(),
         )
         if condition.shot_count == 5
     )
@@ -173,6 +207,7 @@ def _locked_reference_cells(
             confirmation_score_receipt_paths=_locked_selection_artifacts(
                 fold, seed
             )[1],
+            trusted_index=_trusted_index(),
         )
         if condition.shot_count == 150
     )
@@ -246,6 +281,7 @@ def _locked_selection_artifacts(
             evidence_paths=(candidate_evidence,),
             reference_evidence_paths=(reference_evidence,),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
         content = path.read_bytes()
         paths.append(path)
@@ -425,7 +461,7 @@ def test_locked_ground_truth_rejects_an_internally_valid_easy_only_subset(
     _write_canonical(path, ground_truth)
 
     with pytest.raises(ValueError, match="exactly match test2019 locked cohort"):
-        load_locked_ground_truth(path)
+        load_locked_ground_truth(path, trusted_index=_trusted_index())
 
 
 def test_locked_ground_truth_materializer_derives_the_full_source_cohort(
@@ -443,9 +479,11 @@ def test_locked_ground_truth_materializer_derives_the_full_source_cohort(
     )
     output = tmp_path / "ground-truth.json"
 
-    materialize_locked_ground_truth(source_path, roles_path, output)
+    materialize_locked_ground_truth(
+        source_path, roles_path, output, trusted_index=_trusted_index()
+    )
 
-    loaded = load_locked_ground_truth(output)
+    loaded = load_locked_ground_truth(output, trusted_index=_trusted_index())
     assert {row.identity for row in loaded.rows} == {
         ("novel", 1, "burst", "E", 1),
         ("base", 2, "burst", "E", 2),
@@ -479,8 +517,141 @@ def test_locked_ground_truth_rejects_default_contract_claims_without_full_images
         },
     )
 
-    with pytest.raises(ValueError, match="source image coverage"):
-        load_locked_ground_truth(ground_truth_path)
+    with pytest.raises(ValueError, match="trusted RPC source images"):
+        load_locked_ground_truth(ground_truth_path, trusted_index=_trusted_index())
+
+
+def test_locked_ground_truth_rejects_forged_resolved_source_despite_contract_claims(
+    tmp_path: Path,
+):
+    """A self-authored resolved manifest cannot replace the parsed RPC source."""
+    source = {
+        **LOCKED_SOURCE_MANIFEST,
+        "objects": [
+            {
+                "split": "test2019",
+                "annotation_id": 999,
+                "image_id": 1,
+                "category_id": 99,
+            }
+        ],
+    }
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, source)
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(
+        roles_path,
+        {
+            **LOCKED_SCENE_ROLE_MANIFEST,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        },
+    )
+    ground_truth_path = tmp_path / "ground-truth.json"
+    _write_canonical(
+        ground_truth_path,
+        {
+            **LOCKED_GROUND_TRUTH,
+            "source_manifest_path": source_path.name,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "scene_role_manifest_path": roles_path.name,
+            "scene_role_manifest_sha256": hashlib.sha256(roles_path.read_bytes()).hexdigest(),
+            "objects": [
+                {
+                    "sample_id": "novel",
+                    "object_id": 999,
+                    "burst_id": "burst",
+                    "difficulty": "E",
+                    "truth_category_id": 99,
+                }
+            ],
+        },
+    )
+    trusted = RpcIndex(
+        RpcDatasetContract.default(),
+        (),
+        (
+            RpcObject("test2019", 1, 1, 1, (0.0, 0.0, 1.0, 1.0)),
+            RpcObject("test2019", 2, 2, 2, (0.0, 0.0, 1.0, 1.0)),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="trusted RPC source"):
+        load_locked_ground_truth(ground_truth_path, trusted_index=trusted)
+
+
+def test_locked_ground_truth_rejects_foreign_validation_scene_role(
+    tmp_path: Path,
+):
+    """Roles are a complete val/test partition, not a test-only loose list."""
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, LOCKED_SOURCE_MANIFEST)
+    source_images = LOCKED_SOURCE_MANIFEST["images"]
+    trusted_images = tuple(
+        RpcImage(
+            item["split"],  # type: ignore[arg-type]
+            item["image_id"],  # type: ignore[arg-type]
+            item.get("source_identity", f"{item['split']}:{item['image_id']}"),  # type: ignore[arg-type]
+            tmp_path / f"{item['split']}-{item['image_id']}.jpg",
+            1,
+            "0" * 64,
+            item.get(
+                "level", "easy" if item["split"] in {"val2019", "test2019"} else ""
+            ),  # type: ignore[arg-type]
+        )
+        for item in source_images  # type: ignore[union-attr]
+    )
+    trusted = RpcIndex(
+        RpcDatasetContract.default(),
+        trusted_images,
+        (
+            RpcObject("test2019", 1, 1, 1, (0.0, 0.0, 1.0, 1.0)),
+            RpcObject("test2019", 2, 2, 2, (0.0, 0.0, 1.0, 1.0)),
+        ),
+    )
+    assignments = [
+        *LOCKED_SCENE_ROLE_MANIFEST["assignments"],
+        *[
+            {
+                "split": "val2019",
+                "image_id": image_id,
+                "role": "calibration",
+                "burst_id": f"val-{image_id}",
+                "difficulty": "easy",
+            }
+            for image_id in range(1, RpcDatasetContract.default().image_counts["val2019"] + 1)
+        ],
+        {
+            "split": "val2019",
+            "image_id": 999999,
+            "role": "calibration",
+            "burst_id": "foreign",
+            "difficulty": "easy",
+        },
+    ]
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(
+        roles_path,
+        {
+            "schema_version": 1,
+            "kind": "rpc-fewshot-scene-roles",
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "assignments": assignments,
+        },
+    )
+    ground_truth_path = tmp_path / "ground-truth.json"
+    _write_canonical(
+        ground_truth_path,
+        {
+            **LOCKED_GROUND_TRUTH,
+            "source_manifest_path": source_path.name,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "scene_role_manifest_path": roles_path.name,
+            "scene_role_manifest_sha256": hashlib.sha256(roles_path.read_bytes()).hexdigest(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="invalid locked ground-truth scene-role assignment"):
+        load_locked_ground_truth(ground_truth_path, trusted_index=trusted)
 
 
 def _write_fold_base_evidence(
@@ -678,7 +849,9 @@ def test_single_scorer_rejects_a_foreign_stage_four_target_binding():
     condition = next(
         item
         for item in locked_conditions(
-            selection, confirmation_score_receipt_paths=paths
+            selection,
+            confirmation_score_receipt_paths=paths,
+            trusted_index=_trusted_index(),
         )
         if item.shot_count == 5
     )
@@ -705,7 +878,7 @@ def test_single_scorer_rejects_a_foreign_stage_four_target_binding():
     receipt["cohort"]["manifest_sha256"] = "9" * 64  # type: ignore[index]
 
     with pytest.raises(ValueError, match="locked target cohort does not match Stage-4 cohort"):
-        module._condition_scoring_plan(receipt)
+        module._condition_scoring_plan(receipt, trusted_index=_trusted_index())
 
 
 def test_yaml_scoring_plan_declares_bootstrap_matrix_ids_and_cohort():
@@ -836,6 +1009,7 @@ def test_incomplete_fold_seed_aggregate_cannot_emit_final_pass(tmp_path: Path):
             evidence_paths=(evidence_path,),
             reference_evidence_paths=(reference_evidence_path,),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
     assert not output.exists()
 
@@ -884,6 +1058,7 @@ def test_stage_one_aggregate_cannot_establish_a_final_minimum(tmp_path: Path):
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
     assert not output.exists()
 
@@ -933,6 +1108,7 @@ def test_complete_locked_aggregate_is_the_only_final_boolean(tmp_path: Path):
         evidence_paths=tuple(evidence_paths),
         reference_evidence_paths=tuple(reference_evidence_paths),
         ground_truth_manifest_path=ground_truth_path,
+        trusted_index=_trusted_index(),
     )
 
     aggregate = module.load_canonical_json(output)
@@ -983,6 +1159,7 @@ def test_locked_aggregate_rejects_receipts_without_stage_four_confirmation_bindi
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1029,6 +1206,7 @@ def test_locked_aggregate_rejects_unresolvable_stage_four_confirmation_artifact(
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1093,6 +1271,7 @@ def test_locked_aggregate_rejects_foreign_stage_four_ground_truth_binding(
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1145,6 +1324,7 @@ def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
         evidence_paths=tuple(evidence_paths),
         reference_evidence_paths=tuple(reference_evidence_paths),
         ground_truth_manifest_path=ground_truth_path,
+        trusted_index=_trusted_index(),
     )
 
     aggregate = module.load_canonical_json(output)
@@ -1164,7 +1344,9 @@ def test_single_confirmation_aggregate_is_a_genuine_stage_four_artifact(
     assert {
         condition.shot_count
         for condition in locked_conditions(
-            selection, confirmation_score_receipt_paths=tuple(paths)
+            selection,
+            confirmation_score_receipt_paths=tuple(paths),
+            trusted_index=_trusted_index(),
         )
     } == {5, 150}
 
@@ -1192,7 +1374,11 @@ def test_locked_scheduler_rejects_a_self_consistent_forged_stage_four_aggregate(
     )
 
     with pytest.raises(ValueError, match="Stage-4 confirmation score receipt is not derivable"):
-        locked_conditions(selection, confirmation_score_receipt_paths=replacement_paths)
+        locked_conditions(
+            selection,
+            confirmation_score_receipt_paths=replacement_paths,
+            trusted_index=_trusted_index(),
+        )
 
 
 def test_final_aggregate_rejects_forged_lower_fold_base_recall(
@@ -1245,6 +1431,7 @@ def test_final_aggregate_rejects_forged_lower_fold_base_recall(
             evidence_paths=tuple(candidate_evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1294,6 +1481,7 @@ def test_aggregate_rejects_a_non_150_shot_locked_reference(tmp_path: Path):
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
     assert not output.exists()
 
@@ -1345,6 +1533,7 @@ def test_aggregate_rejects_a_receipt_without_locked_ground_truth_provenance(
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1397,6 +1586,7 @@ def test_aggregate_combines_per_sku_loss_across_declared_support_seeds(
         evidence_paths=tuple(evidence_paths),
         reference_evidence_paths=tuple(reference_evidence_paths),
         ground_truth_manifest_path=ground_truth_path,
+        trusted_index=_trusted_index(),
     )
 
     aggregate = module.load_canonical_json(output)
@@ -1445,6 +1635,7 @@ def test_aggregate_rejects_candidate_reference_cross_seed_pairing(tmp_path: Path
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1491,6 +1682,7 @@ def test_aggregate_rejects_raw_evidence_that_does_not_match_receipt_digest(
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
 
 
@@ -1531,4 +1723,5 @@ def test_aggregate_rejects_inconsistent_same_fold_base_artifacts(tmp_path: Path)
             evidence_paths=tuple(evidence_paths),
             reference_evidence_paths=tuple(reference_evidence_paths),
             ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
         )
