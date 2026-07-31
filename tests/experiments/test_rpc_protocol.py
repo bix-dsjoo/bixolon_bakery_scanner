@@ -947,7 +947,10 @@ def _stage_four_selection_artifacts(
                 provisional_pass=claim.provisional_pass,
             )
         )
-    return StageFourSelection(tuple(claims)), tuple(paths)
+    # Preserve the source-owned Stage-2/3 score lineage as well as the
+    # re-hashed copied confirmation artifacts.  The copied selection must
+    # remain schedulable only when that complete lineage is present.
+    return StageFourSelection(tuple(claims), selection.ascending_receipts), tuple(paths)
 
 
 def _trusted_index():
