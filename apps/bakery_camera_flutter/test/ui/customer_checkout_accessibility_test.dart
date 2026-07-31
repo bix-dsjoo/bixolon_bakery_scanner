@@ -65,47 +65,54 @@ void main() {
   );
 
   testWidgets(
-    'review overlay and ledger stay reachable at kiosk sizes and 200 percent text',
+    'review selection remains bidirectional and reachable at kiosk sizes and 200 percent text',
     (tester) async {
       final semantics = tester.ensureSemantics();
-      await _pumpReviewAt(
-        tester,
-        const Size(1024, 720),
-        scale: 2,
-        highContrast: true,
-      );
+      for (final size in const [Size(1024, 720), Size(1280, 820)]) {
+        await _pumpReviewAt(tester, size, scale: 2, highContrast: true);
 
-      final overlay = find.byKey(const Key('customer-review-overlay-object-2'));
-      expect(
-        find.byKey(const Key('captured-review-full-scene')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('customer-review-row-object-2')),
-        findsOneWidget,
-      );
-      _expectMinimumTouchTarget(tester, overlay);
+        final overlayOne = find.byKey(
+          const Key('customer-review-overlay-object-1'),
+        );
+        final overlayTwo = find.byKey(
+          const Key('customer-review-overlay-object-2'),
+        );
+        final rowOne = find.byKey(const Key('customer-review-row-object-1'));
+        final rowTwo = find.byKey(const Key('customer-review-row-object-2'));
+        expect(
+          find.byKey(const Key('captured-review-full-scene')),
+          findsOneWidget,
+        );
+        _expectMinimumTouchTarget(tester, overlayTwo);
 
-      await tester.tap(overlay);
-      await tester.pump();
+        await _ensureReachable(tester, overlayTwo, size);
+        await tester.tap(overlayTwo);
+        await tester.pump();
+        expect(tester.widget<ListTile>(rowTwo).selected, isTrue);
+        expect(
+          find.byKey(const Key('customer-review-candidate-panel-object-2')),
+          findsOneWidget,
+        );
+        expect(
+          tester.getSemantics(overlayTwo).flagsCollection.isSelected,
+          Tristate.isTrue,
+        );
 
-      expect(
-        tester
-            .widget<ListTile>(
-              find.byKey(const Key('customer-review-row-object-2')),
-            )
-            .selected,
-        isTrue,
-      );
-      expect(
-        find.byKey(const Key('customer-review-candidate-panel-object-2')),
-        findsOneWidget,
-      );
-      expect(
-        tester.getSemantics(overlay).flagsCollection.isSelected,
-        Tristate.isTrue,
-      );
-      expect(tester.takeException(), isNull);
+        await _ensureReachable(tester, rowOne, size);
+        await tester.tap(rowOne);
+        await tester.pump();
+        expect(tester.widget<ListTile>(rowOne).selected, isTrue);
+        expect(
+          find.byKey(const Key('customer-review-candidate-panel-object-2')),
+          findsNothing,
+        );
+        await _ensureReachable(tester, overlayOne, size);
+        expect(
+          tester.getSemantics(overlayOne).flagsCollection.isSelected,
+          Tristate.isTrue,
+        );
+        expect(tester.takeException(), isNull, reason: '$size at 2.0');
+      }
       semantics.dispose();
     },
   );
@@ -117,32 +124,25 @@ void main() {
     await _pumpReview(tester);
 
     expect(find.bySemanticsLabel(_photoNumberTwoSemantics), findsWidgets);
-    expect(find.textContaining('confidence'), findsNothing);
+    _expectNoCustomerInferenceEvidence(tester);
     semantics.dispose();
   });
 
   testWidgets(
-    'review keeps the full scene and unresolved correction panel visible together',
+    'review renders the retained fixture through the default file image',
     (tester) async {
-      await _pumpReviewAt(
-        tester,
-        const Size(1280, 820),
-        scale: 1,
-        highContrast: false,
-      );
-
-      expect(
-        find.byKey(const Key('captured-review-full-scene')),
-        findsOneWidget,
-      );
-      expect(
-        tester
-            .getRect(
-              find.byKey(const Key('customer-review-candidate-panel-object-2')),
+      await _pumpReview(tester);
+      final image = tester.widget<Image>(
+        find
+            .descendant(
+              of: find.byKey(const Key('captured-review-full-scene')),
+              matching: find.byType(Image),
             )
-            .bottom,
-        lessThanOrEqualTo(716),
+            .first,
       );
+      expect(image.image, isA<FileImage>());
+      expect((image.image as FileImage).file.path, _reviewFixtureImagePath);
+      expect(File(_reviewFixtureImagePath).existsSync(), isTrue);
     },
   );
 
@@ -281,7 +281,6 @@ void main() {
         onChooseTop3: (_, _) {},
         onOpenCatalog: (_) {},
         onContinue: _noop,
-        imageProviderFactory: _reviewImageProviderFactory,
       ),
       'customer_review_1280x820.png',
     );
@@ -359,7 +358,6 @@ Future<void> _pumpReview(
       onChooseTop3: (_, _) {},
       onOpenCatalog: (_) {},
       onContinue: _noop,
-      imageProviderFactory: _reviewImageProviderFactory,
     ),
     scale: scale,
     highContrast: highContrast,
@@ -380,6 +378,18 @@ Future<void> _pumpReviewAt(
   await tester.pumpAndSettle();
 }
 
+Future<void> _ensureReachable(
+  WidgetTester tester,
+  Finder finder,
+  Size size,
+) async {
+  await tester.ensureVisible(finder);
+  await tester.pumpAndSettle();
+  final rect = tester.getRect(finder);
+  expect(rect.top, greaterThanOrEqualTo(0));
+  expect(rect.bottom, lessThanOrEqualTo(size.height));
+}
+
 Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
   tester.view.physicalSize = const Size(1280, 820);
   tester.view.devicePixelRatio = 1;
@@ -391,9 +401,6 @@ Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
 }
 
 void _noop() {}
-
-ImageProvider<Object> _reviewImageProviderFactory(File _) =>
-    const AssetImage('assets/illustrations/manual_cart_entry.png');
 
 void _expectMinimumTouchTarget(WidgetTester tester, Finder finder) {
   expect(finder, findsWidgets);
@@ -408,6 +415,30 @@ void _expectMinimumTouchTarget(WidgetTester tester, Finder finder) {
           .shortestSide,
       greaterThanOrEqualTo(48),
       reason: '${element.widget.runtimeType} must provide a 48px touch target',
+    );
+  }
+}
+
+void _expectNoCustomerInferenceEvidence(WidgetTester tester) {
+  const forbiddenTerms = [
+    'confidence',
+    'score',
+    'detector',
+    'RepViT',
+    'DINO',
+    'SHA',
+    'policy',
+    '0.92',
+    '0.88',
+    '0.76',
+    '0.62',
+    '0.4',
+  ];
+  for (final term in forbiddenTerms) {
+    expect(find.textContaining(term, findRichText: true), findsNothing);
+    expect(
+      find.bySemanticsLabel(RegExp(term, caseSensitive: false)),
+      findsNothing,
     );
   }
 }
@@ -499,7 +530,7 @@ final _reviewState = CheckoutState(
 );
 
 const _reviewFixtureImagePath =
-    r'C:\workspace\bixolon_bakery_scanner\apps\bakery_camera_flutter\assets\illustrations\manual_cart_entry.png';
+    r'C:/workspace/bixolon_bakery_scanner/apps/bakery_camera_flutter/assets/illustrations/manual_cart_entry.png';
 
 final _retakeState = CheckoutState(
   phase: CheckoutPhase.retakeRequired,
