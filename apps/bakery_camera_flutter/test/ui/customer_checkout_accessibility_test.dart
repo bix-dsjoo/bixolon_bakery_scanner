@@ -88,11 +88,24 @@ void main() {
         await _ensureReachable(tester, overlayTwo, size);
         await tester.tap(overlayTwo);
         await tester.pump();
+        await _ensureReachable(tester, rowTwo, size);
         expect(tester.widget<ListTile>(rowTwo).selected, isTrue);
+        final candidatePanelTwo = find.byKey(
+          const Key('customer-review-candidate-panel-object-2'),
+        );
+        expect(candidatePanelTwo, findsOneWidget);
         expect(
-          find.byKey(const Key('customer-review-candidate-panel-object-2')),
+          find.descendant(
+            of: candidatePanelTwo,
+            matching: find.text(_sugarDonut.displayName),
+          ),
           findsOneWidget,
         );
+        expect(
+          find.byKey(const Key('customer-review-candidate-panel-object-1')),
+          findsNothing,
+        );
+        await _ensureReachable(tester, candidatePanelTwo, size);
         expect(
           tester.getSemantics(overlayTwo).flagsCollection.isSelected,
           Tristate.isTrue,
@@ -131,7 +144,18 @@ void main() {
   testWidgets(
     'review renders the retained fixture through the default file image',
     (tester) async {
-      await _pumpReview(tester);
+      await tester.pumpWidget(
+        _app(
+          CustomerReviewView(
+            state: _reviewState,
+            productForCandidate: (_, skuId) => skuId == 10 ? _sugarDonut : null,
+            onChooseTop3: (_, _) {},
+            onOpenCatalog: (_) {},
+            onContinue: _noop,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
       final image = tester.widget<Image>(
         find
             .descendant(
@@ -275,12 +299,32 @@ void main() {
   ) async {
     await _golden(
       tester,
-      CustomerReviewView(
-        state: _reviewState,
-        productForCandidate: (_, skuId) => skuId == 10 ? _sugarDonut : null,
-        onChooseTop3: (_, _) {},
-        onOpenCatalog: (_) {},
-        onContinue: _noop,
+      Builder(
+        builder: (context) => ColoredBox(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          // Fit the complete scroll extent into the fixed-size evidence image.
+          // The production review layout and its natural image height stay
+          // unchanged; actual kiosk reachability is exercised above.
+          child: FittedBox(
+            fit: BoxFit.contain,
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: 1280,
+              height: 1200,
+              child: CustomerReviewView(
+                state: _reviewState,
+                productForCandidate: (_, skuId) =>
+                    skuId == 10 ? _sugarDonut : null,
+                onChooseTop3: (_, _) {},
+                onOpenCatalog: (_) {},
+                onContinue: _noop,
+                imageProviderFactory: (_) => const AssetImage(
+                  'assets/illustrations/manual_cart_entry.png',
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
       'customer_review_1280x820.png',
     );
@@ -358,6 +402,8 @@ Future<void> _pumpReview(
       onChooseTop3: (_, _) {},
       onOpenCatalog: (_) {},
       onContinue: _noop,
+      imageProviderFactory: (_) =>
+          const AssetImage('assets/illustrations/manual_cart_entry.png'),
     ),
     scale: scale,
     highContrast: highContrast,
@@ -429,17 +475,16 @@ void _expectNoCustomerInferenceEvidence(WidgetTester tester) {
     'SHA',
     'policy',
     '0.92',
+    '0.95',
     '0.88',
     '0.76',
     '0.62',
     '0.4',
   ];
   for (final term in forbiddenTerms) {
-    expect(find.textContaining(term, findRichText: true), findsNothing);
-    expect(
-      find.bySemanticsLabel(RegExp(term, caseSensitive: false)),
-      findsNothing,
-    );
+    final pattern = RegExp(RegExp.escape(term), caseSensitive: false);
+    expect(find.textContaining(pattern, findRichText: true), findsNothing);
+    expect(find.bySemanticsLabel(pattern), findsNothing);
   }
 }
 
@@ -525,8 +570,8 @@ final _reviewState = CheckoutState(
   ],
   lines: const [],
   capturedEvidenceDisplayPath: _reviewFixtureImagePath,
-  capturedImageWidth: 1254,
-  capturedImageHeight: 1254,
+  capturedImageWidth: 1920,
+  capturedImageHeight: 1080,
 );
 
 const _reviewFixtureImagePath =
