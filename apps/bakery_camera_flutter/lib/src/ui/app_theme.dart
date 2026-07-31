@@ -20,37 +20,44 @@ ThemeData buildBakeryTheme() {
       fontSize: 24,
       height: 1.35,
       fontWeight: FontWeight.w500,
+      letterSpacing: 0,
     ),
     titleLarge: TextStyle(
       fontSize: 18,
       height: 1.35,
       fontWeight: FontWeight.w600,
       fontFeatures: tabularFigures,
+      letterSpacing: 0,
     ),
     titleMedium: TextStyle(
       fontSize: 15,
       height: 1.35,
       fontWeight: FontWeight.w600,
+      letterSpacing: 0,
     ),
     bodyLarge: TextStyle(
       fontSize: 14,
       height: 1.4,
       fontWeight: FontWeight.w500,
+      letterSpacing: 0,
     ),
     bodyMedium: TextStyle(
       fontSize: 13,
       height: 1.35,
       fontWeight: FontWeight.w400,
+      letterSpacing: 0,
     ),
     labelLarge: TextStyle(
       fontSize: 16,
       height: 1.35,
       fontWeight: FontWeight.w600,
+      letterSpacing: 0,
     ),
     labelMedium: TextStyle(
       fontSize: 12,
       height: 1.4,
       fontWeight: FontWeight.w500,
+      letterSpacing: 0,
     ),
   );
 
@@ -141,9 +148,11 @@ ThemeData buildBakeryTheme() {
             borderRadius: BorderRadius.circular(tokens.controlRadius),
           ),
         ),
-        side: WidgetStatePropertyAll(
-          BorderSide(
-            color: tokens.controlBorder,
+        side: WidgetStateProperty.resolveWith(
+          (states) => BorderSide(
+            color: states.contains(WidgetState.focused)
+                ? tokens.focus
+                : tokens.controlBorder,
             width: bixolonControlBorderWidth,
           ),
         ),

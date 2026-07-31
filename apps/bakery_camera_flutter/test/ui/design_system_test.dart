@@ -1,4 +1,5 @@
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
+import 'package:bakery_camera_prototype/src/ui/bixolon_brand.dart';
 import 'package:bakery_camera_prototype/src/ui/bixolon_theme_extension.dart';
 import 'package:bakery_camera_prototype/src/ui/components/bakery_primary_button.dart';
 import 'package:bakery_camera_prototype/src/ui/components/bakery_status_banner.dart';
@@ -50,6 +51,53 @@ void main() {
     expect(tokens.controlRadius, 5);
     expect(tokens.surfaceRadius, 5);
     expect(tokens.modalRadius, 10);
+  });
+
+  test('theme token copies and interpolates POS-specific values', () {
+    final tokens = BixolonThemeExtension.bixolon;
+    const selectedSurface = Color(0xFF000001);
+    const controlBorder = Color(0xFF000002);
+    const disabledAction = Color(0xFF000003);
+    const modalRadius = 14.0;
+    final updated = tokens.copyWith(
+      selectedSurface: selectedSurface,
+      controlBorder: controlBorder,
+      disabledAction: disabledAction,
+      modalRadius: modalRadius,
+    );
+
+    expect(updated.selectedSurface, selectedSurface);
+    expect(updated.controlBorder, controlBorder);
+    expect(updated.disabledAction, disabledAction);
+    expect(updated.modalRadius, modalRadius);
+
+    final interpolated = tokens.lerp(updated, 0.5);
+    expect(
+      interpolated.selectedSurface,
+      Color.lerp(tokens.selectedSurface, selectedSurface, 0.5),
+    );
+    expect(
+      interpolated.controlBorder,
+      Color.lerp(tokens.controlBorder, controlBorder, 0.5),
+    );
+    expect(
+      interpolated.disabledAction,
+      Color.lerp(tokens.disabledAction, disabledAction, 0.5),
+    );
+    expect(interpolated.modalRadius, 12);
+  });
+
+  test('outlined buttons use the POS resting and focused borders', () {
+    final tokens = BixolonThemeExtension.bixolon;
+    final side = buildBakeryTheme().outlinedButtonTheme.style!.side!;
+
+    final resting = side.resolve(<WidgetState>{});
+    final focused = side.resolve(<WidgetState>{WidgetState.focused});
+
+    expect(resting!.color, tokens.controlBorder);
+    expect(resting.width, bixolonControlBorderWidth);
+    expect(focused!.color, tokens.focus);
+    expect(focused.width, bixolonControlBorderWidth);
   });
 
   testWidgets('primary action and stepper controls meet kiosk touch targets', (
