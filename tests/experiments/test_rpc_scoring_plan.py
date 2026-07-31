@@ -74,6 +74,7 @@ def _fixture_bank():
     write_support_bank(path, bank)
     return path, bank.sha256
 _public_locked_conditions = locked_conditions
+_REAL_VERIFIED_DEFAULT_RPC_INDEX_LOADER = _rpc_scoring._load_verified_default_rpc_index
 
 
 def _install_trusted_index_for_test(index: RpcIndex) -> None:
@@ -102,6 +103,12 @@ def _install_trusted_index_for_test(index: RpcIndex) -> None:
         for image in trusted.images
         if image.split in {"val2019", "test2019"}
     )
+
+
+def test_production_trusted_root_requires_the_exact_archive_root():
+    """A byte-identical clone is not a trusted production source."""
+    with pytest.raises(ValueError, match="exact C:.workspace.archive"):
+        _REAL_VERIFIED_DEFAULT_RPC_INDEX_LOADER(Path("C:/rpc-clone"))
 
 
 def load_locked_ground_truth(path: Path, *, trusted_index: RpcIndex):
@@ -161,6 +168,8 @@ def _full_source_images() -> list[dict[str, object]]:
                     else "base" if image_id == 2 else f"{split}:{image_id}"
                 )
                 image["level"] = "easy"
+                image["byte_size"] = 1
+                image["sha256"] = "1" * 64 if split == "val2019" else "0" * 64
             images.append(image)
     return images
 
@@ -390,6 +399,7 @@ def _locked_selection_artifacts(
 ) -> tuple[StageFourSelection, tuple[Path, ...]]:
     """Build Stage-4 inputs through the real confirmation aggregate writer."""
     module = _score_module()
+    _install_trusted_index_for_test(_trusted_index())
     confirmations = confirmation_conditions(
         ("m0", "div"),
         shot_counts=(3, 5, 10, 150),
@@ -449,26 +459,44 @@ def _locked_selection_artifacts(
         candidate_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"candidate-{fold}-{seed}-{index}.jsonl"
         reference_evidence = _STAGE_FOUR_ARTIFACT_ROOT / f"reference-{fold}-{seed}-{index}.jsonl"
         score_path = _STAGE_FOUR_ARTIFACT_ROOT / f"score-{fold}-{seed}-{index}.json"
-        _write_canonical(
+        _write_evidence(
+            candidate_evidence,
+            condition,
+            novel_prediction=None if condition.shot_count == 3 else 1,
+            support_sha256=bank.sha256,
+        )
+        _write_evidence(reference_evidence, reference, support_sha256=bank.sha256)
+        candidate_receipt_path = _STAGE_FOUR_ARTIFACT_ROOT / f"candidate-condition-{fold}-{seed}-{index}.json"
+        reference_receipt_path = _STAGE_FOUR_ARTIFACT_ROOT / f"reference-condition-{fold}-{seed}-{index}.json"
+        for receipt_path, stage_condition, stage_plan in (
+            (candidate_receipt_path, condition, candidate_plan),
+            (reference_receipt_path, reference, reference_plan),
+        ):
+            _write_canonical(
+                receipt_path,
+                ExperimentReceipt.completed(
+                    stage_condition,
+                    **{**HASHES, "support_sha256": bank.sha256},
+                    cohort_manifest_sha256=DEVELOPMENT_GROUND_TRUTH_SHA256,
+                    novel_category_ids=(1,),
+                    base_category_ids=(2,),
+                    scoring_plan=stage_plan,
+                    base_checkpoint_sha256=base_checkpoint_sha256,
+                    base_checkpoint_evidence_sha256=base_evidence_sha256,
+                    environment_lock_digest="sha256:environment",
+                    output_uri=f"file:///external/confirmation/{fold}/{seed}/{index}",
+                ).to_dict(),
+            )
+        module.score(
+            candidate_evidence,
+            reference_evidence,
+            candidate_receipt_path,
+            reference_receipt_path,
+            ground_truth_path,
+            base_evidence_path,
             score_path,
-            _non_final_score(
-                condition,
-                reference,
-                candidate_plan,
-                reference_plan,
-                candidate_evidence_sha256=_write_evidence(
-                    candidate_evidence,
-                    condition,
-                    novel_prediction=None if condition.shot_count == 3 else 1,
-                    support_sha256=bank.sha256,
-                ),
-                reference_evidence_sha256=_write_evidence(reference_evidence, reference, support_sha256=bank.sha256),
-                base_checkpoint_evidence_path=base_evidence_path,
-                support_bank_path=bank_path,
-                support_bank_sha256=bank.sha256,
-                cohort_manifest_sha256=DEVELOPMENT_GROUND_TRUTH_SHA256,
-                ground_truth_summary=_development_ground_truth_summary(),
-            ),
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+            support_bank_path=bank_path,
         )
         path = _STAGE_FOUR_ARTIFACT_ROOT / f"confirmation-{fold}-{seed}-{index}.json"
         module.aggregate_score_receipts(
@@ -685,6 +713,41 @@ def test_locked_ground_truth_rejects_an_internally_valid_easy_only_subset(
 
     with pytest.raises(ValueError, match="exactly match test2019 locked cohort"):
         load_locked_ground_truth(path, trusted_index=_trusted_index())
+
+
+def test_locked_ground_truth_rejects_materialized_image_byte_digest_mutation(
+    tmp_path: Path,
+):
+    """Resolved source identity is not enough: raw bytes are authenticated too."""
+    source = json.loads(canonical_json_bytes(LOCKED_SOURCE_MANIFEST))
+    test_image = next(
+        item for item in source["images"] if item["split"] == "test2019" and item["image_id"] == 1
+    )
+    test_image["sha256"] = "f" * 64
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, source)
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(
+        roles_path,
+        {
+            **LOCKED_SCENE_ROLE_MANIFEST,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        },
+    )
+    ground_truth_path = tmp_path / "ground-truth.json"
+    _write_canonical(
+        ground_truth_path,
+        {
+            **LOCKED_GROUND_TRUTH,
+            "source_manifest_path": source_path.name,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "scene_role_manifest_path": roles_path.name,
+            "scene_role_manifest_sha256": hashlib.sha256(roles_path.read_bytes()).hexdigest(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="trusted RPC source images"):
+        load_locked_ground_truth(ground_truth_path, trusted_index=_trusted_index())
 
 
 def test_locked_ground_truth_materializer_derives_the_full_source_cohort(
@@ -1110,8 +1173,8 @@ def test_scoring_plan_is_immutable_and_receipt_binds_all_decision_inputs():
         )
 
 
-def test_locked_structural_receipt_cannot_be_completed_before_single_scorer_runs():
-    """A training receipt cannot bypass scorer-owned Stage-4 derivation."""
+def test_locked_structural_receipt_can_record_completed_evidence_but_is_not_final():
+    """Locked run completion remains non-final until full aggregation."""
     selection, paths = _locked_selection_artifacts(0, 101)
     condition = next(
         item
@@ -1128,21 +1191,22 @@ def test_locked_structural_receipt_cannot_be_completed_before_single_scorer_runs
         expected_condition_ids=(condition.condition_id,),
     )
     base = plan.fold_base_artifacts[0]
-    with pytest.raises(ValueError, match="locked ExperimentReceipt cannot be completed"):
-        ExperimentReceipt.completed(
-            condition,
-            **HASHES,
-            cohort_manifest_sha256=LOCKED_GROUND_TRUTH_SHA256,
-            novel_category_ids=(1,),
-            base_category_ids=(2,),
-            scoring_plan=plan,
-            base_checkpoint_sha256=base.checkpoint_sha256,
-            base_checkpoint_evidence_sha256=base.evidence_sha256,
-            environment_lock_digest="sha256:environment",
-            output_uri="file:///external/run",
-            stage_four_selection=selection,
-            stage_four_confirmation_score_receipt_paths=tuple(str(path) for path in paths),
-        )
+    receipt = ExperimentReceipt.completed(
+        condition,
+        **HASHES,
+        cohort_manifest_sha256=LOCKED_GROUND_TRUTH_SHA256,
+        novel_category_ids=(1,),
+        base_category_ids=(2,),
+        scoring_plan=plan,
+        base_checkpoint_sha256=base.checkpoint_sha256,
+        base_checkpoint_evidence_sha256=base.evidence_sha256,
+        environment_lock_digest="sha256:environment",
+        output_uri="file:///external/run",
+        stage_four_selection=selection,
+        stage_four_confirmation_score_receipt_paths=tuple(str(path) for path in paths),
+    )
+
+    assert receipt.status == "completed"
 
 
 def test_yaml_scoring_plan_declares_bootstrap_matrix_ids_and_cohort():
@@ -1266,7 +1330,7 @@ def test_incomplete_fold_seed_aggregate_cannot_emit_final_pass(tmp_path: Path):
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="complete declared fold/seed"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             (receipt_path,),
             output,
@@ -1315,7 +1379,7 @@ def test_stage_one_aggregate_cannot_establish_a_final_minimum(tmp_path: Path):
     _write_ground_truth(ground_truth_path)
     output = tmp_path / "aggregate.json"
 
-    with pytest.raises(ValueError, match="confirmation or locked"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(paths),
             output,
@@ -1327,7 +1391,42 @@ def test_stage_one_aggregate_cannot_establish_a_final_minimum(tmp_path: Path):
     assert not output.exists()
 
 
-def test_complete_locked_aggregate_is_the_only_final_boolean(tmp_path: Path):
+def test_aggregate_rejects_hand_authored_nonfinal_score_receipt_before_use(
+    tmp_path: Path,
+):
+    """Aggregate decisions only consume receipts reproducible by the scorer."""
+    module = _score_module()
+    candidate = _cell_conditions()[0]
+    plan = _plan((candidate.condition_id,))
+    score_path = tmp_path / "hand-authored-score.json"
+    evidence_path = tmp_path / "candidate.jsonl"
+    reference_path = tmp_path / "reference.jsonl"
+    _write_canonical(
+        score_path,
+        _non_final_score(
+            candidate,
+            candidate,
+            plan,
+            plan,
+            candidate_evidence_sha256=_write_evidence(evidence_path, candidate),
+            reference_evidence_sha256=_write_evidence(reference_path, candidate),
+        ),
+    )
+    ground_truth_path = tmp_path / "development-ground-truth.json"
+    _write_development_ground_truth(ground_truth_path)
+
+    with pytest.raises(ValueError, match="derived by the scorer"):
+        module.aggregate_score_receipts(
+            (score_path,),
+            tmp_path / "aggregate.json",
+            evidence_paths=(evidence_path,),
+            reference_evidence_paths=(reference_path,),
+            ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
+        )
+
+
+def test_complete_locked_aggregate_rejects_hand_authored_score_receipts(tmp_path: Path):
     module = _score_module()
     candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
     references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
@@ -1366,28 +1465,97 @@ def test_complete_locked_aggregate_is_the_only_final_boolean(tmp_path: Path):
     _write_ground_truth(ground_truth_path)
     output = tmp_path / "locked-aggregate.json"
 
+    with pytest.raises(ValueError, match="derived by the scorer"):
+        module.aggregate_score_receipts(
+            tuple(paths), output,
+            evidence_paths=tuple(evidence_paths),
+            reference_evidence_paths=tuple(reference_evidence_paths),
+            ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
+        )
+    assert not output.exists()
+
+
+def test_complete_locked_aggregate_accepts_scorer_derived_receipts(tmp_path: Path):
+    """The final locked decision remains executable from real score receipts."""
+    module = _score_module()
+    _install_trusted_index_for_test(_trusted_index())
+    candidates = _locked_candidate_cells(seeds=(101, 102), folds=(0,))
+    references = _locked_reference_cells(seeds=(101, 102), folds=(0,))
+    candidate_plan = _locked_plan(
+        tuple(row.condition_id for row in candidates), seeds=(101, 102)
+    )
+    reference_plan = _locked_plan(
+        tuple(row.condition_id for row in references), seeds=(101, 102)
+    )
+    support_bank_path, support_sha256 = _fixture_bank()
+    ground_truth_path = tmp_path / "locked-ground-truth.json"
+    _write_ground_truth(ground_truth_path)
+    score_paths: list[Path] = []
+    candidate_evidence_paths: list[Path] = []
+    reference_evidence_paths: list[Path] = []
+    for index, (candidate, reference) in enumerate(zip(candidates, references, strict=True)):
+        selection, confirmation_paths = _locked_selection_artifacts(
+            candidate.fold, candidate.support_seed
+        )
+        confirmation = json.loads(confirmation_paths[0].read_text(encoding="utf-8"))
+        base_path = Path(
+            confirmation["upstream_artifacts"][0]["fold_base_checkpoint_evidence_path"]
+        )
+        candidate_receipt_path = tmp_path / f"candidate-condition-{index}.json"
+        reference_receipt_path = tmp_path / f"reference-condition-{index}.json"
+        for receipt_path, condition, plan in (
+            (candidate_receipt_path, candidate, candidate_plan),
+            (reference_receipt_path, reference, reference_plan),
+        ):
+            base = next(item for item in plan.fold_base_artifacts if item.fold == condition.fold)
+            _write_canonical(
+                receipt_path,
+                ExperimentReceipt.completed(
+                    condition,
+                    **{**HASHES, "support_sha256": support_sha256},
+                    cohort_manifest_sha256=LOCKED_GROUND_TRUTH_SHA256,
+                    novel_category_ids=(1,),
+                    base_category_ids=(2,),
+                    scoring_plan=plan,
+                    base_checkpoint_sha256=base.checkpoint_sha256,
+                    base_checkpoint_evidence_sha256=base.evidence_sha256,
+                    environment_lock_digest="sha256:environment",
+                    output_uri=f"file:///external/locked/{index}",
+                    stage_four_selection=selection,
+                    stage_four_confirmation_score_receipt_paths=tuple(
+                        str(path) for path in confirmation_paths
+                    ),
+                ).to_dict(),
+            )
+        candidate_evidence = tmp_path / f"candidate-{index}.jsonl"
+        reference_evidence = tmp_path / f"reference-{index}.jsonl"
+        _write_evidence(candidate_evidence, candidate, support_sha256=support_sha256)
+        _write_evidence(reference_evidence, reference, support_sha256=support_sha256)
+        score_path = tmp_path / f"score-{index}.json"
+        module.score(
+            candidate_evidence, reference_evidence,
+            candidate_receipt_path, reference_receipt_path,
+            ground_truth_path, base_path, score_path,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+            support_bank_path=support_bank_path,
+        )
+        score_paths.append(score_path)
+        candidate_evidence_paths.append(candidate_evidence)
+        reference_evidence_paths.append(reference_evidence)
+    output = tmp_path / "final.json"
+
     module.aggregate_score_receipts(
-        tuple(paths),
-        output,
-        evidence_paths=tuple(evidence_paths),
+        tuple(score_paths), output,
+        evidence_paths=tuple(candidate_evidence_paths),
         reference_evidence_paths=tuple(reference_evidence_paths),
         ground_truth_manifest_path=ground_truth_path,
         trusted_index=_trusted_index(),
     )
 
     aggregate = module.load_canonical_json(output)
-    assert aggregate["aggregate_stage"] == "locked"
-    assert aggregate["kind"] == "rpc-fewshot-final-score-receipt"
-    assert aggregate["decision_scope"] == "complete_locked_fold_seed_aggregate"
     assert aggregate["decision_status"] == "final"
     assert aggregate["final_pass"] is True
-    assert "provisional_pass" not in aggregate
-    for side in ("candidate_full_system", "reference_full_system"):
-        report = aggregate[side]
-        assert "conditional_dino_execution_rate" in report
-        assert set(report["by_difficulty"]) == {"E", "M", "H"}
-        for difficulty in ("E", "M", "H"):
-            assert "conditional_dino_execution_rate" in report["by_difficulty"][difficulty]
 
 
 def test_locked_aggregate_rejects_receipts_without_stage_four_confirmation_binding(
@@ -1422,7 +1590,7 @@ def test_locked_aggregate_rejects_receipts_without_stage_four_confirmation_bindi
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="Stage-4 selection"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(paths),
             tmp_path / "aggregate.json",
@@ -1469,7 +1637,7 @@ def test_locked_aggregate_rejects_unresolvable_stage_four_confirmation_artifact(
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="cannot read Stage-4 confirmation score receipt"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(paths),
             tmp_path / "aggregate.json",
@@ -1534,7 +1702,7 @@ def test_locked_aggregate_rejects_foreign_stage_four_ground_truth_binding(
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="not derivable from upstream artifacts"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(paths),
             tmp_path / "foreign-aggregate.json",
@@ -1545,7 +1713,7 @@ def test_locked_aggregate_rejects_foreign_stage_four_ground_truth_binding(
         )
 
 
-def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
+def test_confirmation_aggregate_rejects_hand_authored_score_receipts(tmp_path: Path):
     module = _score_module()
     candidates = _confirmation_cells(
         ("m0", "div"), 5, seeds=(101, 102), folds=(0,)
@@ -1590,26 +1758,15 @@ def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
     _write_development_ground_truth(ground_truth_path)
     output = tmp_path / "confirmation-aggregate.json"
 
-    module.aggregate_score_receipts(
-        tuple(paths),
-        output,
-        evidence_paths=tuple(evidence_paths),
-        reference_evidence_paths=tuple(reference_evidence_paths),
-        ground_truth_manifest_path=ground_truth_path,
-        trusted_index=_trusted_index(),
-    )
-
-    aggregate = module.load_canonical_json(output)
-    assert aggregate["aggregate_stage"] == "confirmation"
-    assert aggregate["kind"] == "rpc-fewshot-confirmation-score-receipt"
-    assert aggregate["decision_scope"] == "complete_confirmation_fold_seed_aggregate"
-    assert aggregate["decision_status"] == "provisional"
-    assert aggregate["provisional_pass"] is True
-    assert "final_pass" not in aggregate
-    assert (
-        aggregate["locked_ground_truth"]["manifest_sha256"]
-        == DEVELOPMENT_GROUND_TRUTH_SHA256
-    )
+    with pytest.raises(ValueError, match="derived by the scorer"):
+        module.aggregate_score_receipts(
+            tuple(paths), output,
+            evidence_paths=tuple(evidence_paths),
+            reference_evidence_paths=tuple(reference_evidence_paths),
+            ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
+        )
+    assert not output.exists()
 
 
 def test_confirmation_aggregate_rejects_locked_only_ground_truth(tmp_path: Path):
@@ -1636,7 +1793,7 @@ def test_confirmation_aggregate_rejects_locked_only_ground_truth(tmp_path: Path)
     locked_truth = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(locked_truth)
 
-    with pytest.raises(ValueError, match="invalid role ground-truth manifest"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             (score_path,),
             tmp_path / "aggregate.json",
@@ -1735,7 +1892,7 @@ def test_final_aggregate_rejects_forged_lower_fold_base_recall(
     ground_truth_path = tmp_path / "lower-baseline-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="does not reproduce score receipt"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(score_paths),
             tmp_path / "lower-baseline-final.json",
@@ -1785,7 +1942,7 @@ def test_aggregate_rejects_a_non_150_shot_locked_reference(tmp_path: Path):
     _write_ground_truth(ground_truth_path)
     output = tmp_path / "bad-reference-aggregate.json"
 
-    with pytest.raises(ValueError, match="exact 150-shot reference"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(paths),
             output,
@@ -1837,7 +1994,7 @@ def test_aggregate_rejects_a_receipt_without_authenticated_ground_truth_provenan
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="ground-truth provenance"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(score_paths),
             tmp_path / "aggregate.json",
@@ -1848,7 +2005,7 @@ def test_aggregate_rejects_a_receipt_without_authenticated_ground_truth_provenan
         )
 
 
-def test_aggregate_combines_per_sku_loss_across_declared_support_seeds(
+def test_aggregate_rejects_hand_authored_per_sku_seed_score_receipts(
     tmp_path: Path,
 ):
     module = _score_module()
@@ -1891,18 +2048,15 @@ def test_aggregate_combines_per_sku_loss_across_declared_support_seeds(
     _write_ground_truth(ground_truth_path)
     output = tmp_path / "seed-aggregate.json"
 
-    module.aggregate_score_receipts(
-        tuple(score_paths),
-        output,
-        evidence_paths=tuple(evidence_paths),
-        reference_evidence_paths=tuple(reference_evidence_paths),
-        ground_truth_manifest_path=ground_truth_path,
-        trusted_index=_trusted_index(),
-    )
-
-    aggregate = module.load_canonical_json(output)
-    assert aggregate["minimum_rule_inputs"]["novel_loss_over_10pp_fraction"] == 0.0
-    assert aggregate["final_pass"] is True
+    with pytest.raises(ValueError, match="derived by the scorer"):
+        module.aggregate_score_receipts(
+            tuple(score_paths), output,
+            evidence_paths=tuple(evidence_paths),
+            reference_evidence_paths=tuple(reference_evidence_paths),
+            ground_truth_manifest_path=ground_truth_path,
+            trusted_index=_trusted_index(),
+        )
+    assert not output.exists()
 
 
 def test_aggregate_rejects_candidate_reference_cross_seed_pairing(tmp_path: Path):
@@ -1939,7 +2093,7 @@ def test_aggregate_rejects_candidate_reference_cross_seed_pairing(tmp_path: Path
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="paired fold/seed"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(paths),
             tmp_path / "aggregate.json",
@@ -1986,7 +2140,7 @@ def test_aggregate_rejects_raw_evidence_that_does_not_match_receipt_digest(
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="candidate evidence SHA-256"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(score_paths),
             tmp_path / "digest-aggregate.json",
@@ -2027,7 +2181,7 @@ def test_aggregate_rejects_inconsistent_same_fold_base_artifacts(tmp_path: Path)
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="fold base checkpoint"):
+    with pytest.raises(ValueError, match="derived by the scorer"):
         module.aggregate_score_receipts(
             tuple(score_paths),
             tmp_path / "base-aggregate.json",

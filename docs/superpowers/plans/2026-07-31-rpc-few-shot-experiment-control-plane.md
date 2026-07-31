@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep `configs/pipelines/canonical_cpu.yaml`, production model manifests, and the 20-SKU runtime contracts unchanged.
-- Use only `C:\workspace\archive` as the RPC source root; reject the duplicate `C:\workspace\archive\retail_product_checkout` root.
+- Use only `C:\workspace\archive` as the RPC source root; reject the duplicate `C:\workspace\archive\retail_product_checkout` root. Every public scorer, protocol, and CLI entry point that accepts `trusted_source_root` resolves and requires that exact directory; a byte-identical clone is not a trusted source. Hermetic tests may replace only the private raw-index loader seam, never expose a caller-selectable production override.
 - Verify source annotations and every materialized image by lowercase SHA-256 before a run can proceed.
 - Record source/split/selection/preprocess/model/calibration/policy/code/environment/output provenance in canonical JSON; never overwrite an existing manifest or receipt.
 - A Stage-5 schedule is derived only from four hash-bound Stage-4 confirmation receipts for the same method, selector, fold, and support seed; the certificate proves last failure, provisional minimum, next passing anchor, and the balanced 150-shot reference. Nested JSON condition fields are re-parsed against their deterministic `condition_id` before either a condition or score receipt is trusted.

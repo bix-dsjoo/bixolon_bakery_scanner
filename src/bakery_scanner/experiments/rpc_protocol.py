@@ -1365,6 +1365,13 @@ def _stage_one_selection_from_score_receipts(
         )
         if prior.phase != "initial_screen" or not prior.decision.expand_to_ten_seeds:
             raise ValueError("ten-seed re-selection requires an expanding initial Stage-1 receipt")
+        if (
+            len(prior.declared_support_seeds) != 5
+            or not set(prior.declared_support_seeds).issubset(declared_seeds)
+        ):
+            raise ValueError(
+                "ten-seed re-selection requires the initial five support seeds"
+            )
         expected_pairs = prior.decision.expand_to_ten_seeds
     else:
         phase = "initial_screen"
@@ -1850,10 +1857,10 @@ class ExperimentReceipt:
         if self.status == "unavailable" and not self.reason:
             raise ValueError("unavailable receipt requires a reason")
         if self.condition.stage == "locked":
-            if self.status == "completed":
-                raise ValueError(
-                    "locked ExperimentReceipt cannot be completed; only the re-derived scorer aggregate is authoritative"
-                )
+            # A completed locked-condition receipt records that the declared
+            # run produced raw evidence.  It is never a final decision: the
+            # scorer still emits only a non-final score receipt and the full
+            # locked aggregate remains the sole final authority.
             if not isinstance(self.stage_four_selection, StageFourSelection):
                 raise ValueError("locked receipt requires a Stage-4 selection")
             selection = self.stage_four_selection

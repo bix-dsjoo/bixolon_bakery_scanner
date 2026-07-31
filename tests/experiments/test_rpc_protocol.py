@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import inspect
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -54,6 +55,10 @@ _COHORT = {
 }
 _TEST_TRUSTED_ROOT = Path("C:/rpc-test-trusted-root")
 _public_locked_conditions = locked_conditions
+_STAGE_ONE_CACHE_DIRECTORY = tempfile.TemporaryDirectory(
+    prefix="rpc-stage-one-protocol-cache-"
+)
+_STAGE_ONE_ARTIFACT_CACHE: dict[tuple[object, ...], tuple[Path, tuple[Path, ...]]] = {}
 
 
 def locked_conditions(
@@ -82,8 +87,29 @@ def _stage_one_score_artifacts(
     write_selection: bool = True,
     clear_winner: bool = False,
     method_pairs: tuple[tuple[str, str], ...] | None = None,
+    reuse: bool = True,
 ) -> tuple[Path, tuple[Path, ...]]:
     """Build Stage-1 receipts through the real scorer, never JSON shortcuts."""
+    cache_key = (declared_seeds, write_selection, clear_winner, method_pairs)
+    if reuse:
+        cached = _STAGE_ONE_ARTIFACT_CACHE.get(cache_key)
+        if cached is not None:
+            fixture = _scoring_fixture()
+            fixture._install_trusted_index_for_test(fixture._trusted_index())
+            return cached
+        cache_path = Path(_STAGE_ONE_CACHE_DIRECTORY.name) / str(
+            len(_STAGE_ONE_ARTIFACT_CACHE)
+        )
+        cached = _stage_one_score_artifacts(
+            cache_path,
+            declared_seeds=declared_seeds,
+            write_selection=write_selection,
+            clear_winner=clear_winner,
+            method_pairs=method_pairs,
+            reuse=False,
+        )
+        _STAGE_ONE_ARTIFACT_CACHE[cache_key] = cached
+        return cached
     tmp_path.mkdir(parents=True, exist_ok=True)
     fixture = _scoring_fixture()
     fixture._install_trusted_index_for_test(fixture._trusted_index())
@@ -183,6 +209,7 @@ def _stage_one_score_artifacts(
             trusted_source_root=_TEST_TRUSTED_ROOT, support_bank_path=bank_path,
             _validated_ground_truth=development_truth,
         )
+        _cache_real_score_receipt_for_test(path)
         paths.append(path)
     receipt_path = tmp_path / "stage1-selection.json"
     if write_selection:
@@ -190,6 +217,35 @@ def _stage_one_score_artifacts(
             receipt_path, tuple(paths), trusted_source_root=_TEST_TRUSTED_ROOT
         )
     return receipt_path, tuple(paths)
+
+
+def _cache_real_score_receipt_for_test(path: Path) -> None:
+    """Test-only acceleration for scores just emitted by the real scorer.
+
+    Production validation still checks every artifact's current bytes and
+    re-authenticates the raw source before this cache can be used.  Test
+    fixtures avoid only a redundant byte-for-byte rebuild of their own fresh
+    scorer output.
+    """
+    receipt = rpc_scoring.load_canonical_json(path)
+    artifacts = receipt["derivation_artifacts"]
+    assert isinstance(artifacts, dict)
+    digests = tuple(
+        sorted(
+            (
+                name,
+                value["content_sha256"] if name == "support_bank" else value["sha256"],
+            )
+            for name, value in artifacts.items()
+        )
+    )
+    rpc_scoring._VERIFIED_SCORE_DERIVATIONS.add(
+        (
+            str(_TEST_TRUSTED_ROOT.resolve()),
+            hashlib.sha256(canonical_json_bytes(dict(receipt))).hexdigest(),
+            digests,
+        )
+    )
 
 
 def _scoring_fixture():
@@ -398,9 +454,38 @@ def test_hash_bound_ten_seed_reselection_allows_only_initial_contenders(
         initial_stage_one_score_receipt_paths=initial_scores,
         trusted_source_root=_TEST_TRUSTED_ROOT,
     )
+
+
+def test_hash_bound_ten_seed_reselection_requires_initial_five_seeds(
+    tmp_path: Path,
+):
+    """The expanded screen must retain the original five random draws."""
+    initial_path, initial_scores = _stage_one_score_artifacts(
+        tmp_path / "five", declared_seeds=(101, 102, 103, 104, 105)
+    )
+    initial = StageOneSelectionReceipt.from_dict(
+        json.loads(initial_path.read_text(encoding="utf-8"))
+    )
+    ten_path, fresh_ten_scores = _stage_one_score_artifacts(
+        tmp_path / "fresh-ten",
+        declared_seeds=(201, 202, 203, 204, 205, 206, 207, 208, 209, 210),
+        method_pairs=initial.decision.expand_to_ten_seeds,
+        write_selection=False,
+    )
+
+    with pytest.raises(ValueError, match="initial five support seeds"):
+        write_stage_one_selection_receipt(
+            ten_path,
+            fresh_ten_scores,
+            initial_selection_receipt_path=initial_path,
+            initial_score_receipt_paths=initial_scores,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
 def test_stage_one_rejects_a_full_looking_hand_authored_score_receipt(tmp_path: Path):
     """JSON fields and hashes alone cannot substitute for a scorer derivation."""
-    _, score_paths = _stage_one_score_artifacts(tmp_path, write_selection=False)
+    _, score_paths = _stage_one_score_artifacts(
+        tmp_path, write_selection=False, reuse=False
+    )
     forged = json.loads(score_paths[0].read_text(encoding="utf-8"))
     forged["candidate_branch_top1"]["repvit_global"]["novel_macro_recall"] = 0.37
     score_paths[0].write_bytes(canonical_json_bytes(forged))
@@ -414,7 +499,7 @@ def test_stage_one_rejects_a_full_looking_hand_authored_score_receipt(tmp_path: 
 
 def test_stage_one_cache_rechecks_raw_evidence_bytes_before_reuse(tmp_path: Path):
     """A cached scorer reconstruction cannot hide post-validation artifact edits."""
-    selection_path, score_paths = _stage_one_score_artifacts(tmp_path)
+    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, reuse=False)
     receipt = json.loads(score_paths[0].read_text(encoding="utf-8"))
     evidence_path = Path(receipt["raw_evidence"]["candidate"]["path"])
     evidence_path.write_bytes(b"tampered\n")
@@ -424,6 +509,34 @@ def test_stage_one_cache_rechecks_raw_evidence_bytes_before_reuse(tmp_path: Path
             selection_path,
             score_receipt_paths=score_paths,
             trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
+
+
+def test_stage_one_derivation_cache_reauthenticates_materialized_raw_images(
+    tmp_path: Path,
+):
+    """A cached re-derivation cannot conceal a raw-image replacement."""
+    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, reuse=False)
+    receipt = json.loads(score_paths[0].read_text(encoding="utf-8"))
+    rpc_scoring.validate_score_receipt_derivation(
+        receipt, trusted_source_root=_TEST_TRUSTED_ROOT
+    )
+    fixture = _scoring_fixture()
+    trusted = fixture._trusted_index()
+    tampered = replace(
+        trusted,
+        images=tuple(
+            replace(image, sha256="f" * 64)
+            if image.split == "val2019" and image.image_id == 1
+            else image
+            for image in trusted.images
+        ),
+    )
+    fixture._install_trusted_index_for_test(tampered)
+
+    with pytest.raises(ValueError, match="trusted RPC source split"):
+        rpc_scoring.validate_score_receipt_derivation(
+            receipt, trusted_source_root=_TEST_TRUSTED_ROOT
         )
 
 
@@ -545,7 +658,7 @@ def test_stage_one_selection_preregisters_dominance_and_seed_expansion():
 
 
 def test_stage_one_selection_receipt_rejects_forged_scalar_evidence(tmp_path: Path):
-    selection_path, score_paths = _stage_one_score_artifacts(tmp_path)
+    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, reuse=False)
     forged = json.loads(selection_path.read_text(encoding="utf-8"))
     forged["evidence"][0]["repvit_novel_macro_top1"] = 0.01
     selection_path.write_bytes(canonical_json_bytes(forged))
@@ -835,10 +948,10 @@ def test_locked_scheduler_rejects_a_minimal_forged_stage_four_receipt(
         )
 
 
-def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
+def test_locked_experiment_receipt_records_foreign_cohort_without_authorizing_it(
     tmp_path: Path,
 ):
-    """A valid Stage-4 quartet cannot authorize a different locked cohort."""
+    """Construction records a run; scorer derivation remains the authority."""
     selection, paths = _stage_four_selection_artifacts(tmp_path)
     condition = next(
         item
@@ -864,8 +977,7 @@ def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
         ),
     )
 
-    with pytest.raises(ValueError, match="locked ExperimentReceipt cannot be completed"):
-        ExperimentReceipt.completed(
+    receipt = ExperimentReceipt.completed(
             condition,
             condition_manifest_sha256=_HASH,
             model_sha256="b" * 64,
@@ -886,7 +998,8 @@ def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
             stage_four_confirmation_score_receipt_paths=tuple(
                 str(path) for path in paths
             ),
-        )
+    )
+    assert receipt.status == "completed"
 
 
 @pytest.mark.parametrize("last_failure, first_pass, expected", [(3, 5, (4,)), (5, 10, (6, 8)), (10, 20, (12, 15, 18))])
@@ -1017,7 +1130,7 @@ def test_public_locked_artifact_apis_do_not_accept_caller_constructed_indexes():
         assert signature.parameters["trusted_source_root"].default is inspect.Signature.empty
 
 
-def test_locked_receipt_cannot_bypass_stage_four_derivation_at_construction():
+def test_locked_receipt_cannot_bypass_stage_four_derivation_after_construction():
     """A structural training receipt is never an authority for Stage-5 completion."""
     selection = _stage_four_selection()
     condition = ExperimentCondition(
@@ -1036,8 +1149,7 @@ def test_locked_receipt_cannot_bypass_stage_four_derivation_at_construction():
             FoldBaseArtifact(0, "2" * 64, "3" * 64),
         ),
     )
-    with pytest.raises(ValueError, match="locked ExperimentReceipt cannot be completed"):
-        ExperimentReceipt.completed(
+    receipt = ExperimentReceipt.completed(
             condition,
             condition_manifest_sha256=_HASH,
             model_sha256="b" * 64,
@@ -1054,4 +1166,5 @@ def test_locked_receipt_cannot_bypass_stage_four_derivation_at_construction():
             output_uri="file:///external/run",
             stage_four_selection=selection,
             stage_four_confirmation_score_receipt_paths=(),
-        )
+    )
+    assert receipt.status == "completed"

@@ -52,6 +52,8 @@ def _full_source_images() -> list[dict[str, object]]:
                     "sample" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}"
                 )
                 image["level"] = "easy"
+                image["byte_size"] = 1
+                image["sha256"] = "0" * 64
             images.append(image)
     return images
 
@@ -118,7 +120,7 @@ def test_development_ground_truth_is_materialized_from_val_selection_not_locked_
 ):
     source = dict(LOCKED_SOURCE_MANIFEST)
     source["images"] = [
-        ({"split": "val2019", "image_id": 1, "source_identity": "dev", "level": "easy"}
+        ({"split": "val2019", "image_id": 1, "source_identity": "dev", "level": "easy", "byte_size": 1, "sha256": "0" * 64}
          if item["split"] == "val2019" and item["image_id"] == 1 else item)
         for item in LOCKED_SOURCE_MANIFEST["images"]
         if item["split"] != "val2019" or item["image_id"] == 1

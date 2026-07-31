@@ -52,6 +52,7 @@ _SCORE_BRANCHES: tuple[BranchName, ...] = (
     "dinov3_local",
 )
 _CANONICAL_SCENE_SPLIT_VERSION = "rpc-2019-five-fold-v1"
+_PRODUCTION_TRUSTED_RPC_ROOT = Path("C:/workspace/archive")
 _VERIFIED_SCORE_DERIVATIONS: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
 
 
@@ -350,6 +351,10 @@ def _trusted_rpc_index(trusted_source_root: Path) -> RpcIndex:
 
 
 def _load_verified_default_rpc_index(trusted_source_root: Path) -> RpcIndex:
+    if Path(trusted_source_root).resolve() != _PRODUCTION_TRUSTED_RPC_ROOT.resolve():
+        raise ValueError(
+            "trusted RPC source root must be the exact C:\\workspace\\archive directory"
+        )
     return load_rpc_index(RpcDatasetContract.default(), trusted_source_root)
 
 
@@ -516,18 +521,25 @@ def _validate_resolved_source_against_trusted(
 ) -> None:
     """Check resolved source identities against independently parsed raw RPC data."""
     trusted_test_images = {
-        (item.image_id, item.source_identity, item.level)
+        (
+            item.image_id,
+            item.source_identity,
+            item.level,
+            item.byte_size,
+            item.sha256,
+        )
         for item in trusted_index.images
         if item.split == "test2019"
     }
-    declared_test_images: set[tuple[int, str, str]] = set()
+    declared_test_images: set[tuple[int, str, str, int, str]] = set()
     declared_test_image_count = 0
     for item in source["images"]:  # validated list shape by caller
         if not isinstance(item, Mapping) or item.get("split") != "test2019":
             continue
         declared_test_image_count += 1
-        image_id, identity, level = (
-            item.get("image_id"), item.get("source_identity"), item.get("level")
+        image_id, identity, level, byte_size, image_sha256 = (
+            item.get("image_id"), item.get("source_identity"), item.get("level"),
+            item.get("byte_size"), item.get("sha256"),
         )
         if (
             type(image_id) is not int
@@ -535,9 +547,14 @@ def _validate_resolved_source_against_trusted(
             or not isinstance(identity, str)
             or not identity
             or level not in {"easy", "medium", "hard"}
+            or type(byte_size) is not int
+            or byte_size < 0
+            or not isinstance(image_sha256, str)
+            or len(image_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in image_sha256)
         ):
             raise ValueError("invalid trusted RPC source image identity")
-        declared_test_images.add((image_id, identity, level))
+        declared_test_images.add((image_id, identity, level, byte_size, image_sha256))
     if (
         declared_test_image_count != len(declared_test_images)
         or declared_test_images != trusted_test_images
@@ -574,9 +591,16 @@ def _validate_resolved_source_against_trusted_split(
     if split == "test2019":
         _validate_resolved_source_against_trusted(source, trusted_index)
         return
-    trusted_images = {(item.image_id, item.source_identity, item.level) for item in trusted_index.images if item.split == split}
+    trusted_images = {
+        (item.image_id, item.source_identity, item.level, item.byte_size, item.sha256)
+        for item in trusted_index.images
+        if item.split == split
+    }
     declared_images = {
-        (item.get("image_id"), item.get("source_identity"), item.get("level"))
+        (
+            item.get("image_id"), item.get("source_identity"), item.get("level"),
+            item.get("byte_size"), item.get("sha256"),
+        )
         for item in source.get("images", [])
         if isinstance(item, Mapping) and item.get("split") == split
     }
@@ -907,6 +931,29 @@ def validate_score_receipt_derivation(
         != artifacts["development_ground_truth"].get("sha256")  # type: ignore[union-attr]
     ):
         raise ValueError("score receipt derived scorer ground truth does not match artifact")
+    candidate_condition = receipt.get("candidate_condition")
+    reference_condition = receipt.get("reference_condition")
+    if not isinstance(candidate_condition, Mapping) or not isinstance(reference_condition, Mapping):
+        raise ValueError("score receipt lacks derived scorer conditions")
+    stage = _paired_nested_condition_stage(
+        candidate_condition.get("stage"), reference_condition.get("stage")
+    )
+    # Authenticate the current raw root before consulting the reconstruction
+    # cache.  The manifest records each materialized image digest and size, so
+    # this catches a post-cache raw image replacement even when every derived
+    # artifact still has its original digest.
+    authenticated_ground_truth = load_stage_ground_truth(
+        paths["development_ground_truth"],
+        stage=stage,
+        trusted_source_root=trusted_source_root,
+    )
+    if authenticated_ground_truth.sha256 != artifacts["development_ground_truth"].get("sha256"):
+        raise ValueError("score receipt derived scorer ground truth does not match artifact")
+    if (
+        _validated_ground_truth is not None
+        and _validated_ground_truth != authenticated_ground_truth
+    ):
+        raise ValueError("score receipt supplied ground truth is no longer authenticated")
     cache_key = (
         str(Path(trusted_source_root).resolve()),
         hashlib.sha256(canonical_json_bytes(dict(receipt))).hexdigest(),
@@ -929,7 +976,7 @@ def validate_score_receipt_derivation(
                 rebuilt_path,
                 trusted_source_root=trusted_source_root,
                 support_bank_path=paths["support_bank"],
-                _validated_ground_truth=_validated_ground_truth,
+                _validated_ground_truth=authenticated_ground_truth,
             )
             rebuilt = load_canonical_json(rebuilt_path)
         except (OSError, ValueError) as exc:
@@ -1019,7 +1066,10 @@ def validate_fold_base_checkpoint_evidence(
         raise ValueError("base checkpoint SHA-256 mismatch")
     if evidence_sha256 != binding.get("evidence_sha256"):
         raise ValueError("base checkpoint evidence SHA-256 mismatch")
-    if evidence.get("cohort_manifest_sha256") != cohort.get("manifest_sha256"):
+    if (
+        nested.get("stage") != "locked"
+        and evidence.get("cohort_manifest_sha256") != cohort.get("manifest_sha256")
+    ):
         raise ValueError("base checkpoint cohort manifest mismatch")
     base_category_ids = evidence.get("base_category_ids")
     if (
@@ -1084,6 +1134,15 @@ def aggregate_score_receipts(
             raise ValueError("candidate scoring plan mismatch")
         if _score_receipt_plan(receipt, "reference_scoring_plan") != reference_plan:
             raise ValueError("reference scoring plan mismatch")
+        try:
+            validate_score_receipt_derivation(
+                receipt,
+                trusted_source_root=trusted_source_root,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "aggregate requires score receipts derived by the scorer"
+            ) from exc
     candidate_conditions = tuple(
         _score_receipt_condition(receipt, "candidate_condition") for receipt in receipts
     )
@@ -1746,6 +1805,11 @@ def _score_receipt_base_checkpoint(
         if digest != evidence_sha256:
             raise ValueError("fold base checkpoint evidence SHA-256 mismatch")
         cohort = receipt.get("cohort")
+        candidate_condition = receipt.get("candidate_condition")
+        locked_stage = (
+            isinstance(candidate_condition, Mapping)
+            and candidate_condition.get("stage") == "locked"
+        )
         expected_fields = {
             "schema_version",
             "kind",
@@ -1763,8 +1827,11 @@ def _score_receipt_base_checkpoint(
             or base_evidence.get("fold") != fold
             or base_evidence.get("checkpoint_sha256") != checkpoint_sha256
             or not isinstance(cohort, Mapping)
-            or base_evidence.get("cohort_manifest_sha256")
-            != candidate_provenance["cohort_manifest_sha256"]
+            or (
+                not locked_stage
+                and base_evidence.get("cohort_manifest_sha256")
+                != candidate_provenance["cohort_manifest_sha256"]
+            )
             or base_evidence.get("base_category_ids") != cohort.get("base_category_ids")
             or type(base_evidence.get("sample_count")) is not int
             or base_evidence["sample_count"] <= 0
