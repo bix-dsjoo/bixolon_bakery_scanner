@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:bakery_camera_prototype/src/catalog/product.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_review_presentation.dart';
@@ -48,6 +50,16 @@ void main() {
     expect(item.customerSemantics, isNot(contains('0.88')));
     expect(item.customerSemantics, isNot(contains('DINO')));
     expect(item.customerSemantics, contains('사진에서 01번'));
+  });
+
+  test('does not expose the inference-backed draft through its public API', () {
+    final unknown = buildUiInferenceResult().objects.last;
+
+    final item = CustomerReviewPresentation.fromDrafts([
+      ObjectDraft.unresolved(unknown),
+    ]).objects.single;
+
+    expect(() => (item as dynamic).draft, throwsNoSuchMethodError);
   });
 
   test('marks a registered object without a product as needing catalog', () {

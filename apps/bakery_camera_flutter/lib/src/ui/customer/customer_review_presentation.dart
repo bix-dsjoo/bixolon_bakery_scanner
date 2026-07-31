@@ -11,7 +11,6 @@ final class CustomerReviewObject {
     required this.rect,
     required this.state,
     required this.label,
-    required this.draft,
   });
 
   final String objectId;
@@ -19,7 +18,6 @@ final class CustomerReviewObject {
   final Rect rect;
   final CustomerReviewObjectState state;
   final String label;
-  final ObjectDraft draft;
 
   String get numberLabel => displayNumber.toString().padLeft(2, '0');
   String get customerSemantics => '사진에서 $numberLabel번, $label';
@@ -58,6 +56,5 @@ CustomerReviewObject _item(ObjectDraft draft, int displayNumber) {
     ),
     state: state,
     label: product?.displayName ?? '상품을 확인해 주세요',
-    draft: draft,
   );
 }
