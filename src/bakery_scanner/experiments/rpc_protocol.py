@@ -17,6 +17,7 @@ _STAGE_ONE_PAIRS = (("m0", "div"), ("m1", "div"), ("m2", "div"), ("m2", "rnd"))
 _STAGE_ONE_SHOTS = (1, 3, 5)
 _ASCENDING_SHOTS = (1, 3, 5, 10, 20)
 _EXTENDED_ASCENDING_SHOTS = (40, 80, 150)
+_CONFIRMATION_ANCHORS = _ASCENDING_SHOTS + _EXTENDED_ASCENDING_SHOTS
 _REFINEMENTS = {(3, 5): (4,), (5, 10): (6, 8), (10, 20): (12, 15, 18)}
 _REFINEMENT_SHOTS = tuple(
     sorted({shot for shots in _REFINEMENTS.values() for shot in shots})
@@ -33,6 +34,44 @@ _HASH_FIELDS = (
     "preprocessing_sha256",
     "code_sha256",
 )
+
+
+def _next_larger_confirmation_anchor(shot_count: int) -> int:
+    """Return the frozen ascending anchor that immediately follows ``shot_count``.
+
+    Refinement points inherit the upper anchor of their preregistered interval:
+    for example k=6 and k=8 both require k=10 as their confirmation anchor.
+    """
+    try:
+        return next(anchor for anchor in _CONFIRMATION_ANCHORS if anchor > shot_count)
+    except StopIteration as exc:
+        raise ValueError("Stage-4 provisional minimum has no next-larger anchor") from exc
+
+
+def _confirmation_anchor_lineage(shot_counts: Iterable[int]) -> tuple[int, int]:
+    """Validate the immutable Stage-4 quartet/triplet and return min/anchor.
+
+    Both schedule construction and the selection certificate call this helper,
+    so a caller cannot schedule one quartet and later bind Stage-5 to a
+    different, self-consistent set of confirmation conditions.
+    """
+    shots = tuple(shot_counts)
+    non_reference = tuple(sorted(shot for shot in shots if shot != 150))
+    if len(shots) == 3 and set(shots) == {1, 3, 150}:
+        return (1, 3)
+    if len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots:
+        raise ValueError(
+            "confirmation requires four unique shots including the 150-shot reference, or k1/3/150"
+        )
+    if len(non_reference) != 3:
+        raise ValueError("Stage-4 confirmation requires three non-reference conditions")
+    _, provisional_minimum, next_anchor = non_reference
+    expected_next_anchor = _next_larger_confirmation_anchor(provisional_minimum)
+    if next_anchor != expected_next_anchor:
+        raise ValueError(
+            "Stage-4 confirmation requires the preregistered adjacent next-larger anchor"
+        )
+    return (provisional_minimum, next_anchor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,24 +221,20 @@ class StageFourSelection:
             raise ValueError("Stage-4 confirmation receipts must share method, selector, fold, and seed")
         shots = tuple(condition.shot_count for condition in conditions)
         k1_special = len(shots) == 3 and set(shots) == {1, 3, 150}
-        if (len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots) and not k1_special:
-            raise ValueError("Stage-4 selection requires four unique shots including 150, or k1/3/150")
+        provisional, next_anchor = _confirmation_anchor_lineage(shots)
         non_reference = tuple(sorted(shot for shot in shots if shot != 150))
         passed = {
             item.condition.shot_count: item.provisional_pass
             for item in self.confirmation_receipts
         }
-        provisional = min(shot for shot in non_reference if passed[shot]) if any(
-            passed[shot] for shot in non_reference
-        ) else None
-        if provisional is None:
-            raise ValueError("Stage-4 selection has no provisional minimum")
-        prior = tuple(shot for shot in non_reference if shot < provisional)
-        later = tuple(shot for shot in non_reference if shot > provisional)
         if provisional == 1 and k1_special:
-            if not passed[3]:
+            if not passed[provisional] or not passed[next_anchor]:
                 raise ValueError("Stage-4 k=1 selection requires the next passing anchor")
-        elif not prior or not later or passed[max(prior)] or not passed[min(later)]:
+        elif (
+            passed[non_reference[0]]
+            or not passed[provisional]
+            or not passed[next_anchor]
+        ):
             raise ValueError("Stage-4 selection requires last failure and next passing anchor")
         if not passed[150]:
             raise ValueError("Stage-4 balanced 150-shot reference must pass")
@@ -222,11 +257,9 @@ class StageFourSelection:
 
     @property
     def provisional_minimum_shot_count(self) -> int:
-        return min(
-            item.condition.shot_count
-            for item in self.confirmation_receipts
-            if item.condition.shot_count != 150 and item.provisional_pass
-        )
+        return _confirmation_anchor_lineage(
+            item.condition.shot_count for item in self.confirmation_receipts
+        )[0]
 
     @property
     def is_lowest_shot_special_case(self) -> bool:
@@ -981,9 +1014,7 @@ def confirmation_conditions(
     if pair not in _STAGE_ONE_PAIRS:
         raise ValueError("unsupported method/selector combination")
     shots = tuple(shot_counts)
-    k1_special = len(shots) == 3 and set(shots) == {1, 3, 150}
-    if (len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots) and not k1_special:
-        raise ValueError("confirmation requires four unique shots including the 150-shot reference, or k1/3/150")
+    _confirmation_anchor_lineage(shots)
     if any(shot not in _CONFIRMATION_SHOTS for shot in shots):
         raise ValueError("unsupported confirmation condition")
     return _conditions((pair,), shots, seeds, folds, "confirmation")

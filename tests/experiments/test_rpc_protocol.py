@@ -634,6 +634,51 @@ def test_k1_stage_four_selection_has_no_imaginary_lower_failure(monkeypatch: pyt
         StageFourSelection(tuple(replace(item, provisional_pass=item.condition.shot_count != 3) for item in selection.confirmation_receipts))
 
 
+def test_stage_four_requires_the_preregistered_adjacent_larger_anchor():
+    """A certificate cannot skip k=10 and call a later k the confirmation anchor."""
+    skipped_anchor = tuple(
+        _rpc_protocol._new_condition("m0", "div", shot, 0, 101, "confirmation")
+        for shot in (1, 5, 20, 150)
+    )
+    skipped_certificate = tuple(
+        StageFourConfirmationReceipt(
+            condition=condition,
+            score_receipt_sha256=f"{index + 1:x}" * 64,
+            provisional_pass=condition.shot_count != 1,
+        )
+        for index, condition in enumerate(skipped_anchor)
+    )
+
+    with pytest.raises(ValueError, match="adjacent next-larger anchor"):
+        StageFourSelection(skipped_certificate)
+    with pytest.raises(ValueError, match="adjacent next-larger anchor"):
+        confirmation_conditions(
+            ("m0", "div"),
+            shot_counts=(1, 5, 20, 150),
+            seeds=(101,),
+            folds=(0,),
+        )
+
+    valid_conditions = confirmation_conditions(
+        ("m0", "div"),
+        shot_counts=(1, 5, 10, 150),
+        seeds=(101,),
+        folds=(0,),
+    )
+    valid = StageFourSelection(
+        tuple(
+            StageFourConfirmationReceipt(
+                condition=condition,
+                score_receipt_sha256=f"{index + 5:x}" * 64,
+                provisional_pass=condition.shot_count != 1,
+            )
+            for index, condition in enumerate(valid_conditions)
+        )
+    )
+
+    assert valid.provisional_minimum_shot_count == 5
+
+
 def test_all_available_is_an_ascending_diagnostic_not_a_shot_condition():
     conditions = all_available_diagnostic_conditions(("m0", "div"), folds=(0,))
 
