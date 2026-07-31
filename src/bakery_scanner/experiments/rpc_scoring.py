@@ -642,6 +642,7 @@ def score(
         validate_support_bank_for_condition(
             support_bank, support_sha256=receipt["support_sha256"], selector=parsed.selector,
             support_seed=parsed.support_seed, category_ids=(*candidate_novel, *candidate_base),
+            shot_count=parsed.shot_count, support_scope=parsed.support_scope,
         )
     ground_truth = load_stage_ground_truth(
         ground_truth_manifest_path, stage=paired_stage,
@@ -735,7 +736,7 @@ def score(
             "checkpoint_sha256": base_checkpoint_evidence["checkpoint_sha256"],
             "fold": base_checkpoint_evidence["fold"],
         },
-        "locked_ground_truth": _locked_ground_truth_summary(ground_truth),
+        "locked_ground_truth": _ground_truth_summary(ground_truth),
         "minimum_rule_inputs": {
             "registered_coverage": candidate_summary.registered_coverage,
             "novel_macro_recall_lower_delta": interval.novel_macro_recall_lower_delta,
@@ -787,7 +788,7 @@ def _branch_top1_summaries(
     }
 
 
-def _locked_ground_truth_summary(
+def _ground_truth_summary(
     ground_truth: LoadedGroundTruth,
 ) -> dict[str, object]:
     return {
@@ -917,10 +918,6 @@ def aggregate_score_receipts(
         raise ValueError(
             "aggregate requires one candidate/reference evidence file per score receipt"
         )
-    ground_truth = load_locked_ground_truth(
-        ground_truth_manifest_path,
-        trusted_source_root=trusted_source_root,
-    )
     candidate_plan = _score_receipt_plan(receipts[0], "candidate_scoring_plan")
     reference_plan = _score_receipt_plan(receipts[0], "reference_scoring_plan")
     _validate_comparable_scoring_plans(candidate_plan, reference_plan)
@@ -945,6 +942,11 @@ def aggregate_score_receipts(
     _validate_paired_condition_axes(candidate_conditions, reference_conditions)
     aggregate_stage = _validated_aggregate_stage(
         candidate_conditions, reference_conditions
+    )
+    ground_truth = load_stage_ground_truth(
+        ground_truth_manifest_path,
+        stage=aggregate_stage,
+        trusted_source_root=trusted_source_root,
     )
     if aggregate_stage == "locked" and len(candidate_plan.expected_condition_ids) < 2:
         raise ValueError("a single condition is non-final; no final pass is available")
@@ -1076,7 +1078,7 @@ def aggregate_score_receipts(
             ),
             "candidate_full_system": asdict(aggregate_candidate_summary),
             "reference_full_system": asdict(aggregate_reference_summary),
-            "locked_ground_truth": _locked_ground_truth_summary(ground_truth),
+            "locked_ground_truth": _ground_truth_summary(ground_truth),
             "paired_bootstrap_95": asdict(interval),
             "minimum_rule_inputs": minimum_rule_inputs,
             "upstream_artifacts": [
@@ -1317,7 +1319,7 @@ def _load_aggregate_evidence(
         != reference_condition.get("condition_id")
     ):
         raise ValueError("score receipt top-level condition ID mismatch")
-    _validate_score_receipt_locked_ground_truth(receipt, ground_truth)
+    _validate_score_receipt_ground_truth(receipt, ground_truth)
     novel, base = _score_receipt_cohort(receipt, candidate_plan)
     for condition, provenance_name in ((candidate_condition, "candidate_provenance"), (reference_condition, "reference_provenance")):
         provenance = receipt.get(provenance_name)
@@ -1326,6 +1328,8 @@ def _load_aggregate_evidence(
         validate_support_bank_for_condition(
             bank, support_sha256=provenance["support_sha256"], selector=condition["selector"],
             support_seed=condition["support_seed"], category_ids=(*novel, *base),
+            shot_count=condition["shot_count"],
+            support_scope=condition.get("support_scope", "fixed_k"),
         )
     candidate_provenance = _score_receipt_provenance(
         receipt,
@@ -1345,7 +1349,7 @@ def _load_aggregate_evidence(
     ):
         raise ValueError("candidate/reference cohort manifest mismatch")
     if candidate_provenance["cohort_manifest_sha256"] != ground_truth.sha256:
-        raise ValueError("locked ground-truth manifest SHA-256 mismatch")
+        raise ValueError("ground-truth manifest SHA-256 mismatch")
     base_checkpoint = _score_receipt_base_checkpoint(
         receipt,
         fold,
@@ -1442,12 +1446,12 @@ def _load_aggregate_evidence(
     )
 
 
-def _validate_score_receipt_locked_ground_truth(
+def _validate_score_receipt_ground_truth(
     receipt: Mapping[str, object],
     ground_truth: LoadedGroundTruth,
 ) -> None:
     value = receipt.get("locked_ground_truth")
-    expected = _locked_ground_truth_summary(ground_truth)
+    expected = _ground_truth_summary(ground_truth)
     count_names = ("burst_count", "object_count", "sample_count")
     if (
         not isinstance(value, Mapping)
@@ -1463,7 +1467,7 @@ def _validate_score_receipt_locked_ground_truth(
             for name in count_names
         )
     ):
-        raise ValueError("score receipt lacks valid locked ground-truth provenance")
+        raise ValueError("score receipt lacks valid ground-truth provenance")
 
 
 def _score_receipt_cohort(

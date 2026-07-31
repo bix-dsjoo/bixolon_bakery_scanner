@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
@@ -16,6 +17,7 @@ from bakery_scanner.experiments.rpc_support import (
     parse_train_capture_stratum,
     support_prefix,
     validate_unique_div_support_draws,
+    validate_support_bank_for_condition,
 )
 
 
@@ -211,6 +213,56 @@ def test_support_bank_binds_every_declared_div_category_seed_and_rejects_duplica
     assert isinstance(bank, SupportBank)
     assert bank.order_for(7, 5).source_identities != bank.order_for(7, 10).source_identities
     assert len(bank.sha256) == 64
+
+
+def test_support_bank_rejects_duplicate_category_seed_coordinates_directly():
+    """A coordinate grid is not complete when duplicate orders hide a hole."""
+    order = materialize_support_order(_candidates(), method="rnd", seed=5)
+    digest = hashlib.sha256(b"placeholder").hexdigest()
+    with pytest.raises(ValueError, match="duplicate category/seed"):
+        SupportBank("rnd", (5,), (order, order), digest)
+
+
+def test_support_bank_load_rejects_duplicate_category_seed_coordinates(tmp_path):
+    bank = materialize_support_bank({7: _candidates()}, method="rnd", seeds=(5,))
+    payload = bank.to_dict()
+    payload["orders"] = [payload["orders"][0], payload["orders"][0]]
+    path = tmp_path / "duplicate-coordinate-bank.json"
+    path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate category/seed"):
+        load_support_bank(path)
+
+
+def test_support_bank_condition_requires_the_declared_fixed_k_prefix():
+    bank = materialize_support_bank(
+        {7: _candidates()}, method="rnd", seeds=(5,)
+    )
+    with pytest.raises(ValueError, match="insufficient support candidates"):
+        validate_support_bank_for_condition(
+            bank,
+            support_sha256=bank.sha256,
+            selector="rnd",
+            support_seed=5,
+            category_ids=(7,),
+            shot_count=5,
+            support_scope="fixed_k",
+        )
+
+
+def test_support_bank_condition_all_available_is_explicit_not_zero_shot():
+    bank = materialize_support_bank(
+        {7: _candidates()}, method="rnd", seeds=(5,)
+    )
+    assert validate_support_bank_for_condition(
+        bank,
+        support_sha256=bank.sha256,
+        selector="rnd",
+        support_seed=5,
+        category_ids=(7,),
+        shot_count=0,
+        support_scope="all_available",
+    ) == bank
 
 
 def test_support_bank_fails_closed_when_declared_div_seeds_reuse_a_draw():

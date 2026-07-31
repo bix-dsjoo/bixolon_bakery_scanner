@@ -281,8 +281,11 @@ class StageFourConfirmationBinding:
         """Require a locked target to use the exact Stage-4 decision universe."""
         if condition.stage != "locked":
             raise ValueError("Stage-4 binding can authorize only a locked condition")
-        if cohort_manifest_sha256 != self.cohort_manifest_sha256:
-            raise ValueError("locked target cohort does not match Stage-4 cohort")
+        # Stage 4 is deliberately scored on authenticated development truth,
+        # whereas Stage 5 is deliberately scored on locked test truth.  The
+        # target manifest is authenticated by the Stage-5 scorer itself; it
+        # must not be equal to the development cohort that selected the method.
+        _validate_sha256("locked target cohort manifest SHA-256", cohort_manifest_sha256)
         if (
             tuple(novel_category_ids) != self.novel_category_ids
             or tuple(base_category_ids) != self.base_category_ids
@@ -1410,7 +1413,8 @@ def _rederive_stage_one_metrics(receipt: Mapping[str, object]) -> tuple[float, f
         wrong = []
         for category in novel:
             selected = [row for row in rows if row.truth_category_id == category]
-            if not selected: raise ValueError("Stage-1 raw evidence omits novel category")
+            if not selected:
+                raise ValueError("Stage-1 raw evidence omits novel category")
             per.append(sum(row.branch_top1_category_id(branch) == category for row in selected) / len(selected))
             wrong.extend(row.branch_top1_category_id(branch) != category for row in selected)
         return sum(per) / len(per), sum(wrong) / len(wrong)

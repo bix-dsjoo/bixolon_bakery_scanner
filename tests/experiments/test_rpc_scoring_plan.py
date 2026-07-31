@@ -48,11 +48,30 @@ _public_materialize_locked_ground_truth = materialize_locked_ground_truth
 @lru_cache(maxsize=1)
 def _fixture_bank():
     root = Path(tempfile.mkdtemp(prefix="rpc-support-bank-test-"))
-    bank = materialize_support_bank({
-        1: tuple(SupportCandidate(1, f"novel{i}", f"novel{i}_camera{i}-top.jpg", f"{i:x}" * 64, 1, parse_train_capture_stratum(f"novel{i}_camera{i}-top.jpg", 1), (float(i), 1.0)) for i in (1,2,3)),
-        2: tuple(SupportCandidate(2, f"base{i}", f"base{i}_camera{i}-top.jpg", f"{i+3:x}" * 64, 1, parse_train_capture_stratum(f"base{i}_camera{i}-top.jpg", 2), (float(i), 1.0)) for i in (1,2,3)),
-    }, method="div", seeds=(101, 102))
-    path = root / "bank.json"; write_support_bank(path, bank)
+    bank = materialize_support_bank(
+        {
+            category_id: tuple(
+                SupportCandidate(
+                    category_id,
+                    f"{prefix}{number}",
+                    f"{prefix}{number}_camera{(number % 4) + 1}-top.jpg",
+                    hashlib.sha256(f"{prefix}{number}".encode()).hexdigest(),
+                    1,
+                    parse_train_capture_stratum(
+                        f"{prefix}{number}_camera{(number % 4) + 1}-top.jpg",
+                        category_id,
+                    ),
+                    (float(number + 1), float((number % 7) + 1)),
+                )
+                for number in range(160)
+            )
+            for category_id, prefix in ((1, "novel"), (2, "base"))
+        },
+        method="div",
+        seeds=(101, 102),
+    )
+    path = root / "bank.json"
+    write_support_bank(path, bank)
     return path, bank.sha256
 _public_locked_conditions = locked_conditions
 
@@ -67,7 +86,7 @@ def _install_trusted_index_for_test(index: RpcIndex) -> None:
             role=(
                 "locked_acceptance"
                 if image.split == "test2019"
-                else "calibration"
+                else "development_selection"
             ),
             burst_id=(
                 "burst"
@@ -75,7 +94,7 @@ def _install_trusted_index_for_test(index: RpcIndex) -> None:
                 else (
                     f"burst-{image.image_id}"
                     if image.split == "test2019"
-                    else f"val-{image.image_id}"
+                    else "burst" if image.image_id < 3 else f"val-{image.image_id}"
                 )
             ),
             difficulty=image.level,
@@ -135,9 +154,11 @@ def _full_source_images() -> list[dict[str, object]]:
     for split, count in counts.items():
         for image_id in range(1, count + 1):
             image: dict[str, object] = {"split": split, "image_id": image_id}
-            if split == "test2019":
+            if split in {"val2019", "test2019"}:
                 image["source_identity"] = (
-                    "novel" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}"
+                    "novel"
+                    if image_id == 1
+                    else "base" if image_id == 2 else f"{split}:{image_id}"
                 )
                 image["level"] = "easy"
             images.append(image)
@@ -146,6 +167,15 @@ def _full_source_images() -> list[dict[str, object]]:
 
 def _full_test_assignments() -> list[dict[str, object]]:
     return [
+        {
+            "split": "val2019",
+            "image_id": image_id,
+            "role": "development_selection",
+            "burst_id": "burst" if image_id < 3 else f"val-{image_id}",
+            "difficulty": "easy",
+        }
+        for image_id in range(1, RpcDatasetContract.default().image_counts["val2019"] + 1)
+    ] + [
         {
             "split": "test2019",
             "image_id": image_id,
@@ -162,9 +192,22 @@ def _trusted_index() -> RpcIndex:
     """Independent hermetic raw-source resolver; never read the manifest."""
     images = tuple(
         RpcImage(
+            "val2019",
+            image_id,
+            "novel" if image_id == 1 else "base" if image_id == 2 else f"val2019:{image_id}",
+            Path(f"C:/trusted/val-{image_id}.jpg"),
+            1,
+            "1" * 64,
+            "easy",
+        )
+        for image_id in range(
+            1, RpcDatasetContract.default().image_counts["val2019"] + 1
+        )
+    ) + tuple(
+        RpcImage(
             "test2019",
             image_id,
-            "novel" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}",
+            "novel" if image_id == 1 else "base" if image_id == 2 else f"test2019:{image_id}",
             Path(f"C:/trusted/test-{image_id}.jpg"),
             1,
             "0" * 64,
@@ -178,6 +221,8 @@ def _trusted_index() -> RpcIndex:
         RpcDatasetContract.default(),
         images,
         (
+            RpcObject("val2019", 1, 1, 1, (0.0, 0.0, 1.0, 1.0)),
+            RpcObject("val2019", 2, 2, 2, (0.0, 0.0, 1.0, 1.0)),
             RpcObject("test2019", 1, 1, 1, (0.0, 0.0, 1.0, 1.0)),
             RpcObject("test2019", 2, 2, 2, (0.0, 0.0, 1.0, 1.0)),
         ),
@@ -193,6 +238,8 @@ LOCKED_SOURCE_MANIFEST = {
     "categories": [],
     "images": _full_source_images(),
     "objects": [
+        {"split": "val2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
+        {"split": "val2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
         {"split": "test2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
         {"split": "test2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
     ],
@@ -233,6 +280,26 @@ LOCKED_GROUND_TRUTH = {
 }
 LOCKED_GROUND_TRUTH_BYTES = canonical_json_bytes(LOCKED_GROUND_TRUTH)
 LOCKED_GROUND_TRUTH_SHA256 = hashlib.sha256(LOCKED_GROUND_TRUTH_BYTES).hexdigest()
+DEVELOPMENT_SOURCE_MANIFEST = LOCKED_SOURCE_MANIFEST
+DEVELOPMENT_SOURCE_MANIFEST_BYTES = canonical_json_bytes(DEVELOPMENT_SOURCE_MANIFEST)
+DEVELOPMENT_SOURCE_MANIFEST_SHA256 = hashlib.sha256(DEVELOPMENT_SOURCE_MANIFEST_BYTES).hexdigest()
+DEVELOPMENT_SCENE_ROLE_MANIFEST = {
+    **LOCKED_SCENE_ROLE_MANIFEST,
+    "source_manifest_sha256": DEVELOPMENT_SOURCE_MANIFEST_SHA256,
+}
+DEVELOPMENT_SCENE_ROLE_MANIFEST_BYTES = canonical_json_bytes(DEVELOPMENT_SCENE_ROLE_MANIFEST)
+DEVELOPMENT_SCENE_ROLE_MANIFEST_SHA256 = hashlib.sha256(DEVELOPMENT_SCENE_ROLE_MANIFEST_BYTES).hexdigest()
+DEVELOPMENT_GROUND_TRUTH = {
+    "schema_version": 2,
+    "kind": "rpc-fewshot-development-ground-truth",
+    "source_manifest_path": "development-source.json",
+    "source_manifest_sha256": DEVELOPMENT_SOURCE_MANIFEST_SHA256,
+    "scene_role_manifest_path": "development-scene-roles.json",
+    "scene_role_manifest_sha256": DEVELOPMENT_SCENE_ROLE_MANIFEST_SHA256,
+    "objects": LOCKED_GROUND_TRUTH["objects"],
+}
+DEVELOPMENT_GROUND_TRUTH_BYTES = canonical_json_bytes(DEVELOPMENT_GROUND_TRUTH)
+DEVELOPMENT_GROUND_TRUTH_SHA256 = hashlib.sha256(DEVELOPMENT_GROUND_TRUTH_BYTES).hexdigest()
 _STAGE_FOUR_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory(
     prefix="rpc-stage-four-test-"
 )
@@ -333,13 +400,14 @@ def _locked_selection_artifacts(
     claims: list[StageFourConfirmationReceipt] = []
     reference = next(item for item in confirmations if item.shot_count == 150)
     ground_truth_path = _STAGE_FOUR_ARTIFACT_ROOT / f"ground-truth-{fold}-{seed}.json"
-    _write_ground_truth(ground_truth_path)
+    _write_development_ground_truth(ground_truth_path)
     base_evidence_path = _STAGE_FOUR_ARTIFACT_ROOT / f"base-{fold}-{seed}.json"
     base_checkpoint_sha256 = "e" * 64
     base_evidence_sha256 = _write_fold_base_evidence(
         base_evidence_path,
         fold=fold,
         checkpoint_sha256=base_checkpoint_sha256,
+        cohort_manifest_sha256=DEVELOPMENT_GROUND_TRUTH_SHA256,
     )
     base_artifact = FoldBaseArtifact(
         fold=fold,
@@ -349,8 +417,22 @@ def _locked_selection_artifacts(
     for index, condition in enumerate(confirmations):
         bank = materialize_support_bank(
             {
-                1: (SupportCandidate(1, "novel", "novel_camera1-top.jpg", "a" * 64, 1, parse_train_capture_stratum("novel_camera1-top.jpg", 1), (1.0, 0.0)),),
-                2: (SupportCandidate(2, "base", "base_camera1-top.jpg", "b" * 64, 1, parse_train_capture_stratum("base_camera1-top.jpg", 2), (1.0, 0.0)),),
+                category_id: tuple(
+                    SupportCandidate(
+                        category_id,
+                        f"{prefix}-{number}",
+                        f"{prefix}-{number}_camera{(number % 4) + 1}-top.jpg",
+                        hashlib.sha256(f"{prefix}-{number}".encode()).hexdigest(),
+                        1,
+                        parse_train_capture_stratum(
+                            f"{prefix}-{number}_camera{(number % 4) + 1}-top.jpg",
+                            category_id,
+                        ),
+                        (float(number + 1), float((number % 7) + 1)),
+                    )
+                    for number in range(150)
+                )
+                for category_id, prefix in ((1, "novel"), (2, "base"))
             }, method="div", seeds=(seed,)
         )
         bank_path = _STAGE_FOUR_ARTIFACT_ROOT / f"bank-{fold}-{seed}-{index}.json"
@@ -384,6 +466,8 @@ def _locked_selection_artifacts(
                 base_checkpoint_evidence_path=base_evidence_path,
                 support_bank_path=bank_path,
                 support_bank_sha256=bank.sha256,
+                cohort_manifest_sha256=DEVELOPMENT_GROUND_TRUTH_SHA256,
+                ground_truth_summary=_development_ground_truth_summary(),
             ),
         )
         path = _STAGE_FOUR_ARTIFACT_ROOT / f"confirmation-{fold}-{seed}-{index}.json"
@@ -536,6 +620,27 @@ def _write_ground_truth(path: Path) -> None:
     path.write_bytes(LOCKED_GROUND_TRUTH_BYTES)
 
 
+def _write_development_ground_truth(path: Path) -> None:
+    (path.parent / "development-source.json").write_bytes(
+        DEVELOPMENT_SOURCE_MANIFEST_BYTES
+    )
+    (path.parent / "development-scene-roles.json").write_bytes(
+        DEVELOPMENT_SCENE_ROLE_MANIFEST_BYTES
+    )
+    path.write_bytes(DEVELOPMENT_GROUND_TRUTH_BYTES)
+
+
+def _development_ground_truth_summary() -> dict[str, object]:
+    return {
+        "burst_count": 1,
+        "manifest_sha256": DEVELOPMENT_GROUND_TRUTH_SHA256,
+        "object_count": 2,
+        "sample_count": 2,
+        "source_manifest_sha256": DEVELOPMENT_SOURCE_MANIFEST_SHA256,
+        "scene_role_manifest_sha256": DEVELOPMENT_SCENE_ROLE_MANIFEST_SHA256,
+    }
+
+
 def test_locked_ground_truth_rejects_an_internally_valid_easy_only_subset(
     tmp_path: Path,
 ):
@@ -548,6 +653,8 @@ def test_locked_ground_truth_rejects_an_internally_valid_easy_only_subset(
         "categories": [],
         "images": _full_source_images(),
         "objects": [
+            {"split": "val2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
+            {"split": "val2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
             {"split": "test2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
             {"split": "test2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
         ],
@@ -808,14 +915,15 @@ def test_locked_ground_truth_rejects_foreign_validation_scene_role(
 
 
 def _write_fold_base_evidence(
-    path: Path, *, fold: int, checkpoint_sha256: str
+    path: Path, *, fold: int, checkpoint_sha256: str,
+    cohort_manifest_sha256: str = LOCKED_GROUND_TRUTH_SHA256,
 ) -> str:
     value = {
         "schema_version": 1,
         "kind": "rpc-fewshot-fold-base-checkpoint-evidence",
         "fold": fold,
         "checkpoint_sha256": checkpoint_sha256,
-        "cohort_manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
+        "cohort_manifest_sha256": cohort_manifest_sha256,
         "base_category_ids": [2],
         "sample_count": 1,
         "base_macro_final_correct_recall": 1.0,
@@ -836,6 +944,8 @@ def _non_final_score(
     base_checkpoint_evidence_path: Path | None = None,
     support_bank_path: Path | None = None,
     support_bank_sha256: str | None = None,
+    cohort_manifest_sha256: str = LOCKED_GROUND_TRUTH_SHA256,
+    ground_truth_summary: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if support_bank_path is None:
         support_bank_path, support_bank_sha256 = _fixture_bank()
@@ -863,7 +973,7 @@ def _non_final_score(
         "candidate_provenance": {
             "condition_id": candidate.condition_id,
             "evidence_sha256": candidate_evidence_sha256,
-            "cohort_manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
+            "cohort_manifest_sha256": cohort_manifest_sha256,
             "base_checkpoint_sha256": candidate_base.checkpoint_sha256,
             "base_checkpoint_evidence_sha256": candidate_base.evidence_sha256,
             "scoring_plan_sha256": candidate_plan.sha256,
@@ -872,7 +982,7 @@ def _non_final_score(
         "reference_provenance": {
             "condition_id": reference.condition_id,
             "evidence_sha256": reference_evidence_sha256,
-            "cohort_manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
+            "cohort_manifest_sha256": cohort_manifest_sha256,
             "base_checkpoint_sha256": reference_base.checkpoint_sha256,
             "base_checkpoint_evidence_sha256": reference_base.evidence_sha256,
             "scoring_plan_sha256": reference_plan.sha256,
@@ -890,9 +1000,9 @@ def _non_final_score(
                 else {}
             ),
         },
-        "locked_ground_truth": {
+        "locked_ground_truth": ground_truth_summary or {
             "burst_count": 1,
-            "manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
+            "manifest_sha256": cohort_manifest_sha256,
             "object_count": 2,
             "sample_count": 2,
             "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
@@ -1469,13 +1579,15 @@ def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
                 reference_evidence_sha256=_write_evidence(
                     reference_evidence_path, reference
                 ),
+                cohort_manifest_sha256=DEVELOPMENT_GROUND_TRUTH_SHA256,
+                ground_truth_summary=_development_ground_truth_summary(),
             ),
         )
         paths.append(path)
         evidence_paths.append(evidence_path)
         reference_evidence_paths.append(reference_evidence_path)
-    ground_truth_path = tmp_path / "locked-ground-truth.json"
-    _write_ground_truth(ground_truth_path)
+    ground_truth_path = tmp_path / "development-ground-truth.json"
+    _write_development_ground_truth(ground_truth_path)
     output = tmp_path / "confirmation-aggregate.json"
 
     module.aggregate_score_receipts(
@@ -1494,6 +1606,45 @@ def test_confirmation_aggregate_is_provisional_and_never_final(tmp_path: Path):
     assert aggregate["decision_status"] == "provisional"
     assert aggregate["provisional_pass"] is True
     assert "final_pass" not in aggregate
+    assert (
+        aggregate["locked_ground_truth"]["manifest_sha256"]
+        == DEVELOPMENT_GROUND_TRUTH_SHA256
+    )
+
+
+def test_confirmation_aggregate_rejects_locked_only_ground_truth(tmp_path: Path):
+    """Stage 4 must never silently substitute test2019 truth for development."""
+    module = _score_module()
+    candidate = _confirmation_cells(("m0", "div"), 5)[0]
+    reference = _confirmation_cells(("m0", "div"), 150)[0]
+    candidate_plan = _plan((candidate.condition_id,))
+    reference_plan = _plan((reference.condition_id,))
+    score_path = tmp_path / "confirmation-score.json"
+    candidate_path = tmp_path / "candidate.jsonl"
+    reference_path = tmp_path / "reference.jsonl"
+    _write_canonical(
+        score_path,
+        _non_final_score(
+            candidate,
+            reference,
+            candidate_plan,
+            reference_plan,
+            candidate_evidence_sha256=_write_evidence(candidate_path, candidate),
+            reference_evidence_sha256=_write_evidence(reference_path, reference),
+        ),
+    )
+    locked_truth = tmp_path / "locked-ground-truth.json"
+    _write_ground_truth(locked_truth)
+
+    with pytest.raises(ValueError, match="invalid role ground-truth manifest"):
+        module.aggregate_score_receipts(
+            (score_path,),
+            tmp_path / "aggregate.json",
+            evidence_paths=(candidate_path,),
+            reference_evidence_paths=(reference_path,),
+            ground_truth_manifest_path=locked_truth,
+            trusted_index=_trusted_index(),
+        )
 
 
 def test_single_confirmation_aggregate_is_a_genuine_stage_four_artifact(
@@ -1646,7 +1797,7 @@ def test_aggregate_rejects_a_non_150_shot_locked_reference(tmp_path: Path):
     assert not output.exists()
 
 
-def test_aggregate_rejects_a_receipt_without_locked_ground_truth_provenance(
+def test_aggregate_rejects_a_receipt_without_authenticated_ground_truth_provenance(
     tmp_path: Path,
 ):
     module = _score_module()
@@ -1686,7 +1837,7 @@ def test_aggregate_rejects_a_receipt_without_locked_ground_truth_provenance(
     ground_truth_path = tmp_path / "locked-ground-truth.json"
     _write_ground_truth(ground_truth_path)
 
-    with pytest.raises(ValueError, match="locked ground-truth provenance"):
+    with pytest.raises(ValueError, match="ground-truth provenance"):
         module.aggregate_score_receipts(
             tuple(score_paths),
             tmp_path / "aggregate.json",

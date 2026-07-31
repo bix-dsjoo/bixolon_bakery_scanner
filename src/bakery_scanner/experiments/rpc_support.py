@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from numbers import Real
-from typing import Iterable, Mapping
+from typing import Iterable, Literal, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
 
@@ -91,6 +91,8 @@ class SupportBank:
         if not self.orders or any(not isinstance(order, SupportOrder) for order in self.orders):
             raise ValueError("support bank requires materialized orders")
         coordinates = {(order.category_id, order.seed) for order in self.orders}
+        if len(coordinates) != len(self.orders):
+            raise ValueError("support bank contains duplicate category/seed orders")
         categories = {order.category_id for order in self.orders}
         expected = {(category, seed) for category in categories for seed in self.seeds}
         if coordinates != expected:
@@ -197,15 +199,26 @@ def load_support_bank(path: Path) -> SupportBank:
 
 def validate_support_bank_for_condition(
     bank: SupportBank, *, support_sha256: str, selector: str, support_seed: int,
-    category_ids: Iterable[int],
+    category_ids: Iterable[int], shot_count: int,
+    support_scope: Literal["fixed_k", "all_available"],
 ) -> SupportBank:
     """Bind an immutable condition to the exact pre-materialized support bank."""
     if not isinstance(bank, SupportBank) or bank.sha256 != support_sha256:
         raise ValueError("condition support_sha256 does not resolve to support bank")
     if bank.method != selector or support_seed not in bank.seeds:
         raise ValueError("condition selector/seed does not match support bank")
+    if support_scope == "fixed_k":
+        if type(shot_count) is not int or shot_count <= 0:
+            raise ValueError("fixed-k support validation requires a positive shot count")
+    elif support_scope == "all_available":
+        if shot_count != 0:
+            raise ValueError("all_available support validation requires zero shot count")
+    else:
+        raise ValueError("unsupported condition support scope")
     for category_id in category_ids:
-        bank.order_for(category_id, support_seed)
+        order = bank.order_for(category_id, support_seed)
+        if support_scope == "fixed_k" and len(order.candidates) < shot_count:
+            raise ValueError("insufficient support candidates for declared shot count")
     return bank
 
 
