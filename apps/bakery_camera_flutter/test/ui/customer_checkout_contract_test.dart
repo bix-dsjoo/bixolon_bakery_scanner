@@ -7,6 +7,7 @@ import 'package:bakery_camera_prototype/src/ui/customer/catalog_picker.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_review_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/order_review_view.dart';
+import 'package:bakery_camera_prototype/src/ui/components/price_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -189,6 +190,21 @@ void main() {
       ),
     );
 
+    expect(
+      tester.getTopLeft(find.text('Top 1')).dx,
+      lessThan(tester.getTopLeft(find.text('Top 2')).dx),
+    );
+    expect(
+      tester.getTopLeft(find.text('Top 2')).dx,
+      lessThan(tester.getTopLeft(find.text('Top 3')).dx),
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('customer-review-candidate-panel-object-2')),
+        matching: find.byType(PriceText),
+      ),
+      findsNWidgets(3),
+    );
     await tester.tap(find.text('Top 2'));
     await tester.tap(
       find.text('\uC804\uCCB4 \uC0C1\uD488\uC5D0\uC11C \uCC3E\uAE30'),
@@ -196,6 +212,54 @@ void main() {
     await tester.tap(find.text('\uB2E4\uC2DC \uCD2C\uC601'));
 
     expect(calls, ['candidate:11', 'catalog:object-2', 'retake']);
+  });
+
+  testWidgets('shows capture overlay only with valid retained dimensions', (
+    tester,
+  ) async {
+    final unresolved = ObjectDraft.unresolved(
+      buildUiInferenceResult().objects.last,
+    );
+
+    await _pump(
+      tester,
+      CustomerReviewView(
+        state: CheckoutState(
+          phase: CheckoutPhase.customerReview,
+          objectDrafts: [unresolved],
+          lines: const [],
+          capturedEvidenceDisplayPath: 'test/fixtures/missing-capture.jpg',
+        ),
+        productForCandidate: (_, _) => null,
+        onChooseTop3: (_, _) {},
+        onOpenCatalog: (_) {},
+        onContinue: () {},
+      ),
+    );
+    expect(find.byKey(const Key('captured-review-full-scene')), findsNothing);
+    expect(
+      find.byKey(const Key('customer-review-row-object-2')),
+      findsOneWidget,
+    );
+
+    await _pump(
+      tester,
+      CustomerReviewView(
+        state: CheckoutState(
+          phase: CheckoutPhase.customerReview,
+          objectDrafts: [unresolved],
+          lines: const [],
+          capturedEvidenceDisplayPath: 'test/fixtures/missing-capture.jpg',
+          capturedImageWidth: 1920,
+          capturedImageHeight: 1080,
+        ),
+        productForCandidate: (_, _) => null,
+        onChooseTop3: (_, _) {},
+        onOpenCatalog: (_) {},
+        onContinue: () {},
+      ),
+    );
+    expect(find.byKey(const Key('captured-review-full-scene')), findsOneWidget);
   });
 
   testWidgets(

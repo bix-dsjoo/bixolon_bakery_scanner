@@ -88,6 +88,15 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
         .where((draft) => !draft.isResolved)
         .length;
     final allResolved = unresolvedCount == 0;
+    final imagePath = widget.state.capturedEvidenceDisplayPath;
+    final imageWidth = widget.state.capturedImageWidth;
+    final imageHeight = widget.state.capturedImageHeight;
+    final hasCaptureOverlay =
+        imagePath != null &&
+        imageWidth != null &&
+        imageWidth > 0 &&
+        imageHeight != null &&
+        imageHeight > 0;
 
     return CheckoutScaffold(
       title: '\uC0C1\uD488 \uD655\uC778',
@@ -112,12 +121,11 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
                   : '\uC9C4\uD589\uD558\uAE30 \uC804 \uBAA8\uB4E0 \uC0C1\uD488\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.',
             ),
             const SizedBox(height: 16),
-            if (widget.state.capturedEvidenceDisplayPath
-                case final imagePath?) ...[
+            if (hasCaptureOverlay) ...[
               CapturedReviewOverlay(
                 imagePath: imagePath,
-                imageWidth: widget.state.capturedImageWidth ?? 1,
-                imageHeight: widget.state.capturedImageHeight ?? 1,
+                imageWidth: imageWidth,
+                imageHeight: imageHeight,
                 objects: presentation.objects,
                 selectedObjectId: selectedObjectId,
                 onSelectObject: _selectObject,
@@ -219,7 +227,13 @@ class _SelectedObjectActions extends StatelessWidget {
                       case final product?)
                     OutlinedButton(
                       onPressed: () => onChooseTop3(objectId, candidate.skuId),
-                      child: Text(product.displayName),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(product.displayName),
+                          PriceText(amount: product.unitPrice),
+                        ],
+                      ),
                     ),
               ],
             ),
