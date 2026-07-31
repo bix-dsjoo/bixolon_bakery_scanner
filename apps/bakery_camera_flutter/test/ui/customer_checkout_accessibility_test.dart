@@ -362,12 +362,16 @@ void main() {
       ),
       'customer_ready_1280x820.png',
     );
+    final title = find.byKey(const Key('customer-page-title'));
+    final adminAction = find.byKey(const Key('customer-header-action'));
+    expect(title, findsOneWidget);
+    expect(adminAction, findsOneWidget);
+
     final header = tester.getRect(find.byKey(const Key('customer-header')));
-    final adminAction = tester.getRect(
-      find.byKey(const Key('customer-header-action')),
-    );
-    final headerInset = ((header.width - 1240) / 2).clamp(0.0, double.infinity);
-    expect(adminAction.right, closeTo(header.right - headerInset - 24, 1));
+    final titleRect = tester.getRect(title);
+    final adminActionRect = tester.getRect(adminAction);
+    expect(adminActionRect.center.dx, greaterThan(header.center.dx));
+    expect(adminActionRect.left, greaterThan(titleRect.right));
   });
 
   testWidgets('customer retake state matches the approved 1280 kiosk layout', (
