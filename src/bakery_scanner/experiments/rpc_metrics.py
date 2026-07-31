@@ -12,7 +12,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from numbers import Real
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 
 _HASH_NAMES = (
@@ -27,7 +27,78 @@ _HASH_NAMES = (
 _BOUND_HASH_NAMES = _HASH_NAMES[:-1]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DIFFICULTIES = ("E", "M", "H")
-PairIdentity = tuple[str, int, str, int]
+GroundTruthIdentity = tuple[str, int, str, str, int]
+PairIdentity = tuple[str, int, int, str, int]
+BranchName = Literal["repvit_global", "dinov3_global", "dinov3_local"]
+_BRANCH_SCORE_FIELDS: Mapping[BranchName, str] = {
+    "repvit_global": "repvit_global_scores",
+    "dinov3_global": "dinov3_global_scores",
+    "dinov3_local": "dinov3_local_scores",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LockedGroundTruthRow:
+    """One immutable prediction opportunity in the locked RPC cohort."""
+
+    sample_id: str
+    object_id: int
+    burst_id: str
+    difficulty: str
+    truth_category_id: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sample_id, str) or not self.sample_id:
+            raise ValueError("ground-truth sample_id must be nonempty")
+        if type(self.object_id) is not int or self.object_id <= 0:
+            raise ValueError("ground-truth object_id must be a positive integer")
+        if not isinstance(self.burst_id, str) or not self.burst_id:
+            raise ValueError("ground-truth burst_id must be nonempty")
+        if self.difficulty not in _DIFFICULTIES:
+            raise ValueError("ground-truth difficulty must be E, M, or H")
+        if type(self.truth_category_id) is not int or self.truth_category_id <= 0:
+            raise ValueError("ground-truth category ID must be a positive integer")
+
+    @property
+    def identity(self) -> GroundTruthIdentity:
+        return (
+            self.sample_id,
+            self.object_id,
+            self.burst_id,
+            self.difficulty,
+            self.truth_category_id,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "burst_id": self.burst_id,
+            "difficulty": self.difficulty,
+            "object_id": self.object_id,
+            "sample_id": self.sample_id,
+            "truth_category_id": self.truth_category_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "LockedGroundTruthRow":
+        expected = {
+            "burst_id",
+            "difficulty",
+            "object_id",
+            "sample_id",
+            "truth_category_id",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("invalid locked ground-truth object")
+        try:
+            return cls(
+                sample_id=value["sample_id"],  # type: ignore[arg-type]
+                object_id=value["object_id"],  # type: ignore[arg-type]
+                burst_id=value["burst_id"],  # type: ignore[arg-type]
+                difficulty=value["difficulty"],  # type: ignore[arg-type]
+                truth_category_id=value["truth_category_id"],  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid locked ground-truth object") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +106,7 @@ class ResearchEvidenceRow:
     """One score-bearing, reproducible research evaluation observation."""
 
     sample_id: str
+    object_id: int
     condition_id: str
     fold: int
     difficulty: str
@@ -42,7 +114,9 @@ class ResearchEvidenceRow:
     truth_category_id: int
     predicted_category_id: int | None
     score_category_ids: tuple[int, ...]
-    scores: tuple[float, ...]
+    repvit_global_scores: tuple[float, ...]
+    dinov3_global_scores: tuple[float, ...]
+    dinov3_local_scores: tuple[float, ...]
     condition_manifest_sha256: str
     model_sha256: str
     support_sha256: str
@@ -55,6 +129,8 @@ class ResearchEvidenceRow:
         for name in ("sample_id", "condition_id", "burst_id"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must be nonempty")
+        if type(self.object_id) is not int or self.object_id <= 0:
+            raise ValueError("object_id must be a positive integer")
         if type(self.fold) is not int or self.fold < 0:
             raise ValueError("fold must be a non-negative integer")
         if self.difficulty not in _DIFFICULTIES:
@@ -68,30 +144,55 @@ class ResearchEvidenceRow:
         category_ids = _integer_tuple(self.score_category_ids, "score category IDs")
         if not category_ids or len(set(category_ids)) != len(category_ids):
             raise ValueError("score category IDs must be a nonempty ordered unique sequence")
-        scores = _finite_tuple(self.scores, "scores")
-        if len(scores) != len(category_ids):
-            raise ValueError("score category IDs and scores must have equal length")
+        for branch, field_name in _BRANCH_SCORE_FIELDS.items():
+            scores = _finite_tuple(getattr(self, field_name), f"{branch} scores")
+            if len(scores) != len(category_ids):
+                raise ValueError(
+                    f"score category IDs and {branch} scores must have equal length"
+                )
+            object.__setattr__(self, field_name, scores)
         if self.truth_category_id not in category_ids:
             raise ValueError("truth category ID is missing from scores")
         if self.predicted_category_id is not None and self.predicted_category_id not in category_ids:
             raise ValueError("predicted category ID is missing from scores")
         object.__setattr__(self, "score_category_ids", category_ids)
-        object.__setattr__(self, "scores", scores)
         for name in _HASH_NAMES:
             _validate_hash(name, getattr(self, name))
 
     @property
     def pair_identity(self) -> PairIdentity:
-        return (self.sample_id, self.fold, self.burst_id, self.truth_category_id)
+        return (
+            self.sample_id,
+            self.object_id,
+            self.fold,
+            self.burst_id,
+            self.truth_category_id,
+        )
 
     @property
-    def forced_top1_category_id(self) -> int:
-        """Use the first maximum, preserving the producer's declared score order."""
-        return self.score_category_ids[max(range(len(self.scores)), key=self.scores.__getitem__)]
+    def ground_truth_identity(self) -> GroundTruthIdentity:
+        return (
+            self.sample_id,
+            self.object_id,
+            self.burst_id,
+            self.difficulty,
+            self.truth_category_id,
+        )
+
+    def branch_top1_category_id(self, branch: BranchName) -> int:
+        """Return a branch Top-1 using the producer's ordered first maximum."""
+        try:
+            scores = getattr(self, _BRANCH_SCORE_FIELDS[branch])
+        except (KeyError, TypeError) as exc:
+            raise ValueError("unsupported score branch") from exc
+        return self.score_category_ids[
+            max(range(len(scores)), key=scores.__getitem__)
+        ]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "sample_id": self.sample_id,
+            "object_id": self.object_id,
             "condition_id": self.condition_id,
             "fold": self.fold,
             "difficulty": self.difficulty,
@@ -99,7 +200,9 @@ class ResearchEvidenceRow:
             "truth_category_id": self.truth_category_id,
             "predicted_category_id": self.predicted_category_id,
             "score_category_ids": list(self.score_category_ids),
-            "scores": list(self.scores),
+            "repvit_global_scores": list(self.repvit_global_scores),
+            "dinov3_global_scores": list(self.dinov3_global_scores),
+            "dinov3_local_scores": list(self.dinov3_local_scores),
             **{name: getattr(self, name) for name in _HASH_NAMES},
         }
 
@@ -108,8 +211,9 @@ class ResearchEvidenceRow:
         if not isinstance(value, Mapping):
             raise ValueError("evidence row must be an object")
         required = {
-            "sample_id", "condition_id", "fold", "difficulty", "burst_id", "truth_category_id",
-            "predicted_category_id", "score_category_ids", "scores", *_HASH_NAMES,
+            "sample_id", "object_id", "condition_id", "fold", "difficulty", "burst_id", "truth_category_id",
+            "predicted_category_id", "score_category_ids", "repvit_global_scores",
+            "dinov3_global_scores", "dinov3_local_scores", *_HASH_NAMES,
         }
         missing = required - set(value)
         extra = set(value) - required
@@ -118,6 +222,7 @@ class ResearchEvidenceRow:
         try:
             return cls(
                 sample_id=value["sample_id"],  # type: ignore[arg-type]
+                object_id=value["object_id"],  # type: ignore[arg-type]
                 condition_id=value["condition_id"],  # type: ignore[arg-type]
                 fold=value["fold"],  # type: ignore[arg-type]
                 difficulty=value["difficulty"],  # type: ignore[arg-type]
@@ -125,7 +230,9 @@ class ResearchEvidenceRow:
                 truth_category_id=value["truth_category_id"],  # type: ignore[arg-type]
                 predicted_category_id=value["predicted_category_id"],  # type: ignore[arg-type]
                 score_category_ids=tuple(value["score_category_ids"]),  # type: ignore[arg-type]
-                scores=tuple(value["scores"]),  # type: ignore[arg-type]
+                repvit_global_scores=tuple(value["repvit_global_scores"]),  # type: ignore[arg-type]
+                dinov3_global_scores=tuple(value["dinov3_global_scores"]),  # type: ignore[arg-type]
+                dinov3_local_scores=tuple(value["dinov3_local_scores"]),  # type: ignore[arg-type]
                 **{name: value[name] for name in _HASH_NAMES},  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -133,12 +240,11 @@ class ResearchEvidenceRow:
 
 
 @dataclass(frozen=True, slots=True)
-class ForcedTop1Summary:
+class BranchTop1Summary:
     sample_count: int
     novel_macro_recall: float
     base_macro_recall: float
     per_category_recall: Mapping[int, float]
-    top1_agreement: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,13 +302,36 @@ def validate_evidence_rows(rows: Iterable[ResearchEvidenceRow]) -> tuple[Researc
         raise ValueError("evidence must not be empty")
     if not all(isinstance(row, ResearchEvidenceRow) for row in frozen):
         raise ValueError("evidence rows must be ResearchEvidenceRow instances")
-    sample_ids = [row.sample_id for row in frozen]
-    if len(sample_ids) != len(set(sample_ids)):
-        raise ValueError("duplicate sample_id")
+    object_ids = [row.object_id for row in frozen]
+    if len(object_ids) != len(set(object_ids)):
+        raise ValueError("duplicate object_id")
     first = frozen[0]
     provenance = _provenance_key(first)
     if any(row.condition_id != first.condition_id or _provenance_key(row) != provenance for row in frozen[1:]):
         raise ValueError("provenance mismatch within evidence")
+    return frozen
+
+
+def validate_evidence_completeness(
+    rows: Iterable[ResearchEvidenceRow],
+    expected: Iterable[LockedGroundTruthRow],
+) -> tuple[ResearchEvidenceRow, ...]:
+    """Require exact locked-object coverage with no omissions or additions."""
+    frozen = validate_evidence_rows(rows)
+    ground_truth = tuple(expected)
+    if not ground_truth or not all(
+        isinstance(row, LockedGroundTruthRow) for row in ground_truth
+    ):
+        raise ValueError("locked ground-truth rows must be nonempty")
+    identities = [row.identity for row in ground_truth]
+    object_ids = [row.object_id for row in ground_truth]
+    if (
+        len(identities) != len(set(identities))
+        or len(object_ids) != len(set(object_ids))
+        or {row.ground_truth_identity for row in frozen} != set(identities)
+        or len(frozen) != len(ground_truth)
+    ):
+        raise ValueError("evidence does not exactly match locked ground-truth identity")
     return frozen
 
 
@@ -303,19 +432,36 @@ def validate_paired_evidence(
     return candidate_rows, reference_rows
 
 
-def forced_top1_summary(
-    rows: Iterable[ResearchEvidenceRow], *, novel_category_ids: set[int] | frozenset[int]
-) -> ForcedTop1Summary:
+def branch_top1_summary(
+    rows: Iterable[ResearchEvidenceRow],
+    *,
+    branch: BranchName,
+    novel_category_ids: set[int] | frozenset[int],
+) -> BranchTop1Summary:
     frozen = validate_evidence_rows(rows)
     _validate_observed_cohorts(frozen, frozenset(novel_category_ids))
-    recalls = _category_recalls(frozen, lambda row: row.forced_top1_category_id == row.truth_category_id)
-    agreement = _mean(row.predicted_category_id == row.forced_top1_category_id for row in frozen)
-    return ForcedTop1Summary(
+    recalls = _category_recalls(
+        frozen,
+        lambda row: row.branch_top1_category_id(branch) == row.truth_category_id,
+    )
+    return BranchTop1Summary(
         sample_count=len(frozen),
         novel_macro_recall=_macro(recalls, novel_category_ids),
         base_macro_recall=_macro(recalls, _base_categories(frozen, novel_category_ids)),
         per_category_recall=recalls,
-        top1_agreement=agreement,
+    )
+
+
+def branch_top1_agreement(
+    rows: Iterable[ResearchEvidenceRow],
+    *,
+    first: BranchName,
+    second: BranchName,
+) -> float:
+    frozen = validate_evidence_rows(rows)
+    return _mean(
+        row.branch_top1_category_id(first) == row.branch_top1_category_id(second)
+        for row in frozen
     )
 
 

@@ -12,19 +12,30 @@ from typing import Any, Iterable, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
 from bakery_scanner.experiments.rpc_metrics import (
+    BranchName,
     FullSystemSummary,
+    LockedGroundTruthRow,
     PairedConditionEvidence,
     ResearchEvidenceRow,
+    branch_top1_agreement,
+    branch_top1_summary,
     bootstrap_paired_condition_deltas,
     bootstrap_paired_deltas,
     condition_cohort,
     condition_provenance,
-    forced_top1_summary,
     full_system_summary,
     validate_evidence_against_condition,
+    validate_evidence_completeness,
     validate_paired_evidence,
 )
 from bakery_scanner.experiments.rpc_protocol import ScoringPlan
+
+
+_SCORE_BRANCHES: tuple[BranchName, ...] = (
+    "repvit_global",
+    "dinov3_global",
+    "dinov3_local",
+)
 
 
 def load_canonical_json(path: Path) -> Mapping[str, object]:
@@ -48,6 +59,14 @@ class LoadedEvidence:
     """Rows and digest derived from one immutable read of canonical JSONL bytes."""
 
     rows: tuple[ResearchEvidenceRow, ...]
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedGroundTruth:
+    """Validated locked object identities and the canonical file digest."""
+
+    rows: tuple[LockedGroundTruthRow, ...]
     sha256: str
 
 
@@ -76,11 +95,39 @@ def load_canonical_jsonl(path: Path) -> LoadedEvidence:
     return LoadedEvidence(tuple(rows), hashlib.sha256(content).hexdigest())
 
 
+def load_locked_ground_truth(path: Path) -> LoadedGroundTruth:
+    value, digest = _load_canonical_json_with_digest(path)
+    if (
+        set(value) != {"schema_version", "kind", "objects"}
+        or value.get("schema_version") != 1
+        or value.get("kind") != "rpc-fewshot-locked-ground-truth"
+        or not isinstance(value.get("objects"), list)
+        or not value["objects"]
+    ):
+        raise ValueError("invalid locked ground-truth manifest")
+    try:
+        rows = tuple(
+            LockedGroundTruthRow.from_dict(item)
+            for item in value["objects"]  # type: ignore[union-attr]
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid locked ground-truth manifest") from exc
+    identities = [row.identity for row in rows]
+    object_ids = [row.object_id for row in rows]
+    if (
+        len(identities) != len(set(identities))
+        or len(object_ids) != len(set(object_ids))
+    ):
+        raise ValueError("locked ground-truth manifest contains duplicate objects")
+    return LoadedGroundTruth(rows, digest)
+
+
 def score(
     evidence_path: Path,
     reference_path: Path,
     condition_path: Path,
     reference_condition_path: Path,
+    ground_truth_manifest_path: Path,
     base_checkpoint_evidence_path: Path,
     output: Path,
 ) -> None:
@@ -104,6 +151,9 @@ def score(
         raise ValueError("candidate/reference condition cohort mismatch")
     if _cohort_manifest_sha256(condition) != _cohort_manifest_sha256(reference_condition):
         raise ValueError("candidate/reference cohort manifest mismatch")
+    ground_truth = load_locked_ground_truth(ground_truth_manifest_path)
+    if ground_truth.sha256 != _cohort_manifest_sha256(condition):
+        raise ValueError("locked ground-truth manifest SHA-256 mismatch")
     statuses = (condition.get("status"), reference_condition.get("status"))
     if statuses != ("completed", "completed"):
         write_new_json(output, {
@@ -133,14 +183,22 @@ def score(
         raise ValueError("candidate/reference fold base checkpoint evidence mismatch")
     candidate_evidence = load_canonical_jsonl(evidence_path)
     reference_evidence = load_canonical_jsonl(reference_path)
-    candidate_rows = validate_evidence_against_condition(candidate_evidence.rows, condition)
-    reference_rows = validate_evidence_against_condition(reference_evidence.rows, reference_condition)
+    candidate_rows = validate_evidence_completeness(
+        candidate_evidence.rows, ground_truth.rows
+    )
+    reference_rows = validate_evidence_completeness(
+        reference_evidence.rows, ground_truth.rows
+    )
+    candidate_rows = validate_evidence_against_condition(candidate_rows, condition)
+    reference_rows = validate_evidence_against_condition(
+        reference_rows, reference_condition
+    )
     candidate_rows, reference_rows = validate_paired_evidence(candidate_rows, reference_rows)
     novel = candidate_novel
     candidate_summary = full_system_summary(candidate_rows, novel_category_ids=novel, reference_rows=reference_rows)
     reference_summary = full_system_summary(reference_rows, novel_category_ids=novel)
-    candidate_forced = forced_top1_summary(candidate_rows, novel_category_ids=novel)
-    reference_forced = forced_top1_summary(reference_rows, novel_category_ids=novel)
+    candidate_branches = _branch_top1_summaries(candidate_rows, novel)
+    reference_branches = _branch_top1_summaries(reference_rows, novel)
     interval = bootstrap_paired_deltas(
         candidate_rows,
         reference_rows,
@@ -148,7 +206,7 @@ def score(
         seed=candidate_plan.bootstrap_seed,
         replicates=candidate_plan.bootstrap_replicates,
     )
-    write_new_json(output, {
+    score_receipt: dict[str, object] = {
         "schema_version": 2,
         "kind": "rpc-fewshot-score-receipt",
         "status": "completed",
@@ -165,8 +223,8 @@ def score(
         },
         "candidate_provenance": _provenance(condition, candidate_evidence.sha256),
         "reference_provenance": _provenance(reference_condition, reference_evidence.sha256),
-        "candidate_forced_top1": asdict(candidate_forced),
-        "reference_forced_top1": asdict(reference_forced),
+        "candidate_branch_top1": candidate_branches,
+        "reference_branch_top1": reference_branches,
         "candidate_full_system": asdict(candidate_summary),
         "reference_full_system": asdict(reference_summary),
         "paired_bootstrap_95": asdict(interval),
@@ -176,6 +234,7 @@ def score(
             "checkpoint_sha256": base_checkpoint_evidence["checkpoint_sha256"],
             "fold": base_checkpoint_evidence["fold"],
         },
+        "locked_ground_truth": _locked_ground_truth_summary(ground_truth),
         "minimum_rule_inputs": {
             "registered_coverage": candidate_summary.registered_coverage,
             "novel_macro_recall_lower_delta": interval.novel_macro_recall_lower_delta,
@@ -188,7 +247,82 @@ def score(
             ),
             "fold_base_checkpoint_macro_final_correct_recall": base_checkpoint_recall,
         },
-    })
+    }
+    stage = _paired_condition_stage(condition, reference_condition)
+    if stage == "stage1":
+        score_receipt["stage1_global_top1_agreement"] = {
+            "candidate": branch_top1_agreement(
+                candidate_rows,
+                first="repvit_global",
+                second="dinov3_global",
+            ),
+            "reference": branch_top1_agreement(
+                reference_rows,
+                first="repvit_global",
+                second="dinov3_global",
+            ),
+        }
+    write_new_json(output, score_receipt)
+
+
+def _branch_top1_summaries(
+    rows: tuple[ResearchEvidenceRow, ...],
+    novel_category_ids: set[int],
+) -> dict[str, object]:
+    return {
+        branch: asdict(
+            branch_top1_summary(
+                rows,
+                branch=branch,
+                novel_category_ids=novel_category_ids,
+            )
+        )
+        for branch in _SCORE_BRANCHES
+    }
+
+
+def _locked_ground_truth_summary(
+    ground_truth: LoadedGroundTruth,
+) -> dict[str, object]:
+    return {
+        "burst_count": len({row.burst_id for row in ground_truth.rows}),
+        "manifest_sha256": ground_truth.sha256,
+        "object_count": len(ground_truth.rows),
+        "sample_count": len({row.sample_id for row in ground_truth.rows}),
+    }
+
+
+def _paired_condition_stage(
+    candidate: Mapping[str, object],
+    reference: Mapping[str, object],
+) -> str:
+    candidate_condition = candidate.get("condition")
+    reference_condition = reference.get("condition")
+    candidate_stage = (
+        candidate_condition.get("stage")
+        if isinstance(candidate_condition, Mapping)
+        else None
+    )
+    reference_stage = (
+        reference_condition.get("stage")
+        if isinstance(reference_condition, Mapping)
+        else None
+    )
+    return _paired_nested_condition_stage(
+        candidate_stage,
+        reference_stage,
+    )
+
+
+def _paired_nested_condition_stage(
+    candidate_stage: object,
+    reference_stage: object,
+) -> str:
+    if candidate_stage not in {"stage1", "ascending"} or (
+        reference_stage != candidate_stage
+    ):
+        raise ValueError("candidate/reference condition stage mismatch")
+    return candidate_stage
 
 
 def validate_fold_base_checkpoint_evidence(
@@ -253,6 +387,7 @@ def aggregate_score_receipts(
     *,
     evidence_paths: Iterable[Path],
     reference_evidence_paths: Iterable[Path],
+    ground_truth_manifest_path: Path,
 ) -> None:
     """Recompute one final decision from every declared raw evidence pair."""
     if output.exists():
@@ -272,6 +407,7 @@ def aggregate_score_receipts(
         raise ValueError(
             "aggregate requires one candidate/reference evidence file per score receipt"
         )
+    ground_truth = load_locked_ground_truth(ground_truth_manifest_path)
     candidate_plan = _score_receipt_plan(receipts[0], "candidate_scoring_plan")
     reference_plan = _score_receipt_plan(receipts[0], "reference_scoring_plan")
     _validate_comparable_scoring_plans(candidate_plan, reference_plan)
@@ -303,6 +439,7 @@ def aggregate_score_receipts(
     reference_summaries = []
     base_checkpoints: dict[int, tuple[str, str, float]] = {}
     evidence_receipts: list[dict[str, object]] = []
+    branch_reports: list[dict[str, object]] = []
     for receipt, candidate_evidence_path, reference_evidence_path in zip(
         receipts,
         candidate_evidence_paths,
@@ -315,12 +452,14 @@ def aggregate_score_receipts(
             reference_summary,
             base_checkpoint,
             evidence_record,
+            branch_report,
         ) = _load_aggregate_evidence(
             receipt,
             candidate_plan,
             reference_plan,
             candidate_evidence_path,
             reference_evidence_path,
+            ground_truth,
         )
         existing_base = base_checkpoints.setdefault(paired.fold, base_checkpoint)
         if existing_base != base_checkpoint:
@@ -331,6 +470,7 @@ def aggregate_score_receipts(
         candidate_summaries.append(candidate_summary)
         reference_summaries.append(reference_summary)
         evidence_receipts.append(evidence_record)
+        branch_reports.append(branch_report)
     if set(base_checkpoints) != set(candidate_plan.folds):
         raise ValueError("aggregate lacks fold base checkpoint evidence")
     interval = bootstrap_paired_condition_deltas(
@@ -389,6 +529,11 @@ def aggregate_score_receipts(
                 evidence_receipts,
                 key=lambda item: item["candidate_condition_id"],
             ),
+            "condition_branch_top1": sorted(
+                branch_reports,
+                key=lambda item: item["candidate_condition_id"],
+            ),
+            "locked_ground_truth": _locked_ground_truth_summary(ground_truth),
             "paired_bootstrap_95": asdict(interval),
             "minimum_rule_inputs": minimum_rule_inputs,
             "final_pass": final_pass,
@@ -402,11 +547,13 @@ def _load_aggregate_evidence(
     reference_plan: ScoringPlan,
     candidate_path: Path,
     reference_path: Path,
+    ground_truth: LoadedGroundTruth,
 ) -> tuple[
     PairedConditionEvidence,
     FullSystemSummary,
     FullSystemSummary,
     tuple[str, str, float],
+    dict[str, object],
     dict[str, object],
 ]:
     candidate_condition = _score_receipt_condition(receipt, "candidate_condition")
@@ -421,6 +568,7 @@ def _load_aggregate_evidence(
         != reference_condition.get("condition_id")
     ):
         raise ValueError("score receipt top-level condition ID mismatch")
+    _validate_score_receipt_locked_ground_truth(receipt, ground_truth)
     novel, base = _score_receipt_cohort(receipt, candidate_plan)
     candidate_provenance = _score_receipt_provenance(
         receipt,
@@ -439,6 +587,8 @@ def _load_aggregate_evidence(
         != reference_provenance["cohort_manifest_sha256"]
     ):
         raise ValueError("candidate/reference cohort manifest mismatch")
+    if candidate_provenance["cohort_manifest_sha256"] != ground_truth.sha256:
+        raise ValueError("locked ground-truth manifest SHA-256 mismatch")
     base_checkpoint = _score_receipt_base_checkpoint(
         receipt,
         fold,
@@ -467,11 +617,17 @@ def _load_aggregate_evidence(
         novel,
         base,
     )
+    candidate_rows = validate_evidence_completeness(
+        loaded_candidate.rows, ground_truth.rows
+    )
+    reference_rows = validate_evidence_completeness(
+        loaded_reference.rows, ground_truth.rows
+    )
     candidate_rows = validate_evidence_against_condition(
-        loaded_candidate.rows, candidate_receipt
+        candidate_rows, candidate_receipt
     )
     reference_rows = validate_evidence_against_condition(
-        loaded_reference.rows, reference_receipt
+        reference_rows, reference_receipt
     )
     candidate_rows, reference_rows = validate_paired_evidence(
         candidate_rows, reference_rows
@@ -485,6 +641,29 @@ def _load_aggregate_evidence(
         reference_rows,
         novel_category_ids=novel,
     )
+    branch_report: dict[str, object] = {
+        "candidate_condition_id": candidate_condition["condition_id"],
+        "reference_condition_id": reference_condition["condition_id"],
+        "candidate": _branch_top1_summaries(candidate_rows, novel),
+        "reference": _branch_top1_summaries(reference_rows, novel),
+    }
+    stage = _paired_nested_condition_stage(
+        candidate_condition.get("stage"),
+        reference_condition.get("stage"),
+    )
+    if stage == "stage1":
+        branch_report["stage1_global_top1_agreement"] = {
+            "candidate": branch_top1_agreement(
+                candidate_rows,
+                first="repvit_global",
+                second="dinov3_global",
+            ),
+            "reference": branch_top1_agreement(
+                reference_rows,
+                first="repvit_global",
+                second="dinov3_global",
+            ),
+        }
     return (
         PairedConditionEvidence(
             fold=fold,
@@ -502,7 +681,28 @@ def _load_aggregate_evidence(
             "reference_condition_id": reference_condition["condition_id"],
             "reference_evidence_sha256": loaded_reference.sha256,
         },
+        branch_report,
     )
+
+
+def _validate_score_receipt_locked_ground_truth(
+    receipt: Mapping[str, object],
+    ground_truth: LoadedGroundTruth,
+) -> None:
+    value = receipt.get("locked_ground_truth")
+    expected = _locked_ground_truth_summary(ground_truth)
+    count_names = ("burst_count", "object_count", "sample_count")
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != set(expected)
+        or value.get("manifest_sha256") != expected["manifest_sha256"]
+        or any(
+            type(value.get(name)) is not int
+            or value.get(name) != expected[name]
+            for name in count_names
+        )
+    ):
+        raise ValueError("score receipt lacks valid locked ground-truth provenance")
 
 
 def _score_receipt_cohort(
@@ -895,6 +1095,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reference-evidence", type=Path)
     parser.add_argument("--condition", type=Path)
     parser.add_argument("--reference-condition", type=Path)
+    parser.add_argument("--ground-truth-manifest", type=Path)
     parser.add_argument("--base-checkpoint-evidence", type=Path)
     parser.add_argument("--aggregate-score-receipt", action="append", type=Path)
     parser.add_argument("--aggregate-evidence", action="append", type=Path)
@@ -918,11 +1119,14 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "aggregate mode requires candidate and reference raw evidence"
                 )
+            if args.ground_truth_manifest is None:
+                raise ValueError("aggregate mode requires locked ground truth")
             aggregate_score_receipts(
                 tuple(args.aggregate_score_receipt),
                 args.output,
                 evidence_paths=tuple(args.aggregate_evidence),
                 reference_evidence_paths=tuple(args.aggregate_reference_evidence),
+                ground_truth_manifest_path=args.ground_truth_manifest,
             )
         else:
             if args.aggregate_evidence or args.aggregate_reference_evidence:
@@ -934,12 +1138,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.reference_evidence,
                 args.condition,
                 args.reference_condition,
+                args.ground_truth_manifest,
                 args.base_checkpoint_evidence,
             )
             if any(value is None for value in single):
                 raise ValueError(
                     "single-condition scoring requires evidence, reference evidence, "
-                    "condition, reference condition, and fold base checkpoint evidence"
+                    "condition, reference condition, locked ground truth, and fold "
+                    "base checkpoint evidence"
                 )
             score(*single, args.output)  # type: ignore[arg-type]
     except (OSError, ValueError) as exc:

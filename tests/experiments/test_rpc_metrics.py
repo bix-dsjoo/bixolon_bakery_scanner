@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import random
 
 import pytest
 
+from bakery_scanner.experiments import rpc_metrics
 from bakery_scanner.experiments.rpc_metrics import (
     ResearchEvidenceRow,
     bootstrap_paired_deltas,
-    forced_top1_summary,
+    branch_top1_summary,
     full_system_summary,
     passes_minimum_rule,
     validate_evidence_against_condition,
@@ -33,17 +35,27 @@ _HASHES = {
 def _row(
     sample_id: str,
     *,
+    object_id: int | None = None,
     truth: int = 1,
     predicted: int | None = 1,
-    scores: tuple[float, ...] = (0.9, 0.1),
+    repvit_global_scores: tuple[float, ...] = (0.9, 0.1),
+    dinov3_global_scores: tuple[float, ...] | None = None,
+    dinov3_local_scores: tuple[float, ...] | None = None,
     category_ids: tuple[int, ...] = (1, 2),
     fold: int = 0,
     difficulty: str = "E",
     burst_id: str = "burst-a",
     condition_id: str = "candidate",
 ) -> ResearchEvidenceRow:
+    resolved_object_id = object_id
+    if resolved_object_id is None:
+        resolved_object_id = (
+            int.from_bytes(hashlib.sha256(sample_id.encode("utf-8")).digest()[:8], "big")
+            + 1
+        )
     return ResearchEvidenceRow(
         sample_id=sample_id,
+        object_id=resolved_object_id,
         condition_id=condition_id,
         fold=fold,
         difficulty=difficulty,
@@ -51,7 +63,15 @@ def _row(
         truth_category_id=truth,
         predicted_category_id=predicted,
         score_category_ids=category_ids,
-        scores=scores,
+        repvit_global_scores=repvit_global_scores,
+        dinov3_global_scores=(
+            repvit_global_scores
+            if dinov3_global_scores is None
+            else dinov3_global_scores
+        ),
+        dinov3_local_scores=(
+            repvit_global_scores if dinov3_local_scores is None else dinov3_local_scores
+        ),
         **_HASHES,
     )
 
@@ -130,11 +150,158 @@ def test_paired_validation_rejects_identity_and_provenance_mismatches():
         validate_paired_evidence(candidate, (_row("other", condition_id="reference"),))
     with pytest.raises(ValueError, match="provenance"):
         validate_paired_evidence(
-            candidate + (replace(candidate[0], sample_id="same-2", policy_sha256="1" * 64),),
-            reference + (replace(reference[0], sample_id="same-2"),),
+            candidate
+            + (replace(_row("same-2"), policy_sha256="1" * 64),),
+            reference + (_row("same-2", condition_id="reference"),),
         )
-    with pytest.raises(ValueError, match="duplicate sample_id"):
+    with pytest.raises(ValueError, match="duplicate object_id"):
         validate_paired_evidence(candidate + candidate, reference + reference)
+
+
+def test_evidence_schema_binds_each_prediction_to_a_ground_truth_object():
+    payload = _row("scene").to_dict()
+    payload["object_id"] = 17
+
+    row = ResearchEvidenceRow.from_dict(payload)
+
+    assert row.object_id == 17
+    assert row.to_dict()["object_id"] == 17
+
+
+def _three_branch_payload(
+    sample_id: str,
+    *,
+    object_id: int,
+    truth_category_id: int,
+    repvit_global_scores: list[float],
+    dinov3_global_scores: list[float],
+    dinov3_local_scores: list[float],
+) -> dict[str, object]:
+    payload = _row(
+        sample_id,
+        object_id=object_id,
+        truth=truth_category_id,
+        predicted=truth_category_id,
+        category_ids=(1, 2, 3),
+        repvit_global_scores=tuple(repvit_global_scores),
+        dinov3_global_scores=tuple(dinov3_global_scores),
+        dinov3_local_scores=tuple(dinov3_local_scores),
+    ).to_dict()
+    return payload
+
+
+def test_evidence_requires_three_branch_vectors_and_has_no_generic_fallback():
+    complete = _three_branch_payload(
+        "novel",
+        object_id=1,
+        truth_category_id=1,
+        repvit_global_scores=[0.9, 0.05, 0.05],
+        dinov3_global_scores=[0.1, 0.8, 0.1],
+        dinov3_local_scores=[0.1, 0.2, 0.7],
+    )
+
+    parsed = ResearchEvidenceRow.from_dict(complete)
+
+    assert parsed.to_dict()["repvit_global_scores"] == [0.9, 0.05, 0.05]
+    generic = dict(complete)
+    generic["scores"] = generic.pop("repvit_global_scores")
+    with pytest.raises(ValueError, match="missing or unrecognized"):
+        ResearchEvidenceRow.from_dict(generic)
+    missing = dict(complete)
+    del missing["dinov3_local_scores"]
+    with pytest.raises(ValueError, match="missing or unrecognized"):
+        ResearchEvidenceRow.from_dict(missing)
+    wrong_length = dict(complete)
+    wrong_length["dinov3_global_scores"] = [1.0]
+    with pytest.raises(ValueError):
+        ResearchEvidenceRow.from_dict(wrong_length)
+
+
+def test_branch_top1_summaries_are_independent_and_report_global_agreement():
+    rows = tuple(
+        ResearchEvidenceRow.from_dict(payload)
+        for payload in (
+            _three_branch_payload(
+                "novel",
+                object_id=1,
+                truth_category_id=1,
+                repvit_global_scores=[0.9, 0.05, 0.05],
+                dinov3_global_scores=[0.1, 0.8, 0.1],
+                dinov3_local_scores=[0.1, 0.2, 0.7],
+            ),
+            _three_branch_payload(
+                "base",
+                object_id=2,
+                truth_category_id=2,
+                repvit_global_scores=[0.1, 0.8, 0.1],
+                dinov3_global_scores=[0.1, 0.8, 0.1],
+                dinov3_local_scores=[0.8, 0.1, 0.1],
+            ),
+        )
+    )
+
+    repvit = rpc_metrics.branch_top1_summary(
+        rows, branch="repvit_global", novel_category_ids={1}
+    )
+    dino_global = rpc_metrics.branch_top1_summary(
+        rows, branch="dinov3_global", novel_category_ids={1}
+    )
+    dino_local = rpc_metrics.branch_top1_summary(
+        rows, branch="dinov3_local", novel_category_ids={1}
+    )
+
+    assert (repvit.novel_macro_recall, repvit.base_macro_recall) == (1.0, 1.0)
+    assert (dino_global.novel_macro_recall, dino_global.base_macro_recall) == (
+        0.0,
+        1.0,
+    )
+    assert (dino_local.novel_macro_recall, dino_local.base_macro_recall) == (
+        0.0,
+        0.0,
+    )
+    assert (
+        rpc_metrics.branch_top1_agreement(
+            rows, first="repvit_global", second="dinov3_global"
+        )
+        == 0.5
+    )
+
+
+def test_locked_ground_truth_allows_multiple_objects_per_sample_and_exact_coverage():
+    expected = (
+        rpc_metrics.LockedGroundTruthRow("scene", 11, "burst-a", "E", 1),
+        rpc_metrics.LockedGroundTruthRow("scene", 12, "burst-a", "E", 2),
+    )
+    rows = (
+        _row("scene", object_id=11, truth=1),
+        _row("scene", object_id=12, truth=2, predicted=2),
+    )
+
+    assert rpc_metrics.validate_evidence_completeness(rows, expected) == rows
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda rows: rows[:1],
+        lambda rows: rows + (_row("scene", object_id=13, truth=1),),
+        lambda rows: (rows[0], replace(rows[1], burst_id="burst-b")),
+        lambda rows: (rows[0], replace(rows[1], difficulty="H")),
+        lambda rows: (rows[0], replace(rows[1], truth_category_id=1)),
+    ],
+)
+def test_locked_ground_truth_rejects_omitted_extra_or_changed_object_identity(mutate):
+    expected = (
+        rpc_metrics.LockedGroundTruthRow("scene", 11, "burst-a", "E", 1),
+        rpc_metrics.LockedGroundTruthRow("scene", 12, "burst-a", "E", 2),
+    )
+    complete = (
+        _row("scene", object_id=11, truth=1),
+        _row("scene", object_id=12, truth=2, predicted=2),
+    )
+
+    with pytest.raises(ValueError, match="locked ground-truth identity"):
+        rpc_metrics.validate_evidence_completeness(mutate(complete), expected)
 
 
 def test_paired_validation_rejects_difficulty_mismatch_for_same_identity():
@@ -256,7 +423,7 @@ def test_hierarchical_sampler_keeps_bursts_intact_without_resampling_base_catego
             truth=category,
             predicted=category,
             category_ids=(1, 2, 3),
-            scores=(0.9, 0.05, 0.05),
+            repvit_global_scores=(0.9, 0.05, 0.05),
             burst_id=burst,
         )
         for burst in ("burst-a", "burst-b")
@@ -286,7 +453,7 @@ def test_bootstrap_preserves_novel_category_draw_multiplicity_in_macro_delta():
             truth=category,
             predicted=category,
             category_ids=(1, 2, 3, 4),
-            scores=(0.7, 0.1, 0.1, 0.1),
+            repvit_global_scores=(0.7, 0.1, 0.1, 0.1),
         )
         for category in (1, 2, 3, 4)
     )
@@ -309,17 +476,24 @@ def test_bootstrap_preserves_novel_category_draw_multiplicity_in_macro_delta():
     assert interval.novel_macro_recall_upper_delta == pytest.approx(-1 / 3)
 
 
-def test_summaries_account_for_forced_top1_full_system_and_each_difficulty():
+def test_summaries_account_for_branch_top1_full_system_and_each_difficulty():
     rows = (
         _row("e", truth=1, predicted=1, difficulty="E"),
         _row("m", truth=1, predicted=None, difficulty="M"),
-        _row("h", truth=2, predicted=1, difficulty="H", scores=(0.8, 0.2)),
+        _row(
+            "h",
+            truth=2,
+            predicted=1,
+            difficulty="H",
+            repvit_global_scores=(0.8, 0.2),
+        ),
     )
-    forced = forced_top1_summary(rows, novel_category_ids={1})
+    repvit = branch_top1_summary(
+        rows, branch="repvit_global", novel_category_ids={1}
+    )
     final = full_system_summary(rows, novel_category_ids={1})
 
-    assert forced.novel_macro_recall == 1.0
-    assert forced.top1_agreement == pytest.approx(2 / 3)
+    assert repvit.novel_macro_recall == 1.0
     assert final.unknown_rate == pytest.approx(1 / 3)
     assert final.wrong_registered_sku_rate == pytest.approx(1 / 3)
     assert final.by_difficulty["E"].sample_count == 1
@@ -330,4 +504,4 @@ def test_summaries_account_for_forced_top1_full_system_and_each_difficulty():
 @pytest.mark.parametrize("bad", [(float("nan"), 0.0), (float("inf"), 0.0)])
 def test_row_rejects_non_finite_scores(bad: tuple[float, float]):
     with pytest.raises(ValueError, match="finite"):
-        _row("bad", scores=bad)
+        _row("bad", repvit_global_scores=bad)
