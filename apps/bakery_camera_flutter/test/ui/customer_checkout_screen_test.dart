@@ -45,6 +45,22 @@ void main() {
     },
   );
 
+  test('customer review defaults production display paths to FileImage', () {
+    const displayPath = r'C:\retained\session\attempt-1.jpg';
+    final image = CapturedReviewOverlay(
+      imagePath: displayPath,
+      imageWidth: 1920,
+      imageHeight: 1080,
+      objects: const [],
+      selectedObjectId: null,
+      onSelectObject: (_) {},
+    );
+
+    final provider = image.imageProviderForDisplayPath();
+    expect(provider, isA<FileImage>());
+    expect((provider as FileImage).file.path, displayPath);
+  });
+
   testWidgets('review uses the full-scene overlay instead of a selected crop', (
     tester,
   ) async {

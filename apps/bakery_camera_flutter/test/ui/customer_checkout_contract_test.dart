@@ -147,17 +147,19 @@ void main() {
     );
 
     await tester.tap(find.byKey(const Key('customer-review-overlay-object-1')));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    final firstRow = find.byKey(const Key('customer-review-row-object-1'));
+    _expectInsideReviewViewport(tester, firstRow);
+    expect(tester.widget<ListTile>(firstRow).selected, isTrue);
+
     final secondRow = find.byKey(const Key('customer-review-row-object-2'));
-    await tester.ensureVisible(secondRow);
     await tester.tap(secondRow);
-    await tester.pump();
-    expect(
-      find.bySemanticsLabel(
-        '\uc0ac\uc9c4\uc5d0\uc11c 02\ubc88, \uc0c1\ud488\uc744 \ud655\uc778\ud574 \uc8fc\uc138\uc694 \uc120\ud0dd\ub428',
-      ),
-      findsOneWidget,
+    await tester.pumpAndSettle();
+    _expectInsideReviewViewport(
+      tester,
+      find.byKey(const Key('customer-review-overlay-object-2')),
     );
+    expect(find.bySemanticsLabel('사진에서 02번, 확인이 필요해요 선택됨'), findsOneWidget);
     expect(
       find.byKey(const Key('customer-review-candidate-panel-object-2')),
       findsOneWidget,
@@ -165,6 +167,20 @@ void main() {
     expect(
       find.byKey(const Key('customer-review-candidate-panel-object-1')),
       findsNothing,
+    );
+    final candidatePanel = find.byKey(
+      const Key('customer-review-candidate-panel-object-2'),
+    );
+    expect(
+      find.descendant(
+        of: candidatePanel,
+        matching: find.text('사진에서 02번 빵을 확인해 주세요'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: secondRow, matching: find.text('수량 1개')),
+      findsOneWidget,
     );
   });
 
@@ -205,6 +221,7 @@ void main() {
       ),
       findsNWidgets(3),
     );
+    expect(find.text('다시 촬영하면 이번 계산의 현재 사진이 새 사진으로 바뀝니다.'), findsOneWidget);
     await tester.tap(find.text('Top 2'));
     await tester.tap(
       find.text('\uC804\uCCB4 \uC0C1\uD488\uC5D0\uC11C \uCC3E\uAE30'),
@@ -370,6 +387,13 @@ Future<void> _pump(WidgetTester tester, Widget child) => tester.pumpWidget(
     home: Scaffold(body: child),
   ),
 );
+
+void _expectInsideReviewViewport(WidgetTester tester, Finder finder) {
+  final viewport = tester.getRect(find.byType(SingleChildScrollView));
+  final target = tester.getRect(finder);
+  expect(target.top, greaterThanOrEqualTo(viewport.top));
+  expect(target.bottom, lessThanOrEqualTo(viewport.bottom));
+}
 
 CheckoutState _completeState() => CheckoutState(
   phase: CheckoutPhase.paymentComplete,

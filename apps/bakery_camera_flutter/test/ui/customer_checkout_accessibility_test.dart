@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:ui' show Tristate;
 
 import 'package:bakery_camera_prototype/src/catalog/product.dart';
@@ -85,10 +84,9 @@ void main() {
         );
         _expectMinimumTouchTarget(tester, overlayTwo);
 
-        await _ensureReachable(tester, overlayTwo, size);
         await tester.tap(overlayTwo);
-        await tester.pump();
-        await _ensureReachable(tester, rowTwo, size);
+        await tester.pumpAndSettle();
+        _expectInsideReviewViewport(tester, rowTwo);
         expect(tester.widget<ListTile>(rowTwo).selected, isTrue);
         final candidatePanelTwo = find.byKey(
           const Key('customer-review-candidate-panel-object-2'),
@@ -105,21 +103,19 @@ void main() {
           find.byKey(const Key('customer-review-candidate-panel-object-1')),
           findsNothing,
         );
-        await _ensureReachable(tester, candidatePanelTwo, size);
         expect(
           tester.getSemantics(overlayTwo).flagsCollection.isSelected,
           Tristate.isTrue,
         );
 
-        await _ensureReachable(tester, rowOne, size);
         await tester.tap(rowOne);
-        await tester.pump();
+        await tester.pumpAndSettle();
         expect(tester.widget<ListTile>(rowOne).selected, isTrue);
         expect(
           find.byKey(const Key('customer-review-candidate-panel-object-2')),
           findsNothing,
         );
-        await _ensureReachable(tester, overlayOne, size);
+        _expectInsideReviewViewport(tester, overlayOne);
         expect(
           tester.getSemantics(overlayOne).flagsCollection.isSelected,
           Tristate.isTrue,
@@ -142,7 +138,7 @@ void main() {
   });
 
   testWidgets(
-    'review renders the retained fixture through the default file image',
+    'review fixture uses the tracked square asset through the test seam',
     (tester) async {
       await tester.pumpWidget(
         _app(
@@ -152,9 +148,12 @@ void main() {
             onChooseTop3: (_, _) {},
             onOpenCatalog: (_) {},
             onContinue: _noop,
+            imageProviderFactory: (_) =>
+                const AssetImage(_reviewFixtureAssetPath),
           ),
         ),
       );
+      await _precacheReviewFixture(tester);
       await tester.pumpAndSettle();
       final image = tester.widget<Image>(
         find
@@ -164,9 +163,19 @@ void main() {
             )
             .first,
       );
-      expect(image.image, isA<FileImage>());
-      expect((image.image as FileImage).file.path, _reviewFixtureImagePath);
-      expect(File(_reviewFixtureImagePath).existsSync(), isTrue);
+      expect(image.image, isA<AssetImage>());
+      expect(
+        (image.image as AssetImage).assetName,
+        'assets/illustrations/manual_cart_entry.png',
+      );
+      expect(_reviewState.capturedEvidenceDisplayPath, 'fixture://review');
+      expect(_reviewState.capturedImageWidth, 1254);
+      expect(_reviewState.capturedImageHeight, 1254);
+      expect(find.byIcon(Icons.image_outlined), findsNothing);
+      final scene = tester.getRect(
+        find.byKey(const Key('captured-review-full-scene')),
+      );
+      expect(scene.width / scene.height, closeTo(1, 0.001));
     },
   );
 
@@ -310,7 +319,7 @@ void main() {
             alignment: Alignment.topCenter,
             child: SizedBox(
               width: 1280,
-              height: 1200,
+              height: 1600,
               child: CustomerReviewView(
                 state: _reviewState,
                 productForCandidate: (_, skuId) =>
@@ -318,15 +327,15 @@ void main() {
                 onChooseTop3: (_, _) {},
                 onOpenCatalog: (_) {},
                 onContinue: _noop,
-                imageProviderFactory: (_) => const AssetImage(
-                  'assets/illustrations/manual_cart_entry.png',
-                ),
+                imageProviderFactory: (_) =>
+                    const AssetImage(_reviewFixtureAssetPath),
               ),
             ),
           ),
         ),
       ),
       'customer_review_1280x820.png',
+      fixtureImage: const AssetImage(_reviewFixtureAssetPath),
     );
   });
 
@@ -402,8 +411,7 @@ Future<void> _pumpReview(
       onChooseTop3: (_, _) {},
       onOpenCatalog: (_) {},
       onContinue: _noop,
-      imageProviderFactory: (_) =>
-          const AssetImage('assets/illustrations/manual_cart_entry.png'),
+      imageProviderFactory: (_) => const AssetImage(_reviewFixtureAssetPath),
     ),
     scale: scale,
     highContrast: highContrast,
@@ -424,26 +432,40 @@ Future<void> _pumpReviewAt(
   await tester.pumpAndSettle();
 }
 
-Future<void> _ensureReachable(
-  WidgetTester tester,
-  Finder finder,
-  Size size,
-) async {
-  await tester.ensureVisible(finder);
-  await tester.pumpAndSettle();
+void _expectInsideReviewViewport(WidgetTester tester, Finder finder) {
+  final viewport = tester.getRect(find.byType(SingleChildScrollView));
   final rect = tester.getRect(finder);
-  expect(rect.top, greaterThanOrEqualTo(0));
-  expect(rect.bottom, lessThanOrEqualTo(size.height));
+  expect(rect.top, greaterThanOrEqualTo(viewport.top));
+  expect(rect.bottom, lessThanOrEqualTo(viewport.bottom));
 }
 
-Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
+Future<void> _golden(
+  WidgetTester tester,
+  Widget screen,
+  String name, {
+  ImageProvider<Object>? fixtureImage,
+}) async {
   tester.view.physicalSize = const Size(1280, 820);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(_app(screen));
+  if (fixtureImage != null) {
+    await tester.runAsync(
+      () => precacheImage(fixtureImage, tester.element(find.byType(Scaffold))),
+    );
+  }
   await tester.pumpAndSettle();
   await expectLater(find.byType(Scaffold), matchesGoldenFile('goldens/$name'));
+}
+
+Future<void> _precacheReviewFixture(WidgetTester tester) async {
+  await tester.runAsync(
+    () => precacheImage(
+      const AssetImage(_reviewFixtureAssetPath),
+      tester.element(find.byType(CustomerReviewView)),
+    ),
+  );
 }
 
 void _noop() {}
@@ -569,13 +591,13 @@ final _reviewState = CheckoutState(
     ObjectDraft.unresolved(buildUiInferenceResult().objects.last),
   ],
   lines: const [],
-  capturedEvidenceDisplayPath: _reviewFixtureImagePath,
-  capturedImageWidth: 1920,
-  capturedImageHeight: 1080,
+  capturedEvidenceDisplayPath: _reviewFixtureDisplayPath,
+  capturedImageWidth: 1254,
+  capturedImageHeight: 1254,
 );
 
-const _reviewFixtureImagePath =
-    r'C:/workspace/bixolon_bakery_scanner/apps/bakery_camera_flutter/assets/illustrations/manual_cart_entry.png';
+const _reviewFixtureDisplayPath = 'fixture://review';
+const _reviewFixtureAssetPath = 'assets/illustrations/manual_cart_entry.png';
 
 final _retakeState = CheckoutState(
   phase: CheckoutPhase.retakeRequired,
@@ -624,6 +646,7 @@ final _screens = <Widget>[
     onChooseTop3: (_, _) {},
     onOpenCatalog: (_) {},
     onContinue: _noop,
+    imageProviderFactory: (_) => const AssetImage(_reviewFixtureAssetPath),
   ),
   OrderReviewView(
     state: _orderState,

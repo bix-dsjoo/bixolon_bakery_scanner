@@ -44,6 +44,11 @@ CustomerReviewObject _item(ObjectDraft draft, int displayNumber) {
       : draft.requiresCatalogSelection
       ? CustomerReviewObjectState.needsCatalog
       : CustomerReviewObjectState.needsChoice;
+  final label = switch (state) {
+    CustomerReviewObjectState.confirmed => product!.displayName,
+    CustomerReviewObjectState.needsChoice => '확인이 필요해요',
+    CustomerReviewObjectState.needsCatalog => '상품을 확인해 주세요',
+  };
 
   return CustomerReviewObject(
     objectId: inferenceObject.objectId,
@@ -55,6 +60,6 @@ CustomerReviewObject _item(ObjectDraft draft, int displayNumber) {
       inferenceObject.bboxXyxy[3],
     ),
     state: state,
-    label: product?.displayName ?? '상품을 확인해 주세요',
+    label: label,
   );
 }

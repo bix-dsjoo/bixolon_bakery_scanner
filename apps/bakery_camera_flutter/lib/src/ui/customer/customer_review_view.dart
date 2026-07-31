@@ -37,6 +37,8 @@ class CustomerReviewView extends StatefulWidget {
 
 class _CustomerReviewViewState extends State<CustomerReviewView> {
   String? _selectedObjectId;
+  final _overlayVisibilityKeys = <String, GlobalKey>{};
+  final _rowVisibilityKeys = <String, GlobalKey>{};
 
   @override
   void initState() {
@@ -73,9 +75,34 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
           ? null
           : state.objectDrafts.first.inferenceObject.objectId);
 
-  void _selectObject(String objectId) => setState(() {
-    _selectedObjectId = objectId;
-  });
+  GlobalKey _visibilityKeyFor(Map<String, GlobalKey> keys, String objectId) =>
+      keys.putIfAbsent(objectId, GlobalKey.new);
+
+  void _selectFromOverlay(String objectId) {
+    _selectAndReveal(objectId, _visibilityKeyFor(_rowVisibilityKeys, objectId));
+  }
+
+  void _selectFromRow(String objectId) {
+    _selectAndReveal(
+      objectId,
+      _visibilityKeyFor(_overlayVisibilityKeys, objectId),
+    );
+  }
+
+  void _selectAndReveal(String objectId, GlobalKey destinationKey) {
+    setState(() => _selectedObjectId = objectId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final destinationContext = destinationKey.currentContext;
+      if (destinationContext == null) return;
+      Scrollable.ensureVisible(
+        destinationContext,
+        alignment: 0.5,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -130,8 +157,15 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
                 imageHeight: imageHeight,
                 objects: presentation.objects,
                 selectedObjectId: selectedObjectId,
-                onSelectObject: _selectObject,
+                onSelectObject: _selectFromOverlay,
                 imageProviderFactory: widget.imageProviderFactory,
+                objectVisibilityKeys: {
+                  for (final item in presentation.objects)
+                    item.objectId: _visibilityKeyFor(
+                      _overlayVisibilityKeys,
+                      item.objectId,
+                    ),
+                },
               ),
               const SizedBox(height: 20),
             ],
@@ -142,13 +176,18 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
             if (!allResolved) const SizedBox(height: 12),
             for (final item in presentation.objects) ...[
               _ReviewLedgerRow(
+                visibilityKey: _visibilityKeyFor(
+                  _rowVisibilityKeys,
+                  item.objectId,
+                ),
                 item: item,
                 draft: _draftFor(widget.state, item.objectId),
                 selected: item.objectId == selectedObjectId,
-                onTap: () => _selectObject(item.objectId),
+                onTap: () => _selectFromRow(item.objectId),
               ),
               if (item.objectId == selectedObjectId && selectedDraft != null)
                 _SelectedObjectActions(
+                  item: item,
                   draft: selectedDraft,
                   productForCandidate: widget.productForCandidate,
                   onChooseTop3: widget.onChooseTop3,
@@ -165,12 +204,14 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
 
 class _ReviewLedgerRow extends StatelessWidget {
   const _ReviewLedgerRow({
+    required this.visibilityKey,
     required this.item,
     required this.draft,
     required this.selected,
     required this.onTap,
   });
 
+  final GlobalKey visibilityKey;
   final CustomerReviewObject item;
   final ObjectDraft? draft;
   final bool selected;
@@ -179,20 +220,30 @@ class _ReviewLedgerRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final product = draft?.product;
-    return ListTile(
-      key: Key('customer-review-row-${item.objectId}'),
-      selected: selected,
-      leading: Text(item.numberLabel),
-      title: Text(item.label),
-      subtitle: Text('\uC0AC\uC9C4\uC5D0\uC11C ${item.numberLabel}\uBC88'),
-      trailing: product == null ? null : PriceText(amount: product.unitPrice),
-      onTap: onTap,
+    return KeyedSubtree(
+      key: visibilityKey,
+      child: ListTile(
+        key: Key('customer-review-row-${item.objectId}'),
+        selected: selected,
+        leading: Text(item.numberLabel),
+        title: Text(item.label),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('\uC0AC\uC9C4\uC5D0\uC11C ${item.numberLabel}\uBC88'),
+            const Text('\uC218\uB7C9 1\uAC1C'),
+          ],
+        ),
+        trailing: product == null ? null : PriceText(amount: product.unitPrice),
+        onTap: onTap,
+      ),
     );
   }
 }
 
 class _SelectedObjectActions extends StatelessWidget {
   const _SelectedObjectActions({
+    required this.item,
     required this.draft,
     required this.productForCandidate,
     required this.onChooseTop3,
@@ -200,6 +251,7 @@ class _SelectedObjectActions extends StatelessWidget {
     required this.onRetakeCapture,
   });
 
+  final CustomerReviewObject item;
   final ObjectDraft draft;
   final Product? Function(String objectId, int skuId) productForCandidate;
   final void Function(String objectId, int skuId) onChooseTop3;
@@ -216,6 +268,10 @@ class _SelectedObjectActions extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text(
+            '\uC0AC\uC9C4\uC5D0\uC11C ${item.numberLabel}\uBC88 \uBE75\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694',
+          ),
+          const SizedBox(height: 8),
           if (draft.requiresCatalogSelection)
             const Text(
               '\uBAA9\uB85D\uC5D0\uC11C \uC0C1\uD488\uC744 \uCC3E\uC544 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.',
@@ -241,6 +297,12 @@ class _SelectedObjectActions extends StatelessWidget {
               ],
             ),
           const SizedBox(height: 8),
+          if (onRetakeCapture != null) ...[
+            const Text(
+              '\uB2E4\uC2DC \uCD2C\uC601\uD558\uBA74 \uC774\uBC88 \uACC4\uC0B0\uC758 \uD604\uC7AC \uC0AC\uC9C4\uC774 \uC0C8 \uC0AC\uC9C4\uC73C\uB85C \uBC14\uB01D\uB2C8\uB2E4.',
+            ),
+            const SizedBox(height: 8),
+          ],
           Wrap(
             spacing: 8,
             children: [

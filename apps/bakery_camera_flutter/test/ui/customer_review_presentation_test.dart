@@ -37,7 +37,7 @@ void main() {
       presentation.objects[1].state,
       CustomerReviewObjectState.needsChoice,
     );
-    expect(presentation.objects[1].label, '상품을 확인해 주세요');
+    expect(presentation.objects[1].label, '확인이 필요해요');
   });
 
   test('does not leak scores, decision paths, or model identifiers', () {
@@ -49,7 +49,7 @@ void main() {
 
     expect(item.customerSemantics, isNot(contains('0.88')));
     expect(item.customerSemantics, isNot(contains('DINO')));
-    expect(item.customerSemantics, contains('사진에서 01번'));
+    expect(item.customerSemantics, contains('사진에서 01번, 확인이 필요해요'));
   });
 
   test('does not expose the inference-backed draft through its public API', () {
