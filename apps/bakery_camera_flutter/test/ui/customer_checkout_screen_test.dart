@@ -291,7 +291,14 @@ void main() {
   ) async {
     await _pump(tester, ReadyView(onScan: () {}));
 
-    expect(find.text('빵을 트레이에 올려주세요'), findsOneWidget);
+    expect(
+      find.byKey(const Key('ready-placement-instruction')),
+      findsOneWidget,
+    );
+    expect(find.text('트레이를 카메라 아래에 맞춰주세요.'), findsOneWidget);
+    expect(find.text('빵을 트레이에 올려주세요'), findsNothing);
+    expect(find.text('빵이 겹치지 않도록 펼쳐 놓으면 더 잘 확인할 수 있어요.'), findsNothing);
+    expect(find.byType(BakeryStatusBanner), findsNothing);
     expect(find.text('빵 확인하기'), findsOneWidget);
     expect(find.byType(FilledButton), findsOneWidget);
     expect(find.byKey(const Key('live-tray-placement-guide')), findsOneWidget);

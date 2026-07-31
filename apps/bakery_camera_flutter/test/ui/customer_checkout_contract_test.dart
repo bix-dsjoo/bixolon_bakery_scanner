@@ -487,9 +487,15 @@ void main() {
 
     await _pump(tester, const ReadyView(onScan: null));
 
-    final preview = tester.getRect(
-      find.byKey(const Key('live-tray-placement-guide')),
+    final camera = find.byKey(const Key('live-tray-placement-guide'));
+    expect(
+      find.descendant(
+        of: camera,
+        matching: find.byKey(const Key('ready-camera-focus-guide')),
+      ),
+      findsNothing,
     );
+    final preview = tester.getRect(camera);
     expect(preview.width / preview.height, closeTo(16 / 9, 0.02));
   });
 
