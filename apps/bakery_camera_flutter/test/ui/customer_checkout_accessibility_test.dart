@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:ui' show Tristate;
+
 import 'package:bakery_camera_prototype/src/catalog/product.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_models.dart';
 import 'package:bakery_camera_prototype/src/checkout/checkout_state.dart';
@@ -58,6 +61,88 @@ void main() {
           }
         }
       }
+    },
+  );
+
+  testWidgets(
+    'review overlay and ledger stay reachable at kiosk sizes and 200 percent text',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      await _pumpReviewAt(
+        tester,
+        const Size(1024, 720),
+        scale: 2,
+        highContrast: true,
+      );
+
+      final overlay = find.byKey(const Key('customer-review-overlay-object-2'));
+      expect(
+        find.byKey(const Key('captured-review-full-scene')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('customer-review-row-object-2')),
+        findsOneWidget,
+      );
+      _expectMinimumTouchTarget(tester, overlay);
+
+      await tester.tap(overlay);
+      await tester.pump();
+
+      expect(
+        tester
+            .widget<ListTile>(
+              find.byKey(const Key('customer-review-row-object-2')),
+            )
+            .selected,
+        isTrue,
+      );
+      expect(
+        find.byKey(const Key('customer-review-candidate-panel-object-2')),
+        findsOneWidget,
+      );
+      expect(
+        tester.getSemantics(overlay).flagsCollection.isSelected,
+        Tristate.isTrue,
+      );
+      expect(tester.takeException(), isNull);
+      semantics.dispose();
+    },
+  );
+
+  testWidgets('review exposes photo number and state to assistive technology', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await _pumpReview(tester);
+
+    expect(find.bySemanticsLabel(_photoNumberTwoSemantics), findsWidgets);
+    expect(find.textContaining('confidence'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets(
+    'review keeps the full scene and unresolved correction panel visible together',
+    (tester) async {
+      await _pumpReviewAt(
+        tester,
+        const Size(1280, 820),
+        scale: 1,
+        highContrast: false,
+      );
+
+      expect(
+        find.byKey(const Key('captured-review-full-scene')),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .getRect(
+              find.byKey(const Key('customer-review-candidate-panel-object-2')),
+            )
+            .bottom,
+        lessThanOrEqualTo(716),
+      );
     },
   );
 
@@ -196,6 +281,7 @@ void main() {
         onChooseTop3: (_, _) {},
         onOpenCatalog: (_) {},
         onContinue: _noop,
+        imageProviderFactory: _reviewImageProviderFactory,
       ),
       'customer_review_1280x820.png',
     );
@@ -261,6 +347,39 @@ Widget _app(Widget child, {double scale = 1, bool highContrast = false}) =>
       ),
     );
 
+Future<void> _pumpReview(
+  WidgetTester tester, {
+  double scale = 1,
+  bool highContrast = false,
+}) => tester.pumpWidget(
+  _app(
+    CustomerReviewView(
+      state: _reviewState,
+      productForCandidate: (_, skuId) => skuId == 10 ? _sugarDonut : null,
+      onChooseTop3: (_, _) {},
+      onOpenCatalog: (_) {},
+      onContinue: _noop,
+      imageProviderFactory: _reviewImageProviderFactory,
+    ),
+    scale: scale,
+    highContrast: highContrast,
+  ),
+);
+
+Future<void> _pumpReviewAt(
+  WidgetTester tester,
+  Size size, {
+  required double scale,
+  required bool highContrast,
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await _pumpReview(tester, scale: scale, highContrast: highContrast);
+  await tester.pumpAndSettle();
+}
+
 Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
   tester.view.physicalSize = const Size(1280, 820);
   tester.view.devicePixelRatio = 1;
@@ -272,6 +391,9 @@ Future<void> _golden(WidgetTester tester, Widget screen, String name) async {
 }
 
 void _noop() {}
+
+ImageProvider<Object> _reviewImageProviderFactory(File _) =>
+    const AssetImage('assets/illustrations/manual_cart_entry.png');
 
 void _expectMinimumTouchTarget(WidgetTester tester, Finder finder) {
   expect(finder, findsWidgets);
@@ -346,11 +468,38 @@ final _sugarDonut = Product(
   sortOrder: 1,
 );
 
+final _photoNumberTwoSemantics = RegExp(
+  RegExp.escape(
+    String.fromCharCodes(const [
+      0xC0AC,
+      0xC9C4,
+      0xC5D0,
+      0xC11C,
+      0x20,
+      0x30,
+      0x32,
+      0xBC88,
+    ]),
+  ),
+);
+
 final _reviewState = CheckoutState(
   phase: CheckoutPhase.customerReview,
-  objectDrafts: [ObjectDraft.unresolved(buildUiInferenceResult().objects.last)],
+  objectDrafts: [
+    ObjectDraft.accepted(
+      inferenceObject: buildUiInferenceResult().objects.first,
+      product: _sugarDonut,
+    ),
+    ObjectDraft.unresolved(buildUiInferenceResult().objects.last),
+  ],
   lines: const [],
+  capturedEvidenceDisplayPath: _reviewFixtureImagePath,
+  capturedImageWidth: 1254,
+  capturedImageHeight: 1254,
 );
+
+const _reviewFixtureImagePath =
+    r'C:\workspace\bixolon_bakery_scanner\apps\bakery_camera_flutter\assets\illustrations\manual_cart_entry.png';
 
 final _retakeState = CheckoutState(
   phase: CheckoutPhase.retakeRequired,

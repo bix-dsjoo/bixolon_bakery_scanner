@@ -19,6 +19,7 @@ class CustomerReviewView extends StatefulWidget {
     required this.onOpenCatalog,
     required this.onContinue,
     this.onRetakeCapture,
+    this.imageProviderFactory = customerReviewFileImageProvider,
     super.key,
   });
 
@@ -28,6 +29,7 @@ class CustomerReviewView extends StatefulWidget {
   final ValueChanged<String> onOpenCatalog;
   final VoidCallback onContinue;
   final VoidCallback? onRetakeCapture;
+  final CustomerReviewImageProviderFactory imageProviderFactory;
 
   @override
   State<CustomerReviewView> createState() => _CustomerReviewViewState();
@@ -122,13 +124,20 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
             ),
             const SizedBox(height: 16),
             if (hasCaptureOverlay) ...[
-              CapturedReviewOverlay(
-                imagePath: imagePath,
-                imageWidth: imageWidth,
-                imageHeight: imageHeight,
-                objects: presentation.objects,
-                selectedObjectId: selectedObjectId,
-                onSelectObject: _selectObject,
+              SizedBox(
+                height: 196,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: CapturedReviewOverlay(
+                    imagePath: imagePath,
+                    imageWidth: imageWidth,
+                    imageHeight: imageHeight,
+                    objects: presentation.objects,
+                    selectedObjectId: selectedObjectId,
+                    onSelectObject: _selectObject,
+                    imageProviderFactory: widget.imageProviderFactory,
+                  ),
+                ),
               ),
               const SizedBox(height: 20),
             ],
