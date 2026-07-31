@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
+from bakery_scanner.experiments.rpc_manifest import RpcDatasetContract, canonical_json_bytes
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
@@ -24,6 +24,10 @@ from bakery_scanner.experiments.rpc_protocol import (
     confirmation_conditions,
     locked_conditions,
     stage_one_conditions,
+)
+from bakery_scanner.experiments.rpc_scoring import (
+    load_locked_ground_truth,
+    materialize_locked_ground_truth,
 )
 
 
@@ -37,9 +41,64 @@ HASHES = {
     "preprocessing_sha256": "f" * 64,
     "code_sha256": "0" * 64,
 }
-LOCKED_GROUND_TRUTH = {
+def _full_source_images() -> list[dict[str, object]]:
+    counts = RpcDatasetContract.default().image_counts
+    images: list[dict[str, object]] = []
+    for split, count in counts.items():
+        for image_id in range(1, count + 1):
+            image: dict[str, object] = {"split": split, "image_id": image_id}
+            if split == "test2019":
+                image["source_identity"] = (
+                    "novel" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}"
+                )
+                image["level"] = "easy"
+            images.append(image)
+    return images
+
+
+def _full_test_assignments() -> list[dict[str, object]]:
+    return [
+        {
+            "split": "test2019",
+            "image_id": image_id,
+            "role": "locked_acceptance",
+            "burst_id": "burst" if image_id < 3 else f"burst-{image_id}",
+            "difficulty": "easy",
+        }
+        for image_id in range(1, RpcDatasetContract.default().image_counts["test2019"] + 1)
+    ]
+
+
+LOCKED_SOURCE_MANIFEST = {
     "schema_version": 1,
+    "kind": "rpc-fewshot-resolved-inputs",
+    "source": "RPC 2019",
+    "annotation_sha256": dict(RpcDatasetContract.default().annotation_sha256),
+    "image_counts": dict(RpcDatasetContract.default().image_counts),
+    "categories": [],
+    "images": _full_source_images(),
+    "objects": [
+        {"split": "test2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
+        {"split": "test2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
+    ],
+}
+LOCKED_SOURCE_MANIFEST_BYTES = canonical_json_bytes(LOCKED_SOURCE_MANIFEST)
+LOCKED_SOURCE_MANIFEST_SHA256 = hashlib.sha256(LOCKED_SOURCE_MANIFEST_BYTES).hexdigest()
+LOCKED_SCENE_ROLE_MANIFEST = {
+    "schema_version": 1,
+    "kind": "rpc-fewshot-scene-roles",
+    "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
+    "assignments": _full_test_assignments(),
+}
+LOCKED_SCENE_ROLE_MANIFEST_BYTES = canonical_json_bytes(LOCKED_SCENE_ROLE_MANIFEST)
+LOCKED_SCENE_ROLE_MANIFEST_SHA256 = hashlib.sha256(LOCKED_SCENE_ROLE_MANIFEST_BYTES).hexdigest()
+LOCKED_GROUND_TRUTH = {
+    "schema_version": 2,
     "kind": "rpc-fewshot-locked-ground-truth",
+    "source_manifest_path": "locked-source.json",
+    "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
+    "scene_role_manifest_path": "locked-scene-roles.json",
+    "scene_role_manifest_sha256": LOCKED_SCENE_ROLE_MANIFEST_SHA256,
     "objects": [
         {
             "burst_id": "burst",
@@ -318,7 +377,110 @@ def _write_evidence(
 
 
 def _write_ground_truth(path: Path) -> None:
+    (path.parent / "locked-source.json").write_bytes(LOCKED_SOURCE_MANIFEST_BYTES)
+    (path.parent / "locked-scene-roles.json").write_bytes(
+        LOCKED_SCENE_ROLE_MANIFEST_BYTES
+    )
     path.write_bytes(LOCKED_GROUND_TRUTH_BYTES)
+
+
+def test_locked_ground_truth_rejects_an_internally_valid_easy_only_subset(
+    tmp_path: Path,
+):
+    source = {
+        "schema_version": 1,
+        "kind": "rpc-fewshot-resolved-inputs",
+        "source": "RPC 2019",
+        "annotation_sha256": dict(RpcDatasetContract.default().annotation_sha256),
+        "image_counts": dict(RpcDatasetContract.default().image_counts),
+        "categories": [],
+        "images": _full_source_images(),
+        "objects": [
+            {"split": "test2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
+            {"split": "test2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
+        ],
+    }
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, source)
+    roles = {
+        "schema_version": 1,
+        "kind": "rpc-fewshot-scene-roles",
+        "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        "assignments": _full_test_assignments(),
+    }
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(roles_path, roles)
+    ground_truth = {
+        "schema_version": 2,
+        "kind": "rpc-fewshot-locked-ground-truth",
+        "source_manifest_path": source_path.name,
+        "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        "scene_role_manifest_path": roles_path.name,
+        "scene_role_manifest_sha256": hashlib.sha256(roles_path.read_bytes()).hexdigest(),
+        "objects": [
+            {"sample_id": "novel", "object_id": 1, "burst_id": "burst", "difficulty": "E", "truth_category_id": 1},
+        ],
+    }
+    path = tmp_path / "ground-truth.json"
+    _write_canonical(path, ground_truth)
+
+    with pytest.raises(ValueError, match="exactly match test2019 locked cohort"):
+        load_locked_ground_truth(path)
+
+
+def test_locked_ground_truth_materializer_derives_the_full_source_cohort(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "source.json"
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(source_path, LOCKED_SOURCE_MANIFEST)
+    _write_canonical(
+        roles_path,
+        {
+            **LOCKED_SCENE_ROLE_MANIFEST,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        },
+    )
+    output = tmp_path / "ground-truth.json"
+
+    materialize_locked_ground_truth(source_path, roles_path, output)
+
+    loaded = load_locked_ground_truth(output)
+    assert {row.identity for row in loaded.rows} == {
+        ("novel", 1, "burst", "E", 1),
+        ("base", 2, "burst", "E", 2),
+    }
+
+
+def test_locked_ground_truth_rejects_default_contract_claims_without_full_images(
+    tmp_path: Path,
+):
+    source = {**LOCKED_SOURCE_MANIFEST, "images": LOCKED_SOURCE_MANIFEST["images"][:2]}
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, source)
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(
+        roles_path,
+        {
+            **LOCKED_SCENE_ROLE_MANIFEST,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "assignments": LOCKED_SCENE_ROLE_MANIFEST["assignments"][:2],
+        },
+    )
+    ground_truth_path = tmp_path / "ground-truth.json"
+    _write_canonical(
+        ground_truth_path,
+        {
+            **LOCKED_GROUND_TRUTH,
+            "source_manifest_path": source_path.name,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "scene_role_manifest_path": roles_path.name,
+            "scene_role_manifest_sha256": hashlib.sha256(roles_path.read_bytes()).hexdigest(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="source image coverage"):
+        load_locked_ground_truth(ground_truth_path)
 
 
 def _write_fold_base_evidence(
@@ -404,6 +566,8 @@ def _non_final_score(
             "manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
             "object_count": 2,
             "sample_count": 2,
+            "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
+            "scene_role_manifest_sha256": LOCKED_SCENE_ROLE_MANIFEST_SHA256,
         },
         # Deliberately contradictory cached inputs prove the final decision is
         # recomputed from the bound raw evidence rather than receipt booleans.

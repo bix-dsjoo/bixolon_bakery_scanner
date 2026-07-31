@@ -6,13 +6,21 @@ import hashlib
 import re
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable
 
-from bakery_scanner.experiments.rpc_manifest import RpcImage, RpcIndex, RpcObject, canonical_json_bytes
+from bakery_scanner.experiments.rpc_manifest import (
+    RpcImage,
+    RpcIndex,
+    RpcObject,
+    canonical_json_bytes,
+    write_new_json,
+)
 
 
 _CHECKOUT_NAME = re.compile(r"^(?P<date>\d{8})-(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})-(?P<suffix>.+)\.jpg$")
 _ROLE_NAMES = ("calibration", "development_selection")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,8 +142,66 @@ def build_scene_roles(index: RpcIndex, *, split_version: str) -> tuple[SceneRole
         for burst in bursts
         for image, name, category_ids in burst.images
     )
+    validate_val_difficulty_balance(provisional)
     digest = _manifest_digest(provisional)
     return tuple(replace(item, manifest_sha256=digest) for item in provisional)
+
+
+def validate_val_difficulty_balance(
+    rows: Iterable[SceneRoleAssignment],
+) -> None:
+    """Require each validation difficulty to be balanced within one burst."""
+    validation = tuple(row for row in rows if row.split == "val2019")
+    for difficulty in ("easy", "medium", "hard"):
+        subset = tuple(row for row in validation if row.difficulty == difficulty)
+        if not subset:
+            continue
+        counts = {
+            role: sum(row.role == role for row in subset)
+            for role in _ROLE_NAMES
+        }
+        burst_sizes: dict[str, int] = {}
+        for row in subset:
+            burst_sizes[row.burst_id] = burst_sizes.get(row.burst_id, 0) + 1
+        if abs(counts[_ROLE_NAMES[0]] - counts[_ROLE_NAMES[1]]) > max(
+            burst_sizes.values()
+        ):
+            raise ValueError("validation role difficulty balance exceeds largest burst")
+
+
+def write_scene_role_manifest(
+    output: Path,
+    roles: Iterable[SceneRoleAssignment],
+    *,
+    source_manifest_sha256: str,
+) -> None:
+    """Materialize one canonical scene-role artifact bound to resolved RPC input."""
+    if _SHA256.fullmatch(source_manifest_sha256) is None:
+        raise ValueError("source manifest SHA-256 must be lowercase")
+    frozen = tuple(roles)
+    if not frozen or not all(isinstance(row, SceneRoleAssignment) for row in frozen):
+        raise ValueError("scene roles must be nonempty assignments")
+    identities = [(row.split, row.image_id) for row in frozen]
+    if len(identities) != len(set(identities)):
+        raise ValueError("scene roles contain duplicate source images")
+    write_new_json(
+        output,
+        {
+            "schema_version": 1,
+            "kind": "rpc-fewshot-scene-roles",
+            "source_manifest_sha256": source_manifest_sha256,
+            "assignments": [
+                {
+                    "split": row.split,
+                    "image_id": row.image_id,
+                    "role": row.role,
+                    "burst_id": row.burst_id,
+                    "difficulty": row.difficulty,
+                }
+                for row in sorted(frozen, key=lambda item: (item.split, item.image_id))
+            ],
+        },
+    )
 
 
 def _categories(index: RpcIndex) -> dict[int, object]:

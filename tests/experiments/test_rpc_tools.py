@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from bakery_scanner.experiments.rpc_manifest import RpcDatasetContract
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentReceipt,
     FoldBaseArtifact,
@@ -30,9 +31,70 @@ HASHES = {
     "preprocessing_sha256": "f" * 64,
     "code_sha256": "0" * 64,
 }
-LOCKED_GROUND_TRUTH = {
+
+
+def _full_source_images() -> list[dict[str, object]]:
+    counts = RpcDatasetContract.default().image_counts
+    images: list[dict[str, object]] = []
+    for split, count in counts.items():
+        for image_id in range(1, count + 1):
+            image: dict[str, object] = {"split": split, "image_id": image_id}
+            if split == "test2019":
+                image["source_identity"] = (
+                    "sample" if image_id == 1 else "base" if image_id == 2 else f"test:{image_id}"
+                )
+                image["level"] = "easy"
+            images.append(image)
+    return images
+
+
+def _full_test_assignments() -> list[dict[str, object]]:
+    return [
+        {
+            "split": "test2019",
+            "image_id": image_id,
+            "role": "locked_acceptance",
+            "burst_id": "burst" if image_id < 3 else f"burst-{image_id}",
+            "difficulty": "easy",
+        }
+        for image_id in range(1, RpcDatasetContract.default().image_counts["test2019"] + 1)
+    ]
+
+
+LOCKED_SOURCE_MANIFEST = {
     "schema_version": 1,
+    "kind": "rpc-fewshot-resolved-inputs",
+    "source": "RPC 2019",
+    "annotation_sha256": dict(RpcDatasetContract.default().annotation_sha256),
+    "image_counts": dict(RpcDatasetContract.default().image_counts),
+    "categories": [],
+    "images": _full_source_images(),
+    "objects": [
+        {"split": "test2019", "annotation_id": 1, "image_id": 1, "category_id": 1},
+        {"split": "test2019", "annotation_id": 2, "image_id": 2, "category_id": 2},
+    ],
+}
+LOCKED_SOURCE_MANIFEST_BYTES = json.dumps(
+    LOCKED_SOURCE_MANIFEST, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+).encode("utf-8")
+LOCKED_SOURCE_MANIFEST_SHA256 = hashlib.sha256(LOCKED_SOURCE_MANIFEST_BYTES).hexdigest()
+LOCKED_SCENE_ROLE_MANIFEST = {
+    "schema_version": 1,
+    "kind": "rpc-fewshot-scene-roles",
+    "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
+    "assignments": _full_test_assignments(),
+}
+LOCKED_SCENE_ROLE_MANIFEST_BYTES = json.dumps(
+    LOCKED_SCENE_ROLE_MANIFEST, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+).encode("utf-8")
+LOCKED_SCENE_ROLE_MANIFEST_SHA256 = hashlib.sha256(LOCKED_SCENE_ROLE_MANIFEST_BYTES).hexdigest()
+LOCKED_GROUND_TRUTH = {
+    "schema_version": 2,
     "kind": "rpc-fewshot-locked-ground-truth",
+    "source_manifest_path": "locked-source.json",
+    "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
+    "scene_role_manifest_path": "locked-scene-roles.json",
+    "scene_role_manifest_sha256": LOCKED_SCENE_ROLE_MANIFEST_SHA256,
     "objects": [
         {
             "sample_id": "sample",
@@ -214,6 +276,10 @@ def _write_base_checkpoint_evidence(path: Path) -> None:
 
 
 def _write_locked_ground_truth(path: Path) -> None:
+    (path.parent / "locked-source.json").write_bytes(LOCKED_SOURCE_MANIFEST_BYTES)
+    (path.parent / "locked-scene-roles.json").write_bytes(
+        LOCKED_SCENE_ROLE_MANIFEST_BYTES
+    )
     path.write_bytes(LOCKED_GROUND_TRUTH_BYTES)
 
 
@@ -497,6 +563,8 @@ def test_score_cli_scores_a_canonical_task4_receipt_and_records_full_provenance(
         "manifest_sha256": LOCKED_GROUND_TRUTH_SHA256,
         "object_count": 2,
         "sample_count": 2,
+        "source_manifest_sha256": LOCKED_SOURCE_MANIFEST_SHA256,
+        "scene_role_manifest_sha256": LOCKED_SCENE_ROLE_MANIFEST_SHA256,
     }
     assert receipt["candidate_provenance"]["model_sha256"] == "b" * 64
     assert set(receipt["candidate_branch_top1"]) == {

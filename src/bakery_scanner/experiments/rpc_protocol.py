@@ -639,10 +639,13 @@ def _validate_stage_four_category_metrics(value: object, *, expected: tuple[int,
 
 def _validate_stage_four_locked_ground_truth(value: object) -> str:
     if not isinstance(value, Mapping) or set(value) != {
-        "burst_count", "manifest_sha256", "object_count", "sample_count"
+        "burst_count", "manifest_sha256", "object_count", "sample_count",
+        "source_manifest_sha256", "scene_role_manifest_sha256",
     }:
         raise ValueError("Stage-4 confirmation score receipt lacks locked ground-truth provenance")
     _validate_sha256("Stage-4 locked ground-truth manifest SHA-256", value.get("manifest_sha256"))
+    _validate_sha256("Stage-4 locked source manifest SHA-256", value.get("source_manifest_sha256"))
+    _validate_sha256("Stage-4 locked scene-role manifest SHA-256", value.get("scene_role_manifest_sha256"))
     for name in ("burst_count", "object_count", "sample_count"):
         _validate_positive_integer(f"Stage-4 locked ground-truth {name}", value.get(name))
     return value["manifest_sha256"]  # type: ignore[return-value]

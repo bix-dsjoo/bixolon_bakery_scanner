@@ -10,7 +10,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
+from bakery_scanner.experiments.rpc_manifest import (
+    RpcDatasetContract,
+    canonical_json_bytes,
+    write_new_json,
+)
 from bakery_scanner.experiments.rpc_metrics import (
     BranchName,
     FullSystemSummary,
@@ -74,6 +78,8 @@ class LoadedGroundTruth:
 
     rows: tuple[LockedGroundTruthRow, ...]
     sha256: str
+    source_manifest_sha256: str
+    scene_role_manifest_sha256: str
 
 
 def load_canonical_jsonl(path: Path) -> LoadedEvidence:
@@ -104,8 +110,16 @@ def load_canonical_jsonl(path: Path) -> LoadedEvidence:
 def load_locked_ground_truth(path: Path) -> LoadedGroundTruth:
     value, digest = _load_canonical_json_with_digest(path)
     if (
-        set(value) != {"schema_version", "kind", "objects"}
-        or value.get("schema_version") != 1
+        set(value) != {
+            "schema_version",
+            "kind",
+            "source_manifest_path",
+            "source_manifest_sha256",
+            "scene_role_manifest_path",
+            "scene_role_manifest_sha256",
+            "objects",
+        }
+        or value.get("schema_version") != 2
         or value.get("kind") != "rpc-fewshot-locked-ground-truth"
         or not isinstance(value.get("objects"), list)
         or not value["objects"]
@@ -125,7 +139,153 @@ def load_locked_ground_truth(path: Path) -> LoadedGroundTruth:
         or len(object_ids) != len(set(object_ids))
     ):
         raise ValueError("locked ground-truth manifest contains duplicate objects")
-    return LoadedGroundTruth(rows, digest)
+    source_path = _lineage_path(path, value.get("source_manifest_path"))
+    roles_path = _lineage_path(path, value.get("scene_role_manifest_path"))
+    source, source_digest = _load_canonical_json_with_digest(source_path)
+    roles, roles_digest = _load_canonical_json_with_digest(roles_path)
+    if source_digest != value.get("source_manifest_sha256"):
+        raise ValueError("locked ground-truth source manifest SHA-256 mismatch")
+    if roles_digest != value.get("scene_role_manifest_sha256"):
+        raise ValueError("locked ground-truth scene-role manifest SHA-256 mismatch")
+    expected = _locked_test_cohort_from_lineage(source, source_digest, roles)
+    if {row.identity for row in rows} != {row.identity for row in expected}:
+        raise ValueError("locked ground-truth must exactly match test2019 locked cohort")
+    return LoadedGroundTruth(rows, digest, source_digest, roles_digest)
+
+
+def materialize_locked_ground_truth(
+    source_manifest_path: Path,
+    scene_role_manifest_path: Path,
+    output: Path,
+) -> None:
+    """Derive the complete locked test2019 cohort from verified lineage artifacts."""
+    if output.exists():
+        raise FileExistsError(f"output already exists: {output}")
+    source_path = Path(source_manifest_path).resolve()
+    roles_path = Path(scene_role_manifest_path).resolve()
+    output_parent = Path(output).parent.resolve()
+    try:
+        source_relative = source_path.relative_to(output_parent)
+        roles_relative = roles_path.relative_to(output_parent)
+    except ValueError as exc:
+        raise ValueError(
+            "locked ground-truth lineage artifacts must be below the output directory"
+        ) from exc
+    source, source_digest = _load_canonical_json_with_digest(source_path)
+    roles, roles_digest = _load_canonical_json_with_digest(roles_path)
+    rows = _locked_test_cohort_from_lineage(source, source_digest, roles)
+    write_new_json(
+        output,
+        {
+            "schema_version": 2,
+            "kind": "rpc-fewshot-locked-ground-truth",
+            "source_manifest_path": source_relative.as_posix(),
+            "source_manifest_sha256": source_digest,
+            "scene_role_manifest_path": roles_relative.as_posix(),
+            "scene_role_manifest_sha256": roles_digest,
+            "objects": [row.to_dict() for row in rows],
+        },
+    )
+
+
+def _lineage_path(ground_truth_path: Path, value: object) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError("locked ground-truth lineage path is invalid")
+    candidate = (ground_truth_path.parent / value).resolve()
+    try:
+        candidate.relative_to(ground_truth_path.parent.resolve())
+    except ValueError as exc:
+        raise ValueError("locked ground-truth lineage path escapes manifest directory") from exc
+    return candidate
+
+
+def _locked_test_cohort_from_lineage(
+    source: Mapping[str, object], source_digest: str, roles: Mapping[str, object]
+) -> tuple[LockedGroundTruthRow, ...]:
+    if (
+        source.get("schema_version") != 1
+        or source.get("kind") != "rpc-fewshot-resolved-inputs"
+        or source.get("source") != "RPC 2019"
+        or not isinstance(source.get("images"), list)
+        or not isinstance(source.get("objects"), list)
+    ):
+        raise ValueError("invalid locked ground-truth source manifest")
+    contract = RpcDatasetContract.default()
+    if (
+        source.get("annotation_sha256") != dict(contract.annotation_sha256)
+        or source.get("image_counts") != dict(contract.image_counts)
+        or not isinstance(source.get("categories"), list)
+    ):
+        raise ValueError("locked ground-truth source does not match RPC 2019 contract")
+    source_images = source["images"]
+    observed_counts = {
+        split: sum(
+            isinstance(image, Mapping) and image.get("split") == split
+            for image in source_images
+        )
+        for split in contract.image_counts
+    }
+    if observed_counts != dict(contract.image_counts):
+        raise ValueError("locked ground-truth source image coverage does not match RPC 2019 contract")
+    if (
+        roles.get("schema_version") != 1
+        or roles.get("kind") != "rpc-fewshot-scene-roles"
+        or roles.get("source_manifest_sha256") != source_digest
+        or not isinstance(roles.get("assignments"), list)
+    ):
+        raise ValueError("invalid locked ground-truth scene-role manifest")
+    images: dict[int, tuple[str, str]] = {}
+    for image in source["images"]:
+        if not isinstance(image, Mapping) or image.get("split") != "test2019":
+            continue
+        image_id, sample_id, level = (
+            image.get("image_id"), image.get("source_identity"), image.get("level")
+        )
+        if type(image_id) is not int or image_id <= 0 or not isinstance(sample_id, str) or not sample_id:
+            raise ValueError("invalid test2019 source image identity")
+        if level not in {"easy", "medium", "hard"} or image_id in images:
+            raise ValueError("invalid test2019 source image level")
+        images[image_id] = (sample_id, level)
+    if not images:
+        raise ValueError("locked ground-truth source lacks test2019 images")
+    assignments: dict[int, tuple[str, str]] = {}
+    for assignment in roles["assignments"]:
+        if not isinstance(assignment, Mapping) or assignment.get("split") != "test2019":
+            continue
+        image_id, role, burst_id, difficulty = (
+            assignment.get("image_id"), assignment.get("role"), assignment.get("burst_id"), assignment.get("difficulty")
+        )
+        if (
+            type(image_id) is not int or image_id not in images or role != "locked_acceptance"
+            or not isinstance(burst_id, str) or not burst_id or difficulty not in {"easy", "medium", "hard"}
+            or difficulty != images[image_id][1] or image_id in assignments
+        ):
+            raise ValueError("invalid locked test2019 scene-role assignment")
+        assignments[image_id] = (burst_id, difficulty)
+    if set(assignments) != set(images):
+        raise ValueError("scene-role manifest does not cover exact test2019 source images")
+    difficulty_code = {"easy": "E", "medium": "M", "hard": "H"}
+    expected: list[LockedGroundTruthRow] = []
+    object_ids: set[int] = set()
+    for item in source["objects"]:
+        if not isinstance(item, Mapping) or item.get("split") != "test2019":
+            continue
+        object_id, image_id, category_id = (
+            item.get("annotation_id"), item.get("image_id"), item.get("category_id")
+        )
+        if (
+            type(object_id) is not int or object_id <= 0 or object_id in object_ids
+            or type(image_id) is not int or image_id not in images
+            or type(category_id) is not int or category_id <= 0
+        ):
+            raise ValueError("invalid test2019 source object")
+        object_ids.add(object_id)
+        sample_id, _ = images[image_id]
+        burst_id, difficulty = assignments[image_id]
+        expected.append(LockedGroundTruthRow(sample_id, object_id, burst_id, difficulty_code[difficulty], category_id))
+    if not expected:
+        raise ValueError("locked ground-truth source lacks test2019 objects")
+    return tuple(sorted(expected, key=lambda row: row.object_id))
 
 
 def score(
@@ -307,6 +467,8 @@ def _locked_ground_truth_summary(
         "manifest_sha256": ground_truth.sha256,
         "object_count": len(ground_truth.rows),
         "sample_count": len({row.sample_id for row in ground_truth.rows}),
+        "scene_role_manifest_sha256": ground_truth.scene_role_manifest_sha256,
+        "source_manifest_sha256": ground_truth.source_manifest_sha256,
     }
 
 
@@ -853,6 +1015,10 @@ def _validate_score_receipt_locked_ground_truth(
         not isinstance(value, Mapping)
         or set(value) != set(expected)
         or value.get("manifest_sha256") != expected["manifest_sha256"]
+        or value.get("source_manifest_sha256")
+        != expected["source_manifest_sha256"]
+        or value.get("scene_role_manifest_sha256")
+        != expected["scene_role_manifest_sha256"]
         or any(
             type(value.get(name)) is not int
             or value.get(name) != expected[name]

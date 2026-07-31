@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,8 +14,15 @@ from bakery_scanner.experiments.rpc_manifest import (
     RpcImage,
     RpcIndex,
     RpcObject,
+    canonical_json_bytes,
 )
-from bakery_scanner.experiments.rpc_splits import build_class_folds, build_scene_roles
+from bakery_scanner.experiments.rpc_splits import (
+    SceneRoleAssignment,
+    build_class_folds,
+    build_scene_roles,
+    validate_val_difficulty_balance,
+    write_scene_role_manifest,
+)
 
 
 def _image(
@@ -122,6 +130,47 @@ def test_scene_roles_use_coco_level_as_difficulty_and_meet_balance_bound(index: 
         bursts[row.burst_id] += 1
     assert abs(sizes["calibration"] - sizes["development_selection"]) <= max(bursts.values())
     assert all({category_id for row in val_rows if row.role == role for category_id in row.category_ids} == set(range(1, 201)) for role in sizes)
+
+
+def test_scene_roles_reject_difficulty_imbalanced_validation_roles():
+    rows = tuple(
+        SceneRoleAssignment(
+            split="val2019",
+            image_id=index,
+            category_ids=(1,),
+            role="calibration" if index < 4 else "development_selection",
+            burst_id=f"burst-{index}",
+            timestamp=datetime(2019, 1, 1, 9, 0, index),
+            date="20190101",
+            suffix=f"case-{index}",
+            difficulty="easy",
+            split_version="rpc-v1",
+            manifest_sha256="0" * 64,
+        )
+        for index in range(1, 5)
+    )
+
+    with pytest.raises(ValueError, match="difficulty balance"):
+        validate_val_difficulty_balance(rows)
+
+
+def test_scene_role_materializer_writes_canonical_lineage_artifact(
+    index: RpcIndex, tmp_path: Path
+):
+    output = tmp_path / "scene-roles.json"
+
+    write_scene_role_manifest(
+        output,
+        build_scene_roles(index, split_version="rpc-v1"),
+        source_manifest_sha256="a" * 64,
+    )
+
+    payload = output.read_bytes()
+    assert canonical_json_bytes(json.loads(payload)) == payload
+    value = json.loads(payload)
+    assert value["kind"] == "rpc-fewshot-scene-roles"
+    assert value["source_manifest_sha256"] == "a" * 64
+    assert len(value["assignments"]) == len(index.images)
 
 
 def test_scene_roles_count_multi_annotation_source_image_once(index: RpcIndex):

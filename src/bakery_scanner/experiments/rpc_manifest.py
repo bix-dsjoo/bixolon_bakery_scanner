@@ -113,7 +113,7 @@ def load_rpc_index(contract: RpcDatasetContract, root: Path) -> RpcIndex:
             raise ValueError("RPC category metadata differs between splits")
         if source_image_count != contract.image_counts[split]:
             raise ValueError(f"{split} image count mismatch")
-        if split == "train2019" and len(split_images) != source_image_count:
+        if split == "train2019" and len(split_objects) != source_image_count:
             raise ValueError("train2019 images must have exactly one object")
         images.extend(split_images)
         objects.extend(split_objects)

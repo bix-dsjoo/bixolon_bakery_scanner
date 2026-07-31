@@ -135,7 +135,7 @@ git commit -m "feat: add immutable RPC experiment input contract"
 **Interfaces:**
 - Consumes `RpcIndex` (including the source COCO category/supercategory metadata) and returns `ClassFoldAssignment` and `SceneRoleAssignment`. `RpcImage` represents one physical source COCO image exactly once; its linked `RpcObject` records carry all category annotations. Burst and role image counts are distinct `RpcImage` counts, never annotation counts.
 - Produces `build_class_folds(index, *, split_version, seed)` and `build_scene_roles(index, *, split_version)`.
-- `ClassFoldAssignment` guarantees five folds of 40 novel and 160 base categories; `SceneRoleAssignment` guarantees exactly one of `calibration`, `development_selection`, or `locked_acceptance` for every checkout burst. Checkout difficulty is read from the RPC COCO image `level` field, never inferred from filename suffix. The two validation role image counts must differ by no more than the largest validation burst; otherwise the split fails closed.
+- `ClassFoldAssignment` guarantees five folds of 40 novel and 160 base categories; `SceneRoleAssignment` guarantees exactly one of `calibration`, `development_selection`, or `locked_acceptance` for every checkout burst. Checkout difficulty is read from the RPC COCO image `level` field, never inferred from filename suffix. Overall validation-role image counts, and the counts separately for each E/M/H difficulty, must differ by no more than the largest validation burst in the corresponding scope; otherwise the split fails closed.
 
 - [ ] **Step 1: Write failing split tests**
 
@@ -341,6 +341,12 @@ git commit -m "feat: define RPC few-shot experiment protocol"
 ```
 
 ### Task 5: Score hash-bound research evidence and apply the passing rule
+
+Locked oracle-box ground truth is a materialized research artifact, never an
+ad-hoc object list: it records relative source-input and scene-role artifacts
+with SHA-256 digests, and its object identities must exactly equal every
+`test2019` object derived from the verified RPC source and its
+`locked_acceptance` roles. Scorers and score receipts retain all three digests.
 
 **Files:**
 - Create: `src/bakery_scanner/experiments/rpc_metrics.py`

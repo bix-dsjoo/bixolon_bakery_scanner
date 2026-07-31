@@ -146,6 +146,29 @@ def test_load_rpc_index_accepts_and_indexes_multiple_val_and_test_annotations(
     ]
 
 
+def test_load_rpc_index_rejects_multiple_train_annotations_on_one_image(
+    tmp_path: Path,
+):
+    contract = _synthetic_contract(tmp_path)
+    annotation_path = tmp_path / "instances_train2019.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"].append(
+        {"id": 2, "image_id": 1, "category_id": 8, "bbox": [5, 2, 3, 4]}
+    )
+    content = canonical_json_bytes(payload)
+    annotation_path.write_bytes(content)
+    invalid_contract = RpcDatasetContract(
+        annotation_sha256={
+            **contract.annotation_sha256,
+            "train2019": hashlib.sha256(content).hexdigest(),
+        },
+        image_counts=contract.image_counts,
+    )
+
+    with pytest.raises(ValueError, match="train2019 images must have exactly one object"):
+        load_rpc_index(invalid_contract, tmp_path)
+
+
 def test_load_rpc_index_indexes_source_file_identity_and_digest(tmp_path: Path):
     contract = _synthetic_contract(tmp_path)
 
