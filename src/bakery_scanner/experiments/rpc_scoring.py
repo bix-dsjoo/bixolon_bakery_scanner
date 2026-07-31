@@ -1302,6 +1302,15 @@ def _load_aggregate_evidence(
     support_seed = candidate_condition.get("support_seed")
     if type(fold) is not int or type(support_seed) is not int:
         raise ValueError("score receipt has invalid fold/support-seed axes")
+    support_record = receipt.get("support_bank")
+    if not isinstance(support_record, Mapping) or set(support_record) != {"path", "sha256"}:
+        raise ValueError("score receipt lacks hash-bound support bank")
+    support_path, support_sha = support_record.get("path"), support_record.get("sha256")
+    if not isinstance(support_path, str) or not isinstance(support_sha, str):
+        raise ValueError("score receipt has invalid support bank provenance")
+    bank = load_support_bank(Path(support_path))
+    if bank.sha256 != support_sha:
+        raise ValueError("score receipt support bank SHA-256 mismatch")
     if (
         receipt.get("candidate_condition_id") != candidate_condition.get("condition_id")
         or receipt.get("reference_condition_id")
@@ -1310,6 +1319,14 @@ def _load_aggregate_evidence(
         raise ValueError("score receipt top-level condition ID mismatch")
     _validate_score_receipt_locked_ground_truth(receipt, ground_truth)
     novel, base = _score_receipt_cohort(receipt, candidate_plan)
+    for condition, provenance_name in ((candidate_condition, "candidate_provenance"), (reference_condition, "reference_provenance")):
+        provenance = receipt.get(provenance_name)
+        if not isinstance(provenance, Mapping) or not isinstance(provenance.get("support_sha256"), str):
+            raise ValueError("score receipt lacks support provenance")
+        validate_support_bank_for_condition(
+            bank, support_sha256=provenance["support_sha256"], selector=condition["selector"],
+            support_seed=condition["support_seed"], category_ids=(*novel, *base),
+        )
     candidate_provenance = _score_receipt_provenance(
         receipt,
         "candidate_provenance",
