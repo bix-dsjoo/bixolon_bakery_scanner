@@ -625,7 +625,6 @@ def score(
     *,
     trusted_source_root: Path,
     support_bank_path: Path | None = None,
-    _validated_ground_truth: LoadedGroundTruth | None = None,
 ) -> None:
     """Write one non-final condition score; only complete aggregation can pass."""
     if output.exists():
@@ -672,7 +671,7 @@ def score(
             support_seed=parsed.support_seed, category_ids=(*candidate_novel, *candidate_base),
             shot_count=parsed.shot_count, support_scope=parsed.support_scope,
         )
-    ground_truth = _validated_ground_truth or load_stage_ground_truth(
+    ground_truth = load_stage_ground_truth(
         ground_truth_manifest_path, stage=paired_stage,
         trusted_source_root=trusted_source_root,
     )
@@ -976,7 +975,6 @@ def validate_score_receipt_derivation(
                 rebuilt_path,
                 trusted_source_root=trusted_source_root,
                 support_bank_path=paths["support_bank"],
-                _validated_ground_truth=authenticated_ground_truth,
             )
             rebuilt = load_canonical_json(rebuilt_path)
         except (OSError, ValueError) as exc:

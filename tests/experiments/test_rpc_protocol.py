@@ -77,13 +77,18 @@ def locked_conditions(
 
 
 def _condition() -> ExperimentCondition:
-    return stage_one_conditions(seeds=(101,), folds=(0,))[0]
+    return stage_one_conditions(seeds=(101, 102, 103, 104, 105), folds=(0,))[0]
+
+
+def test_public_scorer_cannot_accept_a_prevalidated_ground_truth_override():
+    """Only the scorer's trusted raw-root loader may authenticate truth."""
+    assert "_validated_ground_truth" not in inspect.signature(rpc_scoring.score).parameters
 
 
 def _stage_one_score_artifacts(
     tmp_path: Path,
     *,
-    declared_seeds: tuple[int, ...] = (101,),
+    declared_seeds: tuple[int, ...] = (101, 102, 103, 104, 105),
     write_selection: bool = True,
     clear_winner: bool = False,
     method_pairs: tuple[tuple[str, str], ...] | None = None,
@@ -115,9 +120,6 @@ def _stage_one_score_artifacts(
     fixture._install_trusted_index_for_test(fixture._trusted_index())
     ground_truth_path = tmp_path / "development-ground-truth.json"
     fixture._write_development_ground_truth(ground_truth_path)
-    development_truth = rpc_scoring.load_stage_ground_truth(
-        ground_truth_path, stage="stage1", trusted_source_root=_TEST_TRUSTED_ROOT
-    )
     base_evidence_path = tmp_path / "base-evidence.json"
     base_sha = fixture._write_fold_base_evidence(
         base_evidence_path,
@@ -207,7 +209,6 @@ def _stage_one_score_artifacts(
             evidence_path, evidence_path, condition_path, condition_path,
             ground_truth_path, base_evidence_path, path,
             trusted_source_root=_TEST_TRUSTED_ROOT, support_bank_path=bank_path,
-            _validated_ground_truth=development_truth,
         )
         _cache_real_score_receipt_for_test(path)
         paths.append(path)
@@ -217,6 +218,37 @@ def _stage_one_score_artifacts(
             receipt_path, tuple(paths), trusted_source_root=_TEST_TRUSTED_ROOT
         )
     return receipt_path, tuple(paths)
+
+
+def _resolved_ten_seed_stage_one_artifacts(
+    tmp_path: Path, *, clear_winner: bool = False
+) -> tuple[Path, tuple[Path, ...], Path, tuple[Path, ...]]:
+    """Build the required five-seed parent and hash-bound ten-seed child."""
+    seeds = (101, 102, 103, 104, 105)
+    initial_path, initial_scores = _stage_one_score_artifacts(
+        tmp_path / "five", declared_seeds=seeds, clear_winner=clear_winner
+    )
+    initial = load_stage_one_selection_receipt(
+        initial_path,
+        score_receipt_paths=initial_scores,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+    ten_path, ten_scores = _stage_one_score_artifacts(
+        tmp_path / "ten",
+        declared_seeds=(*seeds, 106, 107, 108, 109, 110),
+        method_pairs=initial.decision.expand_to_ten_seeds,
+        write_selection=False,
+        clear_winner=clear_winner,
+    )
+    if not ten_path.exists():
+        write_stage_one_selection_receipt(
+            ten_path,
+            ten_scores,
+            initial_selection_receipt_path=initial_path,
+            initial_score_receipt_paths=initial_scores,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
+    return ten_path, ten_scores, initial_path, initial_scores
 
 
 def _cache_real_score_receipt_for_test(path: Path) -> None:
@@ -308,9 +340,14 @@ def _scoring_bindings() -> dict[str, object]:
     }
 
 
-def test_stage_one_has_exactly_twelve_cells_before_fold_seed_expansion():
-    cells = stage_one_conditions(seeds=(101,), folds=range(5))
-    assert len(cells) == 60
+def test_stage_one_rejects_a_non_screen_seed_count():
+    with pytest.raises(ValueError, match="five or ten support seeds"):
+        stage_one_conditions(seeds=(101,), folds=range(5))
+
+
+def test_stage_one_has_exactly_twelve_cells_per_fold_seed():
+    cells = stage_one_conditions(seeds=(101, 102, 103, 104, 105), folds=range(5))
+    assert len(cells) == 300
     assert {(row.method, row.selector, row.shot_count) for row in cells} == {
         (method, selector, shot)
         for method, selector in (("m0", "div"), ("m1", "div"), ("m2", "div"), ("m2", "rnd"))
@@ -332,8 +369,8 @@ def test_committed_stage_one_plan_binds_all_300_pair_shot_fold_seed_cells():
 
 
 def test_conditions_have_deterministic_ids():
-    first = stage_one_conditions(seeds=(101,), folds=(0,))[0]
-    second = stage_one_conditions(seeds=(101,), folds=(0,))[0]
+    first = stage_one_conditions(seeds=(101, 102, 103, 104, 105), folds=(0,))[0]
+    second = stage_one_conditions(seeds=(101, 102, 103, 104, 105), folds=(0,))[0]
     assert first.condition_id == second.condition_id
     assert first.condition_id.startswith("rpc-")
 
@@ -344,9 +381,13 @@ def test_stage_one_rejects_an_unregistered_method_selector_shot_cell():
 
 
 def test_ascending_extended_shots_require_explicit_opt_in(tmp_path: Path):
-    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, clear_winner=True)
+    selection_path, score_paths, initial_path, initial_scores = (
+        _resolved_ten_seed_stage_one_artifacts(tmp_path, clear_winner=True)
+    )
     retained = load_stage_one_selection_receipt(
         selection_path, score_receipt_paths=score_paths,
+        initial_selection_receipt_path=initial_path,
+        initial_score_receipt_paths=initial_scores,
         trusted_source_root=_TEST_TRUSTED_ROOT,
     ).decision.retained_methods
     basic = ascending_conditions(
@@ -355,6 +396,8 @@ def test_ascending_extended_shots_require_explicit_opt_in(tmp_path: Path):
         folds=(0,),
         stage_one_selection_receipt_path=selection_path,
         stage_one_score_receipt_paths=score_paths,
+        initial_stage_one_selection_receipt_path=initial_path,
+        initial_stage_one_score_receipt_paths=initial_scores,
         trusted_source_root=_TEST_TRUSTED_ROOT,
     )
     extended = ascending_conditions(
@@ -364,6 +407,8 @@ def test_ascending_extended_shots_require_explicit_opt_in(tmp_path: Path):
         extended=True,
         stage_one_selection_receipt_path=selection_path,
         stage_one_score_receipt_paths=score_paths,
+        initial_stage_one_selection_receipt_path=initial_path,
+        initial_stage_one_score_receipt_paths=initial_scores,
         trusted_source_root=_TEST_TRUSTED_ROOT,
     )
     assert {item.shot_count for item in basic} == {1, 3, 5, 10, 20}
@@ -392,8 +437,8 @@ def test_ascending_rejects_an_unresolved_five_seed_expansion(tmp_path: Path):
         )
 
 
-def test_clear_five_seed_winner_can_continue_without_seed_expansion(tmp_path: Path):
-    """The ten-seed gate is conditional, not an unconditional extra phase."""
+def test_clear_five_seed_winner_requires_ten_seed_reselection(tmp_path: Path):
+    """Even a unique survivor is within 1pp of itself and must expand."""
     selection_path, score_paths = _stage_one_score_artifacts(
         tmp_path, declared_seeds=(101, 102, 103, 104, 105), clear_winner=True
     )
@@ -402,17 +447,16 @@ def test_clear_five_seed_winner_can_continue_without_seed_expansion(tmp_path: Pa
         trusted_source_root=_TEST_TRUSTED_ROOT,
     )
 
-    # The fixture makes m0 strictly dominate every other contender on both
-    # branch recalls and both wrong-SKU rates.
-    assert not selection.decision.expand_to_ten_seeds
-    assert ascending_conditions(
-        selection.decision.retained_methods,
-        seeds=(101,),
-        folds=(0,),
-        stage_one_selection_receipt_path=selection_path,
-        stage_one_score_receipt_paths=score_paths,
-        trusted_source_root=_TEST_TRUSTED_ROOT,
-    )
+    assert selection.decision.expand_to_ten_seeds == (("m0", "div"),)
+    with pytest.raises(ValueError, match="ten-seed re-selection"):
+        ascending_conditions(
+            selection.decision.retained_methods,
+            seeds=(101,),
+            folds=(0,),
+            stage_one_selection_receipt_path=selection_path,
+            stage_one_score_receipt_paths=score_paths,
+            trusted_source_root=_TEST_TRUSTED_ROOT,
+        )
 
 
 def test_hash_bound_ten_seed_reselection_allows_only_initial_contenders(
@@ -652,9 +696,21 @@ def test_stage_one_selection_preregisters_dominance_and_seed_expansion():
         ),
         score_receipt_sha256s=("1" * 64, "2" * 64, "3" * 64),
         decision=result,
+        declared_support_seeds=(101, 102, 103, 104, 105),
     )
     assert receipt.to_dict()["decision"]["retained_methods"] == [["m0", "div"], ["m2", "div"]]
     assert receipt.to_dict()["score_receipt_sha256s"] == ["1" * 64, "2" * 64, "3" * 64]
+
+
+def test_stage_one_selection_receipt_rejects_a_non_screen_seed_count():
+    evidence = (StageOneMethodEvidence("m0", "div", 0.9, 0.9, 0.1, 0.1),)
+    with pytest.raises(ValueError, match="initial selection receipt"):
+        StageOneSelectionReceipt(
+            evidence=evidence,
+            score_receipt_sha256s=("1" * 64,),
+            decision=select_stage_one_methods(evidence),
+            declared_support_seeds=(101,),
+        )
 
 
 def test_stage_one_selection_receipt_rejects_forged_scalar_evidence(tmp_path: Path):
@@ -673,9 +729,13 @@ def test_stage_one_selection_receipt_rejects_forged_scalar_evidence(tmp_path: Pa
 def test_ascending_rejects_rejected_pair_even_with_valid_stage_one_receipt(
     tmp_path: Path,
 ):
-    selection_path, score_paths = _stage_one_score_artifacts(tmp_path, clear_winner=True)
+    selection_path, score_paths, initial_path, initial_scores = (
+        _resolved_ten_seed_stage_one_artifacts(tmp_path, clear_winner=True)
+    )
     selection = load_stage_one_selection_receipt(
         selection_path, score_receipt_paths=score_paths,
+        initial_selection_receipt_path=initial_path,
+        initial_score_receipt_paths=initial_scores,
         trusted_source_root=_TEST_TRUSTED_ROOT,
     )
     rejected = next(
@@ -690,6 +750,8 @@ def test_ascending_rejects_rejected_pair_even_with_valid_stage_one_receipt(
             folds=(0,),
             stage_one_selection_receipt_path=selection_path,
             stage_one_score_receipt_paths=score_paths,
+            initial_stage_one_selection_receipt_path=initial_path,
+            initial_stage_one_score_receipt_paths=initial_scores,
             trusted_source_root=_TEST_TRUSTED_ROOT,
         )
 
@@ -708,7 +770,9 @@ def test_stage_one_selection_requires_all_twelve_preregistered_cells(tmp_path: P
 def test_stage_one_selection_requires_all_declared_fold_seed_cells(tmp_path: Path):
     selection_path = tmp_path / "selection.json"
     _, score_paths = _stage_one_score_artifacts(
-        tmp_path, declared_seeds=(101, 102), write_selection=False
+        tmp_path,
+        declared_seeds=(101, 102, 103, 104, 105),
+        write_selection=False,
     )
 
     with pytest.raises(ValueError, match="declared fold/seed"):

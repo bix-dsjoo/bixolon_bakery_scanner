@@ -345,7 +345,9 @@ def _score_module():
     return module
 
 
-def _cell_conditions(*, seeds: tuple[int, ...] = (101,), folds: tuple[int, ...] = (0,)):
+def _cell_conditions(
+    *, seeds: tuple[int, ...] = (101, 102, 103, 104, 105), folds: tuple[int, ...] = (0,)
+):
     return tuple(
         condition
         for condition in stage_one_conditions(seeds=seeds, folds=folds)
@@ -1344,14 +1346,15 @@ def test_incomplete_fold_seed_aggregate_cannot_emit_final_pass(tmp_path: Path):
 
 def test_stage_one_aggregate_cannot_establish_a_final_minimum(tmp_path: Path):
     module = _score_module()
-    candidates = _cell_conditions(seeds=(101, 102), folds=(0,))
+    seeds = (101, 102, 103, 104, 105)
+    candidates = _cell_conditions(seeds=seeds, folds=(0,))
     references = tuple(
         condition
-        for condition in stage_one_conditions(seeds=(101, 102), folds=(0,))
+        for condition in stage_one_conditions(seeds=seeds, folds=(0,))
         if (condition.method, condition.selector, condition.shot_count) == ("m0", "div", 1)
     )
-    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=(101, 102))
-    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=(101, 102))
+    candidate_plan = _plan(tuple(row.condition_id for row in candidates), seeds=seeds)
+    reference_plan = _plan(tuple(row.condition_id for row in references), seeds=seeds)
     paths = []
     evidence_paths = []
     reference_evidence_paths = []

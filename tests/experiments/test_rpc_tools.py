@@ -334,7 +334,9 @@ def _task4_receipt(
     output_uri: str,
     cohort_manifest_sha256: str = LOCKED_GROUND_TRUTH_SHA256,
 ) -> dict[str, object]:
-    condition = stage_one_conditions(seeds=(101,), folds=(0,))[condition_index]
+    condition = stage_one_conditions(
+        seeds=(101, 102, 103, 104, 105), folds=(0,)
+    )[condition_index]
     plan = ScoringPlan(
         bootstrap_seed=7,
         bootstrap_replicates=10,

@@ -908,9 +908,20 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def stage_one_conditions(*, seeds: Iterable[int] = (101,), folds: Iterable[int] = range(5)) -> tuple[ExperimentCondition, ...]:
-    """Return the complete preregistered Stage-1 matrix, never a Cartesian expansion."""
-    return _conditions(_STAGE_ONE_PAIRS, _STAGE_ONE_SHOTS, seeds, folds, "stage1")
+def stage_one_conditions(
+    *,
+    seeds: Iterable[int] = (101, 102, 103, 104, 105),
+    folds: Iterable[int] = range(5),
+) -> tuple[ExperimentCondition, ...]:
+    """Return one complete five- or ten-seed preregistered Stage-1 matrix."""
+    frozen_seeds = tuple(seeds)
+    if len(frozen_seeds) not in {5, 10}:
+        raise ValueError("Stage-1 requires exactly five or ten support seeds")
+    if len(set(frozen_seeds)) != len(frozen_seeds) or any(
+        type(seed) is not int for seed in frozen_seeds
+    ):
+        raise ValueError("Stage-1 support seeds must be distinct integers")
+    return _conditions(_STAGE_ONE_PAIRS, _STAGE_ONE_SHOTS, frozen_seeds, folds, "stage1")
 
 
 def ascending_conditions(
@@ -1117,7 +1128,7 @@ class StageOneSelectionReceipt:
     score_receipt_sha256s: tuple[str, ...]
     decision: StageOneSelectionDecision
     phase: Literal["initial_screen", "ten_seed_reselection"] = "initial_screen"
-    declared_support_seeds: tuple[int, ...] = (101,)
+    declared_support_seeds: tuple[int, ...] = (101, 102, 103, 104, 105)
     initial_selection_receipt_sha256: str | None = None
 
     def __post_init__(self) -> None:
@@ -1138,7 +1149,11 @@ class StageOneSelectionReceipt:
             raise ValueError("Stage-1 selection receipt has unsupported phase")
         derived = select_stage_one_methods(self.evidence)
         if self.phase == "initial_screen":
-            if self.initial_selection_receipt_sha256 is not None or self.decision != derived:
+            if (
+                len(self.declared_support_seeds) != 5
+                or self.initial_selection_receipt_sha256 is not None
+                or self.decision != derived
+            ):
                 raise ValueError("Stage-1 initial selection receipt does not reproduce frozen evidence")
         elif (
             len(self.declared_support_seeds) != 10
@@ -1373,11 +1388,13 @@ def _stage_one_selection_from_score_receipts(
                 "ten-seed re-selection requires the initial five support seeds"
             )
         expected_pairs = prior.decision.expand_to_ten_seeds
-    else:
+    elif len(declared_seeds) == 5:
         phase = "initial_screen"
         if initial_selection_receipt_path is not None or tuple(initial_score_receipt_paths):
             raise ValueError("initial Stage-1 selection cannot bind a prior re-selection receipt")
         expected_pairs = _STAGE_ONE_PAIRS
+    else:
+        raise ValueError("Stage-1 selection requires exactly five or ten support seeds")
     coordinates = {(condition.fold, condition.support_seed) for condition, _, _, _ in loaded}
     declared_coordinates = {
         (fold, seed) for fold in plan.folds for seed in plan.support_seeds
@@ -1633,18 +1650,14 @@ def select_stage_one_methods(
             for other in rows
             if other != item
         )
-    expanded = (
-        tuple(
-            item.method_selector
-            for item in ranked
-            if (
-                item.repvit_novel_macro_top1 >= best_repvit - 0.01
-                or item.dinov3_novel_macro_top1 >= best_dinov3 - 0.01
-                or has_accuracy_error_tradeoff(item)
-            )
+    expanded = tuple(
+        item.method_selector
+        for item in ranked
+        if (
+            item.repvit_novel_macro_top1 >= best_repvit - 0.01
+            or item.dinov3_novel_macro_top1 >= best_dinov3 - 0.01
+            or has_accuracy_error_tradeoff(item)
         )
-        if len(survivors) > 1
-        else ()
     )
     return StageOneSelectionDecision(
         retained_methods=tuple(item.method_selector for item in ranked),
