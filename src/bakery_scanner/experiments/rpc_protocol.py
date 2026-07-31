@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal, Mapping
 
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes, write_new_json
 
@@ -99,6 +99,96 @@ def refinement_shots(last_failure: int, first_pass: int) -> tuple[int, ...]:
 
 
 @dataclass(frozen=True, slots=True)
+class ScoringPlan:
+    """Immutable decision universe shared by condition and score receipts."""
+
+    bootstrap_seed: int
+    bootstrap_replicates: int
+    folds: tuple[int, ...]
+    support_seeds: tuple[int, ...]
+    expected_condition_ids: tuple[str, ...]
+    cohort_id: str
+    registered_category_ids: tuple[int, ...]
+    schema_version: Literal[1] = 1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported scoring plan schema_version")
+        if type(self.bootstrap_seed) is not int:
+            raise ValueError("bootstrap_seed must be an integer")
+        if type(self.bootstrap_replicates) is not int or self.bootstrap_replicates <= 0:
+            raise ValueError("bootstrap_replicates must be a positive integer")
+        _validate_unique_tuple("folds", self.folds, lambda value: type(value) is int and value >= 0)
+        _validate_unique_tuple("support_seeds", self.support_seeds, lambda value: type(value) is int)
+        _validate_unique_tuple(
+            "expected_condition_ids",
+            self.expected_condition_ids,
+            lambda value: isinstance(value, str) and bool(value),
+        )
+        coordinate_count = len(self.folds) * len(self.support_seeds)
+        if (
+            len(self.expected_condition_ids) < coordinate_count
+            or len(self.expected_condition_ids) % coordinate_count != 0
+        ):
+            raise ValueError(
+                "expected condition IDs must declare a complete fold/seed matrix"
+            )
+        if not isinstance(self.cohort_id, str) or not self.cohort_id:
+            raise ValueError("cohort_id must be nonempty")
+        _validate_unique_tuple(
+            "registered_category_ids",
+            self.registered_category_ids,
+            lambda value: type(value) is int and value > 0,
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ScoringPlan":
+        if not isinstance(value, Mapping):
+            raise ValueError("scoring plan must be an object")
+        expected = {
+            "bootstrap_seed",
+            "bootstrap_replicates",
+            "folds",
+            "support_seeds",
+            "expected_condition_ids",
+            "cohort_id",
+            "registered_category_ids",
+            "schema_version",
+        }
+        if set(value) != expected:
+            raise ValueError("scoring plan has missing or unrecognized fields")
+        try:
+            return cls(
+                bootstrap_seed=value["bootstrap_seed"],  # type: ignore[arg-type]
+                bootstrap_replicates=value["bootstrap_replicates"],  # type: ignore[arg-type]
+                folds=tuple(value["folds"]),  # type: ignore[arg-type]
+                support_seeds=tuple(value["support_seeds"]),  # type: ignore[arg-type]
+                expected_condition_ids=tuple(value["expected_condition_ids"]),  # type: ignore[arg-type]
+                cohort_id=value["cohort_id"],  # type: ignore[arg-type]
+                registered_category_ids=tuple(value["registered_category_ids"]),  # type: ignore[arg-type]
+                schema_version=value["schema_version"],  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid scoring plan") from exc
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "bootstrap_replicates": self.bootstrap_replicates,
+            "bootstrap_seed": self.bootstrap_seed,
+            "cohort_id": self.cohort_id,
+            "expected_condition_ids": list(self.expected_condition_ids),
+            "folds": list(self.folds),
+            "registered_category_ids": list(self.registered_category_ids),
+            "schema_version": self.schema_version,
+            "support_seeds": list(self.support_seeds),
+        }
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(canonical_json_bytes(self.to_dict())).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class ExperimentReceipt:
     condition: ExperimentCondition
     condition_manifest_sha256: str
@@ -111,6 +201,9 @@ class ExperimentReceipt:
     cohort_manifest_sha256: str
     novel_category_ids: tuple[int, ...]
     base_category_ids: tuple[int, ...]
+    scoring_plan: ScoringPlan
+    base_checkpoint_sha256: str
+    base_checkpoint_evidence_sha256: str
     environment_lock_digest: str
     output_uri: str
     status: Literal["completed", "failed", "unavailable"]
@@ -122,7 +215,20 @@ class ExperimentReceipt:
         for name in _HASH_FIELDS:
             _validate_sha256(name, getattr(self, name))
         _validate_sha256("cohort_manifest_sha256", self.cohort_manifest_sha256)
+        _validate_sha256("base_checkpoint_sha256", self.base_checkpoint_sha256)
+        _validate_sha256("base_checkpoint_evidence_sha256", self.base_checkpoint_evidence_sha256)
         _validate_cohorts(self.novel_category_ids, self.base_category_ids)
+        if not isinstance(self.scoring_plan, ScoringPlan):
+            raise ValueError("scoring_plan must be an immutable ScoringPlan")
+        if self.condition.condition_id not in self.scoring_plan.expected_condition_ids:
+            raise ValueError("condition is not an expected condition in the scoring plan")
+        if self.condition.fold not in self.scoring_plan.folds:
+            raise ValueError("condition fold is not declared by the scoring plan")
+        if self.condition.support_seed not in self.scoring_plan.support_seeds:
+            raise ValueError("condition support seed is not declared by the scoring plan")
+        receipt_categories = set(self.novel_category_ids) | set(self.base_category_ids)
+        if receipt_categories != set(self.scoring_plan.registered_category_ids):
+            raise ValueError("condition cohort does not equal the scoring plan registered cohort")
         if not isinstance(self.environment_lock_digest, str) or not self.environment_lock_digest:
             raise ValueError("environment_lock_digest must be nonempty")
         if not isinstance(self.output_uri, str) or not self.output_uri:
@@ -145,6 +251,8 @@ class ExperimentReceipt:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "kind": "rpc-fewshot-experiment-receipt",
+            "schema_version": 2,
             "calibration_sha256": self.calibration_sha256,
             "code_sha256": self.code_sha256,
             "cohort": {
@@ -153,8 +261,15 @@ class ExperimentReceipt:
                 "manifest_sha256": self.cohort_manifest_sha256,
                 "novel_category_ids": list(self.novel_category_ids),
             },
+            "fold_base_checkpoint": {
+                "checkpoint_sha256": self.base_checkpoint_sha256,
+                "evidence_sha256": self.base_checkpoint_evidence_sha256,
+                "fold": self.condition.fold,
+            },
+            "scoring_plan": self.scoring_plan.to_dict(),
+            "scoring_plan_sha256": self.scoring_plan.sha256,
             "scoring": {
-                "registered_category_ids": sorted(self.novel_category_ids + self.base_category_ids),
+                "registered_category_ids": list(self.scoring_plan.registered_category_ids),
             },
             "condition": self.condition.to_dict(),
             "condition_manifest_sha256": self.condition_manifest_sha256,
@@ -225,3 +340,16 @@ def _validate_cohorts(novel: object, base: object) -> None:
             raise ValueError(f"{name} must be a nonempty tuple of unique positive category IDs")
     if set(novel) & set(base):
         raise ValueError("novel and base category cohorts must be disjoint")
+
+
+def _validate_unique_tuple(
+    name: str, values: object, predicate: Callable[[object], bool]
+) -> None:
+    if not isinstance(values, tuple):
+        raise ValueError(f"{name} must be a nonempty tuple")
+    if not values:
+        raise ValueError(f"{name} must be a nonempty tuple")
+    if any(not predicate(value) for value in values):
+        raise ValueError(f"{name} contains an invalid value")
+    if len(set(values)) != len(values):
+        raise ValueError(f"{name} must contain unique values")

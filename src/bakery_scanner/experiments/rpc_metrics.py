@@ -203,10 +203,14 @@ def validate_evidence_against_condition(
     expected_id, expected_hashes = condition_provenance(condition)
     novel, base = condition_cohort(condition)
     registered = _receipt_registered_categories(condition)
+    nested = condition.get("condition")
+    expected_fold = nested.get("fold") if isinstance(nested, Mapping) else None
     permitted = novel | base
     for row in frozen:
         if row.condition_id != expected_id:
             raise ValueError("condition ID provenance mismatch")
+        if row.fold != expected_fold:
+            raise ValueError("fold provenance mismatch")
         for name, expected in expected_hashes.items():
             if getattr(row, name) != expected:
                 raise ValueError(f"{name} provenance mismatch")
@@ -355,14 +359,27 @@ def bootstrap_paired_deltas(
     )
 
 
-def passes_minimum_rule(candidate: FullSystemSummary, reference: FullSystemSummary, interval: PairedBootstrapInterval) -> bool:
+def passes_minimum_rule(
+    candidate: FullSystemSummary,
+    reference: FullSystemSummary,
+    interval: PairedBootstrapInterval,
+    *,
+    base_checkpoint_macro_recall: float,
+) -> bool:
     """Apply the preregistered fail-closed rule; Unknown-only output cannot pass."""
     if not isinstance(candidate, FullSystemSummary) or not isinstance(reference, FullSystemSummary):
         raise ValueError("candidate and reference must be full-system summaries")
     if not isinstance(interval, PairedBootstrapInterval):
         raise ValueError("interval must be a paired bootstrap interval")
+    if (
+        not isinstance(base_checkpoint_macro_recall, Real)
+        or isinstance(base_checkpoint_macro_recall, bool)
+        or not math.isfinite(float(base_checkpoint_macro_recall))
+        or not 0.0 <= float(base_checkpoint_macro_recall) <= 1.0
+    ):
+        raise ValueError("base checkpoint macro recall must be finite and in [0, 1]")
     unknown_only = candidate.registered_coverage == 0.0
-    base_delta = candidate.base_macro_final_correct_recall - reference.base_macro_final_correct_recall
+    base_delta = candidate.base_macro_final_correct_recall - float(base_checkpoint_macro_recall)
     tolerance = 1e-12
     return (
         not unknown_only

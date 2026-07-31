@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from bakery_scanner.experiments.rpc_protocol import ExperimentReceipt, stage_one_conditions
+from bakery_scanner.experiments.rpc_protocol import ExperimentReceipt, ScoringPlan, stage_one_conditions
 
 
 ROOT = Path(__file__).parents[2]
@@ -25,6 +25,24 @@ HASHES = {
     "preprocessing_sha256": "f" * 64,
     "code_sha256": "0" * 64,
 }
+BASE_CHECKPOINT_EVIDENCE = {
+    "schema_version": 1,
+    "kind": "rpc-fewshot-fold-base-checkpoint-evidence",
+    "fold": 0,
+    "checkpoint_sha256": "2" * 64,
+    "cohort_manifest_sha256": "1" * 64,
+    "base_category_ids": [2],
+    "sample_count": 10,
+    "base_macro_final_correct_recall": 1.0,
+}
+BASE_CHECKPOINT_EVIDENCE_BYTES = json.dumps(
+    BASE_CHECKPOINT_EVIDENCE,
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+    allow_nan=False,
+).encode("utf-8")
+BASE_CHECKPOINT_EVIDENCE_SHA256 = hashlib.sha256(BASE_CHECKPOINT_EVIDENCE_BYTES).hexdigest()
 
 
 def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -49,16 +67,34 @@ def _score_module():
 
 
 def _receipt(condition_id: str) -> dict[str, object]:
+    plan = ScoringPlan(
+        bootstrap_seed=7,
+        bootstrap_replicates=10,
+        folds=(0,),
+        support_seeds=(101,),
+        expected_condition_ids=(condition_id,),
+        cohort_id="rpc-test",
+        registered_category_ids=(1, 2),
+    )
     return {
+        "schema_version": 2,
+        "kind": "rpc-fewshot-experiment-receipt",
         **HASHES,
-        "condition": {"condition_id": condition_id, "fold": 0},
+        "condition": {"condition_id": condition_id, "fold": 0, "support_seed": 101},
         "cohort": {
             "fold": 0,
             "manifest_sha256": "1" * 64,
             "novel_category_ids": [1],
             "base_category_ids": [2],
         },
+        "fold_base_checkpoint": {
+            "checkpoint_sha256": "2" * 64,
+            "evidence_sha256": BASE_CHECKPOINT_EVIDENCE_SHA256,
+            "fold": 0,
+        },
         "scoring": {"registered_category_ids": [1, 2]},
+        "scoring_plan": plan.to_dict(),
+        "scoring_plan_sha256": plan.sha256,
         "environment_lock_digest": "sha256:environment",
         "output_uri": "file:///external/run",
         "reason": "",
@@ -68,12 +104,24 @@ def _receipt(condition_id: str) -> dict[str, object]:
 
 def _task4_receipt(*, condition_index: int, output_uri: str, cohort_manifest_sha256: str = "1" * 64) -> dict[str, object]:
     condition = stage_one_conditions(seeds=(101,), folds=(0,))[condition_index]
+    plan = ScoringPlan(
+        bootstrap_seed=7,
+        bootstrap_replicates=10,
+        folds=(0,),
+        support_seeds=(101,),
+        expected_condition_ids=(condition.condition_id,),
+        cohort_id="rpc-test",
+        registered_category_ids=(1, 2),
+    )
     return ExperimentReceipt.completed(
         condition,
         **HASHES,
         cohort_manifest_sha256=cohort_manifest_sha256,
         novel_category_ids=(1,),
         base_category_ids=(2,),
+        scoring_plan=plan,
+        base_checkpoint_sha256="2" * 64,
+        base_checkpoint_evidence_sha256=BASE_CHECKPOINT_EVIDENCE_SHA256,
         environment_lock_digest="sha256:environment",
         output_uri=output_uri,
     ).to_dict()
@@ -99,6 +147,10 @@ def _canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _write_base_checkpoint_evidence(path: Path) -> None:
+    path.write_bytes(BASE_CHECKPOINT_EVIDENCE_BYTES)
+
+
 def test_build_manifest_refuses_existing_output_before_reading_rpc_root(tmp_path: Path):
     output = tmp_path / "existing.json"
     output.write_text("{}", encoding="utf-8")
@@ -122,14 +174,16 @@ def test_score_cli_refuses_existing_output(tmp_path: Path):
     reference = tmp_path / "reference.jsonl"
     condition = tmp_path / "condition.json"
     reference_condition = tmp_path / "reference-condition.json"
+    base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
     evidence.write_text(_canonical(_evidence("candidate")) + "\n", encoding="utf-8")
     reference.write_text(_canonical(_evidence("reference")) + "\n", encoding="utf-8")
     condition.write_text(_canonical(_receipt("candidate")), encoding="utf-8")
     reference_condition.write_text(_canonical(_receipt("reference")), encoding="utf-8")
+    _write_base_checkpoint_evidence(base_checkpoint_evidence)
     output = tmp_path / "existing.json"
     output.write_text("{}", encoding="utf-8")
 
-    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--output", str(output), "--bootstrap-seed", "7")
+    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
     assert result.returncode != 0
     assert "exists" in result.stderr
@@ -140,13 +194,15 @@ def test_score_cli_fails_closed_for_provenance_mismatch(tmp_path: Path):
     reference = tmp_path / "reference.jsonl"
     condition = tmp_path / "condition.json"
     reference_condition = tmp_path / "reference-condition.json"
+    base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
     evidence.write_text(_canonical(_evidence("candidate", policy_sha256="1" * 64)) + "\n", encoding="utf-8")
     reference.write_text(_canonical(_evidence("reference")) + "\n", encoding="utf-8")
     condition.write_text(_canonical(_receipt("candidate")), encoding="utf-8")
     reference_condition.write_text(_canonical(_receipt("reference")), encoding="utf-8")
+    _write_base_checkpoint_evidence(base_checkpoint_evidence)
     output = tmp_path / "receipt.json"
 
-    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--output", str(output), "--bootstrap-seed", "7")
+    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
     assert result.returncode != 0
     assert "provenance" in result.stderr
@@ -162,6 +218,7 @@ def test_score_cli_scores_a_canonical_task4_receipt_and_records_full_provenance(
     reference = tmp_path / "reference.jsonl"
     condition = tmp_path / "condition.json"
     reference_condition = tmp_path / "reference-condition.json"
+    base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
     output = tmp_path / "receipt.json"
     evidence.write_text(
         _canonical(_evidence(candidate_id)) + "\n"
@@ -175,8 +232,9 @@ def test_score_cli_scores_a_canonical_task4_receipt_and_records_full_provenance(
     )
     condition.write_text(_canonical(candidate_receipt), encoding="utf-8")
     reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
+    _write_base_checkpoint_evidence(base_checkpoint_evidence)
 
-    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--output", str(output), "--bootstrap-seed", "7", "--bootstrap-replicates", "10")
+    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
     assert result.returncode == 0, result.stderr
     receipt = json.loads(output.read_text(encoding="utf-8"))
@@ -185,6 +243,10 @@ def test_score_cli_scores_a_canonical_task4_receipt_and_records_full_provenance(
     assert receipt["candidate_provenance"]["model_sha256"] == "b" * 64
     assert receipt["candidate_forced_top1"]["top1_agreement"] == 1.0
     assert receipt["candidate_full_system"]["registered_coverage"] == 1.0
+    assert receipt["paired_bootstrap_95"]["seed"] == 7
+    assert receipt["paired_bootstrap_95"]["replicates"] == 10
+    assert receipt["decision_status"] == "non_final"
+    assert "final_pass" not in receipt
 
 
 def test_score_cli_rejects_equal_cohorts_bound_to_different_manifest_hashes(tmp_path: Path):
@@ -198,6 +260,7 @@ def test_score_cli_rejects_equal_cohorts_bound_to_different_manifest_hashes(tmp_
     reference = tmp_path / "reference.jsonl"
     condition = tmp_path / "condition.json"
     reference_condition = tmp_path / "reference-condition.json"
+    base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
     output = tmp_path / "receipt.json"
     evidence.write_text(
         _canonical(_evidence(candidate_id)) + "\n"
@@ -211,8 +274,9 @@ def test_score_cli_rejects_equal_cohorts_bound_to_different_manifest_hashes(tmp_
     )
     condition.write_text(_canonical(candidate_receipt), encoding="utf-8")
     reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
+    _write_base_checkpoint_evidence(base_checkpoint_evidence)
 
-    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--output", str(output), "--bootstrap-seed", "7")
+    result = _run("tools/evaluate/score_rpc_fewshot.py", "--evidence", str(evidence), "--reference-evidence", str(reference), "--condition", str(condition), "--reference-condition", str(reference_condition), "--base-checkpoint-evidence", str(base_checkpoint_evidence), "--output", str(output))
 
     assert result.returncode != 0
     assert "cohort manifest" in result.stderr
@@ -229,6 +293,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
     reference = tmp_path / "reference.jsonl"
     condition = tmp_path / "condition.json"
     reference_condition = tmp_path / "reference-condition.json"
+    base_checkpoint_evidence = tmp_path / "base-checkpoint.json"
     output = tmp_path / "receipt.json"
     parsed_bytes = (
         _canonical(_evidence(candidate_id)).encode("utf-8") + b"\n"
@@ -246,6 +311,7 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
     )
     condition.write_text(_canonical(candidate_receipt), encoding="utf-8")
     reference_condition.write_text(_canonical(reference_receipt), encoding="utf-8")
+    _write_base_checkpoint_evidence(base_checkpoint_evidence)
     real_loader = module.load_canonical_jsonl
 
     def replace_after_parse(path: Path):
@@ -255,7 +321,14 @@ def test_score_receipt_uses_evidence_digest_from_the_bytes_it_parsed(tmp_path: P
         return loaded
 
     monkeypatch.setattr(module, "load_canonical_jsonl", replace_after_parse)
-    module.score(evidence, reference, condition, reference_condition, output, bootstrap_seed=7, bootstrap_replicates=10)
+    module.score(
+        evidence,
+        reference,
+        condition,
+        reference_condition,
+        base_checkpoint_evidence,
+        output,
+    )
 
     receipt = json.loads(output.read_text(encoding="utf-8"))
     assert receipt["candidate_provenance"]["evidence_sha256"] == hashlib.sha256(parsed_bytes).hexdigest()

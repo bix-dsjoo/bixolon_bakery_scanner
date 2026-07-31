@@ -62,7 +62,12 @@ def test_unknown_only_candidate_cannot_pass_despite_safety_gain():
     interval = bootstrap_paired_deltas(candidate, reference, novel_category_ids={1}, seed=9, replicates=20)
 
     assert candidate_summary.wrong_registered_sku_rate == 0.0
-    assert not passes_minimum_rule(candidate_summary, reference_summary, interval)
+    assert not passes_minimum_rule(
+        candidate_summary,
+        reference_summary,
+        interval,
+        base_checkpoint_macro_recall=1.0,
+    )
 
 
 def test_minimum_rule_accepts_exact_boundaries():
@@ -85,7 +90,33 @@ def test_minimum_rule_accepts_exact_boundaries():
     )
 
     assert candidate_summary.novel_loss_over_10pp_fraction == 0.0
-    assert passes_minimum_rule(candidate_summary, reference_summary, interval)
+    assert passes_minimum_rule(
+        candidate_summary,
+        reference_summary,
+        interval,
+        base_checkpoint_macro_recall=1.0,
+    )
+
+
+def test_minimum_rule_compares_base_recall_to_frozen_fold_checkpoint_not_reference():
+    reference = (_row("n", truth=1, predicted=1), _row("b", truth=2, predicted=1))
+    candidate = (_row("n", truth=1, predicted=1), _row("b", truth=2, predicted=1))
+    candidate_summary = full_system_summary(candidate, novel_category_ids={1})
+    reference_summary = full_system_summary(reference, novel_category_ids={1})
+    interval = bootstrap_paired_deltas(
+        candidate,
+        reference,
+        novel_category_ids={1},
+        seed=9,
+        replicates=10,
+    )
+
+    assert not passes_minimum_rule(
+        candidate_summary,
+        reference_summary,
+        interval,
+        base_checkpoint_macro_recall=1.0,
+    )
 
 
 def test_paired_validation_rejects_identity_and_provenance_mismatches():
@@ -132,6 +163,24 @@ def test_condition_binding_rejects_a_declared_base_category_absent_from_truth_ro
     rows = (_row("novel", truth=1), _row("observed-base", truth=2))
 
     with pytest.raises(ValueError, match="base cohort is absent"):
+        validate_evidence_against_condition(rows, condition)
+
+
+def test_condition_binding_rejects_evidence_from_another_declared_fold():
+    condition = {
+        "condition": {"condition_id": "candidate", "fold": 0},
+        "cohort": {
+            "fold": 0,
+            "manifest_sha256": "1" * 64,
+            "novel_category_ids": [1],
+            "base_category_ids": [2],
+        },
+        "scoring": {"registered_category_ids": [1, 2]},
+        **_HASHES,
+    }
+    rows = (_row("novel", truth=1, fold=1), _row("base", truth=2, fold=1))
+
+    with pytest.raises(ValueError, match="fold provenance"):
         validate_evidence_against_condition(rows, condition)
 
 

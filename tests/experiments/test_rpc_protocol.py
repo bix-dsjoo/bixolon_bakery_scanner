@@ -11,6 +11,7 @@ import pytest
 from bakery_scanner.experiments.rpc_protocol import (
     ExperimentCondition,
     ExperimentReceipt,
+    ScoringPlan,
     ascending_conditions,
     refinement_shots,
     stage_one_conditions,
@@ -28,6 +29,23 @@ _COHORT = {
 
 def _condition() -> ExperimentCondition:
     return stage_one_conditions(seeds=(101,), folds=(0,))[0]
+
+
+def _scoring_bindings() -> dict[str, object]:
+    condition = _condition()
+    return {
+        "scoring_plan": ScoringPlan(
+            bootstrap_seed=7,
+            bootstrap_replicates=10,
+            folds=(0,),
+            support_seeds=(101,),
+            expected_condition_ids=(condition.condition_id,),
+            cohort_id="rpc-test",
+            registered_category_ids=(1, 2),
+        ),
+        "base_checkpoint_sha256": "2" * 64,
+        "base_checkpoint_evidence_sha256": "3" * 64,
+    }
 
 
 def test_stage_one_has_exactly_twelve_cells_before_fold_seed_expansion():
@@ -93,6 +111,7 @@ def test_completed_receipt_binds_nonempty_disjoint_rpc_cohorts():
         preprocessing_sha256="f" * 64,
         code_sha256="0" * 64,
         **_COHORT,
+        **_scoring_bindings(),
         environment_lock_digest="sha256:environment",
         output_uri="file:///external/run",
     )
@@ -114,6 +133,7 @@ def test_receipt_rejects_mutable_or_overlapping_cohorts():
         "base_category_ids": (2,),
         "environment_lock_digest": "sha256:environment",
         "output_uri": "file:///external/run",
+        **_scoring_bindings(),
     }
     with pytest.raises(ValueError, match="tuple"):
         ExperimentReceipt.completed(_condition(), **values)
@@ -131,6 +151,7 @@ def test_unavailable_receipt_is_never_reported_as_passed():
         preprocessing_sha256="f" * 64,
         code_sha256="0" * 64,
         **_COHORT,
+        **_scoring_bindings(),
         environment_lock_digest="sha256:environment",
         output_uri="file:///external/run",
     )
@@ -149,6 +170,7 @@ def test_receipt_serializes_canonical_json_and_refuses_replacement(tmp_path: Pat
         preprocessing_sha256="f" * 64,
         code_sha256="0" * 64,
         **_COHORT,
+        **_scoring_bindings(),
         environment_lock_digest="sha256:environment",
         output_uri="file:///external/run",
     )
