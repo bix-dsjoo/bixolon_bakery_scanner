@@ -14,6 +14,8 @@ from bakery_scanner.experiments.rpc_protocol import (
     FoldBaseArtifact,
     ScoringPlan,
     ascending_conditions,
+    confirmation_conditions,
+    locked_conditions,
     refinement_shots,
     stage_one_conditions,
     write_experiment_receipt,
@@ -85,6 +87,26 @@ def test_ascending_extended_shots_require_explicit_opt_in():
     )
     assert {item.shot_count for item in basic} == {1, 3, 5, 10, 20}
     assert {item.shot_count for item in extended} == {1, 3, 5, 10, 20, 40, 80, 150}
+
+
+def test_confirmation_and_locked_conditions_bind_the_150_shot_reference():
+    confirmation = confirmation_conditions(
+        ("m0", "div"),
+        shot_counts=(3, 5, 10, 150),
+        seeds=(101,),
+        folds=(0,),
+    )
+    locked = locked_conditions(
+        ("m0", "div"),
+        candidate_shot_count=5,
+        seeds=(101,),
+        folds=(0,),
+    )
+
+    assert {condition.stage for condition in confirmation} == {"confirmation"}
+    assert {condition.shot_count for condition in confirmation} == {3, 5, 10, 150}
+    assert {condition.stage for condition in locked} == {"locked"}
+    assert {condition.shot_count for condition in locked} == {5, 150}
 
 
 @pytest.mark.parametrize("last_failure, first_pass, expected", [(3, 5, (4,)), (5, 10, (6, 8)), (10, 20, (12, 15, 18))])

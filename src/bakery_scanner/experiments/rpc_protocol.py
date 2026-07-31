@@ -15,6 +15,12 @@ _STAGE_ONE_SHOTS = (1, 3, 5)
 _ASCENDING_SHOTS = (1, 3, 5, 10, 20)
 _EXTENDED_ASCENDING_SHOTS = (40, 80, 150)
 _REFINEMENTS = {(3, 5): (4,), (5, 10): (6, 8), (10, 20): (12, 15, 18)}
+_REFINEMENT_SHOTS = tuple(
+    sorted({shot for shots in _REFINEMENTS.values() for shot in shots})
+)
+_CONFIRMATION_SHOTS = tuple(
+    sorted(set(_ASCENDING_SHOTS + _EXTENDED_ASCENDING_SHOTS + _REFINEMENT_SHOTS))
+)
 _HASH_FIELDS = (
     "condition_manifest_sha256",
     "model_sha256",
@@ -51,7 +57,9 @@ class ExperimentCondition:
             _ASCENDING_SHOTS + _EXTENDED_ASCENDING_SHOTS
         ):
             raise ValueError("unsupported ascending condition")
-        if self.stage not in {"stage1", "ascending"}:
+        if self.stage in {"confirmation", "locked"} and self.shot_count not in _CONFIRMATION_SHOTS:
+            raise ValueError("unsupported confirmation or locked condition")
+        if self.stage not in {"stage1", "ascending", "confirmation", "locked"}:
             raise ValueError("unsupported stage")
         expected = _condition_id(
             self.method, self.selector, self.shot_count, self.fold, self.support_seed, self.stage
@@ -89,6 +97,51 @@ def ascending_conditions(
         raise ValueError("unsupported method/selector combination")
     shots = _ASCENDING_SHOTS + (_EXTENDED_ASCENDING_SHOTS if extended else ())
     return _conditions(pairs, shots, seeds, folds, "ascending")
+
+
+def confirmation_conditions(
+    method: str | tuple[str, str],
+    *,
+    shot_counts: Iterable[int],
+    seeds: Iterable[int],
+    folds: Iterable[int],
+) -> tuple[ExperimentCondition, ...]:
+    """Materialize the frozen Stage-4 full-subsystem confirmation quartet.
+
+    The caller supplies the already selected last failure, provisional minimum,
+    next passing anchor, and balanced reference.  Requiring exactly four unique
+    values with a 150-shot reference prevents this scheduler being used as a
+    second exploratory learning-curve sweep.
+    """
+    pair = _method_pair(method)
+    if pair not in _STAGE_ONE_PAIRS:
+        raise ValueError("unsupported method/selector combination")
+    shots = tuple(shot_counts)
+    if len(shots) != 4 or len(set(shots)) != 4 or 150 not in shots:
+        raise ValueError("confirmation requires four unique shots including the 150-shot reference")
+    if any(shot not in _CONFIRMATION_SHOTS for shot in shots):
+        raise ValueError("unsupported confirmation condition")
+    return _conditions((pair,), shots, seeds, folds, "confirmation")
+
+
+def locked_conditions(
+    method: str | tuple[str, str],
+    *,
+    candidate_shot_count: int,
+    seeds: Iterable[int],
+    folds: Iterable[int],
+) -> tuple[ExperimentCondition, ...]:
+    """Materialize the Stage-5 provisional-minimum versus 150-shot comparison."""
+    pair = _method_pair(method)
+    if pair not in _STAGE_ONE_PAIRS:
+        raise ValueError("unsupported method/selector combination")
+    if candidate_shot_count not in _CONFIRMATION_SHOTS:
+        raise ValueError("unsupported locked candidate condition")
+    shots = (candidate_shot_count,) if candidate_shot_count == 150 else (
+        candidate_shot_count,
+        150,
+    )
+    return _conditions((pair,), shots, seeds, folds, "locked")
 
 
 def refinement_shots(last_failure: int, first_pass: int) -> tuple[int, ...]:

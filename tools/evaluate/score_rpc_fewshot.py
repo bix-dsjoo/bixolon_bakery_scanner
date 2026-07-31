@@ -318,7 +318,7 @@ def _paired_nested_condition_stage(
     candidate_stage: object,
     reference_stage: object,
 ) -> str:
-    if candidate_stage not in {"stage1", "ascending"} or (
+    if candidate_stage not in {"stage1", "ascending", "confirmation", "locked"} or (
         reference_stage != candidate_stage
     ):
         raise ValueError("candidate/reference condition stage mismatch")
@@ -432,6 +432,9 @@ def aggregate_score_receipts(
         _score_receipt_condition(receipt, "reference_condition") for receipt in receipts
     )
     _validate_paired_condition_axes(candidate_conditions, reference_conditions)
+    aggregate_stage = _validated_aggregate_stage(
+        candidate_conditions, reference_conditions
+    )
     _validate_complete_condition_set(candidate_conditions, candidate_plan)
     _validate_complete_condition_set(reference_conditions, reference_plan)
     aggregate_conditions: list[PairedConditionEvidence] = []
@@ -498,14 +501,29 @@ def aggregate_score_receipts(
             value[2] for value in base_checkpoints.values()
         ),
     }
-    final_pass = _minimum_rule_inputs_pass(minimum_rule_inputs)
+    passes = _minimum_rule_inputs_pass(minimum_rule_inputs)
+    decision_scope = (
+        "complete_locked_fold_seed_aggregate"
+        if aggregate_stage == "locked"
+        else "complete_confirmation_fold_seed_aggregate"
+    )
+    decision: dict[str, object] = (
+        {"decision_status": "final", "final_pass": passes}
+        if aggregate_stage == "locked"
+        else {"decision_status": "provisional", "provisional_pass": passes}
+    )
     write_new_json(
         output,
         {
             "schema_version": 2,
-            "kind": "rpc-fewshot-final-score-receipt",
+            "kind": (
+                "rpc-fewshot-final-score-receipt"
+                if aggregate_stage == "locked"
+                else "rpc-fewshot-confirmation-score-receipt"
+            ),
             "status": "completed",
-            "decision_scope": "complete_declared_fold_seed_aggregate",
+            "decision_scope": decision_scope,
+            "aggregate_stage": aggregate_stage,
             "candidate_scoring_plan": candidate_plan.to_dict(),
             "reference_scoring_plan": reference_plan.to_dict(),
             "candidate_scoring_plan_sha256": candidate_plan.sha256,
@@ -536,7 +554,7 @@ def aggregate_score_receipts(
             "locked_ground_truth": _locked_ground_truth_summary(ground_truth),
             "paired_bootstrap_95": asdict(interval),
             "minimum_rule_inputs": minimum_rule_inputs,
-            "final_pass": final_pass,
+            **decision,
         },
     )
 
@@ -979,6 +997,28 @@ def _validate_paired_condition_axes(
         )
     ):
         raise ValueError("candidate/reference score receipts must have paired fold/seed axes")
+
+
+def _validated_aggregate_stage(
+    candidate_conditions: tuple[Mapping[str, object], ...],
+    reference_conditions: tuple[Mapping[str, object], ...],
+) -> str:
+    """Allow a decision only after the frozen full-system funnel stages."""
+    stages = {
+        _paired_nested_condition_stage(
+            candidate.get("stage"), reference.get("stage")
+        )
+        for candidate, reference in zip(
+            candidate_conditions, reference_conditions, strict=True
+        )
+    }
+    if len(stages) != 1 or not stages <= {"confirmation", "locked"}:
+        raise ValueError(
+            "aggregate requires candidate/reference conditions in one confirmation or locked stage"
+        )
+    if any(reference.get("shot_count") != 150 for reference in reference_conditions):
+        raise ValueError("aggregate requires an exact 150-shot reference condition")
+    return stages.pop()
 
 
 def _minimum_rule_inputs_pass(value: object) -> bool:
