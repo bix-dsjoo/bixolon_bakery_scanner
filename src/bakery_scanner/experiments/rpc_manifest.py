@@ -68,6 +68,7 @@ class RpcImage:
     category_id: int
     byte_size: int
     sha256: str
+    level: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +238,7 @@ def _index_split(
         objects.append(RpcObject(split, annotation_id, image_id, category_id, bbox))
 
     indexed: list[RpcImage] = []
-    source_details: dict[int, tuple[Path, int, str]] = {}
+    source_details: dict[int, tuple[Path, int, str, str]] = {}
     for image_id, record in image_records.items():
         if image_id not in annotation_counts:
             raise ValueError(f"{split} image is missing checkout annotation")
@@ -249,15 +250,21 @@ def _index_split(
         if not source_path.is_file():
             raise ValueError(f"{split} source image is missing")
         source_bytes = source_path.read_bytes()
+        level = record.get("level", "")
+        if split in {"val2019", "test2019"} and level not in {"easy", "medium", "hard"}:
+            raise ValueError(f"{split} image level must be easy, medium, or hard")
+        if split == "train2019" and level not in {"", "easy", "medium", "hard"}:
+            raise ValueError(f"{split} image level is invalid")
         source_details[image_id] = (
             source_path,
             len(source_bytes),
             hashlib.sha256(source_bytes).hexdigest(),
+            level,
         )
 
     for item in objects:
         record = image_records[item.image_id]
-        source_path, byte_size, source_sha256 = source_details[item.image_id]
+        source_path, byte_size, source_sha256, level = source_details[item.image_id]
         indexed.append(
             RpcImage(
                 split=split,
@@ -267,6 +274,7 @@ def _index_split(
                 category_id=item.category_id,
                 byte_size=byte_size,
                 sha256=source_sha256,
+                level=level,
             )
         )
     return indexed, objects, tuple(sorted(categories, key=lambda item: item.category_id)), len(image_records)

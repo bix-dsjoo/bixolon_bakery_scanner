@@ -20,7 +20,15 @@ def _write_coco(root: Path, split: str, *, bbox: list[float] | None = None) -> b
     image_path = root / f"{split}.jpg"
     image_path.write_bytes(f"pixels:{split}".encode("ascii"))
     payload = {
-        "images": [{"id": 1, "file_name": image_path.name, "width": 12, "height": 9}],
+        "images": [
+            {
+                "id": 1,
+                "file_name": image_path.name,
+                "width": 12,
+                "height": 9,
+                "level": "easy" if split != "train2019" else "",
+            }
+        ],
         "annotations": [
             {
                 "id": 1,
@@ -65,6 +73,22 @@ def test_load_rpc_index_rejects_annotation_digest_mismatch(tmp_path: Path):
 
     with pytest.raises(ValueError, match="digest mismatch"):
         load_rpc_index(contract, tmp_path)
+
+
+def test_load_rpc_index_rejects_invalid_val_level(tmp_path: Path):
+    contract = _synthetic_contract(tmp_path)
+    annotation_path = tmp_path / "instances_val2019.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["images"][0]["level"] = "unknown"
+    content = canonical_json_bytes(payload)
+    annotation_path.write_bytes(content)
+    invalid_level_contract = RpcDatasetContract(
+        annotation_sha256={**contract.annotation_sha256, "val2019": hashlib.sha256(content).hexdigest()},
+        image_counts=contract.image_counts,
+    )
+
+    with pytest.raises(ValueError, match="level must be easy, medium, or hard"):
+        load_rpc_index(invalid_level_contract, tmp_path)
 
 
 def test_load_rpc_index_rejects_non_positive_coco_box(tmp_path: Path):
@@ -132,3 +156,4 @@ def test_load_rpc_index_indexes_source_file_identity_and_digest(tmp_path: Path):
     assert image.category_id == 7
     assert image.byte_size == len(b"pixels:train2019")
     assert image.sha256 == hashlib.sha256(b"pixels:train2019").hexdigest()
+    assert next(item for item in index.images if item.split == "val2019").level == "easy"

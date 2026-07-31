@@ -11,9 +11,18 @@ from bakery_scanner.experiments.rpc_manifest import RpcCategory, RpcDatasetContr
 from bakery_scanner.experiments.rpc_splits import build_class_folds, build_scene_roles
 
 
-def _image(split: str, image_id: int, category_id: int, stamp: datetime, suffix: str) -> RpcImage:
+def _image(
+    split: str,
+    image_id: int,
+    category_id: int,
+    stamp: datetime,
+    suffix: str,
+    level: str = "easy",
+) -> RpcImage:
     name = stamp.strftime("%Y%m%d-%H-%M-%S-") + suffix + ".jpg"
-    return RpcImage(split, image_id, f"{split}:{image_id}:{name}", Path(name), category_id, 1, "0" * 64)
+    return RpcImage(
+        split, image_id, f"{split}:{image_id}:{name}", Path(name), category_id, 1, "0" * 64, level
+    )
 
 
 @pytest.fixture
@@ -30,7 +39,16 @@ def index() -> RpcIndex:
             stamp = start + timedelta(minutes=category_id * 3 + burst)
             suffix = f"difficulty-{category_id:03d}-{burst}"
             for offset in range(15):
-                images.append(_image("val2019", image_id, category_id, stamp + timedelta(seconds=offset), suffix))
+                images.append(
+                    _image(
+                        "val2019",
+                        image_id,
+                        category_id,
+                        stamp + timedelta(seconds=offset),
+                        suffix,
+                        ("easy", "medium", "hard")[category_id % 3],
+                    )
+                )
                 image_id += 1
         images.append(_image("test2019", image_id, category_id, start, f"test-{category_id:03d}"))
         image_id += 1
@@ -82,6 +100,19 @@ def test_scene_roles_reject_invalid_checkout_name(index: RpcIndex):
 def test_scene_roles_lock_every_test_image(index: RpcIndex):
     roles = build_scene_roles(index, split_version="rpc-v1")
     assert {row.role for row in roles if row.split == "test2019"} == {"locked_acceptance"}
+
+
+def test_scene_roles_use_coco_level_as_difficulty_and_meet_balance_bound(index: RpcIndex):
+    roles = build_scene_roles(index, split_version="rpc-v1")
+    levels = {image.image_id: image.level for image in index.images}
+    assert all(row.difficulty == levels[row.image_id] for row in roles)
+    val_rows = [row for row in roles if row.split == "val2019"]
+    sizes = {role: sum(row.role == role for row in val_rows) for role in ("calibration", "development_selection")}
+    bursts = {row.burst_id: 0 for row in val_rows}
+    for row in val_rows:
+        bursts[row.burst_id] += 1
+    assert abs(sizes["calibration"] - sizes["development_selection"]) <= max(bursts.values())
+    assert all({row.category_id for row in val_rows if row.role == role} == set(range(1, 201)) for role in sizes)
 
 
 def test_scene_roles_reject_impossible_category_coverage(index: RpcIndex):

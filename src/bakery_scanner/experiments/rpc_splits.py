@@ -45,7 +45,6 @@ class _CheckoutName:
     timestamp: datetime
     date: str
     suffix: str
-    difficulty: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +125,7 @@ def build_scene_roles(index: RpcIndex, *, split_version: str) -> tuple[SceneRole
             timestamp=name.timestamp,
             date=name.date,
             suffix=name.suffix,
-            difficulty=name.difficulty,
+            difficulty=image.level,
             split_version=split_version,
             manifest_sha256="",
         )
@@ -150,7 +149,9 @@ def _build_bursts(images: Iterable[RpcImage]) -> tuple[_Burst, ...]:
     grouped: dict[tuple[str, str, str, str], list[tuple[RpcImage, _CheckoutName]]] = {}
     for image in images:
         name = _parse_checkout_name(image.source_path.name)
-        grouped.setdefault((image.split, name.date, name.suffix, name.difficulty), []).append((image, name))
+        if image.level not in {"easy", "medium", "hard"}:
+            raise ValueError("validation and test images require a valid COCO level")
+        grouped.setdefault((image.split, name.date, name.suffix, image.level), []).append((image, name))
     bursts: list[_Burst] = []
     for key in sorted(grouped):
         records = sorted(grouped[key], key=lambda item: (item[1].timestamp, item[0].image_id, item[0].source_identity))
@@ -184,7 +185,7 @@ def _parse_checkout_name(value: str) -> _CheckoutName:
     suffix = match["suffix"]
     if not suffix:
         raise ValueError("invalid checkout name")
-    return _CheckoutName(timestamp, match["date"], suffix, suffix)
+    return _CheckoutName(timestamp, match["date"], suffix)
 
 
 def _assign_val_roles(bursts: tuple[_Burst, ...], category_ids: tuple[int, ...], split_version: str) -> dict[str, str]:
@@ -234,7 +235,43 @@ def _assign_val_roles(bursts: tuple[_Burst, ...], category_ids: tuple[int, ...],
         assign(burst, role)
     if any(set(role_categories[role]) != set(category_ids) for role in _ROLE_NAMES):
         raise ValueError("impossible validation category coverage")
+    _refine_val_roles(assigned, bursts, category_ids, split_version)
+    final_sizes = {
+        role: sum(burst.image_count for burst in bursts if assigned[burst.burst_id] == role)
+        for role in _ROLE_NAMES
+    }
+    if abs(final_sizes[_ROLE_NAMES[0]] - final_sizes[_ROLE_NAMES[1]]) > max(
+        burst.image_count for burst in bursts
+    ):
+        raise ValueError("validation role size imbalance exceeds largest burst")
     return assigned
+
+
+def _refine_val_roles(
+    assigned: dict[str, str], bursts: tuple[_Burst, ...], category_ids: tuple[int, ...], split_version: str
+) -> None:
+    """Move only coverage-safe atomic bursts while strictly improving size balance."""
+    by_id = {burst.burst_id: burst for burst in bursts}
+    while True:
+        sizes = {role: sum(by_id[burst_id].image_count for burst_id, value in assigned.items() if value == role) for role in _ROLE_NAMES}
+        category_counts = {
+            role: {category_id: sum(category_id in by_id[burst_id].category_ids for burst_id, value in assigned.items() if value == role) for category_id in category_ids}
+            for role in _ROLE_NAMES
+        }
+        current_difference = abs(sizes[_ROLE_NAMES[0]] - sizes[_ROLE_NAMES[1]])
+        candidates: list[tuple[str, _Burst, str]] = []
+        for burst in sorted(bursts, key=lambda item: _digest((split_version, item.burst_id))):
+            source = assigned[burst.burst_id]
+            target = _ROLE_NAMES[1] if source == _ROLE_NAMES[0] else _ROLE_NAMES[0]
+            if any(category_counts[source][category_id] <= 1 for category_id in burst.category_ids):
+                continue
+            difference = abs((sizes[source] - burst.image_count) - (sizes[target] + burst.image_count))
+            if difference < current_difference:
+                candidates.append((burst.burst_id, burst, target))
+        if not candidates:
+            return
+        _, burst, target = candidates[0]
+        assigned[burst.burst_id] = target
 
 
 def _digest(value: tuple[object, ...]) -> str:
