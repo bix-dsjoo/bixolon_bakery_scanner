@@ -34,15 +34,22 @@ void main() {
     expect(theme.useMaterial3, isTrue);
     expect(theme.textTheme.bodyMedium?.fontFamily, 'Pretendard');
     expect(tokens, isNotNull);
-    expect(tokens!.canvas, const Color(0xFFF7F7F5));
+    expect(tokens!.canvas, const Color(0xFFFFFFFF));
+    expect(tokens.ink, const Color(0xFF000000));
+    expect(tokens.mutedInk, const Color(0xFF5C5C5C));
+    expect(tokens.divider, const Color(0xFFE8E8E8));
     expect(tokens.action, const Color(0xFFEE7203));
+    expect(tokens.selectedSurface, const Color(0xFFFCEAD9));
+    expect(tokens.controlBorder, const Color(0xFFD8D8D8));
+    expect(tokens.disabledAction, const Color(0xFFFAD5B3));
     expect(theme.colorScheme.primary, tokens.action);
-    expect(tokens.focus, const Color(0xFF176BFF));
-    expect(tokens.confirmed, const Color(0xFF0E8A72));
+    expect(tokens.focus, const Color(0xFF184C9F));
+    expect(tokens.confirmed, const Color(0xFF268B20));
     expect(tokens.uncertainty, const Color(0xFFC76B00));
-    expect(tokens.error, const Color(0xFFC43A3A));
-    expect(tokens.controlRadius, 4);
-    expect(tokens.surfaceRadius, 8);
+    expect(tokens.error, const Color(0xFFCC2427));
+    expect(tokens.controlRadius, 5);
+    expect(tokens.surfaceRadius, 5);
+    expect(tokens.modalRadius, 10);
   });
 
   testWidgets('primary action and stepper controls meet kiosk touch targets', (
@@ -193,7 +200,7 @@ void main() {
     final side = button.style!.side!.resolve(<WidgetState>{
       WidgetState.focused,
     });
-    expect(side!.color, const Color(0xFF176BFF));
+    expect(side!.color, const Color(0xFF184C9F));
     expect(side.width, greaterThanOrEqualTo(2));
   });
 
@@ -217,7 +224,7 @@ void main() {
       final side = decrement.style!.side!.resolve(<WidgetState>{
         WidgetState.focused,
       });
-      expect(side!.color, const Color(0xFF176BFF));
+      expect(side!.color, const Color(0xFF184C9F));
       expect(side.width, greaterThanOrEqualTo(2));
       expect(
         tester.getSemantics(find.byType(IconButton).first),

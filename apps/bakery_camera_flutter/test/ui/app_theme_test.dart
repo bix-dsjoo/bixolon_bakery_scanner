@@ -1,17 +1,24 @@
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('evaluator typography follows the compact desktop hierarchy', () {
+  test('customer typography follows the production POS hierarchy', () {
     final textTheme = buildBakeryTheme().textTheme;
 
-    expect(textTheme.titleLarge?.fontSize, 20);
-    expect(textTheme.titleLarge?.fontWeight?.value, 700);
-    expect(textTheme.titleMedium?.fontSize, 14);
-    expect(textTheme.titleMedium?.fontWeight?.value, 600);
+    expect(textTheme.headlineSmall?.fontSize, 24);
+    expect(textTheme.headlineSmall?.fontWeight, FontWeight.w500);
+    expect(textTheme.titleLarge?.fontSize, 18);
+    expect(textTheme.titleLarge?.fontWeight, FontWeight.w600);
+    expect(textTheme.titleMedium?.fontSize, 15);
+    expect(textTheme.titleMedium?.fontWeight, FontWeight.w600);
+    expect(textTheme.bodyLarge?.fontSize, 14);
+    expect(textTheme.bodyLarge?.fontWeight, FontWeight.w500);
     expect(textTheme.bodyMedium?.fontSize, 13);
-    expect(textTheme.bodyMedium?.fontWeight?.value, 400);
+    expect(textTheme.bodyMedium?.fontWeight, FontWeight.w400);
+    expect(textTheme.labelLarge?.fontSize, 16);
+    expect(textTheme.labelLarge?.fontWeight, FontWeight.w600);
     expect(textTheme.labelMedium?.fontSize, 12);
-    expect(textTheme.labelMedium?.fontWeight?.value, 500);
+    expect(textTheme.labelMedium?.fontWeight, FontWeight.w500);
   });
 }
