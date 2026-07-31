@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/customer_checkout_journey_fixture.dart';
 import '../support/inference_fixtures.dart';
 
 void main() {
@@ -346,11 +347,27 @@ void main() {
   testWidgets('customer ready state matches the approved 1280 kiosk layout', (
     tester,
   ) async {
+    final fixture = (await tester.runAsync(() async {
+      final fixture = await CustomerCheckoutJourneyFixture.create();
+      await fixture.controller.initialize();
+      return fixture;
+    }))!;
+    addTearDown(() => tester.runAsync(fixture.dispose));
+
     await _golden(
       tester,
-      const ReadyView(onScan: _noop),
+      CustomerCheckoutScreen(
+        controller: fixture.controller,
+        onEnterAdmin: ({required abandonConfirmed}) async => true,
+      ),
       'customer_ready_1280x820.png',
     );
+    final header = tester.getRect(find.byKey(const Key('customer-header')));
+    final adminAction = tester.getRect(
+      find.byKey(const Key('customer-header-action')),
+    );
+    final headerInset = ((header.width - 1240) / 2).clamp(0.0, double.infinity);
+    expect(adminAction.right, closeTo(header.right - headerInset - 24, 1));
   });
 
   testWidgets('customer retake state matches the approved 1280 kiosk layout', (
