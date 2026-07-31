@@ -37,6 +37,7 @@ from bakery_scanner.experiments.rpc_scoring import (
     materialize_locked_ground_truth,
 )
 from bakery_scanner.experiments import rpc_scoring as _rpc_scoring
+from bakery_scanner.experiments.rpc_support import SupportCandidate, materialize_support_bank, parse_train_capture_stratum, write_support_bank
 
 
 ROOT = Path(__file__).parents[2]
@@ -336,6 +337,15 @@ def _locked_selection_artifacts(
         evidence_sha256=base_evidence_sha256,
     )
     for index, condition in enumerate(confirmations):
+        bank = materialize_support_bank(
+            {
+                1: (SupportCandidate(1, "novel", "novel_camera1-top.jpg", "a" * 64, 1, parse_train_capture_stratum("novel_camera1-top.jpg", 1), (1.0, 0.0)),),
+                2: (SupportCandidate(2, "base", "base_camera1-top.jpg", "b" * 64, 1, parse_train_capture_stratum("base_camera1-top.jpg", 2), (1.0, 0.0)),),
+            }, method="div", seeds=(seed,)
+        )
+        bank_path = _STAGE_FOUR_ARTIFACT_ROOT / f"bank-{fold}-{seed}-{index}.json"
+        if not bank_path.exists():
+            write_support_bank(bank_path, bank)
         candidate_plan = replace(
             _plan((condition.condition_id,), folds=(fold,), seeds=(seed,)),
             fold_base_artifacts=(base_artifact,),
@@ -358,9 +368,12 @@ def _locked_selection_artifacts(
                     candidate_evidence,
                     condition,
                     novel_prediction=None if condition.shot_count == 3 else 1,
+                    support_sha256=bank.sha256,
                 ),
-                reference_evidence_sha256=_write_evidence(reference_evidence, reference),
+                reference_evidence_sha256=_write_evidence(reference_evidence, reference, support_sha256=bank.sha256),
                 base_checkpoint_evidence_path=base_evidence_path,
+                support_bank_path=bank_path,
+                support_bank_sha256=bank.sha256,
             ),
         )
         path = _STAGE_FOUR_ARTIFACT_ROOT / f"confirmation-{fold}-{seed}-{index}.json"
@@ -463,6 +476,7 @@ def _write_evidence(
     *,
     novel_prediction: int | None = 1,
     base_prediction: int | None = 2,
+    support_sha256: str | None = None,
 ) -> str:
     rows = (
         {
@@ -479,7 +493,7 @@ def _write_evidence(
             "dinov3_global_scores": [0.9, 0.1],
             "dinov3_local_scores": [0.9, 0.1],
             "conditional_dino_executed": True,
-            **HASHES,
+            **{**HASHES, **({"support_sha256": support_sha256} if support_sha256 else {})},
         },
         {
             "sample_id": "base",
@@ -495,7 +509,7 @@ def _write_evidence(
             "dinov3_global_scores": [0.1, 0.9],
             "dinov3_local_scores": [0.1, 0.9],
             "conditional_dino_executed": False,
-            **HASHES,
+            **{**HASHES, **({"support_sha256": support_sha256} if support_sha256 else {})},
         },
     )
     content = b"".join(canonical_json_bytes(row) + b"\n" for row in rows)
@@ -809,6 +823,8 @@ def _non_final_score(
     candidate_evidence_sha256: str,
     reference_evidence_sha256: str,
     base_checkpoint_evidence_path: Path | None = None,
+    support_bank_path: Path | None = None,
+    support_bank_sha256: str | None = None,
 ) -> dict[str, object]:
     candidate_base = next(
         item for item in candidate_plan.fold_base_artifacts if item.fold == candidate.fold
@@ -838,7 +854,7 @@ def _non_final_score(
             "base_checkpoint_sha256": candidate_base.checkpoint_sha256,
             "base_checkpoint_evidence_sha256": candidate_base.evidence_sha256,
             "scoring_plan_sha256": candidate_plan.sha256,
-            **HASHES,
+            **{**HASHES, **({"support_sha256": support_bank_sha256} if support_bank_sha256 else {})},
         },
         "reference_provenance": {
             "condition_id": reference.condition_id,
@@ -847,8 +863,9 @@ def _non_final_score(
             "base_checkpoint_sha256": reference_base.checkpoint_sha256,
             "base_checkpoint_evidence_sha256": reference_base.evidence_sha256,
             "scoring_plan_sha256": reference_plan.sha256,
-            **HASHES,
+            **{**HASHES, **({"support_sha256": support_bank_sha256} if support_bank_sha256 else {})},
         },
+        **({"support_bank": {"path": str(support_bank_path), "sha256": support_bank_sha256}} if support_bank_path and support_bank_sha256 else {}),
         "fold_base_checkpoint": {
             "base_macro_final_correct_recall": 1.0,
             "checkpoint_sha256": candidate_base.checkpoint_sha256,
@@ -1010,7 +1027,7 @@ def test_yaml_scoring_plan_declares_bootstrap_matrix_ids_and_cohort():
         (ROOT / "experiments/20260731-rpc-fewshot/experiment.yaml").read_text(encoding="utf-8")
     )
     plan = payload["scoring_plan"]
-    expected = _cell_conditions(
+    expected = stage_one_conditions(
         seeds=tuple(payload["support_seeds"]),
         folds=tuple(payload["folds"]),
     )
