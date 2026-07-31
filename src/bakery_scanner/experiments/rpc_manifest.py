@@ -71,10 +71,20 @@ class RpcImage:
 
 
 @dataclass(frozen=True, slots=True)
+class RpcCategory:
+    """Immutable source COCO category metadata needed by experiment splits."""
+
+    category_id: int
+    name: str
+    supercategory: str
+
+
+@dataclass(frozen=True, slots=True)
 class RpcIndex:
     contract: RpcDatasetContract
     images: tuple[RpcImage, ...]
     objects: tuple[RpcObject, ...]
+    categories: tuple[RpcCategory, ...] = ()
 
 
 def load_rpc_index(contract: RpcDatasetContract, root: Path) -> RpcIndex:
@@ -89,20 +99,25 @@ def load_rpc_index(contract: RpcDatasetContract, root: Path) -> RpcIndex:
 
     images: list[RpcImage] = []
     objects: list[RpcObject] = []
+    categories: tuple[RpcCategory, ...] | None = None
     for split in _SPLITS:
         annotation_path = source_root / f"instances_{split}.json"
         content = _read_and_verify_annotation(annotation_path, contract.annotation_sha256[split])
         payload = _parse_coco(content, split)
-        split_images, split_objects, source_image_count = _index_split(
+        split_images, split_objects, split_categories, source_image_count = _index_split(
             source_root, split, payload
         )
+        if categories is None:
+            categories = split_categories
+        elif categories != split_categories:
+            raise ValueError("RPC category metadata differs between splits")
         if source_image_count != contract.image_counts[split]:
             raise ValueError(f"{split} image count mismatch")
         if split == "train2019" and len(split_images) != source_image_count:
             raise ValueError("train2019 images must have exactly one object")
         images.extend(split_images)
         objects.extend(split_objects)
-    return RpcIndex(contract, tuple(images), tuple(objects))
+    return RpcIndex(contract, tuple(images), tuple(objects), categories or ())
 
 
 def canonical_json_bytes(payload: object) -> bytes:
@@ -160,7 +175,7 @@ def _parse_coco(content: bytes, split: str) -> dict[str, Any]:
 
 def _index_split(
     source_root: Path, split: str, payload: dict[str, Any]
-) -> tuple[list[RpcImage], list[RpcObject], int]:
+) -> tuple[list[RpcImage], list[RpcObject], tuple[RpcCategory, ...], int]:
     image_records: dict[int, dict[str, Any]] = {}
     for record in payload["images"]:
         if not isinstance(record, dict) or type(record.get("id")) is not int:
@@ -185,12 +200,18 @@ def _index_split(
         image_records[image_id] = record
 
     category_ids: set[int] = set()
+    categories: list[RpcCategory] = []
     for record in payload["categories"]:
         if not isinstance(record, dict) or type(record.get("id")) is not int:
             raise ValueError(f"{split} malformed category record")
         if record["id"] in category_ids:
             raise ValueError(f"{split} duplicate category ID")
+        name = record.get("name")
+        supercategory = record.get("supercategory", "")
+        if not isinstance(name, str) or not name or not isinstance(supercategory, str):
+            raise ValueError(f"{split} malformed category record")
         category_ids.add(record["id"])
+        categories.append(RpcCategory(record["id"], name, supercategory))
 
     annotation_ids: set[int] = set()
     objects: list[RpcObject] = []
@@ -248,7 +269,7 @@ def _index_split(
                 sha256=source_sha256,
             )
         )
-    return indexed, objects, len(image_records)
+    return indexed, objects, tuple(sorted(categories, key=lambda item: item.category_id)), len(image_records)
 
 
 def _parse_bbox(
