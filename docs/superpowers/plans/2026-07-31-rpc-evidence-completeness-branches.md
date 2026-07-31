@@ -17,13 +17,14 @@
   single scoring, aggregation, and Stage-4 reconstruction require an explicit
   trusted RPC root. The verifier re-runs `load_rpc_index` with the immutable
   `RpcDatasetContract.default()` annotation hashes/counts and compares the
-  resolved `test2019` image/object identities exactly. Hermetic tests may inject
-  a separately constructed trusted `RpcIndex`; the resolved manifest is never a
-  trusted resolver.
-- Scene-role assignments must be an exact, duplicate-free domain match for all
-  trusted `val2019` and `test2019` image identities. Test rows are
-  `locked_acceptance`; validation rows are only calibration or development
-  selection. Foreign, train, omitted, and non-test role rows fail closed.
+  resolved `test2019` image/object identities exactly. Public APIs never accept
+  a caller-built `RpcIndex` or contract; hermetic tests patch a private loader
+  seam only. The resolved manifest is never a trusted resolver.
+- Scene-role assignments must exactly equal the deterministic
+  `build_scene_roles(..., split_version="rpc-2019-five-fold-v1")` output for
+  every trusted `val2019` and `test2019` image, including role, burst identity,
+  and difficulty. Foreign, train, omitted, renamed, split, and merged rows fail
+  closed.
 - All three branch vectors are finite, equal in length to the complete registered category order, and have deterministic first-maximum Top-1 behavior.
 - Stage-1 output reports RepViT-global and DINOv3-global summaries plus their Top-1 agreement.
 - Full scoring output retains RepViT-global, DINOv3-global, and DINOv3-local summaries.
@@ -77,11 +78,12 @@ Expected: all selected tests pass.
   and scoring, re-read the raw annotation files with `RpcDatasetContract.default()`,
   and compare the resolved locked test images and object identities to that raw
   index before accepting ground truth.
-- [x] Keep only explicit dependency injection of a separately created
-  `RpcIndex` for hermetic tests; do not permit a resolved source JSON route.
-- [x] Require the scene-role manifest to assign exactly every raw validation and
-  test image once, with valid split-specific roles; reject foreign rows.
-- [x] Add forged source and foreign validation-role regressions.
+- [x] Keep the test seam private: public materialization, scoring, aggregation,
+  Stage-4 reconstruction, and locked scheduling require a source root and load
+  `RpcDatasetContract.default()` internally.
+- [x] Require scene roles to exactly equal the canonical raw-index role builder
+  for all validation/test images, including burst identity and difficulty.
+- [x] Add forged source, foreign validation-role, and tampered burst regressions.
 
 ### Task 2: Three independent model branches
 

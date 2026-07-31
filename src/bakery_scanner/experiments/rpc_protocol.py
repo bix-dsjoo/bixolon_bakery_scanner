@@ -283,9 +283,7 @@ def validate_stage_four_confirmation_score_receipts(
     selection: StageFourSelection,
     receipt_paths: Iterable[Path],
     *,
-    trusted_source_root: Path | None = None,
-    trusted_index: object | None = None,
-    verify_derivation: bool = True,
+    trusted_source_root: Path,
 ) -> StageFourConfirmationBinding:
     """Resolve every Stage-4 claim to its canonical, immutable score receipt.
 
@@ -332,8 +330,6 @@ def validate_stage_four_confirmation_score_receipts(
                 receipt,
                 claim,
                 trusted_source_root=trusted_source_root,
-                trusted_index=trusted_index,
-                verify_derivation=verify_derivation,
             )
         )
     if len(bindings) != 1:
@@ -352,17 +348,13 @@ def validate_stage_four_binding_for_locked_target(
     scoring_plan: "ScoringPlan",
     base_checkpoint_sha256: str,
     base_checkpoint_evidence_sha256: str,
-    trusted_source_root: Path | None = None,
-    trusted_index: object | None = None,
-    verify_derivation: bool = True,
+    trusted_source_root: Path,
 ) -> StageFourConfirmationBinding:
     """Resolve Stage-4 bytes and bind their provenance to one Stage-5 target."""
     binding = validate_stage_four_confirmation_score_receipts(
         selection,
         receipt_paths,
         trusted_source_root=trusted_source_root,
-        trusted_index=trusted_index,
-        verify_derivation=verify_derivation,
     )
     binding.validate_locked_target(
         condition=condition,
@@ -380,9 +372,7 @@ def _validate_stage_four_confirmation_score_receipt(
     receipt: Mapping[str, object],
     claim: StageFourConfirmationReceipt,
     *,
-    trusted_source_root: Path | None,
-    trusted_index: object | None,
-    verify_derivation: bool,
+    trusted_source_root: Path,
 ) -> StageFourConfirmationBinding:
     required = {
         "schema_version",
@@ -500,12 +490,10 @@ def _validate_stage_four_confirmation_score_receipt(
         candidate,
         receipt.get("provisional_pass"),
     )
-    if verify_derivation:
-        _validate_stage_four_confirmation_derivation(
-            receipt,
-            trusted_source_root=trusted_source_root,
-            trusted_index=trusted_index,
-        )
+    _validate_stage_four_confirmation_derivation(
+        receipt,
+        trusted_source_root=trusted_source_root,
+    )
     return StageFourConfirmationBinding(
         cohort_manifest_sha256=locked_ground_truth,
         novel_category_ids=tuple(sorted(novel)),
@@ -520,8 +508,7 @@ def _validate_stage_four_confirmation_score_receipt(
 def _validate_stage_four_confirmation_derivation(
     receipt: Mapping[str, object],
     *,
-    trusted_source_root: Path | None,
-    trusted_index: object | None,
+    trusted_source_root: Path,
 ) -> None:
     """Delegate byte-level Stage-4 reconstruction to the score-artifact verifier.
 
@@ -538,7 +525,6 @@ def _validate_stage_four_confirmation_derivation(
         validate_stage_four_confirmation_derivation(
             receipt,
             trusted_source_root=trusted_source_root,
-            trusted_index=trusted_index,
         )
     except (ImportError, OSError, ValueError) as exc:
         raise ValueError("Stage-4 confirmation score receipt is not derivable from upstream artifacts") from exc
@@ -921,8 +907,7 @@ def locked_conditions(
     selection: StageFourSelection,
     *,
     confirmation_score_receipt_paths: Iterable[Path],
-    trusted_source_root: Path | None = None,
-    trusted_index: object | None = None,
+    trusted_source_root: Path,
 ) -> tuple[ExperimentCondition, ...]:
     """Materialize only the Stage-5 pair proven by four immutable Stage-4 files."""
     if not isinstance(selection, StageFourSelection):
@@ -931,7 +916,6 @@ def locked_conditions(
         selection,
         confirmation_score_receipt_paths,
         trusted_source_root=trusted_source_root,
-        trusted_index=trusted_index,
     )
     return _conditions(
         ((selection.method, selection.selector),),
@@ -1153,6 +1137,10 @@ class ExperimentReceipt:
         if self.status == "unavailable" and not self.reason:
             raise ValueError("unavailable receipt requires a reason")
         if self.condition.stage == "locked":
+            if self.status == "completed":
+                raise ValueError(
+                    "locked ExperimentReceipt cannot be completed; only the re-derived scorer aggregate is authoritative"
+                )
             if not isinstance(self.stage_four_selection, StageFourSelection):
                 raise ValueError("locked receipt requires a Stage-4 selection")
             selection = self.stage_four_selection
@@ -1171,18 +1159,6 @@ class ExperimentReceipt:
                 150,
             }:
                 raise ValueError("locked receipt condition does not match its Stage-4 selection")
-            validate_stage_four_binding_for_locked_target(
-                selection,
-                self.stage_four_confirmation_score_receipt_paths,
-                condition=self.condition,
-                cohort_manifest_sha256=self.cohort_manifest_sha256,
-                novel_category_ids=self.novel_category_ids,
-                base_category_ids=self.base_category_ids,
-                scoring_plan=self.scoring_plan,
-                base_checkpoint_sha256=self.base_checkpoint_sha256,
-                base_checkpoint_evidence_sha256=self.base_checkpoint_evidence_sha256,
-                verify_derivation=False,
-            )
         elif self.stage_four_selection is not None:
             raise ValueError("only locked receipts may bind a Stage-4 selection")
         elif self.stage_four_confirmation_score_receipt_paths:

@@ -24,9 +24,11 @@ from bakery_scanner.experiments.rpc_protocol import (
     ScoringPlan,
     stage_one_conditions,
 )
+from bakery_scanner.experiments import rpc_scoring as _rpc_scoring
 
 
 ROOT = Path(__file__).parents[2]
+_TEST_TRUSTED_ROOT = Path("C:/rpc-test-trusted-root")
 HASHES = {
     "condition_manifest_sha256": "a" * 64,
     "model_sha256": "b" * 64,
@@ -188,6 +190,32 @@ def _score_module():
     module = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = module
     specification.loader.exec_module(module)
+    public_score = module.score
+
+    def score_for_test(*args, trusted_index: RpcIndex, **kwargs):
+        _rpc_scoring._load_verified_default_rpc_index = lambda _root: trusted_index
+        _rpc_scoring._build_canonical_scene_roles = lambda trusted: tuple(
+            type(
+                "Role",
+                (),
+                {
+                    "split": image.split,
+                    "image_id": image.image_id,
+                    "role": "locked_acceptance",
+                    "burst_id": (
+                        "burst" if image.image_id < 3 else f"burst-{image.image_id}"
+                    ),
+                    "difficulty": image.level,
+                },
+            )
+            for image in trusted.images
+            if image.split == "test2019"
+        )
+        return public_score(
+            *args, trusted_source_root=_TEST_TRUSTED_ROOT, **kwargs
+        )
+
+    module.score = score_for_test
     return module
 
 

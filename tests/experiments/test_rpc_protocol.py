@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import importlib.util
+import inspect
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -24,8 +25,11 @@ from bakery_scanner.experiments.rpc_protocol import (
     refinement_shots,
     stage_one_conditions,
     write_experiment_receipt,
+    _condition_id,
 )
 from bakery_scanner.experiments.rpc_manifest import canonical_json_bytes
+from bakery_scanner.experiments import rpc_scoring
+from bakery_scanner.experiments import rpc_protocol as _rpc_protocol
 
 
 _HASH = "a" * 64
@@ -34,6 +38,23 @@ _COHORT = {
     "novel_category_ids": (1,),
     "base_category_ids": (2,),
 }
+_TEST_TRUSTED_ROOT = Path("C:/rpc-test-trusted-root")
+_public_locked_conditions = locked_conditions
+
+
+def locked_conditions(
+    selection: StageFourSelection,
+    *,
+    confirmation_score_receipt_paths,
+    trusted_index,
+):
+    """Test adapter for the scorer's private raw-index seam."""
+    rpc_scoring._load_verified_default_rpc_index = lambda _root: trusted_index
+    return _public_locked_conditions(
+        selection,
+        confirmation_score_receipt_paths=confirmation_score_receipt_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
 
 
 def _condition() -> ExperimentCondition:
@@ -368,7 +389,7 @@ def test_locked_experiment_receipt_rejects_foreign_stage_four_cohort_binding(
         ),
     )
 
-    with pytest.raises(ValueError, match="Stage-4.*cohort"):
+    with pytest.raises(ValueError, match="locked ExperimentReceipt cannot be completed"):
         ExperimentReceipt.completed(
             condition,
             condition_manifest_sha256=_HASH,
@@ -494,3 +515,60 @@ def test_receipt_serializes_canonical_json_and_refuses_replacement(tmp_path: Pat
     assert content == json.dumps(receipt.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     with pytest.raises(FileExistsError):
         write_experiment_receipt(output, receipt)
+
+
+def test_public_locked_artifact_apis_do_not_accept_caller_constructed_indexes():
+    """Only a verified RPC source root may establish trusted raw data."""
+    for function in (
+        rpc_scoring.load_locked_ground_truth,
+        rpc_scoring.materialize_locked_ground_truth,
+        rpc_scoring.score,
+        rpc_scoring.aggregate_score_receipts,
+        rpc_scoring.validate_stage_four_confirmation_derivation,
+        _rpc_protocol.locked_conditions,
+        _rpc_protocol.validate_stage_four_confirmation_score_receipts,
+        _rpc_protocol.validate_stage_four_binding_for_locked_target,
+    ):
+        signature = inspect.signature(function)
+        assert "trusted_index" not in signature.parameters
+        assert signature.parameters["trusted_source_root"].default is inspect.Signature.empty
+
+
+def test_locked_receipt_cannot_bypass_stage_four_derivation_at_construction():
+    """A structural training receipt is never an authority for Stage-5 completion."""
+    selection = _stage_four_selection()
+    condition = ExperimentCondition(
+        "m0", "div", 5, 0, 101, "locked",
+        _condition_id("m0", "div", 5, 0, 101, "locked"),
+    )
+    plan = ScoringPlan(
+        bootstrap_seed=7,
+        bootstrap_replicates=10,
+        folds=(0,),
+        support_seeds=(101,),
+        expected_condition_ids=(condition.condition_id,),
+        cohort_id="rpc-test",
+        registered_category_ids=(1, 2),
+        fold_base_artifacts=(
+            FoldBaseArtifact(0, "2" * 64, "3" * 64),
+        ),
+    )
+    with pytest.raises(ValueError, match="locked ExperimentReceipt cannot be completed"):
+        ExperimentReceipt.completed(
+            condition,
+            condition_manifest_sha256=_HASH,
+            model_sha256="b" * 64,
+            support_sha256="c" * 64,
+            calibration_sha256="d" * 64,
+            policy_sha256="e" * 64,
+            preprocessing_sha256="f" * 64,
+            code_sha256="0" * 64,
+            **_COHORT,
+            scoring_plan=plan,
+            base_checkpoint_sha256="2" * 64,
+            base_checkpoint_evidence_sha256="3" * 64,
+            environment_lock_digest="sha256:environment",
+            output_uri="file:///external/run",
+            stage_four_selection=selection,
+            stage_four_confirmation_score_receipt_paths=(),
+        )

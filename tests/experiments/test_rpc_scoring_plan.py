@@ -9,6 +9,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -35,9 +36,79 @@ from bakery_scanner.experiments.rpc_scoring import (
     load_locked_ground_truth,
     materialize_locked_ground_truth,
 )
+from bakery_scanner.experiments import rpc_scoring as _rpc_scoring
 
 
 ROOT = Path(__file__).parents[2]
+_TEST_TRUSTED_ROOT = Path("C:/rpc-test-trusted-root")
+_public_load_locked_ground_truth = load_locked_ground_truth
+_public_materialize_locked_ground_truth = materialize_locked_ground_truth
+_public_locked_conditions = locked_conditions
+
+
+def _install_trusted_index_for_test(index: RpcIndex) -> None:
+    """Private scorer seam; production APIs still require a trusted root."""
+    _rpc_scoring._load_verified_default_rpc_index = lambda _root: index
+    _rpc_scoring._build_canonical_scene_roles = lambda trusted: tuple(
+        SimpleNamespace(
+            split=image.split,
+            image_id=image.image_id,
+            role=(
+                "locked_acceptance"
+                if image.split == "test2019"
+                else "calibration"
+            ),
+            burst_id=(
+                "burst"
+                if image.split == "test2019" and image.image_id < 3
+                else (
+                    f"burst-{image.image_id}"
+                    if image.split == "test2019"
+                    else f"val-{image.image_id}"
+                )
+            ),
+            difficulty=image.level,
+        )
+        for image in trusted.images
+        if image.split in {"val2019", "test2019"}
+    )
+
+
+def load_locked_ground_truth(path: Path, *, trusted_index: RpcIndex):
+    _install_trusted_index_for_test(trusted_index)
+    return _public_load_locked_ground_truth(
+        path, trusted_source_root=_TEST_TRUSTED_ROOT
+    )
+
+
+def materialize_locked_ground_truth(
+    source_manifest_path: Path,
+    scene_role_manifest_path: Path,
+    output: Path,
+    *,
+    trusted_index: RpcIndex,
+) -> None:
+    _install_trusted_index_for_test(trusted_index)
+    _public_materialize_locked_ground_truth(
+        source_manifest_path,
+        scene_role_manifest_path,
+        output,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+
+
+def locked_conditions(
+    selection: StageFourSelection,
+    *,
+    confirmation_score_receipt_paths,
+    trusted_index: RpcIndex,
+):
+    _install_trusted_index_for_test(trusted_index)
+    return _public_locked_conditions(
+        selection,
+        confirmation_score_receipt_paths=confirmation_score_receipt_paths,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
 HASHES = {
     "condition_manifest_sha256": "a" * 64,
     "model_sha256": "b" * 64,
@@ -166,6 +237,24 @@ def _score_module():
     module = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = module
     specification.loader.exec_module(module)
+    public_aggregate = module.aggregate_score_receipts
+    public_condition_plan = module._condition_scoring_plan
+
+    def aggregate_for_test(*args, trusted_index: RpcIndex, **kwargs):
+        _install_trusted_index_for_test(trusted_index)
+        return public_aggregate(
+            *args, trusted_source_root=_TEST_TRUSTED_ROOT, **kwargs
+        )
+
+    def condition_plan_for_test(*args, trusted_index: RpcIndex | None = None, **kwargs):
+        if trusted_index is not None:
+            _install_trusted_index_for_test(trusted_index)
+        return public_condition_plan(
+            *args, trusted_source_root=_TEST_TRUSTED_ROOT, **kwargs
+        )
+
+    module.aggregate_score_receipts = aggregate_for_test
+    module._condition_scoring_plan = condition_plan_for_test
     return module
 
 
@@ -490,6 +579,43 @@ def test_locked_ground_truth_materializer_derives_the_full_source_cohort(
     }
 
 
+def test_locked_ground_truth_rejects_a_tampered_canonical_burst_identity(
+    tmp_path: Path,
+):
+    """A role file cannot split, merge, or rename a raw checkout burst."""
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, LOCKED_SOURCE_MANIFEST)
+    roles = {
+        **LOCKED_SCENE_ROLE_MANIFEST,
+        "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        "assignments": [
+            {
+                **assignment,
+                "burst_id": "forged-burst"
+                if assignment["split"] == "test2019" and assignment["image_id"] == 1
+                else assignment["burst_id"],
+            }
+            for assignment in LOCKED_SCENE_ROLE_MANIFEST["assignments"]
+        ],
+    }
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(roles_path, roles)
+    ground_truth_path = tmp_path / "ground-truth.json"
+    _write_canonical(
+        ground_truth_path,
+        {
+            **LOCKED_GROUND_TRUTH,
+            "source_manifest_path": source_path.name,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "scene_role_manifest_path": roles_path.name,
+            "scene_role_manifest_sha256": hashlib.sha256(roles_path.read_bytes()).hexdigest(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not exactly equal canonical trusted val/test roles"):
+        load_locked_ground_truth(ground_truth_path, trusted_index=_trusted_index())
+
+
 def test_locked_ground_truth_rejects_default_contract_claims_without_full_images(
     tmp_path: Path,
 ):
@@ -650,7 +776,7 @@ def test_locked_ground_truth_rejects_foreign_validation_scene_role(
         },
     )
 
-    with pytest.raises(ValueError, match="invalid locked ground-truth scene-role assignment"):
+    with pytest.raises(ValueError, match="does not exactly equal canonical trusted val/test roles"):
         load_locked_ground_truth(ground_truth_path, trusted_index=trusted)
 
 
@@ -842,9 +968,8 @@ def test_scoring_plan_is_immutable_and_receipt_binds_all_decision_inputs():
         )
 
 
-def test_single_scorer_rejects_a_foreign_stage_four_target_binding():
-    """Serialized locked receipts are revalidated before the single scorer runs."""
-    module = _score_module()
+def test_locked_structural_receipt_cannot_be_completed_before_single_scorer_runs():
+    """A training receipt cannot bypass scorer-owned Stage-4 derivation."""
     selection, paths = _locked_selection_artifacts(0, 101)
     condition = next(
         item
@@ -861,24 +986,21 @@ def test_single_scorer_rejects_a_foreign_stage_four_target_binding():
         expected_condition_ids=(condition.condition_id,),
     )
     base = plan.fold_base_artifacts[0]
-    receipt = ExperimentReceipt.completed(
-        condition,
-        **HASHES,
-        cohort_manifest_sha256=LOCKED_GROUND_TRUTH_SHA256,
-        novel_category_ids=(1,),
-        base_category_ids=(2,),
-        scoring_plan=plan,
-        base_checkpoint_sha256=base.checkpoint_sha256,
-        base_checkpoint_evidence_sha256=base.evidence_sha256,
-        environment_lock_digest="sha256:environment",
-        output_uri="file:///external/run",
-        stage_four_selection=selection,
-        stage_four_confirmation_score_receipt_paths=tuple(str(path) for path in paths),
-    ).to_dict()
-    receipt["cohort"]["manifest_sha256"] = "9" * 64  # type: ignore[index]
-
-    with pytest.raises(ValueError, match="locked target cohort does not match Stage-4 cohort"):
-        module._condition_scoring_plan(receipt, trusted_index=_trusted_index())
+    with pytest.raises(ValueError, match="locked ExperimentReceipt cannot be completed"):
+        ExperimentReceipt.completed(
+            condition,
+            **HASHES,
+            cohort_manifest_sha256=LOCKED_GROUND_TRUTH_SHA256,
+            novel_category_ids=(1,),
+            base_category_ids=(2,),
+            scoring_plan=plan,
+            base_checkpoint_sha256=base.checkpoint_sha256,
+            base_checkpoint_evidence_sha256=base.evidence_sha256,
+            environment_lock_digest="sha256:environment",
+            output_uri="file:///external/run",
+            stage_four_selection=selection,
+            stage_four_confirmation_score_receipt_paths=tuple(str(path) for path in paths),
+        )
 
 
 def test_yaml_scoring_plan_declares_bootstrap_matrix_ids_and_cohort():

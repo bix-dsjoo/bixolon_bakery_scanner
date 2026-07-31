@@ -351,8 +351,14 @@ an authority: materialization and all real scoring commands require an explicit
 trusted RPC root, re-read and hash the raw annotations against
 `RpcDatasetContract.default()`, and compare resolved test images/objects to the
 independently parsed index. Scene roles must exactly cover raw `val2019` and
-`test2019` images once; foreign/train rows fail closed. Scorers and score
-receipts retain all three digests.
+`test2019` images with the canonical deterministic role, burst, and difficulty
+for split version `rpc-2019-five-fold-v1`; foreign, renamed, split, merged, or
+train rows fail closed. Public materialization, scoring, aggregation, Stage-4
+reconstruction, and locked scheduling accept only a trusted source root and
+internally load `RpcDatasetContract.default()`; the hermetic injection seam is
+private. Structural `ExperimentReceipt` records cannot claim a completed
+locked result—the re-derived scorer aggregate is the sole authoritative locked
+conclusion. Scorers and score receipts retain all three digests.
 
 **Files:**
 - Create: `src/bakery_scanner/experiments/rpc_metrics.py`
