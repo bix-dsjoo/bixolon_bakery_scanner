@@ -3,12 +3,11 @@ import 'package:flutter/material.dart';
 import '../../catalog/product.dart';
 import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
-import '../components/bakery_primary_button.dart';
-import '../components/checkout_scaffold.dart';
 import '../components/price_text.dart';
 import '../bixolon_theme_extension.dart';
 import 'captured_review_overlay.dart';
 import 'catalog_picker.dart';
+import 'checkout_review_workspace.dart';
 import 'customer_review_presentation.dart';
 
 /// Links every customer review ledger row to its object in the retained image.
@@ -102,95 +101,48 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
         .length;
     final allResolved = unresolvedCount == 0;
     final confirmedCount = widget.state.objectDrafts.length - unresolvedCount;
-    final imagePath = widget.state.capturedEvidenceDisplayPath;
-    final imageWidth = widget.state.capturedImageWidth;
-    final imageHeight = widget.state.capturedImageHeight;
-    final hasCaptureOverlay =
-        imagePath != null &&
-        imageWidth != null &&
-        imageWidth > 0 &&
-        imageHeight != null &&
-        imageHeight > 0;
-
-    return CheckoutScaffold(
-      title: '\uBE75 \uD655\uC778',
-      maxWidth: 1240,
-      scrollable: false,
-      primaryAction: BakeryPrimaryButton(
-        label: allResolved
-            ? '\uC8FC\uBB38 \uD655\uC778'
-            : '\uD655\uC778\uD560 \uBE75 $unresolvedCount\uAC1C \uB0A8\uC74C',
-        onPressed: allResolved ? widget.onContinue : null,
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 4, bottom: 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _ReviewProgress(
-              totalCount: widget.state.objectDrafts.length,
-              confirmedCount: confirmedCount,
-              unresolvedCount: unresolvedCount,
+    return CheckoutReviewWorkspace(
+      state: widget.state,
+      presentation: presentation,
+      selectedObjectId: selectedObjectId,
+      onSelectObject: _selectObject,
+      taskTitle: selectedDraft?.isResolved == false
+          ? '${presentation.objects.where((item) => item.objectId == selectedObjectId).firstOrNull?.numberLabel ?? ''}번 · 상품 확인 필요'
+          : '주문 내역',
+      taskContent: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ReviewProgress(
+            totalCount: widget.state.objectDrafts.length,
+            confirmedCount: confirmedCount,
+            unresolvedCount: unresolvedCount,
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: _ReviewTaskPane(
+              presentation: presentation,
+              state: widget.state,
+              selectedObjectId: selectedObjectId,
+              selectedDraft: selectedDraft,
+              onSelectObject: _selectObject,
+              productForCandidate: widget.productForCandidate,
+              onChooseTop3: widget.onChooseTop3,
+              onOpenCatalog: widget.onOpenCatalog,
+              onRetakeCapture: widget.onRetakeCapture,
+              catalogDiscovery: widget.catalogDiscovery,
+              catalogSearch: widget.catalogSearch,
+              onCatalogSelected: widget.onCatalogSelected,
+              onCloseCatalog: widget.onCloseCatalog,
             ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final horizontal = constraints.maxWidth >= 760;
-                  final scene = _ReviewScenePane(
-                    hasCaptureOverlay: hasCaptureOverlay,
-                    imagePath: imagePath,
-                    imageWidth: imageWidth,
-                    imageHeight: imageHeight,
-                    presentation: presentation,
-                    selectedObjectId: selectedObjectId,
-                    onSelectObject: _selectObject,
-                    imageProviderFactory: widget.imageProviderFactory,
-                  );
-                  final tasks = _ReviewTaskPane(
-                    presentation: presentation,
-                    state: widget.state,
-                    selectedObjectId: selectedObjectId,
-                    selectedDraft: selectedDraft,
-                    onSelectObject: _selectObject,
-                    productForCandidate: widget.productForCandidate,
-                    onChooseTop3: widget.onChooseTop3,
-                    onOpenCatalog: widget.onOpenCatalog,
-                    onRetakeCapture: widget.onRetakeCapture,
-                    catalogDiscovery: widget.catalogDiscovery,
-                    catalogSearch: widget.catalogSearch,
-                    onCatalogSelected: widget.onCatalogSelected,
-                    onCloseCatalog: widget.onCloseCatalog,
-                  );
-                  if (!horizontal) {
-                    return Column(
-                      children: [
-                        Expanded(flex: 3, child: scene),
-                        const SizedBox(height: 12),
-                        Expanded(flex: 4, child: tasks),
-                      ],
-                    );
-                  }
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(flex: 3, child: scene),
-                      const SizedBox(width: 20),
-                      VerticalDivider(
-                        key: const Key('customer-review-workspace-divider'),
-                        width: 1,
-                        thickness: 1,
-                      ),
-                      const SizedBox(width: 20),
-                      Expanded(flex: 2, child: tasks),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
+      primaryActionLabel: allResolved ? '주문 확인' : '확인할 빵 $unresolvedCount개 남음',
+      onPrimaryAction: allResolved ? widget.onContinue : null,
+      imageProviderFactory: widget.imageProviderFactory,
+      legacySceneKey: const Key('customer-review-scene-pane'),
+      legacyTaskKey: const Key('customer-review-task-pane'),
+      legacyDividerKey: const Key('customer-review-workspace-divider'),
     );
   }
 }
@@ -242,79 +194,6 @@ class _ReviewProgress extends StatelessWidget {
   }
 }
 
-class _ReviewScenePane extends StatelessWidget {
-  const _ReviewScenePane({
-    required this.hasCaptureOverlay,
-    required this.imagePath,
-    required this.imageWidth,
-    required this.imageHeight,
-    required this.presentation,
-    required this.selectedObjectId,
-    required this.onSelectObject,
-    required this.imageProviderFactory,
-  });
-
-  final bool hasCaptureOverlay;
-  final String? imagePath;
-  final int? imageWidth;
-  final int? imageHeight;
-  final CustomerReviewPresentation presentation;
-  final String? selectedObjectId;
-  final ValueChanged<String> onSelectObject;
-  final CustomerReviewImageProviderFactory imageProviderFactory;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      key: const Key('customer-review-scene-pane'),
-      padding: const EdgeInsets.only(right: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '\uCD2C\uC601\uD55C \uD2B8\uB808\uC774',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: Center(
-              child: hasCaptureOverlay
-                  ? CapturedReviewOverlay(
-                      imagePath: imagePath!,
-                      imageWidth: imageWidth!,
-                      imageHeight: imageHeight!,
-                      objects: presentation.objects,
-                      selectedObjectId: selectedObjectId,
-                      onSelectObject: onSelectObject,
-                      imageProviderFactory: imageProviderFactory,
-                    )
-                  : const _MissingCapture(),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MissingCapture extends StatelessWidget {
-  const _MissingCapture();
-
-  @override
-  Widget build(BuildContext context) => const Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.image_not_supported_outlined),
-        SizedBox(height: 8),
-        Text(
-          '\uCD2C\uC601 \uC774\uBBF8\uC9C0\uB97C \uD45C\uC2DC\uD560 \uC218 \uC5C6\uC5B4\uC694.',
-        ),
-      ],
-    ),
-  );
-}
-
 class _ReviewTaskPane extends StatelessWidget {
   const _ReviewTaskPane({
     required this.presentation,
@@ -360,208 +239,105 @@ class _ReviewTaskPane extends StatelessWidget {
         .where((item) => item.objectId == selectedObjectId)
         .toList(growable: false);
     final selectedItem = selectedItems.firstOrNull;
+    final activeDraft = selectedDraft;
     final catalog = catalogDiscovery;
     final searchCatalog = catalogSearch;
     final selectCatalog = onCatalogSelected;
-    return KeyedSubtree(
-      key: const Key('customer-review-task-pane'),
-      child: catalog != null && searchCatalog != null && selectCatalog != null
-          ? SingleChildScrollView(
-              padding: const EdgeInsets.only(left: 4),
-              child: CatalogPicker(
-                discovery: catalog,
-                search: searchCatalog,
-                onSelected: selectCatalog,
-                onClose: onCloseCatalog,
-              ),
-            )
-          : Column(
+    return catalog != null && searchCatalog != null && selectCatalog != null
+        ? SingleChildScrollView(
+            padding: const EdgeInsets.only(left: 4),
+            child: CatalogPicker(
+              discovery: catalog,
+              search: searchCatalog,
+              onSelected: selectCatalog,
+              onClose: onCloseCatalog,
+            ),
+          )
+        : SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(4, 0, 0, 12),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-                  child: Text(
-                    selectedDraft?.isResolved == false
-                        ? '${selectedItem?.numberLabel ?? ''}\uBC88 \uBE75\uB9CC \uD655\uC778\uD574 \uC8FC\uC138\uC694'
-                        : '\uC778\uC2DD\uD55C \uBE75',
-                    style: Theme.of(context).textTheme.titleLarge,
+                for (final item in presentation.objects)
+                  if (_draftFor(item.objectId) case final draft?)
+                    if (draft.isResolved) ...[
+                      _ReviewLedgerRow(
+                        item: item,
+                        draft: draft,
+                        selected: item.objectId == selectedObjectId,
+                        onTap: () => onSelectObject(item.objectId),
+                      ),
+                      Divider(color: tokens.divider, height: 1),
+                    ],
+                if (selectedItem != null &&
+                    activeDraft != null &&
+                    !activeDraft.isResolved) ...[
+                  _ReviewLedgerRow(
+                    item: selectedItem,
+                    draft: activeDraft,
+                    selected: true,
+                    onTap: () => onSelectObject(selectedItem.objectId),
                   ),
-                ),
-                SizedBox(
-                  height: 64,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final objects = presentation.objects;
-                      if (objects.length <= 5) {
-                        const horizontalPadding = 8.0;
-                        const gap = 4.0;
-                        final width =
-                            (constraints.maxWidth -
-                                (horizontalPadding * 2) -
-                                (gap * (objects.length - 1))) /
-                            objects.length;
-                        return Padding(
-                          padding: const EdgeInsets.only(
-                            right: horizontalPadding,
-                          ),
-                          child: Row(
-                            children: [
-                              for (
-                                var index = 0;
-                                index < objects.length;
-                                index++
-                              ) ...[
-                                if (index > 0) const SizedBox(width: gap),
-                                _ReviewLedgerRow(
-                                  width: width,
-                                  item: objects[index],
-                                  draft: _draftFor(objects[index].objectId),
-                                  selected:
-                                      objects[index].objectId ==
-                                      selectedObjectId,
-                                  onTap: () =>
-                                      onSelectObject(objects[index].objectId),
-                                ),
-                              ],
-                            ],
-                          ),
-                        );
-                      }
-                      return ListView.separated(
-                        padding: const EdgeInsets.only(right: 8),
-                        scrollDirection: Axis.horizontal,
-                        itemCount: objects.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 4),
-                        itemBuilder: (context, index) {
-                          final item = objects[index];
-                          return _ReviewLedgerRow(
-                            width: 96,
-                            item: item,
-                            draft: _draftFor(item.objectId),
-                            selected: item.objectId == selectedObjectId,
-                            onTap: () => onSelectObject(item.objectId),
-                          );
-                        },
-                      );
-                    },
+                  Divider(color: tokens.divider, height: 1),
+                  const SizedBox(height: 12),
+                  _SelectedObjectActions(
+                    item: selectedItem,
+                    draft: activeDraft,
+                    productForCandidate: productForCandidate,
+                    onChooseTop3: onChooseTop3,
+                    onOpenCatalog: onOpenCatalog,
+                    onRetakeCapture: onRetakeCapture,
                   ),
-                ),
-                Divider(color: tokens.divider),
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(4, 4, 0, 12),
-                    child: selectedItem == null || selectedDraft == null
-                        ? const SizedBox.shrink()
-                        : selectedDraft!.isResolved
-                        ? _ResolvedObjectSummary(
-                            draft: selectedDraft!,
-                            onChange: () => onOpenCatalog(
-                                selectedDraft!.inferenceObject.objectId,
-                            ),
-                          )
-                        : _SelectedObjectActions(
-                            item: selectedItem,
-                            draft: selectedDraft!,
-                            productForCandidate: productForCandidate,
-                            onChooseTop3: onChooseTop3,
-                            onOpenCatalog: onOpenCatalog,
-                            onRetakeCapture: onRetakeCapture,
-                          ),
-                  ),
-                ),
+                ],
               ],
             ),
-    );
+          );
   }
 }
 
 class _ReviewLedgerRow extends StatelessWidget {
   const _ReviewLedgerRow({
-    required this.width,
     required this.item,
     required this.draft,
     required this.selected,
     required this.onTap,
   });
 
-  final double width;
   final CustomerReviewObject item;
-  final ObjectDraft? draft;
+  final ObjectDraft draft;
   final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final tokens = BixolonThemeExtension.of(context);
-    final confirmed = draft?.isResolved ?? false;
-    return SizedBox(
-      width: width,
-      child: ListTile(
-        key: Key('customer-review-row-${item.objectId}'),
-        dense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 6),
-        horizontalTitleGap: 4,
-        selected: selected,
-        selectedTileColor: tokens.selectedSurface,
-        leading: Icon(
-          confirmed ? Icons.check_circle : Icons.help_outline,
-          color: confirmed ? tokens.confirmed : tokens.uncertainty,
-          size: 20,
-        ),
-        title: Text(
-          '${item.numberLabel}\uBC88',
-          maxLines: 1,
-          style: Theme.of(context).textTheme.labelLarge,
-        ),
-        subtitle: Text(
-          confirmed ? '\uD655\uC778' : '\uD655\uC778 \uD544\uC694',
-          maxLines: 1,
-        ),
-        onTap: onTap,
+    final confirmed = draft.isResolved;
+    return ListTile(
+      key: Key('customer-review-row-${item.objectId}'),
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      horizontalTitleGap: 8,
+      selected: selected,
+      selectedTileColor: tokens.selectedSurface,
+      leading: Icon(
+        confirmed ? Icons.check_circle : Icons.help_outline,
+        color: confirmed ? tokens.confirmed : tokens.uncertainty,
+        size: 20,
       ),
-    );
-  }
-}
-
-class _ResolvedObjectSummary extends StatelessWidget {
-  const _ResolvedObjectSummary({required this.draft, required this.onChange});
-
-  final ObjectDraft draft;
-  final VoidCallback onChange;
-
-  @override
-  Widget build(BuildContext context) {
-    final product = draft.product!;
-    final tokens = BixolonThemeExtension.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Icon(Icons.check_circle, color: tokens.confirmed),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('선택한 상품'),
-                const SizedBox(height: 4),
-                Text(
-                  product.displayName,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              PriceText(amount: product.unitPrice),
-              const SizedBox(height: 4),
-              TextButton(onPressed: onChange, child: const Text('변경')),
-            ],
-          ),
-        ],
+      title: Text(
+        confirmed
+            ? draft.product!.displayName
+            : '${item.numberLabel}번 · 상품 확인 필요',
+        maxLines: 1,
+        style: Theme.of(context).textTheme.labelLarge,
       ),
+      subtitle: Text(
+        confirmed
+            ? '${item.numberLabel}번 · 개당 ${PriceText.formatKrw(draft.product!.unitPrice)}'
+            : '아래 후보 중에서 선택해 주세요',
+        maxLines: 1,
+      ),
+      onTap: onTap,
     );
   }
 }
@@ -612,7 +388,7 @@ class _SelectedObjectActions extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         if (!draft.requiresCatalogSelection)
-          for (final candidate in draft.candidates)
+          for (final (index, candidate) in draft.candidates.indexed)
             if (productForCandidate(objectId, candidate.skuId)
                 case final product?) ...[
               OutlinedButton(
@@ -626,7 +402,17 @@ class _SelectedObjectActions extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    Expanded(child: Text(product.displayName)),
+                    SizedBox(
+                      width: 52,
+                      child: Text(
+                        'Top ${index + 1}',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                    ),
+                    if (product.displayName != 'Top ${index + 1}')
+                      Expanded(child: Text(product.displayName))
+                    else
+                      const Spacer(),
                     PriceText(amount: product.unitPrice),
                     const SizedBox(width: 8),
                     const Icon(Icons.chevron_right),

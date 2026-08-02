@@ -95,6 +95,10 @@ void main() {
   testWidgets(
     'catalog search keeps the retained scene visible and returns to the same exception',
     (tester) async {
+      tester.view.physicalSize = const Size(1280, 820);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final fixture = (await tester.runAsync(() async {
         final fixture = await CustomerCheckoutJourneyFixture.create();
         await fixture.controller.initialize();
@@ -138,7 +142,6 @@ void main() {
         await fixture.controller.initialize();
         await fixture.controller.scan();
         await fixture.controller.chooseTop3('object-2', 10);
-        await fixture.controller.continueToOrderReview();
         return fixture;
       }))!;
       addTearDown(() => tester.runAsync(fixture.dispose));
@@ -198,7 +201,6 @@ void main() {
       await fixture.controller.initialize();
       await fixture.controller.scan();
       await fixture.controller.chooseTop3('object-2', 10);
-      await fixture.controller.continueToOrderReview();
       return fixture;
     }))!;
     addTearDown(() => tester.runAsync(fixture.dispose));

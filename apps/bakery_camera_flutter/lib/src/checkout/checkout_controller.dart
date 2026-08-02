@@ -730,9 +730,10 @@ final class CheckoutController extends ChangeNotifier {
     ];
     final lines = _linesFor(drafts);
     await _auditStore.replaceDraftOrder(_requireSession(), lines);
+    final allResolved = drafts.every((value) => value.isResolved);
     _replaceState(
       CheckoutState(
-        phase: _state.phase == CheckoutPhase.orderReview
+        phase: _state.phase == CheckoutPhase.orderReview || allResolved
             ? CheckoutPhase.orderReview
             : CheckoutPhase.customerReview,
         objectDrafts: drafts,

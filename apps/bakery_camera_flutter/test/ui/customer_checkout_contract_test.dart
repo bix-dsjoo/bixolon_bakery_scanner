@@ -5,6 +5,7 @@ import 'package:bakery_camera_prototype/src/checkout/checkout_state.dart';
 import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/catalog_picker.dart';
+import 'package:bakery_camera_prototype/src/ui/customer/checkout_review_workspace.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_checkout_screen.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/customer_review_view.dart';
 import 'package:bakery_camera_prototype/src/ui/customer/order_review_view.dart';
@@ -16,6 +17,88 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/inference_fixtures.dart';
 
 void main() {
+  for (final scenario in ['candidate', 'automatic']) {
+    testWidgets('$scenario review uses one retained-scene checkout workspace', (
+      tester,
+    ) async {
+      final result = buildUiInferenceResult();
+      final acceptedProduct = _product('croissant', 'Croissant', 'pastry', 6);
+      final accepted = ObjectDraft.accepted(
+        inferenceObject: result.objects.first,
+        product: acceptedProduct,
+      );
+      final candidateProducts = {
+        10: _product('ten', 'Candidate A', 'sweet', 10),
+        11: _product('eleven', 'Candidate B', 'sweet', 11),
+        12: _product('twelve', 'Candidate C', 'sweet', 12),
+      };
+      final automatic = scenario == 'automatic';
+      final state = CheckoutState(
+        phase: automatic
+            ? CheckoutPhase.orderReview
+            : CheckoutPhase.customerReview,
+        objectDrafts: [
+          accepted,
+          if (!automatic) ObjectDraft.unresolved(result.objects.last),
+        ],
+        lines: [CheckoutLine(product: acceptedProduct, quantity: 1)],
+        capturedEvidenceDisplayPath: 'test/fixtures/missing-capture.jpg',
+        capturedImageWidth: 1920,
+        capturedImageHeight: 1080,
+      );
+
+      await _pump(
+        tester,
+        automatic
+            ? OrderReviewView(
+                state: state,
+                onSetQuantity: (_, _) {},
+                onAddProduct: () {},
+                onOverrideObject: (_) {},
+                onCountMismatch: () {},
+                onPay: () {},
+                onRemoveProduct: (_) {},
+              )
+            : CustomerReviewView(
+                state: state,
+                productForCandidate: (_, sku) => candidateProducts[sku],
+                onChooseTop3: (_, _) {},
+                onOpenCatalog: (_) {},
+                onContinue: () {},
+              ),
+      );
+
+      expect(find.byType(CheckoutReviewWorkspace), findsOneWidget);
+      expect(
+        find.byKey(const Key('checkout-review-scene-pane')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('checkout-review-task-pane')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('checkout-review-workspace-divider')),
+        findsOneWidget,
+      );
+      if (automatic) {
+        expect(find.text('Top 1'), findsNothing);
+        final action = tester.widget<FilledButton>(
+          find.widgetWithText(FilledButton, '1,000원 결제하기'),
+        );
+        expect(action.onPressed, isNotNull);
+      } else {
+        expect(find.text('Top 1'), findsOneWidget);
+        expect(find.text('Top 2'), findsOneWidget);
+        expect(find.text('Top 3'), findsOneWidget);
+        final action = tester.widget<FilledButton>(
+          find.widgetWithText(FilledButton, '확인할 빵 1개 남음'),
+        );
+        expect(action.onPressed, isNull);
+      }
+    });
+  }
+
   testWidgets('catalog shows featured category search and stable active list', (
     tester,
   ) async {
@@ -200,8 +283,7 @@ void main() {
     final firstRow = find.byKey(const Key('customer-review-row-object-1'));
     expect(tester.widget<ListTile>(firstRow).selected, isTrue);
 
-    final secondRow = find.byKey(const Key('customer-review-row-object-2'));
-    await tester.tap(secondRow);
+    await tester.tap(find.byKey(const Key('customer-review-overlay-object-2')));
     await tester.pumpAndSettle();
     expect(
       tester.getRect(find.byKey(const Key('captured-review-full-scene'))),

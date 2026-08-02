@@ -105,6 +105,21 @@ void main() {
     expect(controller.state.capturedImageHeight, 1080);
   });
 
+  test('final Top 3 choice enters payable order review', () async {
+    worker.nextResult = buildUiInferenceResult();
+    await controller.initialize();
+    await controller.scan();
+
+    await controller.chooseTop3('object-2', 10);
+
+    expect(controller.state.phase, CheckoutPhase.orderReview);
+    expect(controller.state.canPay, isTrue);
+    expect(
+      controller.state.objectDrafts.every((draft) => draft.isResolved),
+      isTrue,
+    );
+  });
+
   test(
     'completion behavior is loaded once from the session settings snapshot',
     () async {
@@ -236,7 +251,6 @@ void main() {
       expect(controller.state.activeObject!.requiresCatalogSelection, isTrue);
 
       await controller.chooseCatalog('object-1', 'product-donut');
-      await controller.continueToOrderReview();
 
       expect(
         audit.resolutions.single.source,
@@ -306,22 +320,20 @@ void main() {
     );
   });
 
-  test('Top 3 choices preserve history and exact customer source', () async {
+  test('Top 3 choice records the exact customer source', () async {
     worker.nextResult = buildUiInferenceResult();
     await controller.initialize();
     await controller.scan();
 
     await controller.chooseTop3('object-2', 10);
-    await controller.chooseTop3('object-2', 11);
 
-    expect(audit.resolutions, hasLength(2));
+    expect(audit.resolutions, hasLength(1));
     expect(
       audit.resolutions.map((value) => value.source),
       everyElement(CustomerResolutionSource.customerTop3),
     );
     expect(audit.resolutions.map((value) => value.product.productId), [
       'product-donut',
-      'product-cream-donut',
     ]);
     expect(controller.state.activeObject, isNull);
   });
