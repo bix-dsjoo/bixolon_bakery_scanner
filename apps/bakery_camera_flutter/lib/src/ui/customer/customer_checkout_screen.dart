@@ -155,7 +155,7 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
                   widget.controller.setQuantity(productId, quantity),
               onAddProduct: _showAddCatalog,
               onOverrideObject: _showCatalogForObject,
-              onCountMismatch: () => widget.controller.reportCountMismatch(),
+              onCountMismatch: () => widget.controller.restartCapture(),
               onPay: () => widget.controller.pay(),
               onRemoveProduct: (productId) =>
                   widget.controller.removeProduct(productId),

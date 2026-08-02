@@ -224,6 +224,8 @@ void main() {
       find.byKey(const Key('order-review-selected-line')),
     );
     expect(selectedLine.selectedTileColor, const Color(0xFFFCEAD9));
+    expect(selectedLine.selectedColor, const Color(0xFF000000));
+    expect(selectedLine.iconColor, const Color(0xFF5C5C5C));
     expect(
       tester
           .widget<ListTile>(find.byKey(const Key('order-review-selected-line')))

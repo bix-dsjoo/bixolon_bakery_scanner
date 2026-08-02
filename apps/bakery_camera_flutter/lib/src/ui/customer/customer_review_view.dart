@@ -453,7 +453,12 @@ class _ReviewTaskPane extends StatelessWidget {
                     child: selectedItem == null || selectedDraft == null
                         ? const SizedBox.shrink()
                         : selectedDraft!.isResolved
-                        ? _ResolvedObjectSummary(draft: selectedDraft!)
+                        ? _ResolvedObjectSummary(
+                            draft: selectedDraft!,
+                            onChange: () => onOpenCatalog(
+                                selectedDraft!.inferenceObject.objectId,
+                            ),
+                          )
                         : _SelectedObjectActions(
                             item: selectedItem,
                             draft: selectedDraft!,
@@ -519,9 +524,10 @@ class _ReviewLedgerRow extends StatelessWidget {
 }
 
 class _ResolvedObjectSummary extends StatelessWidget {
-  const _ResolvedObjectSummary({required this.draft});
+  const _ResolvedObjectSummary({required this.draft, required this.onChange});
 
   final ObjectDraft draft;
+  final VoidCallback onChange;
 
   @override
   Widget build(BuildContext context) {
@@ -537,9 +543,7 @@ class _ResolvedObjectSummary extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '\uC790\uB3D9\uC73C\uB85C \uD655\uC778\uD588\uC5B4\uC694',
-                ),
+                const Text('선택한 상품'),
                 const SizedBox(height: 4),
                 Text(
                   product.displayName,
@@ -548,7 +552,14 @@ class _ResolvedObjectSummary extends StatelessWidget {
               ],
             ),
           ),
-          PriceText(amount: product.unitPrice),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              PriceText(amount: product.unitPrice),
+              const SizedBox(height: 4),
+              TextButton(onPressed: onChange, child: const Text('변경')),
+            ],
+          ),
         ],
       ),
     );
@@ -574,8 +585,22 @@ class _SelectedObjectActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (draft.isResolved) return const SizedBox.shrink();
     final objectId = draft.inferenceObject.objectId;
+    if (draft.isResolved) {
+      return Column(
+        key: Key('customer-review-selected-panel-$objectId'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('선택한 상품: ${draft.product!.displayName}'),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () => onOpenCatalog(objectId),
+            icon: const Icon(Icons.edit_outlined),
+            label: const Text('변경'),
+          ),
+        ],
+      );
+    }
     return Column(
       key: Key('customer-review-candidate-panel-$objectId'),
       crossAxisAlignment: CrossAxisAlignment.stretch,

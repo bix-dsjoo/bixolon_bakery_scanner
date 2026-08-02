@@ -254,6 +254,12 @@ final class CheckoutController extends ChangeNotifier {
     _replaceState(_emptyState(CheckoutPhase.ready));
   }
 
+  /// Records a customer-requested rescan, then returns directly to live capture.
+  Future<void> restartCapture() async {
+    await reportCountMismatch();
+    await retake();
+  }
+
   Future<void> enterManualCart() async {
     _ensurePhase(CheckoutPhase.retakeRequired, 'manual cart');
     if (!manualCartEligible) {

@@ -28,8 +28,8 @@ void main() {
       final snapshot = await repository.activeCatalog();
       final revisions = await database.select(database.catalogRevisions).get();
 
-      expect(snapshot.revision.revisionId, 'catalog-v1.1.0-r2');
-      expect(snapshot.products, hasLength(6));
+      expect(snapshot.revision.revisionId, 'catalog-v1.1.0-r4');
+      expect(snapshot.products, hasLength(20));
       expect(
         snapshot.products.every((product) => product.unitPrice >= 0),
         isTrue,
@@ -41,12 +41,26 @@ void main() {
       );
       expect(revisions, hasLength(1));
       expect(snapshot.products.map((product) => product.productId), [
-        'product-almond-campagne',
         'product-walnut-donut',
+        'product-croffle',
+        'product-waffle',
+        'product-scon',
+        'product-half-moon-croissant',
         'product-croissant',
-        'product-pastry-bread',
+        'product-flower-bread',
+        'product-almond-scon',
+        'product-dinner-roll',
+        'product-sugar-donut',
+        'product-bagel',
+        'product-egg-tart',
+        'product-muffin',
+        'product-burger',
+        'product-sandwich',
+        'product-grain-campagne',
+        'product-almond-campagne',
         'product-mini-bread',
-        'product-cream-bun',
+        'product-pastry-bread',
+        'product-plain-bread',
       ]);
     },
   );
@@ -63,12 +77,26 @@ void main() {
             product.productId: product.recognitionSkuId,
         },
         {
-          'product-almond-campagne': 7,
-          'product-walnut-donut': 11,
+          'product-walnut-donut': 1,
+          'product-croffle': 2,
+          'product-waffle': 3,
+          'product-scon': 4,
+          'product-half-moon-croissant': 5,
           'product-croissant': 6,
-          'product-pastry-bread': 12,
-          'product-mini-bread': 20,
-          'product-cream-bun': null,
+          'product-flower-bread': 7,
+          'product-almond-scon': 8,
+          'product-dinner-roll': 9,
+          'product-sugar-donut': 10,
+          'product-bagel': 11,
+          'product-egg-tart': 12,
+          'product-muffin': 13,
+          'product-burger': 14,
+          'product-sandwich': 15,
+          'product-grain-campagne': 16,
+          'product-almond-campagne': 17,
+          'product-pastry-bread': 19,
+          'product-mini-bread': 18,
+          'product-plain-bread': 20,
         },
       );
     },
@@ -100,25 +128,10 @@ void main() {
       );
       expect(
         revisions
-            .singleWhere((row) => row.revisionId == 'catalog-v1.1.0-r2')
+            .singleWhere((row) => row.revisionId == 'catalog-v1.1.0-r4')
             .isActive,
         isTrue,
       );
-    },
-  );
-
-  test(
-    'seed preserves commercial identity independently from recognition SKU',
-    () async {
-      await seed.installIfEmpty();
-
-      final creamBun = (await repository.activeCatalog()).products.singleWhere(
-        (product) => product.productId == 'product-cream-bun',
-      );
-
-      expect(creamBun.displayName, '크림빵');
-      expect(creamBun.recognitionSkuId, isNull);
-      expect(await repository.productForRecognitionSku(17), isNull);
     },
   );
 }

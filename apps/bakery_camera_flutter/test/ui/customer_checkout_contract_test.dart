@@ -478,7 +478,7 @@ void main() {
       await tester.tap(find.byIcon(Icons.add).first);
       await tester.tap(find.byIcon(Icons.delete_outline));
       await tester.tap(find.text('상품 추가'));
-      await tester.tap(find.text('실제 빵 수가 달라요'));
+      await tester.tap(find.text('다시 촬영'));
       await tester.tap(find.byType(FilledButton));
       expect(
         actions,

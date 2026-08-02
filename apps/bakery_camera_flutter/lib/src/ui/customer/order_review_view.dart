@@ -316,10 +316,7 @@ class _OrderTaskPane extends StatelessWidget {
               label: '\uC0C1\uD488 \uCD94\uAC00',
               onPressed: onAddProduct,
             ),
-            BakerySecondaryButton(
-              label: '\uC2E4\uC81C \uBE75 \uC218\uAC00 \uB2EC\uB77C\uC694',
-              onPressed: onCountMismatch,
-            ),
+            BakerySecondaryButton(label: '다시 촬영', onPressed: onCountMismatch),
           ],
         ),
       ],
@@ -355,6 +352,8 @@ class _OrderLine extends StatelessWidget {
           : Key('order-review-line-${line.product.productId}'),
       selected: selected,
       selectedTileColor: BixolonThemeExtension.of(context).selectedSurface,
+      selectedColor: BixolonThemeExtension.of(context).ink,
+      iconColor: BixolonThemeExtension.of(context).mutedInk,
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       minTileHeight: 64,
       onTap: recognizedObjectIds.isEmpty

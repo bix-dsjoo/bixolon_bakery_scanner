@@ -78,7 +78,7 @@ final class CatalogSeed {
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('catalog seed must be a JSON object');
     }
-    if (decoded['revision_id'] != 'catalog-v1.1.0-r2' ||
+    if (decoded['revision_id'] != 'catalog-v1.1.0-r4' ||
         decoded['currency'] != 'KRW') {
       throw const FormatException('catalog seed has an unsupported revision');
     }
