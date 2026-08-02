@@ -288,6 +288,24 @@ void main() {
     },
   );
 
+  test('override restores the mapped AI product with AI source', () async {
+    worker.nextResult = _registeredResult();
+    await controller.initialize();
+    await controller.scan();
+
+    await controller.overrideResolvedProduct('object-1', 'product-donut');
+    await controller.overrideResolvedProduct('object-1', 'product-croissant');
+
+    expect(audit.resolutions.map((item) => item.product.productId), [
+      'product-donut',
+      'product-croissant',
+    ]);
+    expect(
+      audit.resolutions.last.source,
+      CustomerResolutionSource.aiAutoCustomerAccepted,
+    );
+  });
+
   test('Top 3 choices preserve history and exact customer source', () async {
     worker.nextResult = buildUiInferenceResult();
     await controller.initialize();

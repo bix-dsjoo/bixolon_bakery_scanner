@@ -361,10 +361,11 @@ final class CheckoutController extends ChangeNotifier {
     if (draft.inferenceObject.isUnknown || !draft.isResolved) {
       throw StateError('only an accepted registered result can be overridden');
     }
+    final product = _product(productId);
     await _resolve(
       draft: draft,
-      product: _product(productId),
-      source: CustomerResolutionSource.customerOverrodeAuto,
+      product: product,
+      source: _overrideSource(draft.inferenceObject, product),
     );
   }
 
@@ -968,6 +969,18 @@ final class CheckoutController extends ChangeNotifier {
       match = product;
     }
     return match;
+  }
+
+  CustomerResolutionSource _overrideSource(
+    InferenceObject object,
+    Product product,
+  ) {
+    final mappedProduct = object.skuId == null
+        ? null
+        : _productForRecognitionSku(object.skuId!);
+    return mappedProduct?.productId == product.productId
+        ? CustomerResolutionSource.aiAutoCustomerAccepted
+        : CustomerResolutionSource.customerOverrodeAuto;
   }
 
   Future<void> _releaseCanceledCapture(StagedAttempt? stagedAttempt) async {
