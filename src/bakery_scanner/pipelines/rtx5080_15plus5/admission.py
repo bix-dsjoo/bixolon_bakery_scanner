@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
+from types import MappingProxyType
 from typing import Callable, Literal, Mapping
 
 from .config import CandidateConfig
@@ -59,6 +60,13 @@ class EngineBinding:
     semantic: str
 
 
+_CANONICAL_ENGINE_BINDINGS = MappingProxyType({
+    "rfdetr_engine": (EngineBinding("images", "input", "float16", (1, 3, 640, 640), "canonical_rgb"),),
+    "repvit_engine": (EngineBinding("crops", "input", "float16", (14, 3, 224, 224), "repvit_crops"),),
+    "dinov3_engine": (EngineBinding("crops", "input", "float16", (7, 3, 224, 224), "dinov3_crops"),),
+})
+
+
 @dataclass(frozen=True, slots=True)
 class AdmissionReceipt:
     pipeline_id: str
@@ -88,6 +96,10 @@ def admit_candidate(
     """Verify every identity before any engine session can be constructed."""
     if not isinstance(config, CandidateConfig):
         raise AdmissionError("candidate configuration is invalid")
+    try:
+        config.__post_init__()
+    except ValueError as exc:
+        raise AdmissionError("candidate configuration is noncanonical") from exc
     root = Path(content_root).resolve()
     if not root.is_dir():
         raise AdmissionError(f"content root is missing: {root}")
@@ -107,7 +119,12 @@ def admit_candidate(
 
 
 def verify_declared_artifact(content_root: Path, item: ArtifactDeclaration) -> VerifiedArtifact:
-    path = Path(content_root).resolve().joinpath(*item.local_path.parts)
+    root = Path(content_root).resolve()
+    path = root.joinpath(*item.local_path.parts).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise AdmissionError(f"{item.artifact_id}: artifact path escapes content_root") from exc
     if not path.is_file():
         raise AdmissionError(f"{item.artifact_id}: artifact is missing: {item.local_path}")
     actual_bytes = path.stat().st_size
@@ -130,6 +147,8 @@ def require_exact_bindings(
     expected: Mapping[str, tuple[EngineBinding, ...]],
     observed: Mapping[str, tuple[Mapping[str, object], ...]],
 ) -> None:
+    if dict(expected) != dict(_CANONICAL_ENGINE_BINDINGS):
+        raise AdmissionError("canonical engine binding schema mismatch")
     if not isinstance(observed, Mapping):
         raise AdmissionError("TensorRT binding inspection returned an invalid schema")
     normalized_observed: dict[str, tuple[EngineBinding, ...]] = {}
@@ -140,8 +159,8 @@ def require_exact_bindings(
             normalized_observed[engine_id] = tuple(_binding(binding, f"observed {engine_id}") for binding in bindings)
     except AdmissionError:
         raise
-    if dict(expected) != normalized_observed:
-        raise AdmissionError("TensorRT binding schema mismatch")
+    if dict(_CANONICAL_ENGINE_BINDINGS) != normalized_observed:
+        raise AdmissionError("canonical engine binding schema mismatch")
 
 
 def _load_manifest(path: Path, content_root: Path, pipeline_id: str) -> _AdmissionManifest:
@@ -220,8 +239,9 @@ def _engines(value: object, artifacts: tuple[ArtifactDeclaration, ...]) -> Mappi
     if not isinstance(value, dict):
         raise AdmissionError("engines must be a mapping")
     engine_ids = {item.artifact_id for item in artifacts if item.kind == "engine"}
-    if set(value) != engine_ids:
-        raise AdmissionError("engine binding declarations must cover exactly the declared engines")
+    canonical_engine_ids = set(_CANONICAL_ENGINE_BINDINGS)
+    if engine_ids != canonical_engine_ids or set(value) != canonical_engine_ids:
+        raise AdmissionError("canonical engine roles must be exactly RF-DETR, RepViT, and DINOv3")
     parsed: dict[str, tuple[EngineBinding, ...]] = {}
     for engine_id in sorted(engine_ids):
         raw_bindings = value[engine_id]
@@ -231,7 +251,9 @@ def _engines(value: object, artifacts: tuple[ArtifactDeclaration, ...]) -> Mappi
         if len({binding.name for binding in bindings}) != len(bindings):
             raise AdmissionError(f"{engine_id}: binding names must be unique")
         parsed[engine_id] = bindings
-    return parsed
+    if parsed != dict(_CANONICAL_ENGINE_BINDINGS):
+        raise AdmissionError("canonical engine binding schema mismatch")
+    return MappingProxyType(parsed)
 
 
 def _binding(value: object, name: str) -> EngineBinding:

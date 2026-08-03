@@ -12,6 +12,15 @@ from typing import Mapping
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CENTER_TOLERANCE = 1e-6
+CANONICAL_SKUS = MappingProxyType({
+    1: "Walnut Donut", 2: "Croffle", 3: "Waffle", 4: "Scon",
+    5: "Half-moon Croissant", 6: "Croissant", 7: "Flower Bread",
+    8: "Almond Scon", 9: "Dinner Roll", 10: "Sugar Donut", 11: "Bagel",
+    12: "Egg Tart", 13: "Muffin", 14: "Burger", 15: "Sandwich",
+    16: "Grain Campagne", 17: "Almond Campagne", 18: "Mini Bread",
+    19: "Pastry Bread", 20: "Plain Bread",
+})
 
 
 class ScanState(str, Enum):
@@ -57,6 +66,20 @@ class ObjectLocation:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalFrame:
+    """Canonical EXIF-transposed RGB frame used by every object coordinate."""
+
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.width, int) or isinstance(self.width, bool) or self.width < 1:
+            raise ValueError("canonical frame width must be a positive integer")
+        if not isinstance(self.height, int) or isinstance(self.height, bool) or self.height < 1:
+            raise ValueError("canonical frame height must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateConfidence:
     detector_calibrated: float
     sku_acceptance_calibrated: float | None
@@ -82,8 +105,7 @@ class SkuCandidate:
     def __post_init__(self) -> None:
         if not isinstance(self.rank, int) or isinstance(self.rank, bool) or self.rank < 1:
             raise ValueError("rank must be a positive integer")
-        _sku(self.sku_id, "sku_id")
-        _non_empty(self.sku_name, "sku_name")
+        _canonical_sku(self.sku_id, self.sku_name, "SkuCandidate")
         _unit_interval(self.score, "score")
 
 
@@ -137,10 +159,7 @@ class FinalObject:
             if self.confidence.sku_acceptance_calibrated is not None:
                 raise ValueError("Unknown requires null SKU acceptance confidence")
         else:
-            _sku(self.sku_id, "sku_id")
-            _non_empty(self.sku_name, "sku_name")
-            if self.sku_name == "Unknown":
-                raise ValueError("registered SKU name must not be Unknown")
+            _canonical_sku(self.sku_id, self.sku_name, "FinalObject")
             if self.confidence.sku_acceptance_calibrated is None:
                 raise ValueError("approved SKU requires SKU acceptance confidence")
 
@@ -193,6 +212,7 @@ class ScanResult:
     reasons: tuple[RetakeReason, ...]
     timings_ms: StageTimings
     provenance: ScanProvenance
+    canonical_frame: CanonicalFrame
     manual_catalog_required: bool
     attempt: int | None = None
     problem_regions: tuple[ObjectLocation, ...] = ()
@@ -204,6 +224,8 @@ class ScanResult:
             raise ValueError("state must be a ScanState")
         if not isinstance(self.timings_ms, StageTimings) or not isinstance(self.provenance, ScanProvenance):
             raise ValueError("timings_ms and provenance must use immutable contracts")
+        if not isinstance(self.canonical_frame, CanonicalFrame):
+            raise ValueError("canonical_frame must use CanonicalFrame")
         if not isinstance(self.manual_catalog_required, bool):
             raise ValueError("manual_catalog_required must be boolean")
         if not isinstance(self.objects, tuple):
@@ -214,6 +236,7 @@ class ScanResult:
             raise ValueError("problem_regions must be an immutable tuple")
         if not all(isinstance(item, FinalObject) for item in self.objects):
             raise ValueError("objects must contain FinalObject values")
+        _validate_locations((item.location for item in self.objects), self.canonical_frame)
         _validate_object_order(self.objects)
         if len({item.object_id for item in self.objects}) != len(self.objects):
             raise ValueError("object_id values must be unique")
@@ -223,6 +246,7 @@ class ScanResult:
             raise ValueError("reasons must be unique")
         if not all(isinstance(region, ObjectLocation) for region in self.problem_regions):
             raise ValueError("problem_regions must contain ObjectLocation values")
+        _validate_locations(self.problem_regions, self.canonical_frame)
         if self.state is ScanState.NEEDS_RETAKE:
             if self.objects:
                 raise ValueError("needs_retake must not contain final objects")
@@ -233,6 +257,8 @@ class ScanResult:
             if self.manual_catalog_required != (self.attempt >= 3):
                 raise ValueError("manual_catalog_required is true only for needs_retake attempt 3 and later")
         elif self.state is ScanState.ACCEPTED:
+            if not 3 <= len(self.objects) <= 7:
+                raise ValueError("accepted_scan must contain 3 through 7 final objects")
             if self.reasons or self.problem_regions or self.attempt is not None or self.manual_catalog_required:
                 raise ValueError("accepted_scan must not carry retake fields")
         else:
@@ -263,12 +289,12 @@ class ScanResult:
         cls, *, scan_id: str, retake_chain_id: str, attempt: int,
         reasons: tuple[RetakeReason, ...], problem_regions: tuple[ObjectLocation, ...],
         objects: tuple[FinalObject, ...] = (), timings_ms: StageTimings,
-        provenance: ScanProvenance,
+        provenance: ScanProvenance, canonical_frame: CanonicalFrame,
     ) -> "ScanResult":
         return cls(
             scan_id=scan_id, retake_chain_id=retake_chain_id, state=ScanState.NEEDS_RETAKE,
             objects=objects, reasons=reasons, timings_ms=timings_ms, provenance=provenance,
-            manual_catalog_required=attempt >= 3, attempt=attempt, problem_regions=problem_regions,
+            canonical_frame=canonical_frame, manual_catalog_required=attempt >= 3, attempt=attempt, problem_regions=problem_regions,
         )
 
     def to_json_bytes(self) -> bytes:
@@ -295,6 +321,7 @@ def scan_result_payload(result: ScanResult) -> dict[str, object]:
         "reasons": [reason.value for reason in result.reasons],
         "problem_regions": [_location_payload(region) for region in result.problem_regions],
         "attempt": result.attempt,
+        "canonical_frame": {"width": result.canonical_frame.width, "height": result.canonical_frame.height},
         "timings_ms": asdict(result.timings_ms),
         "provenance": {
             "pipeline_id": result.provenance.pipeline_id,
@@ -345,6 +372,19 @@ def _validate_object_order(objects: tuple[FinalObject, ...]) -> None:
         raise ValueError("object_order must match deterministic object sequence")
 
 
+def _validate_locations(locations: object, frame: CanonicalFrame) -> None:
+    """Require in-bounds coordinates and center agreement within 1e-6 normalized units."""
+    for location in locations:
+        x_min, y_min, x_max, y_max = location.box_xyxy
+        if x_max > frame.width or y_max > frame.height:
+            raise ValueError("box_xyxy must remain in bounds of the canonical frame")
+        expected_x = (x_min + x_max) / (2 * frame.width)
+        expected_y = (y_min + y_max) / (2 * frame.height)
+        actual_x, actual_y = location.center_normalized
+        if abs(actual_x - expected_x) > _CENTER_TOLERANCE or abs(actual_y - expected_y) > _CENTER_TOLERANCE:
+            raise ValueError("center_normalized must agree with the canonical box center")
+
+
 def _finite_tuple(value: tuple[float, ...], length: int, name: str) -> None:
     if not isinstance(value, tuple) or len(value) != length:
         raise ValueError(f"{name} must be a tuple of length {length}")
@@ -363,9 +403,11 @@ def _unit_interval(value: object, name: str) -> None:
         raise ValueError(f"{name} must be within [0, 1]")
 
 
-def _sku(value: object, name: str) -> None:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"{name} must be a positive SKU integer")
+def _canonical_sku(value: object, sku_name: object, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value not in CANONICAL_SKUS:
+        raise ValueError(f"{name} must use a canonical SKU ID")
+    if sku_name != CANONICAL_SKUS[value]:
+        raise ValueError(f"{name} must use the canonical SKU name")
 
 
 def _non_empty(value: object, name: str) -> None:

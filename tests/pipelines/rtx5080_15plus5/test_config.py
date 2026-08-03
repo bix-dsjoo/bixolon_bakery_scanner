@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from bakery_scanner.pipelines.rtx5080_15plus5.config import load_candidate_config
+import pytest
+
+from bakery_scanner.pipelines.rtx5080_15plus5.config import (
+    CandidateConfig,
+    CandidateRuntimeConfig,
+    load_candidate_config,
+)
 
 
 CONFIG = Path("configs/pipelines/rtx5080_15plus5_single_frame_v1.yaml")
@@ -37,3 +44,20 @@ def test_evaluation_config_fixes_oof_and_all_latency_paths() -> None:
     assert evaluation.role_counts == {"train": 3, "calibration": 1, "evaluation": 1}
     assert evaluation.utility_floors["normal_scan_acceptance"] == {"overall": 0.80, "each": 0.70}
     assert evaluation.latency_paths == ("E", "M", "H", "overall", "dinov3", "needs_retake", "unknown")
+
+
+def test_direct_constructors_cannot_bypass_static_candidate_values() -> None:
+    valid = load_candidate_config(CONFIG)
+    with pytest.raises(ValueError, match="CUDA:0 FP16"):
+        CandidateRuntimeConfig("CPU", "FP16", 3, 7, 100.0, valid.runtime.stage_budgets_ms)
+    with pytest.raises(ValueError, match="stage_budgets_ms"):
+        CandidateRuntimeConfig("CUDA:0", "FP16", 3, 7, 100.0, {**valid.runtime.stage_budgets_ms, "detector": 35.0})
+    with pytest.raises(ValueError, match="pipeline_id"):
+        CandidateConfig(
+            "arbitrary_pipeline", valid.admission_manifest, valid.evaluation_config, valid.runtime,
+            14, 7, .85, valid.evaluation,
+        )
+    with pytest.raises(ValueError, match="batch sizes"):
+        replace(valid, repvit_batch_size=13)
+    with pytest.raises(ValueError, match="fusion_margin"):
+        replace(valid, fusion_margin=.84)

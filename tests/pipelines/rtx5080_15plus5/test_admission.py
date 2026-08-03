@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,14 @@ def _inspect_expected_engine_bindings(_: RuntimeIdentity) -> dict[str, tuple[dic
     }
 
 
+def _manifest(root: Path) -> dict[str, object]:
+    return json.loads((root / "admission.json").read_text(encoding="utf-8"))
+
+
+def _write_manifest(root: Path, manifest: dict[str, object]) -> None:
+    (root / "admission.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_admission_rejects_engine_hash_mismatch(candidate_root: Path, runtime_identity: RuntimeIdentity) -> None:
     (candidate_root / "engines" / "rfdetr.engine").write_bytes(b"wrong!")
 
@@ -96,3 +105,45 @@ def test_admission_accepts_only_exact_runtime_and_bindings(candidate_root: Path,
 
     assert receipt.admitted is True
     assert tuple(item.artifact_id for item in receipt.artifacts) == tuple(sorted(item.artifact_id for item in receipt.artifacts))
+
+
+def test_admission_rejects_missing_canonical_engine_role(candidate_root: Path, runtime_identity: RuntimeIdentity) -> None:
+    manifest = _manifest(candidate_root)
+    manifest["artifacts"] = [item for item in manifest["artifacts"] if item["artifact_id"] != "dinov3_engine"]
+    del manifest["engines"]["dinov3_engine"]
+    _write_manifest(candidate_root, manifest)
+
+    with pytest.raises(AdmissionError, match="canonical engine"):
+        admit_candidate(load_candidate_config(candidate_root / "candidate.yaml"), candidate_root, runtime_identity, inspect_bindings=_inspect_expected_engine_bindings)
+
+
+def test_admission_rejects_noncanonical_repvit_static_batch(candidate_root: Path, runtime_identity: RuntimeIdentity) -> None:
+    manifest = _manifest(candidate_root)
+    manifest["engines"]["repvit_engine"][0]["shape"][0] = 13
+    _write_manifest(candidate_root, manifest)
+
+    def wrong_batch_inspector(_: RuntimeIdentity) -> dict[str, tuple[dict[str, object], ...]]:
+        bindings = _inspect_expected_engine_bindings(runtime_identity)
+        return {**bindings, "repvit_engine": ({**bindings["repvit_engine"][0], "shape": (13, 3, 224, 224)},)}
+
+    with pytest.raises(AdmissionError, match="canonical engine"):
+        admit_candidate(load_candidate_config(candidate_root / "candidate.yaml"), candidate_root, runtime_identity, inspect_bindings=wrong_batch_inspector)
+
+
+def test_admission_rejects_artifact_symlink_escape(candidate_root: Path, runtime_identity: RuntimeIdentity) -> None:
+    outside = candidate_root.parent / "outside-catalog.json"
+    outside.write_bytes(b"outside catalog")
+    link = candidate_root / "escape-catalog.json"
+    try:
+        os.symlink(outside, link)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    manifest = _manifest(candidate_root)
+    catalog = next(item for item in manifest["artifacts"] if item["artifact_id"] == "catalog")
+    catalog["local_path"] = link.name
+    catalog["bytes"] = outside.stat().st_size
+    catalog["sha256"] = hashlib.sha256(outside.read_bytes()).hexdigest()
+    _write_manifest(candidate_root, manifest)
+
+    with pytest.raises(AdmissionError, match="escapes content_root"):
+        admit_candidate(load_candidate_config(candidate_root / "candidate.yaml"), candidate_root, runtime_identity, inspect_bindings=_inspect_expected_engine_bindings)

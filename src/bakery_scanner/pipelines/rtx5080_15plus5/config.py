@@ -35,6 +35,20 @@ class CandidateRuntimeConfig:
     p95_limit_ms: float
     stage_budgets_ms: Mapping[str, float]
 
+    def __post_init__(self) -> None:
+        if self.device != "CUDA:0" or self.precision != "FP16":
+            raise ValueError("candidate runtime must be CUDA:0 FP16")
+        if self.min_objects != 3 or self.max_objects != 7:
+            raise ValueError("candidate object envelope must be 3 through 7")
+        if _finite_float(self.p95_limit_ms, "p95_limit_ms") != 100.0:
+            raise ValueError("candidate p95_limit_ms must be 100.0")
+        if not isinstance(self.stage_budgets_ms, Mapping):
+            raise ValueError("candidate stage_budgets_ms must be a mapping")
+        budgets = _float_mapping(dict(self.stage_budgets_ms), "runtime.stage_budgets_ms")
+        if budgets != _STAGE_BUDGETS:
+            raise ValueError("candidate stage_budgets_ms must match the immutable static budget")
+        object.__setattr__(self, "stage_budgets_ms", MappingProxyType(budgets))
+
 
 @dataclass(frozen=True, slots=True)
 class EvaluationConfig:
@@ -47,6 +61,19 @@ class EvaluationConfig:
     counterfactual_completeness_block_rate: float
     latency_paths: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if _finite_float(self.iou_threshold, "iou_threshold") != 0.50 or self.seed != 20260803 or self.fold_count != 5:
+            raise ValueError("evaluation configuration has noncanonical static values")
+        if not isinstance(self.role_counts, Mapping) or dict(self.role_counts) != {"train": 3, "calibration": 1, "evaluation": 1}:
+            raise ValueError("evaluation configuration requires 3/1/1 fold roles")
+        if not isinstance(self.utility_floors, Mapping):
+            raise ValueError("evaluation configuration utility floors must be a mapping")
+        floors = _nested_float_mapping(dict(self.utility_floors), "utility_floors")
+        if floors != _UTILITY_FLOORS or _finite_float(self.incremental_auto_sku_approval_coverage_floor, "incremental coverage floor") != .5 or _finite_float(self.counterfactual_completeness_block_rate, "counterfactual completeness block rate") != 1.0 or self.latency_paths != _LATENCY_PATHS:
+            raise ValueError("evaluation configuration has noncanonical static values")
+        object.__setattr__(self, "role_counts", MappingProxyType(dict(self.role_counts)))
+        object.__setattr__(self, "utility_floors", MappingProxyType({key: MappingProxyType(value) for key, value in floors.items()}))
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateConfig:
@@ -58,6 +85,20 @@ class CandidateConfig:
     dinov3_batch_size: int
     fusion_margin: float
     evaluation: EvaluationConfig
+
+    def __post_init__(self) -> None:
+        if self.pipeline_id != "rtx5080_15plus5_single_frame_v1":
+            raise ValueError("candidate pipeline_id must be rtx5080_15plus5_single_frame_v1")
+        if not isinstance(self.admission_manifest, Path) or not isinstance(self.evaluation_config, Path):
+            raise ValueError("candidate paths must be Path values")
+        if not isinstance(self.runtime, CandidateRuntimeConfig) or not isinstance(self.evaluation, EvaluationConfig):
+            raise ValueError("candidate nested configuration is invalid")
+        self.runtime.__post_init__()
+        self.evaluation.__post_init__()
+        if self.repvit_batch_size != 14 or self.dinov3_batch_size != 7:
+            raise ValueError("candidate static batch sizes must be RepViT 14 and DINOv3 7")
+        if _finite_float(self.fusion_margin, "fusion_margin") != .85:
+            raise ValueError("candidate fusion_margin must be 0.85")
 
 
 def load_candidate_config(path: Path) -> CandidateConfig:
@@ -145,9 +186,9 @@ def _configured_path(base: Path, value: object, name: str) -> Path:
 
 
 def _mapping(value: object, name: str) -> dict[str, object]:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         raise ValueError(f"{name} must be a mapping")
-    return value
+    return dict(value)
 
 
 def _exact_keys(payload: dict[str, object], expected: set[str], name: str) -> None:
