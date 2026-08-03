@@ -10,6 +10,7 @@ import pytest
 from scripts.benchmark_camera_worker import (
     _StagedTreeLocks,
     _require_stable_code_identity,
+    stage_external_inputs,
     load_benchmark_protocol,
     load_external_manifest,
     build_benchmark_report,
@@ -202,6 +203,28 @@ def test_external_manifest_requires_hashed_absolute_grouped_rows(tmp_path):
 
     assert samples[0]["image_id"] == "e-1"
     assert manifest_sha256 == hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+def test_staged_external_inputs_are_immutable_copies_of_verified_manifest_bytes(tmp_path):
+    import hashlib
+
+    original = tmp_path / "mutable-capture.jpg"
+    original.write_bytes(b"verified image bytes")
+    samples = (
+        {
+            "image_id": "e-1",
+            "group": "E",
+            "image_path": str(original.resolve()),
+            "image_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+        },
+    )
+
+    staged = stage_external_inputs(samples, tmp_path / "snapshot" / "inputs")
+    original.write_bytes(b"attacker replacement")
+
+    assert staged[0]["image_id"] == "e-1"
+    assert staged[0]["image_sha256"] == samples[0]["image_sha256"]
+    assert Path(staged[0]["image_path"]).read_bytes() == b"verified image bytes"
 
 
 def test_benchmark_protocol_requires_fixed_cuda_p95_contract(tmp_path):

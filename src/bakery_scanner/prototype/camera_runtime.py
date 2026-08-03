@@ -204,6 +204,7 @@ class CameraInferenceRuntime:
             backend: RuntimeBackend | None = None
             try:
                 load_started = _timestamp(runtime_clock, device)
+                _synchronize(device)
                 if on_startup is not None:
                     on_startup("loading", device)
                 if backend_loader is None:
@@ -223,6 +224,9 @@ class CameraInferenceRuntime:
                 else:
                     backend = backend_loader(device)
                 _validate_backend(backend, device)
+                # Startup is outside the measured request boundary.  Ensure a
+                # failed CUDA context is admitted or rejected before ready.
+                _synchronize(device)
                 presentation_policy = PresentationPolicy.load(
                     root_path
                     / "policies"
@@ -422,6 +426,11 @@ class CameraInferenceRuntime:
             decisions=objects,
         ).to_payload()
         postprocess_finished = _timestamp(self._clock, self.device)
+        # GPU work is deliberately synchronized once, after every measured
+        # stage has been enqueued.  Per-stage synchronization serializes the
+        # pipeline and produces misleading timing evidence.
+        _synchronize(self.device)
+        total_finished = _timestamp(self._clock, self.device)
         timings = {
             "decode_preprocess": _milliseconds(total_started, decode_finished),
             "detector": _milliseconds(detector_started, detector_finished),
@@ -430,7 +439,7 @@ class CameraInferenceRuntime:
             "dinov3": dinov3_ms,
             "fusion": fusion_ms,
             "postprocess": _milliseconds(postprocess_started, postprocess_finished),
-            "total": _milliseconds(total_started, postprocess_finished),
+            "total": _milliseconds(total_started, total_finished),
         }
         return {
             "type": "result",
@@ -676,6 +685,7 @@ def _load_default_backend(
         score_threshold=manifest.score_threshold,
         source=manifest.source_label,
         device="cuda" if device == "cuda:0" else "cpu",
+        expected_sha256=manifest.checkpoint_sha256,
     )
     try:
         classifier = ClassifierPipeline.load(config_path, artifact_root=artifact_root)
@@ -686,6 +696,11 @@ def _load_default_backend(
         raise
     if classifier.config != config:
         raise ValueError("classifier config changed after integrity validation")
+    _require_file_hash(
+        manifest.calibration,
+        manifest.calibration_sha256,
+        "detector calibration",
+    )
     return _LoadedBackend(
         device=device,
         detector=detector,
@@ -928,7 +943,6 @@ def _release_device_cache(device: str) -> None:
 
 
 def _timestamp(clock: Callable[[], float], device: str) -> float:
-    _synchronize(device)
     value = float(clock())
     if not math.isfinite(value):
         raise ValueError("clock must return finite values")

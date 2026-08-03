@@ -203,6 +203,51 @@ def load_external_manifest(
     return tuple(samples), manifest_sha256
 
 
+def stage_external_inputs(
+    samples: Sequence[Mapping[str, str]], destination: Path
+) -> tuple[dict[str, str], ...]:
+    """Copy manifest-verified image bytes into the run-owned staged tree.
+
+    The worker is deliberately never given a caller-owned image path.  Reading
+    the source once, hashing those exact bytes, and then writing those bytes to
+    the staged tree closes the validation/read gap without retaining any source
+    pathname in later result receipts.
+    """
+    inputs = Path(destination).resolve()
+    if inputs.exists():
+        raise ValueError("benchmark staged inputs destination already exists")
+    staged: list[dict[str, str]] = []
+    try:
+        inputs.mkdir(parents=True)
+        for index, sample in enumerate(samples, start=1):
+            source = Path(sample["image_path"])
+            expected = _sha256(sample["image_sha256"], "manifest image_sha256")
+            try:
+                payload = source.read_bytes()
+            except OSError as exc:
+                raise ValueError("benchmark image could not be staged") from exc
+            if hashlib.sha256(payload).hexdigest() != expected:
+                raise ValueError("benchmark manifest image SHA-256 mismatch during staging")
+            suffix = source.suffix.lower() if source.suffix else ".image"
+            staged_path = inputs / f"{index:04d}-{expected}{suffix}"
+            staged_path.write_bytes(payload)
+            if hashlib.sha256(staged_path.read_bytes()).hexdigest() != expected:
+                raise ValueError("benchmark staged image SHA-256 mismatch")
+            staged.append(
+                {
+                    "image_id": sample["image_id"],
+                    "group": sample["group"],
+                    "image_path": str(staged_path),
+                    "image_sha256": expected,
+                }
+            )
+    except Exception:
+        # The temporary run directory owns this destination; callers remove it
+        # after a failed run.
+        raise
+    return tuple(staged)
+
+
 def load_benchmark_protocol(path: Path) -> tuple[dict[str, object], str]:
     """Load the reviewed CUDA-only worker-boundary protocol."""
     protocol_path = Path(path).resolve()
@@ -590,6 +635,7 @@ def run_grouped_benchmark(
     staging = tempfile.TemporaryDirectory(prefix="bakery-camera-evidence-")
     try:
         snapshot = _stage_parent_snapshot(root, Path(staging.name) / "checkout")
+        staged_samples = stage_external_inputs(samples, snapshot / "inputs")
         if (
             _compute_code_identity(snapshot, commit=code_identity["code_commit"])
             != code_identity
@@ -622,11 +668,11 @@ def run_grouped_benchmark(
             "--device",
             "cuda",
             "--warmup-image",
-            samples[0]["image_path"],
+            staged_samples[0]["image_path"],
             "--allow-external-warmup",
         )
         samples_by_group = {
-            group: tuple(sample for sample in samples if sample["group"] == group)
+            group: tuple(sample for sample in staged_samples if sample["group"] == group)
             for group in ("E", "M", "H")
         }
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
@@ -637,7 +683,7 @@ def run_grouped_benchmark(
                     raise RuntimeError("worker did not start on protocol CUDA device")
                 _require_child_code_identity(ready, "ready", code_identity)
                 for index in range(int(protocol["minimum_warmups"])):
-                    sample = samples[index % len(samples)]
+                    sample = staged_samples[index % len(staged_samples)]
                     _analyze_sample(
                         worker, sample, f"warmup-{index + 1:04d}", analysis_timeout_seconds
                     )

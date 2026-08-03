@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from numbers import Integral
 from pathlib import Path
@@ -49,18 +50,29 @@ class RFDetrRunner:
         source: str = _SOURCE,
         device: str = "cuda",
         model_factory: Callable[..., Any] | None = None,
+        expected_sha256: str | None = None,
     ) -> "RFDetrRunner":
         checkpoint_path = Path(checkpoint).resolve()
         if not checkpoint_path.is_file():
             raise ValueError(f"RF-DETR checkpoint is missing: {checkpoint_path}")
+        if expected_sha256 is not None:
+            _require_checkpoint_sha256(checkpoint_path, expected_sha256)
         if model_factory is None:
             try:
                 from rfdetr import RFDETRLarge
             except ImportError as error:
                 raise RuntimeError("RF-DETR is required for RFDetrRunner.load()") from error
             model_factory = RFDETRLarge
+        model = model_factory(
+            pretrain_weights=str(checkpoint_path), num_classes=1, device=device
+        )
+        # Path-based backends can reread their weights during construction.
+        # Rechecking immediately after construction binds the resulting graph to
+        # the same immutable bytes the caller admitted.
+        if expected_sha256 is not None:
+            _require_checkpoint_sha256(checkpoint_path, expected_sha256)
         return cls(
-            model_factory(pretrain_weights=str(checkpoint_path), num_classes=1, device=device),
+            model,
             score_threshold=score_threshold,
             source=source,
         )
@@ -125,3 +137,21 @@ class RFDetrRunner:
                 )
             )
         return tuple(sorted(proposals, key=lambda item: (-item.score, item.box.y, item.box.x, item.box.height, item.box.width)))
+
+
+def _require_checkpoint_sha256(path: Path, expected: str) -> None:
+    if (
+        not isinstance(expected, str)
+        or len(expected) != 64
+        or any(character not in "0123456789abcdef" for character in expected)
+    ):
+        raise ValueError("RF-DETR checkpoint SHA-256 is invalid")
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while block := handle.read(1024 * 1024):
+                digest.update(block)
+    except OSError as exc:
+        raise ValueError(f"RF-DETR checkpoint is unavailable: {path}") from exc
+    if digest.hexdigest() != expected:
+        raise ValueError("RF-DETR checkpoint SHA-256 mismatch")

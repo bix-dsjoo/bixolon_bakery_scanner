@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from bakery_scanner.contracts import Box
@@ -61,6 +62,28 @@ def test_rfdetr_loader_passes_cpu_device_to_the_backend_factory(tmp_path):
 
     assert runner.source == "rfdetr_large_bakery_v1"
     assert calls == [{"pretrain_weights": str(checkpoint.resolve()), "num_classes": 1, "device": "cpu"}]
+
+
+def test_rfdetr_loader_rejects_checkpoint_replaced_during_model_construction(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pth"
+    checkpoint.write_bytes(b"verified checkpoint")
+    expected = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+    class Backend:
+        def predict(self, *args, **kwargs):
+            raise AssertionError("not used")
+
+    def mutate_checkpoint(**_kwargs):
+        checkpoint.write_bytes(b"replaced checkpoint")
+        return Backend()
+
+    with pytest.raises(ValueError, match="checkpoint SHA-256 mismatch"):
+        RFDetrRunner.load(
+            checkpoint,
+            score_threshold=0.5,
+            expected_sha256=expected,
+            model_factory=mutate_checkpoint,
+        )
 
 
 def test_rfdetr_manifest_pins_corrected_gt_zero_fp_threshold():

@@ -144,15 +144,7 @@ final class InferenceObject {
       unknownReason = _requiredString(unknownReasonValue, 'unknown_reason');
     }
     if (skuId == null) {
-      if (candidates.length != 3 ||
-          candidates.asMap().entries.any(
-            (entry) => entry.value.rank != entry.key + 1,
-          ) ||
-          candidates.map((candidate) => candidate.skuId).toSet().length != 3) {
-        throw const FormatException(
-          'Unknown objects require exactly three ranked candidates',
-        );
-      }
+      _requireExactTop3(candidates);
     } else if (candidates.isNotEmpty || unknownReason != null) {
       throw const FormatException(
         'registered objects must not include Unknown evidence',
@@ -196,6 +188,28 @@ final class InferenceObject {
   final Map<String, Object?> provenance;
 
   bool get isUnknown => skuId == null;
+}
+
+void _requireExactTop3(List<InferenceCandidate> candidates) {
+  if (candidates.length != 3 ||
+      candidates.asMap().entries.any(
+        (entry) => entry.value.rank != entry.key + 1,
+      ) ||
+      candidates.map((candidate) => candidate.skuId).toSet().length != 3) {
+    throw const FormatException(
+      'Unknown objects require exactly three ranked candidates',
+    );
+  }
+  for (var index = 1; index < candidates.length; index += 1) {
+    final previous = candidates[index - 1];
+    final current = candidates[index];
+    if (previous.score < current.score ||
+        (previous.score == current.score && previous.skuId > current.skuId)) {
+      throw const FormatException(
+        'Unknown candidates must descend by score with SKU-ID ties ascending',
+      );
+    }
+  }
 }
 
 final class StageTimings {

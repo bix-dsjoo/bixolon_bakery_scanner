@@ -1275,6 +1275,34 @@ def test_progress_observer_time_is_excluded_from_detector_and_postprocess(
     assert result["timings_ms"]["total"] == pytest.approx(3010.0)
 
 
+def test_cuda_analysis_synchronizes_once_at_the_result_boundary(tmp_path, monkeypatch):
+    from bakery_scanner.prototype import camera_runtime
+
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    image_path = _write_image(tmp_path / "capture.jpg")
+    box = Box(5, 5, 20, 20)
+    synchronizations: list[object] = []
+    monkeypatch.setattr(camera_runtime.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        camera_runtime.torch.cuda,
+        "synchronize",
+        lambda *args: synchronizations.append(args),
+    )
+    backend = FakeBackend("cuda:0", proposals=(_proposal(box),), decisions=(_confirmed(6, box),))
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="cuda",
+        cuda_probe=lambda: True,
+        backend_loader=lambda _device: backend,
+    )
+    synchronizations.clear()
+
+    runtime.analyze(image_path, "cuda-timing")
+
+    assert len(synchronizations) == 1
+
+
 def test_analyze_emits_each_progress_phase_at_most_once(tmp_path: Path):
     warmup_image = _write_image(tmp_path / "warm.jpg")
     image_path = _write_image(tmp_path / "capture.jpg")

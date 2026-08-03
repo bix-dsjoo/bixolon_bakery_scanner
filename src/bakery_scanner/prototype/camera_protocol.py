@@ -36,6 +36,21 @@ _TIMING_STAGES = frozenset(
         "total",
     }
 )
+_OBJECT_FIELDS = frozenset(
+    {
+        "object_id", "sku_id", "sku_name", "bbox_xyxy", "confidence",
+        "decision_path", "top3", "unknown_reason", "detector", "provenance",
+    }
+)
+_REGISTERED_PATHS = frozenset({"repvit_direct", "dinov3_confirmed", "fusion_ranked"})
+_PROVENANCE_FIELDS = frozenset(
+    {
+        "detector_id", "repvit_artifact_id", "repvit_sha256", "repvit_manifest_sha256",
+        "repvit_prototype_sha256", "dinov3_artifact_id", "dinov3_sha256",
+        "dinov3_support_sha256", "calibration_id", "calibration_sha256",
+        "preprocess_sha256", "canonical_frame_version", "exif_orientation", "failure_code",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -267,6 +282,13 @@ def _require_exact_ranked_top3(
             for score in scores
         ):
             raise ValueError("runtime result candidate Top3 scores are invalid")
+        ordered = tuple(zip(scores, sku_ids, strict=True))
+        if tuple(
+            sorted(ordered, key=lambda item: (-float(item[0]), int(item[1])))
+        ) != ordered:
+            raise ValueError(
+                "runtime result candidate Top3 scores must descend with SKU-ID ties ascending"
+            )
 
 
 def _result_object_ids(value: object) -> tuple[set[str], set[str]]:
@@ -275,7 +297,7 @@ def _result_object_ids(value: object) -> tuple[set[str], set[str]]:
     object_ids: set[str] = set()
     unknown_ids: set[str] = set()
     for item in value:
-        if not isinstance(item, Mapping):
+        if not isinstance(item, Mapping) or set(item) != _OBJECT_FIELDS:
             raise ValueError("runtime result objects must be mappings")
         object_id = item.get("object_id")
         if (
@@ -287,13 +309,76 @@ def _result_object_ids(value: object) -> tuple[set[str], set[str]]:
             raise ValueError("runtime result object identity is invalid")
         sku_id = item["sku_id"]
         if sku_id is not None and (
-            isinstance(sku_id, bool) or not isinstance(sku_id, int)
+            isinstance(sku_id, bool) or not isinstance(sku_id, int) or not 1 <= sku_id <= 20
         ):
             raise ValueError("runtime result object sku_id is invalid")
+        sku_name = item["sku_name"]
+        path = item["decision_path"]
+        if not isinstance(sku_name, str) or not sku_name or not isinstance(path, str):
+            raise ValueError("runtime result object identity is invalid")
+        _validate_object_box(item["bbox_xyxy"])
+        _validate_probability(item["confidence"], "runtime result object confidence")
+        _validate_detector(item["detector"])
+        _validate_provenance(item["provenance"])
+        unknown_reason = item["unknown_reason"]
+        top3 = item["top3"]
+        if not isinstance(top3, list):
+            raise ValueError("runtime result object top3 is invalid")
+        if sku_id is None:
+            if sku_name != "Unknown" or path != "unknown_top3":
+                raise ValueError("runtime result Unknown object identity is invalid")
+            if unknown_reason is not None and (
+                not isinstance(unknown_reason, str) or not unknown_reason
+            ):
+                raise ValueError("runtime result Unknown object reason is invalid")
+            if top3:
+                _require_exact_ranked_top3((item,), (object_id,))
+        elif (
+            sku_name == "Unknown" or path not in _REGISTERED_PATHS or top3 or unknown_reason is not None
+        ):
+            raise ValueError("runtime result registered object is invalid")
         object_ids.add(object_id)
         if sku_id is None:
             unknown_ids.add(object_id)
     return object_ids, unknown_ids
+
+
+def _validate_object_box(value: object) -> None:
+    if not isinstance(value, list) or len(value) != 4:
+        raise ValueError("runtime result object box is invalid")
+    try:
+        x1, y1, x2, y2 = (float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("runtime result object box is invalid") from exc
+    if not all(math.isfinite(item) for item in (x1, y1, x2, y2)) or x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1:
+        raise ValueError("runtime result object box is invalid")
+
+
+def _validate_probability(value: object, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
+        raise ValueError(f"{label} is invalid")
+
+
+def _validate_detector(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != {"source", "score"} or not isinstance(value["source"], str) or not value["source"]:
+        raise ValueError("runtime result object detector is invalid")
+    _validate_probability(value["score"], "runtime result object detector score")
+
+
+def _validate_provenance(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != _PROVENANCE_FIELDS:
+        raise ValueError("runtime result object provenance is invalid")
+    for field in {"detector_id", "repvit_artifact_id", "dinov3_artifact_id", "calibration_id"}:
+        if not isinstance(value[field], str) or not value[field]:
+            raise ValueError("runtime result object provenance is invalid")
+    for field in {"repvit_sha256", "repvit_manifest_sha256", "repvit_prototype_sha256", "dinov3_sha256", "dinov3_support_sha256", "calibration_sha256", "preprocess_sha256"}:
+        hash_value = value[field]
+        if not isinstance(hash_value, str) or len(hash_value) != 64 or any(character not in _LOWER_HEX for character in hash_value):
+            raise ValueError("runtime result object provenance is invalid")
+    if value["canonical_frame_version"] != "exif_visual_rgb_v1" or isinstance(value["exif_orientation"], bool) or not isinstance(value["exif_orientation"], int) or not 1 <= value["exif_orientation"] <= 8:
+        raise ValueError("runtime result object provenance is invalid")
+    if value["failure_code"] is not None and (not isinstance(value["failure_code"], str) or not value["failure_code"]):
+        raise ValueError("runtime result object provenance is invalid")
 
 
 def _object_id_list(value: object, field: str) -> tuple[str, ...]:

@@ -431,6 +431,22 @@ void main() {
     }
   });
 
+  test('Unknown candidates require descending scores and ascending SKU ties', () {
+    final object = _unknownObject('object-1');
+    object['top3'] = [
+      {'rank': 1, 'sku_id': 7, 'sku_name': 'Flower Bread', 'score': 0.41},
+      {'rank': 2, 'sku_id': 2, 'sku_name': 'Croffle', 'score': 0.41},
+      {'rank': 3, 'sku_id': 4, 'sku_name': 'Scon', 'score': 0.27},
+    ];
+
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(objects: [object], counts: const {}, unknownCount: 1),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test(
     'Unknown accepts an omitted reason while preserving ranked evidence',
     () {
