@@ -78,6 +78,26 @@ class _DinoFeatureFixture(torch.nn.Module):
         }
 
 
+class _RecordingRepVitFeatureFixture(_RepVitFeatureFixture):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_sizes: list[int] = []
+
+    def forward_features(self, batch: torch.Tensor) -> torch.Tensor:
+        self.batch_sizes.append(batch.shape[0])
+        return super().forward_features(batch)
+
+
+class _RecordingDinoFeatureFixture(_DinoFeatureFixture):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_sizes: list[int] = []
+
+    def forward_features(self, batch: torch.Tensor) -> dict[str, torch.Tensor]:
+        self.batch_sizes.append(batch.shape[0])
+        return super().forward_features(batch)
+
+
 def _one_image_index(tmp_path: Path) -> RpcIndex:
     source = tmp_path / "item.jpg"
     Image.new("RGB", (12, 9), (20, 30, 40)).save(source)
@@ -96,6 +116,19 @@ def _one_image_index(tmp_path: Path) -> RpcIndex:
         level="easy",
     )
     return RpcIndex(contract, (image,), (RpcObject("val2019", 11, 7, 7, (1.0, 2.0, 3.0, 4.0)),))
+
+
+def _two_object_index(tmp_path: Path) -> RpcIndex:
+    index = _one_image_index(tmp_path)
+    return RpcIndex(
+        index.contract,
+        index.images,
+        (
+            index.objects[0],
+            RpcObject("val2019", 12, 7, 7, (5.0, 2.0, 3.0, 4.0)),
+        ),
+        index.categories,
+    )
 
 
 def _fixture_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ResearchArtifacts:
@@ -145,6 +178,24 @@ def test_extract_oracle_features_records_two_globals_and_196_patches(
     assert manifest["runtime"]["torch"] == torch.__version__
     with pytest.raises(FileExistsError):
         extract_oracle_features(_one_image_index(tmp_path), artifacts, output)
+
+
+def test_extract_oracle_features_batches_canonical_crops_without_reordering(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    repvit = _RecordingRepVitFeatureFixture()
+    dino = _RecordingDinoFeatureFixture()
+    monkeypatch.setattr(worker, "_load_feature_models", lambda _artifacts: (repvit, dino))
+    artifacts = _fixture_artifacts(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path)
+
+    manifest_path = extract_oracle_features(
+        _two_object_index(tmp_path), artifacts, tmp_path / "batched-features", batch_size=2
+    )
+
+    assert repvit.batch_sizes == dino.batch_sizes == [2]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert [row["annotation_id"] for row in manifest["rows"]] == [11, 12]
 
 
 def test_extract_revalidates_artifacts_before_loading_models(

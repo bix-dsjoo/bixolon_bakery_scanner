@@ -1135,6 +1135,8 @@ def extract_oracle_features(
     index: RpcIndex,
     artifacts: ResearchArtifacts,
     output: Path,
+    *,
+    batch_size: int = 1,
 ) -> Path:
     """Materialize no-replace float16 oracle features and their canonical manifest.
 
@@ -1146,6 +1148,8 @@ def extract_oracle_features(
         raise ValueError("index must be an RpcIndex")
     if not isinstance(artifacts, ResearchArtifacts):
         raise ValueError("artifacts must be ResearchArtifacts")
+    if type(batch_size) is not int or batch_size <= 0:
+        raise ValueError("feature batch_size must be a positive integer")
     root = _RESEARCH_RUNS_ROOT.resolve()
     destination = Path(output).resolve()
     if not destination.is_relative_to(root):
@@ -1175,14 +1179,23 @@ def extract_oracle_features(
         if _model_device(dino_model) != device:
             raise ValueError("research encoders must share one device")
         image_by_identity = {image.source_identity: image for image in index.images}
-        for row_index, row in enumerate(rows):
-            image = image_by_identity[row.source_identity]
-            crop = _canonical_oracle_crop(image, row.bbox_xywh)
-            batch = transform(crop).unsqueeze(0).to(device)
+        for start in range(0, len(rows), batch_size):
+            batch_rows = rows[start : start + batch_size]
+            batch = torch.stack(
+                [
+                    transform(
+                        _canonical_oracle_crop(
+                            image_by_identity[row.source_identity], row.bbox_xywh
+                        )
+                    )
+                    for row in batch_rows
+                ]
+            ).to(device)
             repvit, dino, patches = _feature_vectors(repvit_model, dino_model, batch)
-            repvit_array[row_index] = repvit.cpu().numpy().astype(np.float16, copy=False)
-            dino_array[row_index] = dino.cpu().numpy().astype(np.float16, copy=False)
-            patch_array[row_index] = patches.cpu().numpy().astype(np.float16, copy=False)
+            stop = start + len(batch_rows)
+            repvit_array[start:stop] = repvit.cpu().numpy().astype(np.float16, copy=False)
+            dino_array[start:stop] = dino.cpu().numpy().astype(np.float16, copy=False)
+            patch_array[start:stop] = patches.cpu().numpy().astype(np.float16, copy=False)
         del repvit_array, dino_array, patch_array
         manifest = _feature_manifest(rows, image_by_identity, artifacts, temporary)
         manifest_path = temporary / "manifest.json"
@@ -1275,26 +1288,26 @@ def _feature_vectors(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     with torch.inference_mode():
         repvit_raw = repvit_model.forward_features(batch)
-        if not isinstance(repvit_raw, torch.Tensor) or tuple(repvit_raw.shape[:2]) != (1, _FEATURE_DIMENSION):
-            raise ValueError("RepViT features must have shape (1, 384, H, W)")
+        if not isinstance(repvit_raw, torch.Tensor) or tuple(repvit_raw.shape[:2]) != (batch.shape[0], _FEATURE_DIMENSION):
+            raise ValueError("RepViT features must have shape (N, 384, H, W)")
         if repvit_raw.ndim != 4 or not torch.isfinite(repvit_raw).all().item():
             raise ValueError("RepViT features must be finite spatial tensors")
-        repvit = _l2_normalize(repvit_raw.mean(dim=(2, 3)), "RepViT global feature")[0]
+        repvit = _l2_normalize(repvit_raw.mean(dim=(2, 3)), "RepViT global feature")
         dino_raw = dino_model.forward_features(batch)
         if not isinstance(dino_raw, Mapping):
             raise ValueError("DINOv3 forward_features must return a mapping")
         dino_global = dino_raw.get("x_norm_clstoken")
         patches = dino_raw.get("x_norm_patchtokens")
-        if not isinstance(dino_global, torch.Tensor) or tuple(dino_global.shape) != (1, _FEATURE_DIMENSION):
-            raise ValueError("DINOv3 global features must have shape (1, 384)")
-        if not isinstance(patches, torch.Tensor) or tuple(patches.shape) != (1, _DINO_PATCH_COUNT, _FEATURE_DIMENSION):
-            raise ValueError("DINOv3 patch features must have shape (1, 196, 384)")
+        if not isinstance(dino_global, torch.Tensor) or tuple(dino_global.shape) != (batch.shape[0], _FEATURE_DIMENSION):
+            raise ValueError("DINOv3 global features must have shape (N, 384)")
+        if not isinstance(patches, torch.Tensor) or tuple(patches.shape) != (batch.shape[0], _DINO_PATCH_COUNT, _FEATURE_DIMENSION):
+            raise ValueError("DINOv3 patch features must have shape (N, 196, 384)")
         if not torch.isfinite(dino_global).all().item() or not torch.isfinite(patches).all().item():
             raise ValueError("DINOv3 features must be finite")
         return (
             repvit,
-            _l2_normalize(dino_global, "DINOv3 global feature")[0],
-            _l2_normalize(patches, "DINOv3 patch feature")[0],
+            _l2_normalize(dino_global, "DINOv3 global feature"),
+            _l2_normalize(patches, "DINOv3 patch feature"),
         )
 
 
