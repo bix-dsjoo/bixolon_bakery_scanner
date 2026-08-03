@@ -81,7 +81,12 @@ class CudaTimingCollector:
     point at which event elapsed times are read.
     """
 
-    def __init__(self, device: torch.device | str = "cuda:0") -> None:
+    def __init__(
+        self,
+        device: torch.device | str = "cuda:0",
+        *,
+        synchronize: Callable[[], None] | None = None,
+    ) -> None:
         self.device = torch.device(device)
         if self.device.type != "cuda" or not torch.cuda.is_available():
             raise ValueError("CUDA event timing requires an available CUDA device")
@@ -90,6 +95,7 @@ class CudaTimingCollector:
             self._ranges: list[tuple[str, Any, Any]] = []
         except Exception as exc:
             raise ValueError("CUDA event timing could not be created") from exc
+        self._synchronize = synchronize or (lambda: torch.cuda.synchronize(self.device))
         self._finalized = False
 
     def measure(self, stage: str, action: Callable[[], Any]) -> Any:
@@ -117,7 +123,7 @@ class CudaTimingCollector:
         if self._finalized:
             raise RuntimeError("CUDA timing collector is already finalized")
         try:
-            torch.cuda.synchronize(self.device)
+            self._synchronize()
             totals: dict[str, float] = {}
             for stage, start, end in self._ranges:
                 elapsed = float(start.elapsed_time(end))
@@ -570,7 +576,7 @@ class ClassifierPipeline:
         cuda_timing: CudaTimingCollector | None = None,
     ) -> BatchInferenceResult:
         """Classify ordered detector boxes with shared batch evidence extraction."""
-        total_started = self._timestamp()
+        total_started = self._host_now()
         owns_cuda_timing = False
         frame = _canonical_frame(image)
         ordered_boxes = tuple(boxes)
@@ -581,7 +587,7 @@ class ClassifierPipeline:
         if type(dino_max_objects) is not int or dino_max_objects <= 0:
             raise ValueError("dino_max_objects must be a positive integer")
         if not ordered_boxes:
-            total_finished = self._timestamp()
+            total_finished = self._host_now()
             return BatchInferenceResult(
                 (),
                 BatchStageTimings(0.0, 0.0, 0.0, 0.0, _milliseconds(total_started, total_finished)),
@@ -589,10 +595,12 @@ class ClassifierPipeline:
             )
         if self.config.runtime.device == "CUDA:0" and torch.cuda.is_available():
             if cuda_timing is None:
-                cuda_timing = CudaTimingCollector("cuda:0")
+                cuda_timing = CudaTimingCollector(
+                    "cuda:0", synchronize=self.clock.synchronize
+                )
                 owns_cuda_timing = True
 
-        crop_started = self._timestamp()
+        crop_started = self._host_now()
         crop_groups: list[tuple[Image.Image, ...]] = []
         product_box_groups: list[tuple[Box, ...]] = []
         for box in ordered_boxes:
@@ -601,11 +609,11 @@ class ClassifierPipeline:
             )
             crop_groups.append(crops)
             product_box_groups.append(product_boxes)
-        crop_finished = self._timestamp()
+        crop_finished = self._host_now()
 
         if not callable(getattr(self.repvit, "score_many_with_evidence", None)):
             raise ValueError("RepViT runner does not expose batch evidence scoring")
-        repvit_started = self._timestamp()
+        repvit_started = self._host_now()
         score_repvit = lambda: self.repvit.score_many_with_evidence(
             tuple(crop_groups), max_objects=repvit_max_objects
         )
@@ -614,7 +622,7 @@ class ClassifierPipeline:
             if cuda_timing is not None
             else score_repvit()
         )
-        repvit_finished = self._timestamp()
+        repvit_finished = self._host_now()
         if len(repvit_evidence) != len(ordered_boxes):
             raise ValueError("RepViT batch evidence must align with input boxes")
 
@@ -637,7 +645,7 @@ class ClassifierPipeline:
             else:
                 decisions[index] = direct
 
-        dino_started = self._timestamp()
+        dino_started = self._host_now()
         fusion_ms = 0.0
         if recheck_indexes:
             dino = self._get_dino()
@@ -673,7 +681,7 @@ class ClassifierPipeline:
                         )
                     continue
 
-                fusion_started = self._timestamp()
+                fusion_started = self._host_now()
                 for index, evidence in zip(batch_indexes, dino_evidence, strict=True):
                     if self.fusion_policy is not None:
                         decisions[index] = self._fusion_decision(
@@ -693,10 +701,10 @@ class ClassifierPipeline:
                             evidence.local_scores,
                             box=ordered_boxes[index],
                         )
-                fusion_finished = self._timestamp()
+                fusion_finished = self._host_now()
                 fusion_ms += _milliseconds(fusion_started, fusion_finished)
-        dino_finished = self._timestamp()
-        total_finished = self._timestamp()
+        dino_finished = self._host_now()
+        total_finished = self._host_now()
         if any(decision is None for decision in decisions):
             raise RuntimeError("batch inference did not produce every decision")
         repvit_ms = _milliseconds(repvit_started, repvit_finished)
@@ -706,7 +714,7 @@ class ClassifierPipeline:
             event_timings = cuda_timing.finalize()
             repvit_ms = event_timings.get("repvit", 0.0)
             dino_ms = event_timings.get("dinov3", 0.0)
-            total_finished = self._timestamp()
+            total_finished = self._host_now()
         total_ms = _milliseconds(total_started, total_finished)
         completed = tuple(
             self._with_metadata(
@@ -865,6 +873,13 @@ class ClassifierPipeline:
     def _timestamp(self) -> float:
         self.clock.synchronize()
         return self.clock()
+
+    def _host_now(self) -> float:
+        """Read the host monotonic clock without serializing queued GPU work."""
+        value = float(self.clock())
+        if not math.isfinite(value):
+            raise ValueError("clock must return finite values")
+        return value
 
     def _observe_serial_timing(
         self,

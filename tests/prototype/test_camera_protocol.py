@@ -323,6 +323,30 @@ def test_validate_result_event_rejects_malformed_registered_object_schema():
 @pytest.mark.parametrize(
     "presentation",
     [
+        _presentation(),
+        _presentation(state="unknown", candidate_object_ids=["object-2"]),
+        _presentation(
+            state="needs_retake", final_count_usable=False,
+            retake_scope="scan", instruction_code="no_bread_detected",
+        ),
+        _presentation(
+            state="needs_retake", final_count_usable=False,
+            retake_scope="object", retake_object_ids=["object-2"],
+            instruction_code="separate_breads",
+        ),
+    ],
+)
+def test_validate_result_event_rejects_unknown_without_exact_top3_in_every_context(presentation):
+    result = _result(presentation)
+    result["objects"][1]["top3"] = []
+
+    with pytest.raises(ValueError, match="Top3"):
+        camera_protocol.validate_result_event(result)
+
+
+@pytest.mark.parametrize(
+    "presentation",
+    [
         _presentation(final_count_usable=False),
         _presentation(policy_sha256="A" * 64),
         _presentation(

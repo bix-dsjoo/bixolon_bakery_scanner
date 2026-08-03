@@ -64,6 +64,19 @@ def test_rfdetr_loader_passes_cpu_device_to_the_backend_factory(tmp_path):
     assert calls == [{"pretrain_weights": str(checkpoint.resolve()), "num_classes": 1, "device": "cpu"}]
 
 
+def test_rfdetr_cuda_loader_requires_a_checkpoint_digest(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pth"
+    checkpoint.write_bytes(b"checkpoint")
+
+    with pytest.raises(ValueError, match="CUDA evidence checkpoint requires SHA-256"):
+        RFDetrRunner.load(
+            checkpoint,
+            score_threshold=0.5,
+            device="cuda",
+            model_factory=lambda **_kwargs: pytest.fail("factory must not run"),
+        )
+
+
 def test_rfdetr_loader_rejects_checkpoint_replaced_during_model_construction(tmp_path):
     checkpoint = tmp_path / "checkpoint.pth"
     checkpoint.write_bytes(b"verified checkpoint")

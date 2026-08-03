@@ -358,8 +358,7 @@ def _result_object_ids(
                 not isinstance(unknown_reason, str) or not unknown_reason
             ):
                 raise ValueError("runtime result Unknown object reason is invalid")
-            if top3:
-                _require_exact_ranked_top3((item,), (object_id,))
+            _require_exact_ranked_top3((item,), (object_id,))
         elif (
             sku_name == "Unknown" or path not in _REGISTERED_PATHS or top3 or unknown_reason is not None
         ):

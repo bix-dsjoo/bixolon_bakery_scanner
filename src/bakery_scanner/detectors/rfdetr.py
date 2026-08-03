@@ -172,6 +172,8 @@ class _CheckpointBinding:
         self._handle: int | None = None
 
     def __enter__(self) -> "_CheckpointBinding":
+        if str(self.device).lower().startswith("cuda") and self.expected_sha256 is None:
+            raise ValueError("CUDA evidence checkpoint requires SHA-256")
         if self.expected_sha256 is None:
             return self
         _validate_checkpoint_sha256(self.expected_sha256)

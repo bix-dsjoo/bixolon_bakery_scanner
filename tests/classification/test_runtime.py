@@ -398,6 +398,65 @@ def test_infer_many_batches_repvit_and_only_rechecks_direct_rejections():
     assert result.timings.total_ms >= result.timings.crop_ms + result.timings.repvit_ms
 
 
+def test_batch_shared_cuda_timing_never_synchronizes_the_host_clock():
+    evidence = RepVitEvidence(_repvit_scores({6: 0.80, 5: 0.20}), torch.ones(384), 0.01)
+    clock = ManualStageClock()
+
+    class SharedTiming:
+        def measure(self, _stage, action):
+            return action()
+
+    pipeline = _pipeline(
+        repvit=ManyRecordingRunner((evidence,)),
+        dino_loader=lambda: pytest.fail("direct decision must not load DINO"),
+        clock=clock,
+    )
+
+    pipeline.infer_many(
+        _image(),
+        (Box(1, 1, 20, 20),),
+        repvit_max_objects=2,
+        dino_max_objects=2,
+        cuda_timing=SharedTiming(),
+    )
+
+    assert clock.sync_count == 0
+
+
+def test_batch_standalone_cuda_timing_finalizes_the_host_clock_once(monkeypatch):
+    from bakery_scanner.classification import runtime
+
+    class Event:
+        def __init__(self, *, enable_timing):
+            assert enable_timing is True
+
+        def record(self, _stream):
+            return None
+
+        def elapsed_time(self, _other):
+            return 1.0
+
+    monkeypatch.setattr(runtime.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(runtime.torch.cuda, "current_stream", lambda _device: object())
+    monkeypatch.setattr(runtime.torch.cuda, "Event", Event)
+    monkeypatch.setattr(runtime.torch.cuda.nvtx, "range_push", lambda _name: None)
+    monkeypatch.setattr(runtime.torch.cuda.nvtx, "range_pop", lambda: None)
+    clock = ManualStageClock()
+    evidence = RepVitEvidence(_repvit_scores({6: 0.80, 5: 0.20}), torch.ones(384), 0.01)
+    pipeline = _pipeline(
+        repvit=ManyRecordingRunner((evidence,)),
+        dino_loader=lambda: pytest.fail("direct decision must not load DINO"),
+        clock=clock,
+    )
+
+    pipeline.infer_many(
+        _image(), (Box(1, 1, 20, 20),),
+        repvit_max_objects=2, dino_max_objects=2,
+    )
+
+    assert clock.sync_count == 1
+
+
 def test_direct_decision_observes_only_repvit_stage():
     stages: list[str] = []
     repvit = StageCheckingRunner(
