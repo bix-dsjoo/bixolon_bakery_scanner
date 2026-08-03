@@ -129,7 +129,18 @@ Future<void> _expectCustomerResolution({
     if (expectedCandidateRank != null) {
       expect(resolution.candidateRank, inInclusiveRange(1, 3));
     }
-    expect(await _unknownEvidenceSnapshot(journey), before);
+    final after = await _unknownEvidenceSnapshot(journey);
+    expect(after.inferenceObjectId, before.inferenceObjectId);
+    expect(after.skuId, before.skuId);
+    expect(after.skuName, before.skuName);
+    expect(after.decisionPath, before.decisionPath);
+    expect(after.confidence, before.confidence);
+    expect(after.bboxJson, before.bboxJson);
+    expect(after.detectorSource, before.detectorSource);
+    expect(after.detectorScore, before.detectorScore);
+    expect(after.provenanceJson, before.provenanceJson);
+    expect(after.unknownReason, before.unknownReason);
+    expect(after.candidates, before.candidates);
   } finally {
     await journey.dispose();
   }
