@@ -1139,7 +1139,7 @@ git commit -m "bench(quality): 15+5 OOF 수락 증거 기록"
 - [ ] **Step 1: Write failing receipt tests**
 
 ~~~python
-@pytest.mark.parametrize("slice_name", ["E", "M", "H", "overall", "dino", "needs_retake", "unknown", "count_1_2", "count_3_7", "count_8_plus"])
+@pytest.mark.parametrize("slice_name", ["E", "M", "H", "overall", "dinov3", "needs_retake", "unknown", "count_1_2", "count_3_7", "count_8_plus"])
 def test_each_required_slice_needs_one_thousand_samples(slice_name, valid_samples):
     samples = tuple(row for row in valid_samples if row.slice_name != slice_name or row.index < 999)
     with pytest.raises(ValueError, match=f"{slice_name} requires 1000"):
@@ -1147,7 +1147,7 @@ def test_each_required_slice_needs_one_thousand_samples(slice_name, valid_sample
 
 
 def test_one_path_over_one_hundred_ms_rejects_receipt(valid_samples):
-    samples = replace_slice_p95(valid_samples, "dino", 100.01)
+    samples = replace_slice_p95(valid_samples, "dinov3", 100.01)
     assert build_performance_receipt(samples, RUNTIME, ARTIFACTS).status == "performance-rejected"
 ~~~
 
