@@ -16,7 +16,7 @@ _STAGE_BUDGETS = {
     "crop": 4.0, "repvit": 12.0, "direct_gate": 2.0, "dinov3": 18.0,
     "fusion_payload": 6.0, "headroom": 8.0,
 }
-_LATENCY_PATHS = ("E", "M", "H", "overall", "dinov3", "needs_retake", "unknown")
+_LATENCY_PATHS = ("E", "M", "H", "overall", "dinov3", "needs_retake", "unknown", "count_1_2", "count_3_7", "count_8_plus")
 _UTILITY_FLOORS = {
     "normal_scan_acceptance": {"overall": 0.80, "each": 0.70},
     "unnecessary_retake": {"overall": 0.20, "each": 0.30},
@@ -30,16 +30,16 @@ _UTILITY_FLOORS = {
 class CandidateRuntimeConfig:
     device: str
     precision: str
-    min_objects: int
-    max_objects: int
+    repvit_chunk_capacity_objects: int
+    dinov3_chunk_capacity_objects: int
     p95_limit_ms: float
     stage_budgets_ms: Mapping[str, float]
 
     def __post_init__(self) -> None:
         if self.device != "CUDA:0" or self.precision != "FP16":
             raise ValueError("candidate runtime must be CUDA:0 FP16")
-        if self.min_objects != 3 or self.max_objects != 7:
-            raise ValueError("candidate object envelope must be 3 through 7")
+        if self.repvit_chunk_capacity_objects != 7 or self.dinov3_chunk_capacity_objects != 7:
+            raise ValueError("candidate chunk capacities must be seven objects")
         if _finite_float(self.p95_limit_ms, "p95_limit_ms") != 100.0:
             raise ValueError("candidate p95_limit_ms must be 100.0")
         if not isinstance(self.stage_budgets_ms, Mapping):
@@ -132,17 +132,17 @@ def load_candidate_config(path: Path) -> CandidateConfig:
 
 
 def _load_runtime(payload: dict[str, object]) -> CandidateRuntimeConfig:
-    _exact_keys(payload, {"device", "precision", "min_objects", "max_objects", "p95_limit_ms", "stage_budgets_ms"}, "runtime")
+    _exact_keys(payload, {"device", "precision", "repvit_chunk_capacity_objects", "dinov3_chunk_capacity_objects", "p95_limit_ms", "stage_budgets_ms"}, "runtime")
     stage_budgets = _float_mapping(payload["stage_budgets_ms"], "runtime.stage_budgets_ms")
     if payload["device"] != "CUDA:0" or payload["precision"] != "FP16":
         raise ValueError("candidate runtime must be CUDA:0 FP16")
-    if _positive_int(payload["min_objects"], "min_objects") != 3 or _positive_int(payload["max_objects"], "max_objects") != 7:
-        raise ValueError("candidate object envelope must be 3 through 7")
+    if _positive_int(payload["repvit_chunk_capacity_objects"], "repvit_chunk_capacity_objects") != 7 or _positive_int(payload["dinov3_chunk_capacity_objects"], "dinov3_chunk_capacity_objects") != 7:
+        raise ValueError("candidate chunk capacities must be seven objects")
     if _finite_float(payload["p95_limit_ms"], "p95_limit_ms") != 100.0:
         raise ValueError("candidate p95_limit_ms must be 100.0")
     if dict(stage_budgets) != _STAGE_BUDGETS:
         raise ValueError("candidate stage_budgets_ms must match the immutable static budget")
-    return CandidateRuntimeConfig("CUDA:0", "FP16", 3, 7, 100.0, MappingProxyType(stage_budgets))
+    return CandidateRuntimeConfig("CUDA:0", "FP16", 7, 7, 100.0, MappingProxyType(stage_budgets))
 
 
 def _load_evaluation(path: Path) -> EvaluationConfig:

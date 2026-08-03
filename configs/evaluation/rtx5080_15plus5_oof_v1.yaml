@@ -14,4 +14,5 @@ utility_floors:
   unknown_top3_recall: {overall: 0.95, each: 0.90}
 incremental_auto_sku_approval_coverage_floor: 0.50
 counterfactual_completeness_block_rate: 1.0
-latency_paths: [E, M, H, overall, dinov3, needs_retake, unknown]
+# count_1_2 and count_8_plus are performance-only until independent quality evidence exists.
+latency_paths: [E, M, H, overall, dinov3, needs_retake, unknown, count_1_2, count_3_7, count_8_plus]

@@ -16,13 +16,14 @@
 - Apply EXIF transpose and RGB conversion before every model; all boxes are finite in-bounds canonical xyxy.
 - Do not modify configs/pipelines/canonical_cpu.yaml, portable_cpu_smoke, or legacy behavior.
 - New code lives under bakery_scanner.data, bakery_scanner.detection, bakery_scanner.classification, bakery_scanner.pipelines, bakery_scanner.benchmarking, and responsibility-oriented tools directories.
-- Runtime accepts only 3 through 7 detected objects. Counts outside that envelope return needs_retake with object_count_out_of_profile.
+- Every positive final object count is eligible for accepted_scan; zero targets return needs_retake with no_target_detected. Current 3--7 counts are quality-evidence only.
+- RepViT batch 14 and DINO batch 7 are static invocation capacities: deterministically chunk all positive counts in original order, pad only the final chunk, ignore padded rows, concatenate evidence, and abort the whole scan on any chunk failure.
 - Never emit partial objects for a needs_retake scan.
 - RepViT direct approval requires the immutable calibrated class-wise Gate. Only direct rejections run DINOv3.
 - Fusion accepts only when the ranked SKU equals local Top-1, or both model global Top-1 values equal it and fusion margin is at least 0.85; every other object is Unknown.
 - Unknown is excluded from SKU totals and carries exactly three unique ranked active-catalog candidates.
 - The 100ms boundary starts with encoded JPEG bytes already in worker memory and ends with a validated in-memory result payload; decode is included and file I/O, acquisition, UI, engine build, initial load, and warm-up are excluded.
-- E, M, H, overall, DINO, needs_retake, and Unknown paths each require warmed p95 at or below 100ms.
+- E, M, H, overall, DINO, needs_retake, Unknown, count_1_2, count_3_7, and count_8_plus slices each require warmed p95 at or below 100ms; the outer count slices are performance-only until independent quality evidence exists.
 - TensorRT/ONNX packages and engines are external artifacts. The current bundled runtime reports tensorrt, torch_tensorrt, and onnx unavailable; engine work must fail closed until an external runtime manifest with byte sizes and SHA-256 passes admission.
 - No silent PyTorch, CPU, lower-resolution, smaller-detector, or lower-precision fallback is allowed.
 - Dataset payloads, checkpoints, ONNX files, TensorRT engines, support banks, and raw receipts stay outside Git. Git stores manifests, split identities, policies, compact summaries, source, configs, and tests.
@@ -250,7 +251,6 @@ class DecisionPath(str, Enum):
 
 class RetakeReason(str, Enum):
     NO_TARGET_DETECTED = "no_target_detected"
-    OBJECT_COUNT_OUT_OF_PROFILE = "object_count_out_of_profile"
     UNCOVERED_FOREGROUND = "uncovered_foreground"
     OVERLAP_OR_OCCLUSION = "overlap_or_occlusion"
     POSSIBLE_SPLIT = "possible_split"
@@ -341,9 +341,9 @@ payload before returning it.
 - [ ] **Step 4: Write failing config and admission tests**
 
 ~~~python
-def test_config_requires_static_limits_and_hard_p95(candidate_config):
-    assert candidate_config.runtime.min_objects == 3
-    assert candidate_config.runtime.max_objects == 7
+def test_config_requires_static_chunk_capacities_and_hard_p95(candidate_config):
+    assert candidate_config.runtime.repvit_chunk_capacity_objects == 7
+    assert candidate_config.runtime.dinov3_chunk_capacity_objects == 7
     assert candidate_config.runtime.p95_limit_ms == 100.0
     assert candidate_config.runtime.precision == "FP16"
     assert candidate_config.runtime.stage_budgets_ms == {
@@ -367,7 +367,7 @@ def test_admission_rejects_engine_hash_mismatch(candidate_root, runtime_identity
 
 - [ ] **Step 5: Add strict config and evaluation artifacts**
 
-The pipeline YAML fixes pipeline_id rtx5080_15plus5_single_frame_v1, device CUDA:0, precision FP16, min_objects 3, max_objects 7, RepViT batch 14, DINO batch 7, fusion margin 0.85, p95 limit 100.0, and the exact stage budgets asserted above. The evaluation YAML fixes IoU 0.50, seed 20260803, five folds, 3/1/1 roles, the utility floors from the spec, and all seven latency paths.
+The pipeline YAML fixes pipeline_id rtx5080_15plus5_single_frame_v1, device CUDA:0, precision FP16, seven-object RepViT/DINO chunk capacities, RepViT batch 14 (tight/context pairs), DINO batch 7, fusion margin 0.85, p95 limit 100.0, and the exact stage budgets asserted above. The evaluation YAML fixes IoU 0.50, seed 20260803, five folds, 3/1/1 roles, the utility floors from the spec, seven path slices, and count_1_2/count_3_7/count_8_plus latency slices.
 
 - [ ] **Step 6: Implement fail-closed admission**
 
@@ -443,16 +443,15 @@ def test_uncovered_foreground_requires_retake():
     assert decision.reasons == (RetakeReason.UNCOVERED_FOREGROUND,)
 
 
-@pytest.mark.parametrize("count", [2, 8])
-def test_object_count_outside_static_profile_requires_retake(count):
+def test_zero_target_requires_retake():
     decision = evaluate_completeness(
         frame_size=(4284, 5712),
-        proposals=make_valid_boxes(count),
+        proposals=(),
         foreground=FULLY_COVERED_FOREGROUND,
         quality=GOOD_QUALITY,
-        policy=policy(min_objects=3, max_objects=7),
+        policy=policy(),
     )
-    assert RetakeReason.OBJECT_COUNT_OUT_OF_PROFILE in decision.reasons
+    assert decision.reasons == (RetakeReason.NO_TARGET_DETECTED,)
 ~~~
 
 - [ ] **Step 2: Run completeness tests and verify RED**
@@ -473,8 +472,6 @@ class ForegroundEvidence:
 
 @dataclass(frozen=True, slots=True)
 class CompletenessPolicy:
-    min_objects: int
-    max_objects: int
     max_uncovered_ratio: float
     max_pair_iou: float
     border_margin_ratio: float
@@ -681,12 +678,12 @@ One DINO forward yields global and local tokens. Cap global prototype contributo
 
 ~~~python
 def test_direct_gate_rejects_tight_context_top1_disagreement(pipeline):
-    result = pipeline.infer_many(CANONICAL, (BOX,), repvit_max_objects=14, dino_max_objects=7)
+    result = pipeline.infer_many(CANONICAL, (BOX,), repvit_rows_per_invocation=14, dino_objects_per_invocation=7)
     assert result.dino_object_count == 1
     assert result.decisions[0].decision_path is not DecisionPath.REPVIT_DIRECT
 ~~~
 
-RepViT receives a single 2N batch ordered tight-1, context-1, tight-2, context-2. DINO receives only rejected object context crops in one padded batch.
+RepViT receives deterministic ordered 2N row chunks ordered tight-1, context-1, tight-2, context-2, with at most seven objects per static invocation. DINO receives only rejected object context crops in ordered seven-object padded chunks. Final chunks are padded, padded rows are ignored, and chunk evidence is concatenated back to original object order; any chunk failure aborts the whole scan.
 
 - [ ] **Step 7: Run focused suites and artifact commands**
 
@@ -801,7 +798,7 @@ git commit -m "feat(policy): 15+5 OOF 수락 정책 추가"
 
 **Interfaces:**
 - Consumes: final/fold FP32 checkpoints, exact preprocessing descriptors, and external runtime-manifest.json containing TensorRT Python binding and trtexec identities.
-- Produces externally: static detector batch 1, RepViT batch 14, and DINO batch 7 FP16 engines plus manifests.
+- Produces externally: static detector batch 1, RepViT batch 14 (seven tight/context object pairs per invocation), and DINO batch 7 (seven rejected objects per invocation) FP16 engines plus manifests. These are chunk capacities, not scan-count limits.
 
 - [ ] **Step 1: Write failing runtime-manifest admission tests**
 
@@ -955,15 +952,15 @@ class CudaStream(Protocol):
 
 class RepVitTensorRtRunner:
     def score_pairs(self, crop_pairs: Sequence[GpuCropPair]) -> RepVitBatchEvidence:
-        return self._execute_static_batch(crop_pairs, batch_size=14)
+        return self._execute_ordered_chunks(crop_pairs, objects_per_chunk=7, rows_per_object=2)
 
 
 class DinoTensorRtRunner:
     def score_rejections(self, crops: Sequence[GpuCrop]) -> DinoBatchEvidence:
-        return self._execute_static_batch(crops, batch_size=7)
+        return self._execute_ordered_chunks(crops, objects_per_chunk=7, rows_per_object=1)
 ~~~
 
-Preallocate detector batch 1, RepViT batch 14, and DINO batch 7 buffers at startup. Pad unused rows, retain a boolean valid mask, and prohibit reads from padded outputs.
+Preallocate detector batch 1, RepViT batch 14, and DINO batch 7 buffers at startup. Partition every positive count deterministically in original object order, pad only each final chunk, retain a boolean valid mask, prohibit reads from padded outputs, and concatenate valid evidence in original order. Any chunk failure aborts the entire scan with no partial objects or totals.
 
 - [ ] **Step 4: Implement one decode and GPU-resident crop flow**
 
@@ -975,7 +972,7 @@ Use two admitted CUDA streams. Synchronize only before evaluate_completeness. Re
 
 - [ ] **Step 6: Implement fail-closed branching**
 
-Malformed detector output raises RuntimeInferenceError. Completeness failure produces needs_retake with no final objects. Accepted scenes run RepViT; direct rejections run one DINO batch; immutable fusion produces registered SKU or Unknown. Engine/CUDA/OOM errors abort the entire result and never invoke a legacy runtime.
+Malformed detector output raises RuntimeInferenceError. Zero targets or other completeness failure produces needs_retake with no final objects; positive object counts are never retaken for batch capacity. Accepted scenes run ordered RepViT chunks; direct rejections run ordered DINO chunks; immutable fusion produces registered SKU or Unknown. Engine/CUDA/OOM or any chunk error aborts the entire result and never invokes a legacy runtime.
 
 - [ ] **Step 7: Run hermetic and GPU-marked tests**
 
@@ -1142,7 +1139,7 @@ git commit -m "bench(quality): 15+5 OOF 수락 증거 기록"
 - [ ] **Step 1: Write failing receipt tests**
 
 ~~~python
-@pytest.mark.parametrize("slice_name", ["E", "M", "H", "overall", "dino", "needs_retake", "unknown"])
+@pytest.mark.parametrize("slice_name", ["E", "M", "H", "overall", "dino", "needs_retake", "unknown", "count_1_2", "count_3_7", "count_8_plus"])
 def test_each_required_slice_needs_one_thousand_samples(slice_name, valid_samples):
     samples = tuple(row for row in valid_samples if row.slice_name != slice_name or row.index < 999)
     with pytest.raises(ValueError, match=f"{slice_name} requires 1000"):
@@ -1166,7 +1163,7 @@ Stages are decode_canonical, detector, completeness, crop, repvit, direct_gate, 
 
 - [ ] **Step 4: Implement deterministic benchmark scheduling**
 
-Warm up at least 20 runs. Repeat E 100, M 99, and H 100 images in canonical sorted order until each group reaches 1,000 samples. Gather actual DINO, retake, and Unknown scans; repeat their sorted IDs until each path reaches 1,000. If an actual path has zero samples, use a manifest-bound forced-path fixture and label evidence_kind forced_path_performance without including it in quality.
+Warm up at least 20 runs. Repeat E 100, M 99, and H 100 images in canonical sorted order until each group reaches 1,000 samples. Gather actual DINO, retake, and Unknown scans; repeat their sorted IDs until each path reaches 1,000. Record deterministic exact forced counts for count_1_2 and count_8_plus fixtures assembled only from current crop identities; label them evidence_kind forced_path_performance and never include them in accuracy or quality. count_3_7 is the current labeled quality-evidence slice.
 
 - [ ] **Step 5: Enforce the 100ms and runtime Gates**
 

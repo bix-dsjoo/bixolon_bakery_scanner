@@ -49,7 +49,7 @@ production-unverified이며 production risk upper bound나 non-target rejection�
 | 합계 | 299 | 1,406 | 20 |
 
 - E 100장, M 99장, H 100장이다.
-- 한 장에는 3~7개 객체가 있고 median은 4~5개다.
+- 현재 299개 labeled 장면에는 한 장당 3~7개 객체가 있고 median은 4~5개다. 이는 `count_3_7` 품질 evidence slice이며 runtime acceptance 제한이 아니다.
 - image shape은 3024×4032 또는 4284×5712다.
 - incremental 5종은 혼합 장면에서 총 337개 box를 갖는다.
 - SKU별 scene box는 최소 57개, 최대 89개다.
@@ -249,7 +249,7 @@ Detector가 출력하지 않은 객체에는 detector confidence가 없다. 따�
 - unexplained foreground area
 - box overlap, possible split와 possible merge
 - blur, exposure와 reflection
-- object count profile 3~7
+- current-data object-count evidence slice 3~7 (retake 조건 아님)
 
 Foreground evidence는 객체를 새로 만들거나 SKU를 결정하지 않는다. Detector
 box로 설명되지 않는 foreground가 있으면 retake를 요구하는 보수적 guard다.
@@ -257,7 +257,6 @@ box로 설명되지 않는 foreground가 있으면 retake를 요구하는 보수
 ### 7.2 Retake reason
 
 - no_target_detected
-- object_count_out_of_profile
 - uncovered_foreground
 - overlap_or_occlusion
 - possible_split
@@ -388,8 +387,8 @@ Unknown과 customer resolution은 immutable SKU totals와 자동 주문에 포�
 
 - RTX 5080 전용 TensorRT FP16 engine
 - RF-DETR-L, RepViT와 DINO static-shape profile
-- verified object-count envelope 3~7
-- detector input, RepViT batch 14와 DINO batch 7의 고정 buffers
+- current-data quality evidence slice는 3~7 객체이며 acceptance envelope이 아니다.
+- detector input, RepViT batch 14와 DINO batch 7의 고정 buffers. RepViT 14는 객체당 tight/context pair 두 행이므로 invocation당 7 객체를 뜻하고, DINO 7도 invocation당 rejected object 7개를 뜻한다.
 - startup preallocation과 buffer reuse
 - GPU crop, padding mask와 score processing
 - object별 Python/model call 금지
@@ -399,8 +398,11 @@ Unknown과 customer resolution은 immutable SKU totals와 자동 주문에 포�
 - DINO global/local evidence를 단일 backbone pass에서 생성
 - TensorRT 불가 시 PyTorch/CPU silent fallback 금지
 
-8개 이상 또는 3개 미만 객체는 dynamic profile을 만들지 않고
-object_count_out_of_profile로 retake한다.
+양수 객체 수는 acceptance와 독립적이다. Runtime은 original object order로
+임의의 양수 count를 7-object chunk로 deterministic partition하고 마지막 chunk만
+pad한다. padded row는 valid mask로 읽지 않으며, 모든 chunk의 evidence를 원래
+order로 concatenate한다. 어떤 chunk라도 실패하면 scan 전체를 abort하고 partial
+object/total을 반환하지 않는다. 0 target만 `no_target_detected` needs_retake다.
 
 ### 10.2 Stage budget
 
@@ -532,10 +534,19 @@ RTX 5080에서 실제 final engine과 policy로 측정한다.
 | DINO path | 1,000 | p95 ≤100ms |
 | needs_retake path | 1,000 | p95 ≤100ms |
 | Unknown path | 1,000 | p95 ≤100ms |
+| count_1_2 | 1,000 | p95 ≤100ms, performance-only |
+| count_3_7 | 1,000 | p95 ≤100ms |
+| count_8_plus | 1,000 | p95 ≤100ms, performance-only |
 
 299개 장면을 고정 순서로 반복한다. 경로 표본이 부족하면 실제 해당 경로
 scan을 고정 순서로 반복한다. 경로가 전혀 발생하지 않으면 forced-path
 performance stress를 별도 실행하고 품질 지표와 섞지 않는다.
+
+현재 labeled quality evidence는 `count_3_7`에만 있다. `count_1_2`와
+`count_8_plus`는 현재 crop identity에서 deterministic forced fixture로 latency만
+측정할 수 있으며, accuracy/quality evidence로 세지 않고 production-unverified로
+남긴다. count-slice p95 실패는 candidate performance admission을 거부할 뿐
+semantically valid scan을 retake로 바꾸지 않는다.
 
 필수 보고:
 

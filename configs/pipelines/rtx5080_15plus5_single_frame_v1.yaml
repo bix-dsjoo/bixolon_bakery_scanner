@@ -7,8 +7,8 @@ evaluation_config: ../evaluation/rtx5080_15plus5_oof_v1.yaml
 runtime:
   device: CUDA:0
   precision: FP16
-  min_objects: 3
-  max_objects: 7
+  repvit_chunk_capacity_objects: 7
+  dinov3_chunk_capacity_objects: 7
   p95_limit_ms: 100.0
   stage_budgets_ms:
     decode_canonical: 10.0
@@ -20,6 +20,8 @@ runtime:
     dinov3: 18.0
     fusion_payload: 6.0
     headroom: 8.0
+# Batch 14 holds tight/context pairs for seven objects; DINO batch 7 holds
+# seven rejected objects. These are invocation chunk capacities, never scan limits.
 repvit_batch_size: 14
 dinov3_batch_size: 7
 fusion_margin: 0.85

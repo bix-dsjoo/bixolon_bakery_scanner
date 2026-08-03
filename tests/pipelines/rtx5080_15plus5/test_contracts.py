@@ -125,23 +125,24 @@ def test_accepted_object_rejects_noncanonical_sku_id() -> None:
         )
 
 
-@pytest.mark.parametrize("count", [2, 8])
-def test_accepted_scan_rejects_out_of_profile_object_count(count: int) -> None:
+@pytest.mark.parametrize("count", [1, 2, 8])
+def test_accepted_scan_allows_every_nonempty_object_count(count: int) -> None:
     objects = tuple(_registered_object((index % 20) + 1, order=index + 1) for index in range(count))
-    with pytest.raises(ValueError, match="3 through 7"):
-        _accepted_scan(objects)
+    assert _accepted_scan(objects).object_total == count
 
 
-def test_out_of_profile_count_returns_a_retake_without_objects() -> None:
+def test_accepted_scan_rejects_empty_objects_and_zero_target_returns_retake() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        _accepted_scan(())
     result = ScanResult.needs_retake(
         scan_id="scan-1", retake_chain_id="chain-1", attempt=1,
-        reasons=(RetakeReason.OBJECT_COUNT_OUT_OF_PROFILE,), problem_regions=(), timings_ms=StageTimings(*(1.0,) * 9),
+        reasons=(RetakeReason.NO_TARGET_DETECTED,), problem_regions=(), timings_ms=StageTimings(*(1.0,) * 9),
         provenance=ScanProvenance("rtx5080_15plus5_single_frame_v1", "rtx5080_trt_fp16_static7_v1", _HASH, {"detector": _HASH}),
         canonical_frame=_FRAME,
     )
     assert result.state is ScanState.NEEDS_RETAKE
     assert result.objects == ()
-    assert result.reasons == (RetakeReason.OBJECT_COUNT_OUT_OF_PROFILE,)
+    assert result.reasons == (RetakeReason.NO_TARGET_DETECTED,)
 
 
 def test_scan_rejects_out_of_bounds_box_and_inconsistent_normalized_center() -> None:

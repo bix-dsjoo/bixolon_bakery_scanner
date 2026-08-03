@@ -63,7 +63,7 @@ def candidate_root(tmp_path: Path, runtime_identity: RuntimeIdentity) -> Path:
     config = {
         "schema_version": 1, "pipeline_id": manifest["pipeline_id"],
         "admission_manifest": "admission.json", "evaluation_config": "evaluation.yaml",
-        "runtime": {"device": "CUDA:0", "precision": "FP16", "min_objects": 3, "max_objects": 7, "p95_limit_ms": 100.0,
+        "runtime": {"device": "CUDA:0", "precision": "FP16", "repvit_chunk_capacity_objects": 7, "dinov3_chunk_capacity_objects": 7, "p95_limit_ms": 100.0,
                     "stage_budgets_ms": {"decode_canonical": 10, "detector": 36, "completeness": 6, "crop": 4, "repvit": 12, "direct_gate": 2, "dinov3": 18, "fusion_payload": 6, "headroom": 8}},
         "repvit_batch_size": 14, "dinov3_batch_size": 7, "fusion_margin": 0.85,
     }
@@ -71,7 +71,7 @@ def candidate_root(tmp_path: Path, runtime_identity: RuntimeIdentity) -> Path:
                   "role_counts": {"train": 3, "calibration": 1, "evaluation": 1},
                   "utility_floors": {"normal_scan_acceptance": {"overall": .8, "each": .7}, "unnecessary_retake": {"overall": .2, "each": .3}, "auto_sku_approval_coverage": {"overall": .7, "each": .6}, "unknown_rate": {"overall": .3, "each": .4}, "unknown_top3_recall": {"overall": .95, "each": .9}},
                   "incremental_auto_sku_approval_coverage_floor": .5, "counterfactual_completeness_block_rate": 1.0,
-                  "latency_paths": ["E", "M", "H", "overall", "dinov3", "needs_retake", "unknown"]}
+                  "latency_paths": ["E", "M", "H", "overall", "dinov3", "needs_retake", "unknown", "count_1_2", "count_3_7", "count_8_plus"]}
     (tmp_path / "candidate.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
     (tmp_path / "evaluation.yaml").write_text(yaml.safe_dump(evaluation), encoding="utf-8")
     return tmp_path

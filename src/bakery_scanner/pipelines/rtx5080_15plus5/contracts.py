@@ -37,7 +37,6 @@ class DecisionPath(str, Enum):
 
 class RetakeReason(str, Enum):
     NO_TARGET_DETECTED = "no_target_detected"
-    OBJECT_COUNT_OUT_OF_PROFILE = "object_count_out_of_profile"
     UNCOVERED_FOREGROUND = "uncovered_foreground"
     OVERLAP_OR_OCCLUSION = "overlap_or_occlusion"
     POSSIBLE_SPLIT = "possible_split"
@@ -257,8 +256,8 @@ class ScanResult:
             if self.manual_catalog_required != (self.attempt >= 3):
                 raise ValueError("manual_catalog_required is true only for needs_retake attempt 3 and later")
         elif self.state is ScanState.ACCEPTED:
-            if not 3 <= len(self.objects) <= 7:
-                raise ValueError("accepted_scan must contain 3 through 7 final objects")
+            if not self.objects:
+                raise ValueError("accepted_scan must contain a non-empty final object tuple")
             if self.reasons or self.problem_regions or self.attempt is not None or self.manual_catalog_required:
                 raise ValueError("accepted_scan must not carry retake fields")
         else:
