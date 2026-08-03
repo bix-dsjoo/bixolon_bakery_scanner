@@ -104,6 +104,25 @@ def test_rfdetr_loader_rejects_checkpoint_replaced_during_model_construction(tmp
     assert replacement_denied is True
 
 
+def test_rfdetr_binding_denies_replacement_until_warmup_finalization(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pth"
+    checkpoint.write_bytes(b"verified checkpoint")
+    expected = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+    class Backend:
+        def predict(self, *args, **kwargs):
+            raise AssertionError("not used")
+
+    runner = RFDetrRunner.load(
+        checkpoint, score_threshold=0.5, expected_sha256=expected,
+        model_factory=lambda **_kwargs: Backend(),
+    )
+    with pytest.raises(PermissionError):
+        checkpoint.write_bytes(b"replacement during warmup")
+    runner.finalize_artifact_binding()
+    checkpoint.write_bytes(b"released after warmup")
+
+
 def test_windows_verified_path_bindings_deny_classifier_artifact_replacement(tmp_path):
     config = tmp_path / "gpu_rfdetr_classifier_policy.yaml"
     repvit = tmp_path / "repvit.pth"

@@ -25,7 +25,7 @@ _SOURCE = "rfdetr_large_bakery_v1"
 class RFDetrRunner:
     """Normalize a loaded RF-DETR-L model into canonical bread proposals."""
 
-    def __init__(self, model: Any, *, score_threshold: float, source: str = _SOURCE) -> None:
+    def __init__(self, model: Any, *, score_threshold: float, source: str = _SOURCE, binding: "_CheckpointBinding | None" = None) -> None:
         if not hasattr(model, "predict"):
             raise TypeError("RF-DETR backend must provide predict()")
         if isinstance(score_threshold, bool) or not isinstance(score_threshold, (int, float)):
@@ -37,6 +37,7 @@ class RFDetrRunner:
         self._model = model
         self._score_threshold = float(score_threshold)
         self.source = source
+        self._binding = binding
 
     @classmethod
     def from_model(cls, model: Any, *, score_threshold: float, source: str = _SOURCE) -> "RFDetrRunner":
@@ -56,7 +57,9 @@ class RFDetrRunner:
         checkpoint_path = Path(checkpoint).resolve()
         if not checkpoint_path.is_file():
             raise ValueError(f"RF-DETR checkpoint is missing: {checkpoint_path}")
-        with _CheckpointBinding(checkpoint_path, expected_sha256, device):
+        binding = _CheckpointBinding(checkpoint_path, expected_sha256, device)
+        binding.__enter__()
+        try:
             if model_factory is None:
                 try:
                     from rfdetr import RFDETRLarge
@@ -66,11 +69,27 @@ class RFDetrRunner:
             model = model_factory(
                 pretrain_weights=str(checkpoint_path), num_classes=1, device=device
             )
+        except Exception:
+            binding.release(verify=False)
+            raise
         return cls(
             model,
             score_threshold=score_threshold,
             source=source,
+            binding=binding,
         )
+
+    def finalize_artifact_binding(self) -> None:
+        binding = self._binding
+        self._binding = None
+        if binding is not None:
+            binding.release(verify=True)
+
+    def close(self) -> None:
+        binding = self._binding
+        self._binding = None
+        if binding is not None:
+            binding.release(verify=False)
 
     def predict(self, image_id: int, image: Image.Image) -> tuple[BreadProposal, ...]:
         if not isinstance(image, Image.Image) or image.mode != "RGB":
@@ -170,6 +189,7 @@ class _CheckpointBinding:
         self.expected_sha256 = expected_sha256
         self.device = device
         self._handle: int | None = None
+        self._active = False
 
     def __enter__(self) -> "_CheckpointBinding":
         if str(self.device).lower().startswith("cuda") and self.expected_sha256 is None:
@@ -182,16 +202,23 @@ class _CheckpointBinding:
         elif str(self.device).lower().startswith("cuda"):
             raise ValueError("CUDA evidence checkpoint binding requires Windows share-deny locking")
         _require_checkpoint_sha256(self.path, self.expected_sha256)
+        self._active = True
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release(verify=exc_type is None)
+
+    def release(self, *, verify: bool) -> None:
+        if not self._active:
+            return
         try:
-            if self.expected_sha256 is not None and exc_type is None:
+            if verify and self.expected_sha256 is not None:
                 _require_checkpoint_sha256(self.path, self.expected_sha256)
         finally:
             if self._handle is not None:
                 _close_windows_handle(self._handle)
                 self._handle = None
+            self._active = False
 
 
 class VerifiedPathBindings:

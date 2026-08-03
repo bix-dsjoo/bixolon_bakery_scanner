@@ -634,9 +634,12 @@ final class InferenceResult {
     final requestId = _requiredString(json['request_id'], 'request_id');
     final image = _map(json['image'], 'image');
     _expectFields(image, const {'width', 'height'});
-    final imageWidth = _positiveFinite(image['width'], 'image width');
-    final imageHeight = _positiveFinite(image['height'], 'image height');
+    final imageWidth = _positiveInt(image['width'], 'image width').toDouble();
+    final imageHeight = _positiveInt(image['height'], 'image height').toDouble();
     final device = _requiredString(json['device'], 'result device');
+    if (device != 'cpu' && device != 'cuda:0') {
+      throw const FormatException('result device must be cpu or cuda:0');
+    }
     final objectValues = _list(json['objects'], 'objects');
     final objects = <InferenceObject>[
       for (var index = 0; index < objectValues.length; index += 1)

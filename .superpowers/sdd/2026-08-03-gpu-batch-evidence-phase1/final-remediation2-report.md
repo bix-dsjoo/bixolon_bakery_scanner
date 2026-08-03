@@ -36,6 +36,11 @@
   preflight, lazy DINO/local-bank loading, and startup synchronization. It
   rehashes and releases only after successful warm-up; failure and close paths
   release handles safely, so normal inference retains no artifact locks.
+- RF-DETR's own binding likewise remains held through detector warm-up and
+  releases only after final verification. Python startup metrics now require
+  the same exact applied-artifact hash map as Dart, including custom backends.
+  A shared CUDA timing collector is finalized on classifier failure before the
+  error propagates.
 
 ## Verification
 
@@ -44,7 +49,7 @@
 - Classifier/runtime/worker/receipt/policy: `PYTHONPATH=src python -m pytest tests/classification/test_config.py tests/classification/test_runtime.py tests/prototype/test_camera_runtime.py tests/prototype/test_camera_worker.py tests/benchmarking/test_gpu_worker_receipt.py tests/contract/test_repository_policy.py -q`
   - `148 passed`
 - Full Python: `PYTHONPATH=src python -m pytest -q`
-  - `779 passed, 4 skipped, 15 deselected`
+  - `780 passed, 4 skipped, 15 deselected`
 - `git diff --check` completed without output.
 - Flutter was unavailable, so Dart execution remains unverified. CUDA/artifact
   suites remain unverified where required hardware or external model files are

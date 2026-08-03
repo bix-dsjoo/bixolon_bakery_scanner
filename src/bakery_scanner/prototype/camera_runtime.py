@@ -50,6 +50,13 @@ _MANIFEST_COMMON_KEYS = {
 _MANIFEST_SOURCE_KEYS = {"source_path", "source_uri"}
 _ARTIFACT_KEYS = {"file", "sha256"}
 _SHA256_LENGTH = 64
+_APPLIED_ARTIFACT_HASH_FIELDS = frozenset({
+    "detector_checkpoint_sha256", "detector_calibration_sha256", "detector_manifest_sha256",
+    "repvit_checkpoint_sha256", "repvit_manifest_sha256", "repvit_prototype_sha256",
+    "dinov3_weights_sha256", "dinov3_support_sha256", "dinov3_local_bank_sha256",
+    "classifier_calibration_sha256", "preprocess_sha256", "fusion_policy_sha256",
+    "presentation_policy_sha256",
+})
 
 
 class RuntimeBackend(Protocol):
@@ -84,8 +91,13 @@ class StartupMetrics:
             0.0 <= self.detector_threshold <= 1.0
         ):
             raise ValueError("detector_threshold must lie in [0, 1]")
-        if not isinstance(self.applied_artifact_hashes, Mapping):
-            raise ValueError("applied_artifact_hashes must be a mapping")
+        if (
+            not isinstance(self.applied_artifact_hashes, Mapping)
+            or set(self.applied_artifact_hashes) != _APPLIED_ARTIFACT_HASH_FIELDS
+            or any(not _is_sha256(value) for value in self.applied_artifact_hashes.values())
+        ):
+            raise ValueError("applied_artifact_hashes must be the exact verified hash set")
+        object.__setattr__(self, "applied_artifact_hashes", dict(self.applied_artifact_hashes))
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,10 +157,19 @@ class _LoadedBackend:
                 closer()
 
     def finalize_artifact_bindings(self) -> None:
+        detector = self.detector
         bindings = self._artifact_bindings
         self._artifact_bindings = None
-        if bindings is not None:
-            bindings.release(verify=True)
+        try:
+            finalizer = getattr(detector, "finalize_artifact_binding", None)
+            if callable(finalizer):
+                finalizer()
+            if bindings is not None:
+                bindings.release(verify=True)
+        except Exception:
+            if bindings is not None:
+                bindings.release(verify=False)
+            raise
 
 
 class CameraInferenceRuntime:
@@ -290,7 +311,7 @@ class CameraInferenceRuntime:
             applied_hashes = (
                 _applied_artifact_hashes(manifest, config, presentation_policy)
                 if backend_loader is None
-                else {}
+                else _backend_applied_artifact_hashes(backend)
             )
             metrics = StartupMetrics(
                 device=device,
@@ -432,11 +453,15 @@ class CameraInferenceRuntime:
                 }
                 if cuda_timing is not None:
                     batch_kwargs["cuda_timing"] = cuda_timing
-                batch = backend.classifier.infer_many(
-                    frame,
-                    boxes,
-                    **batch_kwargs,
-                )
+                try:
+                    batch = backend.classifier.infer_many(
+                        frame,
+                        boxes,
+                        **batch_kwargs,
+                    )
+                except Exception as inference_error:
+                    _finalize_failed_cuda_timing(cuda_timing, inference_error)
+                    raise
                 if len(batch.decisions) != len(ordered):
                     raise ValueError("classifier batch decisions must align with detector proposals")
                 if batch.dino_object_count > 0:
@@ -838,6 +863,17 @@ def _applied_artifact_hashes(
     return hashes
 
 
+def _backend_applied_artifact_hashes(backend: RuntimeBackend) -> dict[str, str]:
+    hashes = getattr(backend, "applied_artifact_hashes", None)
+    if (
+        not isinstance(hashes, Mapping)
+        or set(hashes) != _APPLIED_ARTIFACT_HASH_FIELDS
+        or any(not _is_sha256(value) for value in hashes.values())
+    ):
+        raise ValueError("custom backend must supply the exact applied artifact hashes")
+    return dict(hashes)
+
+
 def _validate_backend(backend: RuntimeBackend, device: str) -> None:
     if backend is None:
         raise TypeError("backend loader must return a RuntimeBackend")
@@ -1046,6 +1082,17 @@ def _timestamp(clock: Callable[[], float], device: str) -> float:
 def _synchronize(device: str) -> None:
     if device == "cuda:0" and torch.cuda.is_available():
         torch.cuda.synchronize(torch.device("cuda:0"))
+
+
+def _finalize_failed_cuda_timing(
+    collector: CudaTimingCollector | None, inference_error: Exception
+) -> None:
+    if collector is None:
+        return
+    try:
+        collector.finalize()
+    except Exception as cleanup_error:
+        raise RuntimeError("CUDA timing cleanup failed after inference failure") from cleanup_error
 
 
 def _milliseconds(started: float, finished: float) -> float:
