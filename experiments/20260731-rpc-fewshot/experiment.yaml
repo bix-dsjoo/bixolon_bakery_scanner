@@ -331,3 +331,7 @@ conditions:
 hypothesis: >-
   Frozen visual support representations can preserve novel-SKU Top-1 with at
   most five labeled images.
+results:
+  - receipt: receipts/20260803-full-development-m1-dinov3-global-curve.md
+    status: preliminary
+    scope: oracle-crop, forced-top1, M1, DINOv3-global
