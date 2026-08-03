@@ -580,6 +580,19 @@ def test_m0_base_embedding_training_requires_cpu_balanced_feature_matrix(
         fit_m0_base_rows_from_embeddings(category_ids, embeddings.to("meta"))
 
 
+def test_m0_base_embedding_training_rejects_zero_norm_feature(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(worker, "_M0_BASE_SHOTS", 1)
+    category_ids = tuple(range(1, 161))
+    embeddings = torch.zeros((160, 384), dtype=torch.float32)
+    embeddings[:, 0] = 1.0
+    embeddings[0] = 0.0
+
+    with pytest.raises(ValueError, match="non-zero length"):
+        fit_m0_base_rows_from_embeddings(category_ids, embeddings)
+
+
 def test_branch_predictions_have_sorted_catalog_scores_and_provenance():
     """A partial or differently ordered score vector cannot cross the shared fusion boundary."""
     supports = _complete_scoring_supports()

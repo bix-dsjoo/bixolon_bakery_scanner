@@ -438,8 +438,9 @@ def fit_m0_base_rows_from_embeddings(
     if (
         any(type(category_id) is not int or category_id not in _RPC_CATEGORY_IDS for category_id in categories)
         or not torch.isfinite(repvit_embeddings).all().item()
+        or (torch.linalg.vector_norm(repvit_embeddings, dim=1) == 0).any().item()
     ):
-        raise ValueError("invalid M0 base embedding matrix")
+        raise ValueError("M0 base embeddings must be finite and have non-zero length")
     ordered_categories = tuple(sorted(set(categories)))
     if len(ordered_categories) != 160 or any(categories.count(category_id) != _M0_BASE_SHOTS for category_id in ordered_categories):
         raise ValueError(
