@@ -221,7 +221,7 @@ def build_counterfactuals(gt_boxes: tuple[BreadProposal, ...]) -> tuple[Counterf
         raise InvalidDetectorOutput("counterfactual GT boxes must be an immutable BreadProposal tuple")
     if not gt_boxes:
         return ()
-    width, height = gt_boxes[0].image_width, gt_boxes[0].image_height
+    width, height = _proposal_frame_dimensions(gt_boxes[0])
     _validate_proposals(gt_boxes, width, height)
     cases: list[CounterfactualCase] = []
     clear = _clear_foreground()
@@ -269,9 +269,13 @@ def _validate_proposals(proposals: object, width: int, height: int) -> None:
     for proposal in proposals:
         if not isinstance(proposal, BreadProposal):
             raise InvalidDetectorOutput("detector proposals must contain BreadProposal values")
-        if proposal.image_width != width or proposal.image_height != height:
+        proposal_width, proposal_height = _proposal_frame_dimensions(proposal)
+        if proposal_width != width or proposal_height != height:
             raise InvalidDetectorOutput("detector proposal dimensions must equal the canonical frame")
-        box = proposal.box
+        try:
+            box = proposal.box
+        except AttributeError as exc:
+            raise InvalidDetectorOutput("detector proposal box is missing") from exc
         if not isinstance(box, Box):
             raise InvalidDetectorOutput("detector box must be a canonical Box")
         try:
@@ -282,6 +286,24 @@ def _validate_proposals(proposals: object, width: int, height: int) -> None:
             raise InvalidDetectorOutput("detector box coordinates must be finite")
         if x_min < 0 or y_min < 0 or x_max <= x_min or y_max <= y_min or x_max > width or y_max > height:
             raise InvalidDetectorOutput("detector box must remain in canonical frame bounds")
+
+
+def _proposal_frame_dimensions(proposal: BreadProposal) -> tuple[int, int]:
+    try:
+        proposal_width = proposal.image_width
+        proposal_height = proposal.image_height
+    except AttributeError as exc:
+        raise InvalidDetectorOutput("detector proposal dimensions are missing") from exc
+    if (
+        not isinstance(proposal_width, int)
+        or isinstance(proposal_width, bool)
+        or proposal_width < 1
+        or not isinstance(proposal_height, int)
+        or isinstance(proposal_height, bool)
+        or proposal_height < 1
+    ):
+        raise InvalidDetectorOutput("detector proposal dimensions must be positive integers")
+    return proposal_width, proposal_height
 
 
 def _regions(value: object, name: str) -> None:

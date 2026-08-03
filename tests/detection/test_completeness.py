@@ -159,3 +159,17 @@ def test_detector_boundary_rejects_mismatched_frame_and_malformed_box() -> None:
     object.__setattr__(malformed, "box", type("BadBox", (), {"xyxy": (0.0, 0.0, math.nan, 1.0)})())
     with pytest.raises(InvalidDetectorOutput, match="box"):
         evaluate_completeness(FRAME, (malformed,), _foreground(), _quality(), _policy())
+
+
+def test_detector_boundary_normalizes_forged_proposal_missing_dimensions() -> None:
+    from bakery_scanner.detection.completeness import InvalidDetectorOutput, evaluate_completeness
+
+    malformed = object.__new__(BreadProposal)
+    for field, value in {
+        "image_id": 1, "source": "rfdetr_large_bakery_v1", "score": 0.9,
+        "box": Box(1, 1, 10, 10), "image_height": 80, "class_id": 1, "class_name": "bread",
+    }.items():
+        object.__setattr__(malformed, field, value)
+
+    with pytest.raises(InvalidDetectorOutput, match="dimensions"):
+        evaluate_completeness(FRAME, (malformed,), _foreground(), _quality(), _policy())
