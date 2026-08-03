@@ -20,9 +20,14 @@ from bakery_scanner.experiments.rpc_manifest import (
     write_new_json,
 )
 from bakery_scanner.experiments.rpc_research_worker import (
+    FeatureExample,
+    FeatureProvenance,
     OracleFeatureRow,
     ResearchArtifacts,
     extract_oracle_features,
+    fit_m0_head,
+    score_m1,
+    score_m2,
 )
 
 
@@ -383,3 +388,128 @@ def test_support_selection_rejects_non_384_dino_global_vectors():
             capture_stratum="camera-a",
             feature_array_sha256="f" * 64,
         )
+
+
+def _scoring_vector(first: float, second: float) -> tuple[float, ...]:
+    return (first, second, *([0.0] * 382))
+
+
+def _scoring_example(
+    category_id: int,
+    source: str,
+    *,
+    repvit: tuple[float, float] = (0.0, 1.0),
+    dino: tuple[float, float] = (0.0, 1.0),
+) -> FeatureExample:
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    provenance = FeatureProvenance(
+        source_identity=source,
+        annotation_id=category_id * 1000 + len(source),
+        source_sha256=digest,
+        repvit_global_array_sha256=hashlib.sha256(f"repvit:{source}".encode()).hexdigest(),
+        dinov3_global_array_sha256=hashlib.sha256(f"dino-global:{source}".encode()).hexdigest(),
+        dinov3_patches_array_sha256=hashlib.sha256(f"dino-local:{source}".encode()).hexdigest(),
+    )
+    dino_vector = _scoring_vector(*dino)
+    return FeatureExample(
+        category_id=category_id,
+        provenance=provenance,
+        repvit_global=_scoring_vector(*repvit),
+        dinov3_global=dino_vector,
+        dinov3_patches=(dino_vector,),
+    )
+
+
+def _complete_scoring_supports(*, duplicate_seven: bool = False) -> dict[int, tuple[FeatureExample, ...]]:
+    supports = {
+        category_id: (_scoring_example(category_id, f"support-{category_id}"),)
+        for category_id in range(1, 201)
+    }
+    supports[7] = (_scoring_example(7, "support-seven-a", repvit=(3.0, 0.0), dino=(3.0, 0.0)),)
+    if duplicate_seven:
+        supports[7] = (
+            supports[7][0],
+            _scoring_example(7, "support-seven-b", repvit=(3.0, 0.0), dino=(3.0, 0.0)),
+        )
+    return supports
+
+
+def _scoring_query(*, source: str = "query") -> FeatureExample:
+    return _scoring_example(7, source, repvit=(1.0, 0.0), dino=(1.0, 0.0))
+
+
+def test_m1_scores_normalized_class_means():
+    """Skipping per-support normalization makes a high-magnitude support win incorrectly."""
+    supports = _complete_scoring_supports()
+    supports[7] = (
+        _scoring_example(7, "support-seven-a", repvit=(3.0, 0.0), dino=(3.0, 0.0)),
+        _scoring_example(7, "support-seven-b", repvit=(1.0, 0.0), dino=(1.0, 0.0)),
+    )
+
+    prediction = score_m1(supports, supports, _scoring_query())
+
+    assert prediction.repvit_top1 == 7
+    assert prediction.dinov3_global_top1 == 7
+    assert prediction.dinov3_local_top1 == 7
+
+
+def test_m2_normalizes_each_class_cache_count():
+    """Summing a class cache would let duplicated identical exemplars inflate its score."""
+    query = _scoring_query()
+
+    one_exemplar = score_m2(_complete_scoring_supports(), _complete_scoring_supports(), query)
+    duplicated_exemplars = score_m2(
+        _complete_scoring_supports(duplicate_seven=True),
+        _complete_scoring_supports(duplicate_seven=True),
+        query,
+    )
+
+    assert one_exemplar.dinov3_global_scores[6] == duplicated_exemplars.dinov3_global_scores[6]
+    assert one_exemplar.dinov3_local_scores[6] == duplicated_exemplars.dinov3_local_scores[6]
+
+
+def test_m0_keeps_frozen_base_rows_unchanged():
+    """Updating an old classifier row during novel training invalidates the frozen base control."""
+    base_features = tuple(
+        _scoring_example(category_id, f"base-{category_id}", repvit=(1.0, 0.0), dino=(1.0, 0.0))
+        for category_id in range(1, 161)
+    )
+    novel_features = tuple(
+        _scoring_example(category_id, f"novel-{category_id}", repvit=(0.0, 1.0), dino=(0.0, 1.0))
+        for category_id in range(161, 201)
+    )
+    base_rows_before_fit = torch.arange(160 * 384, dtype=torch.float32).reshape(160, 384)
+    snapshot = base_rows_before_fit.clone()
+
+    head = fit_m0_head(base_features, novel_features, base_rows_before_fit)
+
+    assert torch.equal(head.base_rows, snapshot)
+    assert torch.equal(base_rows_before_fit, snapshot)
+
+
+def test_branch_predictions_have_sorted_catalog_scores_and_provenance():
+    """A partial or differently ordered score vector cannot cross the shared fusion boundary."""
+    supports = _complete_scoring_supports()
+    query = _scoring_query()
+
+    prediction = score_m1(supports, supports, query)
+
+    assert prediction.score_category_ids == tuple(range(1, 201))
+    assert len(prediction.repvit_global_scores) == 200
+    assert len(prediction.dinov3_global_scores) == 200
+    assert len(prediction.dinov3_local_scores) == 200
+    assert prediction.provenance.query == query.provenance
+    assert prediction.provenance.repvit_support[6] == supports[7][0].provenance
+    assert prediction.provenance.dinov3_support[6] == supports[7][0].provenance
+
+
+def test_branch_scorers_reject_missing_class_and_query_support_overlap():
+    """A malformed 200-SKU universe or query leaked into supports must abort scoring."""
+    supports = _complete_scoring_supports()
+    supports.pop(200)
+    with pytest.raises(ValueError, match="registered 200-class catalog"):
+        score_m1(supports, supports, _scoring_query())
+
+    complete = _complete_scoring_supports()
+    with pytest.raises(ValueError, match="query provenance is present in support"):
+        score_m2(complete, complete, _scoring_query(source="support-seven-a"))

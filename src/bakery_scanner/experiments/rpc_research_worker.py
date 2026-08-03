@@ -35,6 +35,10 @@ _FEATURE_DIMENSION = 384
 _DINO_PATCH_COUNT = 196
 _CANONICAL_FRAME = "exif_visual_rgb_v1"
 _RESEARCH_RUNS_ROOT = Path(r"C:\workspace\rpc_fewshot_runs")
+_RPC_CATEGORY_IDS = tuple(range(1, 201))
+_M0_TRAINING_STEPS = 40
+_M0_LEARNING_RATE = 0.1
+_M2_KERNEL_SCALE = 1.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TRAIN_CAPTURE_SOURCE = re.compile(
     r"^train2019:[1-9][0-9]*:(?P<product>.+)_camera(?P<camera>[0-9]+)-(?P<side>[^_]+)\.jpg$"
@@ -208,6 +212,436 @@ class SupportBank:
             for rank in range(shot_count)
             for order in self.class_orders
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureProvenance:
+    """Immutable source and Task-1 array identities for one scoring feature."""
+
+    source_identity: str
+    annotation_id: int
+    source_sha256: str
+    repvit_global_array_sha256: str
+    dinov3_global_array_sha256: str
+    dinov3_patches_array_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_identity, str) or not self.source_identity:
+            raise ValueError("feature source identity must be non-empty")
+        if type(self.annotation_id) is not int or self.annotation_id <= 0:
+            raise ValueError("feature annotation ID must be positive")
+        for name in (
+            "source_sha256",
+            "repvit_global_array_sha256",
+            "dinov3_global_array_sha256",
+            "dinov3_patches_array_sha256",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                raise ValueError(f"{name} must be lowercase SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureExample:
+    """One source-bound feature bundle shared by all research score branches."""
+
+    category_id: int
+    provenance: FeatureProvenance
+    repvit_global: tuple[float, ...]
+    dinov3_global: tuple[float, ...]
+    dinov3_patches: tuple[tuple[float, ...], ...]
+
+    def __post_init__(self) -> None:
+        if type(self.category_id) is not int or self.category_id <= 0:
+            raise ValueError("feature category ID must be positive")
+        if not isinstance(self.provenance, FeatureProvenance):
+            raise ValueError("feature provenance must be FeatureProvenance")
+        object.__setattr__(self, "repvit_global", _feature_vector(self.repvit_global, "RepViT global feature"))
+        object.__setattr__(self, "dinov3_global", _feature_vector(self.dinov3_global, "DINO global feature"))
+        patches = tuple(
+            _feature_vector(patch, "DINO local patch feature") for patch in self.dinov3_patches
+        )
+        if not patches:
+            raise ValueError("DINO local patch features must not be empty")
+        object.__setattr__(self, "dinov3_patches", patches)
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreProvenance:
+    """The query and exact support provenance behind one branch prediction."""
+
+    method: str
+    query: FeatureProvenance
+    repvit_support: tuple[FeatureProvenance, ...]
+    dinov3_support: tuple[FeatureProvenance, ...]
+
+    def __post_init__(self) -> None:
+        if self.method not in {"m0", "m1", "m2"}:
+            raise ValueError("unsupported research scoring method")
+        if not isinstance(self.query, FeatureProvenance):
+            raise ValueError("query provenance must be FeatureProvenance")
+        for name in ("repvit_support", "dinov3_support"):
+            supports = tuple(getattr(self, name))
+            if not supports or not all(isinstance(item, FeatureProvenance) for item in supports):
+                raise ValueError(f"{name} must contain feature provenance")
+            object.__setattr__(self, name, supports)
+
+
+@dataclass(frozen=True, slots=True)
+class BranchPrediction:
+    """Three score vectors in the one immutable RPC 200-class catalog order."""
+
+    score_category_ids: tuple[int, ...]
+    repvit_global_scores: tuple[float, ...]
+    dinov3_global_scores: tuple[float, ...]
+    dinov3_local_scores: tuple[float, ...]
+    provenance: ScoreProvenance
+
+    def __post_init__(self) -> None:
+        if tuple(self.score_category_ids) != _RPC_CATEGORY_IDS:
+            raise ValueError("scores must use the sorted registered 200-class catalog")
+        for name in ("repvit_global_scores", "dinov3_global_scores", "dinov3_local_scores"):
+            scores = tuple(float(value) for value in getattr(self, name))
+            if len(scores) != len(_RPC_CATEGORY_IDS) or not all(math.isfinite(value) for value in scores):
+                raise ValueError(f"{name} must contain 200 finite scores")
+            object.__setattr__(self, name, scores)
+        if not isinstance(self.provenance, ScoreProvenance):
+            raise ValueError("prediction provenance must be ScoreProvenance")
+
+    @property
+    def repvit_top1(self) -> int:
+        return _top1_category(self.repvit_global_scores)
+
+    @property
+    def dinov3_global_top1(self) -> int:
+        return _top1_category(self.dinov3_global_scores)
+
+    @property
+    def dinov3_local_top1(self) -> int:
+        return _top1_category(self.dinov3_local_scores)
+
+    @property
+    def repvit_scores(self) -> dict[int, float]:
+        """Compatibility-friendly RepViT score lookup keyed by category ID."""
+        return dict(zip(self.score_category_ids, self.repvit_global_scores, strict=True))
+
+    @property
+    def dino_scores(self) -> dict[int, float]:
+        """Compatibility-friendly DINO global score lookup keyed by category ID."""
+        return dict(zip(self.score_category_ids, self.dinov3_global_scores, strict=True))
+
+    @property
+    def dino_local_scores(self) -> dict[int, float]:
+        """Compatibility-friendly DINO local score lookup keyed by category ID."""
+        return dict(zip(self.score_category_ids, self.dinov3_local_scores, strict=True))
+
+
+@dataclass(frozen=True, slots=True)
+class LinearHead:
+    """M0's immutable base rows and fixed-recipe novel rows plus DINO means."""
+
+    base_category_ids: tuple[int, ...]
+    novel_category_ids: tuple[int, ...]
+    base_rows: torch.Tensor
+    novel_rows: torch.Tensor
+    dinov3_global_prototypes: torch.Tensor
+    dinov3_local_prototypes: torch.Tensor
+    support_provenance: tuple[FeatureProvenance, ...]
+
+    def score(self, query: FeatureExample) -> BranchPrediction:
+        """Emit M0's three branch score vectors for a source-disjoint query."""
+        _validate_query_against_support(query, self.support_provenance)
+        repvit_rows = _catalog_rows(
+            self.base_category_ids, self.base_rows, self.novel_category_ids, self.novel_rows
+        )
+        query_repvit = _unit_tensor(query.repvit_global, "query RepViT global feature")
+        query_dino = _unit_tensor(query.dinov3_global, "query DINO global feature")
+        query_patches = _unit_patch_tensor(query.dinov3_patches, "query DINO local patch features")
+        return _prediction(
+            "m0",
+            query,
+            self.support_provenance,
+            self.support_provenance,
+            torch.mv(repvit_rows, query_repvit),
+            torch.mv(self.dinov3_global_prototypes, query_dino),
+            (query_patches @ self.dinov3_local_prototypes.T).mean(dim=0),
+        )
+
+
+def score_m1(
+    repvit_support: Mapping[int, Sequence[FeatureExample]],
+    dino_support: Mapping[int, Sequence[FeatureExample]],
+    query: FeatureExample,
+) -> BranchPrediction:
+    """Score frozen, independently normalized class means for all 200 RPC SKUs."""
+    repvit = _validated_supports(repvit_support, "RepViT")
+    dino = _validated_supports(dino_support, "DINO")
+    _validate_matching_support_provenance(repvit, dino)
+    repvit_provenance = _flatten_provenance(repvit)
+    dino_provenance = _flatten_provenance(dino)
+    _validate_query_against_support(query, (*repvit_provenance, *dino_provenance))
+    repvit_prototypes = _mean_prototypes(repvit, "repvit_global")
+    dino_prototypes = _mean_prototypes(dino, "dinov3_global")
+    local_prototypes = _mean_local_prototypes(dino)
+    return _prediction(
+        "m1",
+        query,
+        repvit_provenance,
+        dino_provenance,
+        torch.mv(repvit_prototypes, _unit_tensor(query.repvit_global, "query RepViT global feature")),
+        torch.mv(dino_prototypes, _unit_tensor(query.dinov3_global, "query DINO global feature")),
+        (_unit_patch_tensor(query.dinov3_patches, "query DINO local patch features") @ local_prototypes.T).mean(dim=0),
+    )
+
+
+def score_m2(
+    repvit_cache: Mapping[int, Sequence[FeatureExample]],
+    dino_cache: Mapping[int, Sequence[FeatureExample]],
+    query: FeatureExample,
+) -> BranchPrediction:
+    """Score class-normalized frozen exemplar kernels for all 200 RPC SKUs."""
+    repvit = _validated_supports(repvit_cache, "RepViT")
+    dino = _validated_supports(dino_cache, "DINO")
+    _validate_matching_support_provenance(repvit, dino)
+    repvit_provenance = _flatten_provenance(repvit)
+    dino_provenance = _flatten_provenance(dino)
+    _validate_query_against_support(query, (*repvit_provenance, *dino_provenance))
+    return _prediction(
+        "m2",
+        query,
+        repvit_provenance,
+        dino_provenance,
+        _cache_scores(repvit, "repvit_global", _unit_tensor(query.repvit_global, "query RepViT global feature")),
+        _cache_scores(dino, "dinov3_global", _unit_tensor(query.dinov3_global, "query DINO global feature")),
+        _local_cache_scores(dino, _unit_patch_tensor(query.dinov3_patches, "query DINO local patch features")),
+    )
+
+
+def fit_m0_head(
+    base_features: Sequence[FeatureExample],
+    novel_features: Sequence[FeatureExample],
+    frozen_base_rows: torch.Tensor,
+) -> LinearHead:
+    """Fit only M0 novel rows with deterministic class-balanced frozen features."""
+    base, novel = _validated_m0_training_features(base_features, novel_features)
+    if not isinstance(frozen_base_rows, torch.Tensor) or frozen_base_rows.ndim != 2:
+        raise ValueError("frozen base rows must be a two-dimensional tensor")
+    if (
+        frozen_base_rows.shape != (len(base), _FEATURE_DIMENSION)
+        or not frozen_base_rows.is_floating_point()
+        or not torch.isfinite(frozen_base_rows).all().item()
+    ):
+        raise ValueError("frozen base rows must match sorted base classes and feature dimension 384")
+    base_rows = frozen_base_rows.detach().clone().contiguous()
+    base_rows.requires_grad_(False)
+    novel_rows = _mean_prototypes(novel, "repvit_global", tuple(novel)).detach().clone().requires_grad_(True)
+    base_categories = tuple(base)
+    novel_categories = tuple(novel)
+    training_vectors, training_targets, training_weights = _m0_training_batch(novel, base_categories, novel_categories)
+    optimizer = torch.optim.SGD((novel_rows,), lr=_M0_LEARNING_RATE)
+    for _ in range(_M0_TRAINING_STEPS):
+        optimizer.zero_grad(set_to_none=True)
+        rows = _catalog_rows(base_categories, base_rows.detach(), novel_categories, novel_rows)
+        logits = training_vectors @ rows.T
+        losses = functional.cross_entropy(logits, training_targets, reduction="none")
+        (losses * training_weights).sum().div(training_weights.sum()).backward()
+        optimizer.step()
+    trained_novel_rows = novel_rows.detach().clone().contiguous()
+    combined = {**base, **novel}
+    support_provenance = _flatten_provenance(combined)
+    return LinearHead(
+        base_categories,
+        novel_categories,
+        base_rows,
+        trained_novel_rows,
+        _mean_prototypes(combined, "dinov3_global"),
+        _mean_local_prototypes(combined),
+        support_provenance,
+    )
+
+
+def _feature_vector(values: Sequence[float], label: str) -> tuple[float, ...]:
+    vector = tuple(float(value) for value in values)
+    if len(vector) != _FEATURE_DIMENSION or not all(math.isfinite(value) for value in vector):
+        raise ValueError(f"{label} must contain 384 finite values")
+    if not any(vector):
+        raise ValueError(f"{label} must have non-zero length")
+    return vector
+
+
+def _unit_tensor(values: Sequence[float], label: str) -> torch.Tensor:
+    vector = torch.tensor(_feature_vector(values, label), dtype=torch.float32)
+    return functional.normalize(vector, dim=0)
+
+
+def _unit_patch_tensor(values: Sequence[Sequence[float]], label: str) -> torch.Tensor:
+    patches = tuple(_feature_vector(item, label) for item in values)
+    if not patches:
+        raise ValueError(f"{label} must not be empty")
+    return functional.normalize(torch.tensor(patches, dtype=torch.float32), dim=1)
+
+
+def _validated_supports(
+    supports: Mapping[int, Sequence[FeatureExample]], label: str
+) -> dict[int, tuple[FeatureExample, ...]]:
+    if not isinstance(supports, Mapping) or set(supports) != set(_RPC_CATEGORY_IDS):
+        raise ValueError("supports must cover the registered 200-class catalog")
+    validated: dict[int, tuple[FeatureExample, ...]] = {}
+    identities: set[tuple[str, int]] = set()
+    for category_id in _RPC_CATEGORY_IDS:
+        examples = tuple(supports[category_id])
+        if not examples or any(not isinstance(item, FeatureExample) or item.category_id != category_id for item in examples):
+            raise ValueError(f"{label} support class is malformed")
+        for item in examples:
+            identity = (item.provenance.source_identity, item.provenance.annotation_id)
+            if identity in identities:
+                raise ValueError("support provenance contains a duplicate example")
+            identities.add(identity)
+        validated[category_id] = examples
+    return validated
+
+
+def _flatten_provenance(supports: Mapping[int, Sequence[FeatureExample]]) -> tuple[FeatureProvenance, ...]:
+    return tuple(
+        example.provenance
+        for category_id in _RPC_CATEGORY_IDS
+        for example in supports[category_id]
+    )
+
+
+def _validate_matching_support_provenance(
+    repvit: Mapping[int, Sequence[FeatureExample]], dino: Mapping[int, Sequence[FeatureExample]]
+) -> None:
+    if _flatten_provenance(repvit) != _flatten_provenance(dino):
+        raise ValueError("RepViT and DINO supports must have identical provenance")
+
+
+def _validate_query_against_support(query: FeatureExample, supports: Sequence[FeatureProvenance]) -> None:
+    if not isinstance(query, FeatureExample):
+        raise ValueError("query must be a FeatureExample")
+    query_identity = (query.provenance.source_identity, query.provenance.annotation_id)
+    if query_identity in {(item.source_identity, item.annotation_id) for item in supports}:
+        raise ValueError("query provenance is present in support")
+
+
+def _mean_prototypes(
+    supports: Mapping[int, Sequence[FeatureExample]], attribute: str, category_ids: Sequence[int] = _RPC_CATEGORY_IDS
+) -> torch.Tensor:
+    rows: list[torch.Tensor] = []
+    for category_id in category_ids:
+        vectors = torch.stack([
+            _unit_tensor(getattr(example, attribute), f"{attribute} support feature")
+            for example in supports[category_id]
+        ])
+        rows.append(functional.normalize(vectors.mean(dim=0), dim=0))
+    return torch.stack(rows)
+
+
+def _mean_local_prototypes(
+    supports: Mapping[int, Sequence[FeatureExample]], category_ids: Sequence[int] = _RPC_CATEGORY_IDS
+) -> torch.Tensor:
+    rows: list[torch.Tensor] = []
+    for category_id in category_ids:
+        patches = torch.cat([
+            _unit_patch_tensor(example.dinov3_patches, "DINO local support feature")
+            for example in supports[category_id]
+        ])
+        rows.append(functional.normalize(patches.mean(dim=0), dim=0))
+    return torch.stack(rows)
+
+
+def _cache_scores(
+    supports: Mapping[int, Sequence[FeatureExample]], attribute: str, query: torch.Tensor
+) -> torch.Tensor:
+    scores = []
+    for category_id in _RPC_CATEGORY_IDS:
+        vectors = torch.stack([
+            _unit_tensor(getattr(example, attribute), f"{attribute} cache feature")
+            for example in supports[category_id]
+        ])
+        scores.append(torch.exp(_M2_KERNEL_SCALE * (vectors @ query)).mean())
+    return torch.stack(scores)
+
+
+def _local_cache_scores(supports: Mapping[int, Sequence[FeatureExample]], query_patches: torch.Tensor) -> torch.Tensor:
+    scores = []
+    for category_id in _RPC_CATEGORY_IDS:
+        support_patches = torch.cat([
+            _unit_patch_tensor(example.dinov3_patches, "DINO local cache feature")
+            for example in supports[category_id]
+        ])
+        patch_scores = torch.exp(_M2_KERNEL_SCALE * (query_patches @ support_patches.T)).mean(dim=1)
+        scores.append(patch_scores.mean())
+    return torch.stack(scores)
+
+
+def _prediction(
+    method: str,
+    query: FeatureExample,
+    repvit_support: tuple[FeatureProvenance, ...],
+    dino_support: tuple[FeatureProvenance, ...],
+    repvit_scores: torch.Tensor,
+    dino_scores: torch.Tensor,
+    local_scores: torch.Tensor,
+) -> BranchPrediction:
+    vectors = (repvit_scores, dino_scores, local_scores)
+    if any(tuple(vector.shape) != (len(_RPC_CATEGORY_IDS),) or not torch.isfinite(vector).all().item() for vector in vectors):
+        raise ValueError("branch scores must be finite 200-class vectors")
+    return BranchPrediction(
+        _RPC_CATEGORY_IDS,
+        tuple(float(value) for value in repvit_scores.tolist()),
+        tuple(float(value) for value in dino_scores.tolist()),
+        tuple(float(value) for value in local_scores.tolist()),
+        ScoreProvenance(method, query.provenance, repvit_support, dino_support),
+    )
+
+
+def _top1_category(scores: Sequence[float]) -> int:
+    return _RPC_CATEGORY_IDS[max(range(len(scores)), key=lambda index: (scores[index], -index))]
+
+
+def _validated_m0_training_features(
+    base_features: Sequence[FeatureExample], novel_features: Sequence[FeatureExample]
+) -> tuple[dict[int, tuple[FeatureExample, ...]], dict[int, tuple[FeatureExample, ...]]]:
+    def grouped(items: Sequence[FeatureExample], label: str) -> dict[int, tuple[FeatureExample, ...]]:
+        result: dict[int, list[FeatureExample]] = {}
+        for item in items:
+            if not isinstance(item, FeatureExample):
+                raise ValueError(f"{label} features must be FeatureExample values")
+            result.setdefault(item.category_id, []).append(item)
+        return {category_id: tuple(examples) for category_id, examples in sorted(result.items())}
+    base, novel = grouped(base_features, "base"), grouped(novel_features, "novel")
+    if not base or not novel or set(base) & set(novel) or set(base) | set(novel) != set(_RPC_CATEGORY_IDS):
+        raise ValueError("base and novel features must be disjoint and cover the registered 200-class catalog")
+    if len(_flatten_provenance({**base, **novel})) != len(set(_flatten_provenance({**base, **novel}))):
+        raise ValueError("M0 support provenance contains duplicate examples")
+    return base, novel
+
+
+def _catalog_rows(
+    base_categories: Sequence[int], base_rows: torch.Tensor, novel_categories: Sequence[int], novel_rows: torch.Tensor
+) -> torch.Tensor:
+    by_category = {
+        **{category_id: base_rows[index] for index, category_id in enumerate(base_categories)},
+        **{category_id: novel_rows[index] for index, category_id in enumerate(novel_categories)},
+    }
+    if set(by_category) != set(_RPC_CATEGORY_IDS):
+        raise ValueError("M0 rows must cover the registered 200-class catalog")
+    return torch.stack([by_category[category_id] for category_id in _RPC_CATEGORY_IDS])
+
+
+def _m0_training_batch(
+    novel: Mapping[int, Sequence[FeatureExample]], base_categories: Sequence[int], novel_categories: Sequence[int]
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    vectors, targets, weights = [], [], []
+    category_to_index = {category_id: index for index, category_id in enumerate(_RPC_CATEGORY_IDS)}
+    for category_id in novel_categories:
+        examples = novel[category_id]
+        for example in examples:
+            vectors.append(_unit_tensor(example.repvit_global, "M0 novel feature"))
+            targets.append(category_to_index[category_id])
+            weights.append(1.0 / len(examples))
+    return torch.stack(vectors), torch.tensor(targets, dtype=torch.long), torch.tensor(weights, dtype=torch.float32)
 
 
 def materialize_support_bank(
