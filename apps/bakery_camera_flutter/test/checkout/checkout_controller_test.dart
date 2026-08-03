@@ -409,7 +409,7 @@ void main() {
   );
 
   test(
-    'count mismatch discards product output and returns to retake',
+    'count mismatch discards product output but retains capture evidence for retake',
     () async {
       worker.nextResult = _registeredResult();
       await controller.initialize();
@@ -421,6 +421,13 @@ void main() {
       expect(controller.state.objectDrafts, isEmpty);
       expect(controller.state.lines, isEmpty);
       expect(controller.state.failure!.code, 'customer_count_mismatch');
+      expect(controller.state.capturedEvidencePath, 'sessions/capture-1.jpg');
+      expect(
+        controller.state.capturedEvidenceDisplayPath,
+        r'C:\audit-root\sessions\capture-1.jpg',
+      );
+      expect(controller.state.capturedImageWidth, 1920);
+      expect(controller.state.capturedImageHeight, 1080);
     },
   );
 

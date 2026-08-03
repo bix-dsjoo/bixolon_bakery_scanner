@@ -265,6 +265,52 @@ void main() {
     },
   );
 
+  testWidgets('catalog panel ignores Escape while a selection is saving', (
+    tester,
+  ) async {
+    final fixture = (await tester.runAsync(() async {
+      final fixture = await CustomerCheckoutJourneyFixture.create();
+      await fixture.controller.initialize();
+      await fixture.controller.scan();
+      await fixture.controller.chooseTop3('object-2', 10);
+      return fixture;
+    }))!;
+    addTearDown(() => tester.runAsync(fixture.dispose));
+
+    await _pump(tester, CustomerCheckoutScreen(controller: fixture.controller));
+    await tester.tap(find.text('상품 추가'));
+    await tester.pumpAndSettle();
+
+    final transactionEntered = Completer<void>();
+    final releaseTransaction = Completer<void>();
+    final blockingTransaction = fixture.database.transaction(() async {
+      transactionEntered.complete();
+      await releaseTransaction.future;
+    });
+    await transactionEntered.future;
+
+    try {
+      await tester.tap(find.text('우유 식빵').last);
+      await tester.pump();
+      expect(
+        find.byKey(const Key('order-review-catalog-panel')),
+        findsOneWidget,
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('order-review-catalog-panel')),
+        findsOneWidget,
+      );
+    } finally {
+      releaseTransaction.complete();
+      await blockingTransaction;
+      await tester.pumpAndSettle();
+    }
+  });
+
   testWidgets('failed catalog action remains open and explains the problem', (
     tester,
   ) async {
@@ -654,6 +700,33 @@ void main() {
         ),
         findsOneWidget,
       );
+    },
+  );
+
+  testWidgets(
+    'count mismatch keeps the captured scene behind the retake notice',
+    (tester) async {
+      final fixture = (await tester.runAsync(() async {
+        final fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+        await fixture.controller.scan();
+        await fixture.controller.chooseTop3('object-2', 10);
+        await fixture.controller.reportCountMismatch();
+        return fixture;
+      }))!;
+      addTearDown(() => tester.runAsync(fixture.dispose));
+
+      await _pump(
+        tester,
+        CustomerCheckoutScreen(controller: fixture.controller),
+      );
+
+      expect(fixture.controller.state.capturedEvidenceDisplayPath, isNotNull);
+      expect(
+        find.byKey(const Key('captured-review-full-scene')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('retake-capture-notice')), findsOneWidget);
     },
   );
 }

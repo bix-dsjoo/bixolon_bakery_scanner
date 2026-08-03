@@ -397,11 +397,19 @@ final class CheckoutController extends ChangeNotifier {
     _manualQuantities.clear();
     await _persistLines(const []);
     _replaceState(
-      _failureState(
+      CheckoutState(
         phase: CheckoutPhase.retakeRequired,
-        code: 'customer_count_mismatch',
-        message: 'The customer reported a different product count.',
-        recoverable: true,
+        objectDrafts: const [],
+        lines: const [],
+        failure: const CheckoutFailure(
+          code: 'customer_count_mismatch',
+          message: 'The customer reported a different product count.',
+          recoverable: true,
+        ),
+        capturedEvidencePath: _state.capturedEvidencePath,
+        capturedEvidenceDisplayPath: _state.capturedEvidenceDisplayPath,
+        capturedImageWidth: _state.capturedImageWidth,
+        capturedImageHeight: _state.capturedImageHeight,
       ),
     );
   }

@@ -284,7 +284,7 @@ class _OrderReviewCatalogPanelState extends State<_OrderReviewCatalogPanel> {
             actions: {
               _CloseCatalogIntent: CallbackAction<_CloseCatalogIntent>(
                 onInvoke: (_) {
-                  widget.onClose();
+                  if (!widget.saving) widget.onClose();
                   return null;
                 },
               ),
