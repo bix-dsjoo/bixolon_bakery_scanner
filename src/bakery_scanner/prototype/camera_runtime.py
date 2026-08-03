@@ -7,8 +7,9 @@ import hashlib
 import json
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, cast
 
 import torch
@@ -23,10 +24,14 @@ from bakery_scanner.classification.contracts import (
 )
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
 from bakery_scanner.classification.policy import PolicyCalibration
-from bakery_scanner.classification.runtime import ClassifierPipeline
+from bakery_scanner.classification.runtime import (
+    ClassifierPipeline,
+    CudaTimingCollector,
+    SerialStageTimings,
+)
 from bakery_scanner.contracts import BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage, load_canonical_image
-from bakery_scanner.detectors.rfdetr import RFDetrRunner
+from bakery_scanner.detectors.rfdetr import RFDetrRunner, VerifiedPathBindings
 
 from .camera_protocol import WorkerPhase
 from .presentation_policy import PresentationPolicy
@@ -46,6 +51,13 @@ _MANIFEST_COMMON_KEYS = {
 _MANIFEST_SOURCE_KEYS = {"source_path", "source_uri"}
 _ARTIFACT_KEYS = {"file", "sha256"}
 _SHA256_LENGTH = 64
+_APPLIED_ARTIFACT_HASH_FIELDS = frozenset({
+    "detector_checkpoint_sha256", "detector_calibration_sha256", "detector_manifest_sha256",
+    "repvit_checkpoint_sha256", "repvit_manifest_sha256", "repvit_prototype_sha256",
+    "dinov3_weights_sha256", "dinov3_support_sha256", "dinov3_local_bank_sha256",
+    "classifier_calibration_sha256", "preprocess_sha256", "fusion_policy_sha256",
+    "presentation_policy_sha256",
+})
 
 
 class RuntimeBackend(Protocol):
@@ -67,6 +79,7 @@ class StartupMetrics:
     dinov3_id: str
     fusion_policy_id: str
     detector_threshold: float
+    applied_artifact_hashes: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.device not in {"cpu", "cuda:0"}:
@@ -79,12 +92,25 @@ class StartupMetrics:
             0.0 <= self.detector_threshold <= 1.0
         ):
             raise ValueError("detector_threshold must lie in [0, 1]")
+        if (
+            not isinstance(self.applied_artifact_hashes, Mapping)
+            or set(self.applied_artifact_hashes) != _APPLIED_ARTIFACT_HASH_FIELDS
+            or any(not _is_sha256(value) for value in self.applied_artifact_hashes.values())
+        ):
+            raise ValueError("applied_artifact_hashes must be the exact verified hash set")
+        object.__setattr__(
+            self, "applied_artifact_hashes", MappingProxyType(dict(self.applied_artifact_hashes))
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class _DetectorManifest:
     checkpoint: Path
     calibration: Path
+    manifest: Path
+    checkpoint_sha256: str
+    calibration_sha256: str
+    manifest_sha256: str
     score_threshold: float
     source_label: str
 
@@ -99,6 +125,7 @@ class _LoadedBackend:
         detector: RFDetrRunner,
         classifier: ClassifierPipeline,
         detector_threshold: float,
+        artifact_bindings: VerifiedPathBindings | None = None,
     ) -> None:
         self.device = device
         self.detector = detector
@@ -112,12 +139,17 @@ class _LoadedBackend:
             else ""
         )
         self.detector_threshold = detector_threshold
+        self._artifact_bindings = artifact_bindings
         self._closed = False
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        bindings = self._artifact_bindings
+        self._artifact_bindings = None
+        if bindings is not None:
+            bindings.release(verify=False)
         classifier = self.classifier
         detector = self.detector
         self.classifier = cast(ClassifierPipeline, None)
@@ -126,6 +158,21 @@ class _LoadedBackend:
             closer = getattr(owned, "close", None)
             if callable(closer):
                 closer()
+
+    def finalize_artifact_bindings(self) -> None:
+        detector = self.detector
+        bindings = self._artifact_bindings
+        self._artifact_bindings = None
+        try:
+            finalizer = getattr(detector, "finalize_artifact_binding", None)
+            if callable(finalizer):
+                finalizer()
+            if bindings is not None:
+                bindings.release(verify=True)
+        except Exception:
+            if bindings is not None:
+                bindings.release(verify=False)
+            raise
 
 
 class CameraInferenceRuntime:
@@ -138,6 +185,7 @@ class CameraInferenceRuntime:
         backend: RuntimeBackend,
         startup_metrics: StartupMetrics,
         presentation_policy: PresentationPolicy,
+        sku_names: Mapping[int, str],
         clock: Callable[[], float],
     ) -> None:
         self._root = root
@@ -148,6 +196,7 @@ class CameraInferenceRuntime:
         self.device = startup_metrics.device
         self.startup_metrics = startup_metrics
         self._presentation_policy = presentation_policy
+        self._sku_names = dict(sku_names)
 
     @classmethod
     def initialize(
@@ -160,11 +209,18 @@ class CameraInferenceRuntime:
         cuda_probe: Callable[[], bool] | None = None,
         backend_loader: Callable[[str], RuntimeBackend] | None = None,
         clock: Callable[[], float] | None = None,
+        artifact_root: Path | None = None,
     ) -> "CameraInferenceRuntime":
         root_path = Path(root).resolve()
+        artifact_root_path = (
+            Path(artifact_root).resolve() if artifact_root is not None else root_path
+        )
+        external_artifact_root = artifact_root_path if artifact_root is not None else None
         warmup_path = Path(warmup_image).resolve()
         if not root_path.is_dir():
             raise ValueError(f"repository root is missing: {root_path}")
+        if not artifact_root_path.is_dir():
+            raise ValueError(f"artifact root is missing: {artifact_root_path}")
         if not warmup_path.is_file():
             raise ValueError(f"warm-up image is missing: {warmup_path}")
         normalized_preference = _normalize_preference(preference)
@@ -180,28 +236,47 @@ class CameraInferenceRuntime:
         fallback_reason = None if cuda_available or normalized_preference == "cpu" else "cuda_unavailable"
 
         manifest = (
-            _load_detector_manifest(root_path) if backend_loader is None else None
+            _load_detector_manifest(root_path, artifact_root=external_artifact_root)
+            if backend_loader is None
+            else None
         )
         for device in attempts:
             backend: RuntimeBackend | None = None
             try:
                 load_started = _timestamp(runtime_clock, device)
+                _synchronize(device)
                 if on_startup is not None:
                     on_startup("loading", device)
                 if backend_loader is None:
                     assert manifest is not None
-                    config = _validate_classifier_artifacts(root_path, device)
+                    config = _validate_classifier_artifacts(
+                        root_path,
+                        device,
+                        artifact_root=external_artifact_root,
+                    )
                     backend = _load_default_backend(
                         manifest=manifest,
                         config=config,
                         config_path=_classifier_config_path(root_path, device),
                         device=device,
+                        artifact_root=external_artifact_root,
                     )
                 else:
                     backend = backend_loader(device)
                 _validate_backend(backend, device)
+                # Startup is outside the measured request boundary.  Ensure a
+                # failed CUDA context is admitted or rejected before ready.
+                _synchronize(device)
                 presentation_policy = PresentationPolicy.load(
-                    root_path / "configs" / "camera_presentation_policy.json"
+                    root_path
+                    / "policies"
+                    / "presentation"
+                    / "camera_action_state_v2.json"
+                )
+                applied_hashes = (
+                    _applied_artifact_hashes(manifest, config, presentation_policy)
+                    if backend_loader is None
+                    else _backend_applied_artifact_hashes(backend)
                 )
                 load_finished = _timestamp(runtime_clock, device)
             except Exception:
@@ -223,6 +298,9 @@ class CameraInferenceRuntime:
             try:
                 warmup_started = _timestamp(runtime_clock, device)
                 _warm_backend(backend, warmup_path, device)
+                finalizer = getattr(backend, "finalize_artifact_bindings", None)
+                if callable(finalizer):
+                    finalizer()
                 warmup_finished = _timestamp(runtime_clock, device)
             except Exception:
                 try:
@@ -248,12 +326,14 @@ class CameraInferenceRuntime:
                 dinov3_id=metadata["dinov3_id"],
                 fusion_policy_id=metadata["fusion_policy_id"],
                 detector_threshold=float(metadata["detector_threshold"]),
+                applied_artifact_hashes=applied_hashes,
             )
             return cls(
                 root=root_path,
                 backend=backend,
                 startup_metrics=metrics,
                 presentation_policy=presentation_policy,
+                sku_names=_load_sku_names(root_path),
                 clock=runtime_clock,
             )
         raise RuntimeError("runtime initialization exhausted device attempts")
@@ -284,6 +364,13 @@ class CameraInferenceRuntime:
         assert self._backend is not None
         backend = self._backend
         emitted: set[WorkerPhase] = set()
+        cuda_timing = (
+            CudaTimingCollector("cuda:0")
+            if self.device == "cuda:0"
+            and isinstance(backend.detector, RFDetrRunner)
+            and isinstance(backend.classifier, ClassifierPipeline)
+            else None
+        )
 
         total_started = _timestamp(self._clock, self.device)
         frame = load_canonical_image(capture_path)
@@ -291,7 +378,16 @@ class CameraInferenceRuntime:
 
         _emit_progress(on_progress, WorkerPhase.DETECTING, emitted)
         detector_started = _timestamp(self._clock, self.device)
-        proposals = backend.detector.predict(1, frame.image)
+        predict = lambda: backend.detector.predict(1, frame.image)
+        try:
+            proposals = (
+                cuda_timing.measure("detector", predict)
+                if cuda_timing is not None
+                else predict()
+            )
+        except Exception as detector_error:
+            _finalize_failed_cuda_timing(cuda_timing, detector_error)
+            raise
         detector_finished = _timestamp(self._clock, self.device)
         ordered = tuple(
             sorted(
@@ -307,47 +403,139 @@ class CameraInferenceRuntime:
             )
         )
 
-        _emit_progress(on_progress, WorkerPhase.CLASSIFYING, emitted)
-        decisions: list[tuple[BreadProposal, ClassificationDecision]] = []
+        try:
+            _emit_progress(on_progress, WorkerPhase.CLASSIFYING, emitted)
+        except Exception as progress_error:
+            _finalize_failed_cuda_timing(cuda_timing, progress_error)
+            raise
+        crop_ms = 0.0
         repvit_ms = 0.0
         dinov3_ms = 0.0
+        fusion_ms = 0.0
+        dino_object_count = 0
+        decisions: list[tuple[BreadProposal, ClassificationDecision]] = []
+        if ordered:
+            if backend.classifier.config.runtime.mode == "serial_reference":
 
-        def on_stage(stage: str) -> None:
-            if stage == "dinov3":
-                _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
-            elif stage != "repvit":
-                raise ValueError(f"unsupported classifier stage: {stage}")
+                def on_stage(stage: str) -> None:
+                    if stage == "dinov3":
+                        _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+                    elif stage != "repvit":
+                        raise ValueError(f"unsupported classifier stage: {stage}")
 
-        for proposal in ordered:
-            decision = backend.classifier.infer(
-                frame,
-                proposal.box,
-                on_stage=on_stage,
-            )
-            if decision.box != proposal.box:
-                raise ValueError("classifier decision box changed detector coordinates")
-            decisions.append((proposal, decision))
-            repvit_ms += decision.timings.repvit_ms
-            dinov3_ms += decision.timings.dinov3_ms
+                for proposal in ordered:
+                    observation: SerialStageTimings | None = None
 
-        _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
+                    def on_timing(value: SerialStageTimings) -> None:
+                        nonlocal observation
+                        if observation is not None:
+                            raise ValueError("classifier emitted duplicate serial timing observation")
+                        observation = value
+
+                    decision = backend.classifier.infer(
+                        frame,
+                        proposal.box,
+                        on_stage=on_stage,
+                        on_timing=on_timing,
+                    )
+                    if decision.box != proposal.box:
+                        raise ValueError("classifier decision box changed detector coordinates")
+                    decisions.append((proposal, decision))
+                    if observation is None:
+                        raise ValueError("classifier did not emit serial timing observation")
+                    crop_ms += observation.crop_ms
+                    repvit_ms += observation.repvit_ms
+                    dinov3_ms += observation.dinov3_ms
+                    fusion_ms += observation.fusion_ms
+                    dino_object_count += int(observation.dino_executed)
+                    if observation.dino_executed:
+                        _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+            else:
+                boxes = tuple(proposal.box for proposal in ordered)
+                batch_kwargs: dict[str, object] = {
+                    "repvit_max_objects": _batch_limit(
+                        backend.classifier.config.runtime.repvit_microbatch_objects,
+                        len(boxes),
+                    ),
+                    "dino_max_objects": _batch_limit(
+                        backend.classifier.config.runtime.dinov3_microbatch_objects,
+                        len(boxes),
+                    ),
+                }
+                if cuda_timing is not None:
+                    batch_kwargs["cuda_timing"] = cuda_timing
+                try:
+                    batch = backend.classifier.infer_many(
+                        frame,
+                        boxes,
+                        **batch_kwargs,
+                    )
+                except Exception as inference_error:
+                    _finalize_failed_cuda_timing(cuda_timing, inference_error)
+                    raise
+                if len(batch.decisions) != len(ordered):
+                    _finalize_failed_cuda_timing(
+                        cuda_timing, ValueError("classifier batch decisions must align with detector proposals")
+                    )
+                    raise ValueError("classifier batch decisions must align with detector proposals")
+                if batch.dino_object_count > 0:
+                    try:
+                        _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+                    except Exception as progress_error:
+                        _finalize_failed_cuda_timing(cuda_timing, progress_error)
+                        raise
+                for proposal, decision in zip(ordered, batch.decisions, strict=True):
+                    if decision.box != proposal.box:
+                        _finalize_failed_cuda_timing(
+                            cuda_timing, ValueError("classifier decision box changed detector coordinates")
+                        )
+                        raise ValueError("classifier decision box changed detector coordinates")
+                    decisions.append((proposal, decision))
+                repvit_ms = batch.timings.repvit_ms
+                dinov3_ms = batch.timings.dinov3_ms
+                crop_ms = batch.timings.crop_ms
+                fusion_ms = batch.timings.fusion_ms
+                dino_object_count = batch.dino_object_count
+
+        try:
+            _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
+        except Exception as progress_error:
+            _finalize_failed_cuda_timing(cuda_timing, progress_error)
+            raise
         postprocess_started = _timestamp(self._clock, self.device)
-        objects, counts, unknown_count = _aggregate_objects(
-            decisions,
-            _load_sku_names(self._root),
-        )
-        presentation = self._presentation_policy.evaluate(
-            proposals=objects,
-            decisions=objects,
-        ).to_payload()
+        try:
+            objects, counts, unknown_count = _aggregate_objects(
+                decisions,
+                self._sku_names,
+            )
+            presentation = self._presentation_policy.evaluate(
+                proposals=objects,
+                decisions=objects,
+            ).to_payload()
+        except Exception as lifecycle_error:
+            _finalize_failed_cuda_timing(cuda_timing, lifecycle_error)
+            raise
         postprocess_finished = _timestamp(self._clock, self.device)
+        # GPU work is deliberately synchronized once, after every measured
+        # stage has been enqueued.  Per-stage synchronization serializes the
+        # pipeline and produces misleading timing evidence.
+        cuda_events = cuda_timing.finalize() if cuda_timing is not None else None
+        if cuda_events is None:
+            _synchronize(self.device)
+        total_finished = _timestamp(self._clock, self.device)
         timings = {
             "decode_preprocess": _milliseconds(total_started, decode_finished),
-            "detector": _milliseconds(detector_started, detector_finished),
-            "repvit": repvit_ms,
-            "dinov3": dinov3_ms,
+            "detector": (
+                cuda_events.get("detector", 0.0)
+                if cuda_events is not None
+                else _milliseconds(detector_started, detector_finished)
+            ),
+            "crop": crop_ms,
+            "repvit": cuda_events.get("repvit", 0.0) if cuda_events is not None else repvit_ms,
+            "dinov3": cuda_events.get("dinov3", 0.0) if cuda_events is not None else dinov3_ms,
+            "fusion": fusion_ms,
             "postprocess": _milliseconds(postprocess_started, postprocess_finished),
-            "total": _milliseconds(total_started, postprocess_finished),
+            "total": _milliseconds(total_started, total_finished),
         }
         return {
             "type": "result",
@@ -359,6 +547,10 @@ class CameraInferenceRuntime:
             "unknown_count": unknown_count,
             "presentation": presentation,
             "timings_ms": timings,
+            "diagnostics": {
+                "object_count": len(objects),
+                "dino_object_count": dino_object_count,
+            },
         }
 
     def close(self) -> None:
@@ -385,6 +577,14 @@ def _normalize_preference(preference: str) -> str:
     return preference
 
 
+def _batch_limit(value: int | str, object_count: int) -> int:
+    if value == "all":
+        return max(1, object_count)
+    if type(value) is int:
+        return value
+    raise ValueError("classifier microbatch object limit is invalid")
+
+
 def _probe_cuda() -> bool:
     if not torch.cuda.is_available():
         return False
@@ -396,9 +596,14 @@ def _probe_cuda() -> bool:
         return False
 
 
-def _load_detector_manifest(root: Path) -> _DetectorManifest:
-    model_dir = root / "models" / _DETECTOR_ID
-    manifest_path = model_dir / "manifest.json"
+def _load_detector_manifest(
+    root: Path,
+    *,
+    artifact_root: Path | None = None,
+) -> _DetectorManifest:
+    manifest_dir = root / "models" / _DETECTOR_ID
+    model_dir = (artifact_root or root) / "models" / _DETECTOR_ID
+    manifest_path = manifest_dir / "manifest.json"
     try:
         payload = json.loads(
             manifest_path.read_text("utf-8"),
@@ -429,8 +634,10 @@ def _load_detector_manifest(root: Path) -> _DetectorManifest:
     source_key = next(iter(source_keys & _MANIFEST_SOURCE_KEYS))
     if not isinstance(payload[source_key], str) or not payload[source_key]:
         raise ValueError("detector manifest source reference is invalid")
-    checkpoint = _manifest_artifact(model_dir, payload["checkpoint"], "checkpoint")
-    calibration = _manifest_artifact(
+    checkpoint, checkpoint_sha256 = _manifest_artifact(
+        model_dir, payload["checkpoint"], "checkpoint"
+    )
+    calibration, calibration_sha256 = _manifest_artifact(
         model_dir, payload["calibration"], "calibration"
     )
     threshold = payload["score_threshold"]
@@ -444,12 +651,16 @@ def _load_detector_manifest(root: Path) -> _DetectorManifest:
     return _DetectorManifest(
         checkpoint=checkpoint,
         calibration=calibration,
+        manifest=manifest_path,
+        checkpoint_sha256=checkpoint_sha256,
+        calibration_sha256=calibration_sha256,
+        manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         score_threshold=float(threshold),
         source_label=_DETECTOR_ID,
     )
 
 
-def _manifest_artifact(model_dir: Path, raw: object, label: str) -> Path:
+def _manifest_artifact(model_dir: Path, raw: object, label: str) -> tuple[Path, str]:
     if not isinstance(raw, dict) or set(raw) != _ARTIFACT_KEYS:
         raise ValueError(f"detector {label} manifest schema is invalid")
     filename = raw["file"]
@@ -464,7 +675,7 @@ def _manifest_artifact(model_dir: Path, raw: object, label: str) -> Path:
         raise ValueError(f"detector {label} SHA-256 is invalid")
     path = model_dir / filename
     _require_file_hash(path, expected, f"detector {label}")
-    return path
+    return path, expected
 
 
 def _classifier_config_path(root: Path, device: str) -> Path:
@@ -476,8 +687,15 @@ def _classifier_config_path(root: Path, device: str) -> Path:
     return root / "configs" / filename
 
 
-def _validate_classifier_artifacts(root: Path, device: str) -> ClassifierConfig:
-    config = ClassifierConfig.load(_classifier_config_path(root, device))
+def _validate_classifier_artifacts(
+    root: Path,
+    device: str,
+    *,
+    artifact_root: Path | None = None,
+) -> ClassifierConfig:
+    config = ClassifierConfig.load(
+        _classifier_config_path(root, device), artifact_root=artifact_root
+    )
     expected_runtime = "CUDA:0" if device == "cuda:0" else "CPU"
     if config.runtime.device != expected_runtime or config.runtime.precision != "FP32":
         raise ValueError("classifier runtime must match selected device in FP32")
@@ -556,28 +774,133 @@ def _load_default_backend(
     config: ClassifierConfig,
     config_path: Path,
     device: str,
+    artifact_root: Path | None = None,
 ) -> RuntimeBackend:
     detector = RFDetrRunner.load(
         manifest.checkpoint,
         score_threshold=manifest.score_threshold,
         source=manifest.source_label,
         device="cuda" if device == "cuda:0" else "cpu",
+        expected_sha256=manifest.checkpoint_sha256,
     )
+    bindings: VerifiedPathBindings | None = None
+    classifier: ClassifierPipeline | None = None
     try:
-        classifier = ClassifierPipeline.load(config_path)
+        if device == "cuda:0":
+            bindings = VerifiedPathBindings(
+                _classifier_binding_entries(config, config_path), device="cuda"
+            )
+            bindings.__enter__()
+            classifier = ClassifierPipeline.load(
+                config_path, artifact_root=artifact_root
+            )
+            if classifier.config != config:
+                raise ValueError("classifier config changed after integrity validation")
+        else:
+            classifier = ClassifierPipeline.load(config_path, artifact_root=artifact_root)
     except Exception:
+        if classifier is not None:
+            closer = getattr(classifier, "close", None)
+            if callable(closer):
+                closer()
+        if bindings is not None:
+            bindings.release(verify=False)
         closer = getattr(detector, "close", None)
         if callable(closer):
             closer()
         raise
+    assert classifier is not None
     if classifier.config != config:
         raise ValueError("classifier config changed after integrity validation")
+    _require_file_hash(
+        manifest.calibration,
+        manifest.calibration_sha256,
+        "detector calibration",
+    )
     return _LoadedBackend(
         device=device,
         detector=detector,
         classifier=classifier,
         detector_threshold=manifest.score_threshold,
+        artifact_bindings=bindings,
     )
+
+
+def _classifier_binding_entries(
+    config: ClassifierConfig, config_path: Path
+) -> tuple[tuple[Path, str, str], ...]:
+    """Return every path `ClassifierPipeline.load` may open with its expected hash."""
+    if (
+        config.repvit.prototype_bank is None
+        or config.repvit.prototype_bank_sha256 is None
+        or config.dinov3.local_bank is None
+        or config.dinov3.local_bank_sha256 is None
+        or config.calibration.artifact_sha256 is None
+        or config.calibration.fusion_policy is None
+        or config.calibration.fusion_policy_sha256 is None
+    ):
+        raise ValueError("classifier artifact binding requires complete declared artifacts")
+    path = Path(config_path).resolve()
+    if not path.is_file():
+        raise ValueError("classifier config binding file is missing")
+    config_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    return (
+        (path, config_sha256, "classifier config"),
+        (config.repvit.checkpoint, config.repvit.checkpoint_sha256, "RepViT checkpoint"),
+        (config.repvit.manifest, config.repvit.manifest_sha256, "RepViT manifest"),
+        (config.repvit.prototype_bank, config.repvit.prototype_bank_sha256, "RepViT prototype bank"),
+        (config.dinov3.weights, config.dinov3.weights_sha256, "DINOv3 weights"),
+        (config.dinov3.support, config.dinov3.support_sha256, "DINOv3 support"),
+        (config.dinov3.local_bank, config.dinov3.local_bank_sha256, "DINOv3 local bank"),
+        (config.calibration.artifact, config.calibration.artifact_sha256, "classifier calibration"),
+        (config.calibration.fusion_policy, config.calibration.fusion_policy_sha256, "fusion policy"),
+    )
+
+
+def _applied_artifact_hashes(
+    manifest: _DetectorManifest,
+    config: ClassifierConfig,
+    presentation_policy: PresentationPolicy,
+) -> dict[str, str]:
+    """Return the exact verified artifact set attached to a default runtime.
+
+    This is deliberately derived only after detector, classifier, fusion, and
+    presentation-policy validation have completed.  A receipt therefore cannot
+    substitute an identifier or an unchecked path for an artifact digest.
+    """
+    hashes = {
+        "detector_checkpoint_sha256": manifest.checkpoint_sha256,
+        "detector_calibration_sha256": manifest.calibration_sha256,
+        "detector_manifest_sha256": manifest.manifest_sha256,
+        "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+        "repvit_manifest_sha256": config.repvit.manifest_sha256,
+        "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+        "dinov3_weights_sha256": config.dinov3.weights_sha256,
+        "dinov3_support_sha256": config.dinov3.support_sha256,
+        "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+        "classifier_calibration_sha256": config.calibration.artifact_sha256,
+        "preprocess_sha256": preprocess_sha256(config.preprocess),
+        "fusion_policy_sha256": config.calibration.fusion_policy_sha256,
+        "presentation_policy_sha256": presentation_policy.policy_sha256,
+    }
+    invalid = sorted(name for name, value in hashes.items() if not _is_sha256(value))
+    if invalid:
+        raise ValueError(
+            "runtime artifact provenance contains invalid SHA-256 values: "
+            + ", ".join(invalid)
+        )
+    return hashes
+
+
+def _backend_applied_artifact_hashes(backend: RuntimeBackend) -> dict[str, str]:
+    hashes = getattr(backend, "applied_artifact_hashes", None)
+    if (
+        not isinstance(hashes, Mapping)
+        or set(hashes) != _APPLIED_ARTIFACT_HASH_FIELDS
+        or any(not _is_sha256(value) for value in hashes.values())
+    ):
+        raise ValueError("custom backend must supply the exact applied artifact hashes")
+    return dict(hashes)
 
 
 def _validate_backend(backend: RuntimeBackend, device: str) -> None:
@@ -587,10 +910,16 @@ def _validate_backend(backend: RuntimeBackend, device: str) -> None:
         raise ValueError("backend device does not match initialization attempt")
     if not callable(getattr(backend.detector, "predict", None)):
         raise TypeError("runtime detector must provide predict()")
-    if not callable(getattr(backend.classifier, "infer", None)) or not callable(
-        getattr(backend.classifier, "preflight_models", None)
-    ):
-        raise TypeError("runtime classifier must provide infer() and preflight_models()")
+    classifier = backend.classifier
+    if not callable(getattr(classifier, "preflight_models", None)):
+        raise TypeError("runtime classifier must provide preflight_models()")
+    if classifier.config.runtime.mode == "serial_reference":
+        if not callable(getattr(classifier, "infer", None)):
+            raise TypeError(
+                "runtime classifier must provide infer() for serial_reference mode"
+            )
+    elif not callable(getattr(classifier, "infer_many", None)):
+        raise TypeError("runtime classifier must provide infer_many() for batch mode")
     if not callable(getattr(backend, "close", None)):
         raise TypeError("runtime backend must provide close()")
 
@@ -773,7 +1102,6 @@ def _release_device_cache(device: str) -> None:
 
 
 def _timestamp(clock: Callable[[], float], device: str) -> float:
-    _synchronize(device)
     value = float(clock())
     if not math.isfinite(value):
         raise ValueError("clock must return finite values")
@@ -783,6 +1111,17 @@ def _timestamp(clock: Callable[[], float], device: str) -> float:
 def _synchronize(device: str) -> None:
     if device == "cuda:0" and torch.cuda.is_available():
         torch.cuda.synchronize(torch.device("cuda:0"))
+
+
+def _finalize_failed_cuda_timing(
+    collector: CudaTimingCollector | None, inference_error: Exception
+) -> None:
+    if collector is None:
+        return
+    try:
+        collector.finalize()
+    except Exception as cleanup_error:
+        raise RuntimeError("CUDA timing cleanup failed after inference failure") from cleanup_error
 
 
 def _milliseconds(started: float, finished: float) -> float:

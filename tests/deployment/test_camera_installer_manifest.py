@@ -55,20 +55,29 @@ def test_manifest_verifier_rejects_tampered_presentation_policy_at_its_path(
     tmp_path: Path,
 ) -> None:
     payload = tmp_path / "payload"
-    policy = payload / "pipeline" / "configs" / "camera_presentation_policy.json"
+    policy = (
+        payload
+        / "pipeline"
+        / "policies"
+        / "presentation"
+        / "camera_action_state_v2.json"
+    )
     policy.parent.mkdir(parents=True)
-    policy.write_bytes(b'{"policy_id":"camera_action_state_v1"}')
+    policy.write_bytes(b'{"policy_id":"camera_action_state_v2"}')
     manifest = build_package_manifest(payload, app_version="1.0.2")
     (payload / "package-manifest.json").write_text(
         json.dumps(manifest),
         encoding="utf-8",
     )
 
-    policy.write_bytes(b'{"policy_id":"camera_action_state_v2"}')
+    policy.write_bytes(b'{"policy_id":"camera_action_state_x2"}')
 
     with pytest.raises(
         ValueError,
-        match="hash mismatch: pipeline/configs/camera_presentation_policy.json",
+        match=(
+            "hash mismatch: "
+            "pipeline/policies/presentation/camera_action_state_v2.json"
+        ),
     ):
         verify_package_manifest(payload)
 

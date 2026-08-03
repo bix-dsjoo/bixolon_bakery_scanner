@@ -144,15 +144,7 @@ final class InferenceObject {
       unknownReason = _requiredString(unknownReasonValue, 'unknown_reason');
     }
     if (skuId == null) {
-      if (candidates.length != 3 ||
-          candidates.asMap().entries.any(
-            (entry) => entry.value.rank != entry.key + 1,
-          ) ||
-          candidates.map((candidate) => candidate.skuId).toSet().length != 3) {
-        throw const FormatException(
-          'Unknown objects require exactly three ranked candidates',
-        );
-      }
+      _requireExactTop3(candidates);
     } else if (candidates.isNotEmpty || unknownReason != null) {
       throw const FormatException(
         'registered objects must not include Unknown evidence',
@@ -198,12 +190,36 @@ final class InferenceObject {
   bool get isUnknown => skuId == null;
 }
 
+void _requireExactTop3(List<InferenceCandidate> candidates) {
+  if (candidates.length != 3 ||
+      candidates.asMap().entries.any(
+        (entry) => entry.value.rank != entry.key + 1,
+      ) ||
+      candidates.map((candidate) => candidate.skuId).toSet().length != 3) {
+    throw const FormatException(
+      'Unknown objects require exactly three ranked candidates',
+    );
+  }
+  for (var index = 1; index < candidates.length; index += 1) {
+    final previous = candidates[index - 1];
+    final current = candidates[index];
+    if (previous.score < current.score ||
+        (previous.score == current.score && previous.skuId > current.skuId)) {
+      throw const FormatException(
+        'Unknown candidates must descend by score with SKU-ID ties ascending',
+      );
+    }
+  }
+}
+
 final class StageTimings {
   const StageTimings({
     required this.decodePreprocessMs,
     required this.detectorMs,
+    required this.cropMs,
     required this.repvitMs,
     required this.dinov3Ms,
+    required this.fusionMs,
     required this.postprocessMs,
     required this.totalMs,
   });
@@ -212,37 +228,85 @@ final class StageTimings {
     _expectFields(json, const {
       'decode_preprocess',
       'detector',
+      'crop',
       'repvit',
       'dinov3',
+      'fusion',
       'postprocess',
       'total',
     });
-    return StageTimings(
+    final timings = StageTimings(
       decodePreprocessMs: _nonNegativeFinite(
         json['decode_preprocess'],
         'decode_preprocess timing',
       ),
       detectorMs: _nonNegativeFinite(json['detector'], 'detector timing'),
+      cropMs: _nonNegativeFinite(json['crop'], 'crop timing'),
       repvitMs: _nonNegativeFinite(json['repvit'], 'repvit timing'),
       dinov3Ms: _nonNegativeFinite(json['dinov3'], 'dinov3 timing'),
+      fusionMs: _nonNegativeFinite(json['fusion'], 'fusion timing'),
       postprocessMs: _nonNegativeFinite(
         json['postprocess'],
         'postprocess timing',
       ),
       totalMs: _nonNegativeFinite(json['total'], 'total timing'),
     );
+    if (timings.totalMs <
+        [
+          timings.decodePreprocessMs,
+          timings.detectorMs,
+          timings.cropMs,
+          timings.repvitMs,
+          timings.dinov3Ms,
+          timings.fusionMs,
+          timings.postprocessMs,
+        ].reduce((maximum, value) => value > maximum ? value : maximum)) {
+      throw const FormatException('total timing must cover every stage');
+    }
+    return timings;
   }
 
   final double decodePreprocessMs;
   final double detectorMs;
+  final double cropMs;
   final double repvitMs;
   final double dinov3Ms;
+  final double fusionMs;
   final double postprocessMs;
   final double totalMs;
 }
 
+final class InferenceDiagnostics {
+  const InferenceDiagnostics({
+    required this.objectCount,
+    required this.dinoObjectCount,
+  });
+
+  factory InferenceDiagnostics.fromJson(
+    Map<String, Object?> json, {
+    required int actualObjectCount,
+  }) {
+    _expectFields(json, const {'object_count', 'dino_object_count'});
+    final objectCount = _nonNegativeInt(json['object_count'], 'object_count');
+    final dinoObjectCount = _nonNegativeInt(
+      json['dino_object_count'],
+      'dino_object_count',
+    );
+    if (objectCount != actualObjectCount || dinoObjectCount > objectCount) {
+      throw const FormatException('inference diagnostics are inconsistent');
+    }
+    return InferenceDiagnostics(
+      objectCount: objectCount,
+      dinoObjectCount: dinoObjectCount,
+    );
+  }
+
+  final int objectCount;
+  final int dinoObjectCount;
+}
+
 final class StartupMetrics {
-  const StartupMetrics({
+  StartupMetrics({
     required this.device,
     required this.loadMs,
     required this.warmupMs,
@@ -252,7 +316,10 @@ final class StartupMetrics {
     required this.dinov3Id,
     required this.fusionPolicyId,
     required this.detectorThreshold,
-  });
+    Map<String, String> appliedArtifactHashes = const {},
+  }) : appliedArtifactHashes = UnmodifiableMapView(
+         Map<String, String>.from(appliedArtifactHashes),
+       );
 
   factory StartupMetrics.fromJson(Map<String, Object?> json) {
     _expectFields(json, const {
@@ -265,12 +332,42 @@ final class StartupMetrics {
       'dinov3_id',
       'fusion_policy_id',
       'detector_threshold',
+      'applied_artifact_hashes',
     });
     final device = _requiredString(json['device'], 'startup device');
     if (device != 'cpu' && device != 'cuda:0') {
       throw const FormatException('startup device must be cpu or cuda:0');
     }
     final fallbackValue = json['fallback_reason'];
+    final rawHashes = _map(
+      json['applied_artifact_hashes'],
+      'startup applied_artifact_hashes',
+    );
+    const hashKeys = {
+      'detector_checkpoint_sha256',
+      'detector_calibration_sha256',
+      'detector_manifest_sha256',
+      'repvit_checkpoint_sha256',
+      'repvit_manifest_sha256',
+      'repvit_prototype_sha256',
+      'dinov3_weights_sha256',
+      'dinov3_support_sha256',
+      'dinov3_local_bank_sha256',
+      'classifier_calibration_sha256',
+      'preprocess_sha256',
+      'fusion_policy_sha256',
+      'presentation_policy_sha256',
+    };
+    _expectFields(rawHashes, hashKeys);
+    final appliedArtifactHashes = <String, String>{
+      for (final key in hashKeys)
+        key: _requiredString(rawHashes[key], 'startup $key'),
+    };
+    if (appliedArtifactHashes.values.any((value) => !_sha256(value))) {
+      throw const FormatException(
+        'startup applied_artifact_hashes must contain SHA-256 hashes',
+      );
+    }
     return StartupMetrics(
       device: device,
       loadMs: _nonNegativeFinite(json['load_ms'], 'startup load_ms'),
@@ -289,6 +386,7 @@ final class StartupMetrics {
         json['detector_threshold'],
         'startup detector_threshold',
       ),
+      appliedArtifactHashes: appliedArtifactHashes,
     );
   }
 
@@ -301,6 +399,7 @@ final class StartupMetrics {
   final String dinov3Id;
   final String fusionPolicyId;
   final double detectorThreshold;
+  final Map<String, String> appliedArtifactHashes;
 }
 
 enum InferencePresentationState {
@@ -398,7 +497,8 @@ final class InferencePresentation {
       json['policy_id'],
       'presentation policy_id',
     );
-    if (policyId != 'camera_action_state_v1') {
+    if (policyId != 'camera_action_state_v1' &&
+        policyId != 'camera_action_state_v2') {
       throw const FormatException('presentation policy_id is invalid');
     }
     final policySha256 = _requiredString(
@@ -466,8 +566,11 @@ final class InferencePresentation {
             }
           case RetakeScope.object:
             if (retakeObjectIds.isEmpty ||
-                (instruction != RetakeInstruction.separateBreads &&
-                    instruction != RetakeInstruction.candidateEvidenceWeak)) {
+                (policyId == 'camera_action_state_v2'
+                    ? instruction != RetakeInstruction.separateBreads
+                    : instruction != RetakeInstruction.separateBreads &&
+                          instruction !=
+                              RetakeInstruction.candidateEvidenceWeak)) {
               throw const FormatException(
                 'object retake presentation state is inconsistent',
               );
@@ -508,6 +611,7 @@ final class InferenceResult {
     required this.unknownCount,
     required this.presentation,
     required this.timings,
+    required this.diagnostics,
   }) : objects = List.unmodifiable(objects),
        counts = UnmodifiableMapView(counts);
 
@@ -522,6 +626,7 @@ final class InferenceResult {
       'unknown_count',
       'presentation',
       'timings_ms',
+      'diagnostics',
     });
     if (json['type'] != 'result') {
       throw const FormatException('inference result type must be result');
@@ -529,9 +634,12 @@ final class InferenceResult {
     final requestId = _requiredString(json['request_id'], 'request_id');
     final image = _map(json['image'], 'image');
     _expectFields(image, const {'width', 'height'});
-    final imageWidth = _positiveFinite(image['width'], 'image width');
-    final imageHeight = _positiveFinite(image['height'], 'image height');
+    final imageWidth = _positiveInt(image['width'], 'image width').toDouble();
+    final imageHeight = _positiveInt(image['height'], 'image height').toDouble();
     final device = _requiredString(json['device'], 'result device');
+    if (device != 'cpu' && device != 'cuda:0') {
+      throw const FormatException('result device must be cpu or cuda:0');
+    }
     final objectValues = _list(json['objects'], 'objects');
     final objects = <InferenceObject>[
       for (var index = 0; index < objectValues.length; index += 1)
@@ -592,6 +700,10 @@ final class InferenceResult {
         objects: objects,
       ),
       timings: StageTimings.fromJson(_map(json['timings_ms'], 'timings_ms')),
+      diagnostics: InferenceDiagnostics.fromJson(
+        _map(json['diagnostics'], 'diagnostics'),
+        actualObjectCount: objects.length,
+      ),
     );
   }
 
@@ -604,6 +716,7 @@ final class InferenceResult {
   final int unknownCount;
   final InferencePresentation presentation;
   final StageTimings timings;
+  final InferenceDiagnostics diagnostics;
 
   int get registeredCount =>
       counts.values.fold<int>(0, (sum, count) => sum + count);
@@ -655,13 +768,17 @@ final class StartupWorkerEvent extends WorkerEvent {
 }
 
 final class ReadyWorkerEvent extends WorkerEvent {
-  const ReadyWorkerEvent({required this.device, required this.metrics});
+  const ReadyWorkerEvent({
+    required this.device,
+    required this.metrics,
+    this.codeIdentity,
+  });
 
   factory ReadyWorkerEvent.fromJson(Map<String, Object?> json) {
     _expectFields(
       json,
       const {'type', 'device'},
-      optional: const {'startup_metrics'},
+      optional: const {'startup_metrics', 'code_identity'},
     );
     final metricsValue = json['startup_metrics'];
     final metrics = metricsValue == null
@@ -673,11 +790,49 @@ final class ReadyWorkerEvent extends WorkerEvent {
         'ready device does not match startup metrics',
       );
     }
-    return ReadyWorkerEvent(device: device, metrics: metrics);
+    final identityValue = json['code_identity'];
+    return ReadyWorkerEvent(
+      device: device,
+      metrics: metrics,
+      codeIdentity: identityValue == null
+          ? null
+          : WorkerCodeIdentity.fromJson(_map(identityValue, 'code_identity')),
+    );
   }
 
   final String device;
   final StartupMetrics? metrics;
+  final WorkerCodeIdentity? codeIdentity;
+}
+
+/// Optional for legacy workers; schema-v2 evidence workers require it upstream.
+final class WorkerCodeIdentity {
+  const WorkerCodeIdentity({
+    required this.codeCommit,
+    required this.codeIdentitySha256,
+  });
+
+  factory WorkerCodeIdentity.fromJson(Map<String, Object?> json) {
+    _expectFields(json, const {'code_commit', 'code_identity_sha256'});
+    final commit = _requiredString(json['code_commit'], 'code commit');
+    if (!_lowerHex(commit) || (commit.length != 40 && commit.length != 64)) {
+      throw const FormatException('code commit must be lowercase Git hex');
+    }
+    final identity = _requiredString(
+      json['code_identity_sha256'],
+      'code identity SHA-256',
+    );
+    if (!_sha256(identity)) {
+      throw const FormatException('code identity must be lowercase SHA-256');
+    }
+    return WorkerCodeIdentity(
+      codeCommit: commit,
+      codeIdentitySha256: identity,
+    );
+  }
+
+  final String codeCommit;
+  final String codeIdentitySha256;
 }
 
 final class ProgressWorkerEvent extends WorkerEvent {
@@ -758,19 +913,28 @@ final class PongWorkerEvent extends WorkerEvent {
 }
 
 final class StoppedWorkerEvent extends WorkerEvent {
-  const StoppedWorkerEvent(this.requestId);
+  const StoppedWorkerEvent(this.requestId, {this.codeIdentity});
 
   factory StoppedWorkerEvent.fromJson(Map<String, Object?> json) {
-    _expectFields(json, const {'type'}, optional: const {'request_id'});
+    _expectFields(
+      json,
+      const {'type'},
+      optional: const {'request_id', 'code_identity'},
+    );
     final requestIdValue = json['request_id'];
+    final identityValue = json['code_identity'];
     return StoppedWorkerEvent(
       requestIdValue == null
           ? null
           : _requiredString(requestIdValue, 'stopped request_id'),
+      codeIdentity: identityValue == null
+          ? null
+          : WorkerCodeIdentity.fromJson(_map(identityValue, 'code_identity')),
     );
   }
 
   final String? requestId;
+  final WorkerCodeIdentity? codeIdentity;
 }
 
 Map<String, Object?> _parseProvenance(Map<String, Object?> json) {
@@ -905,6 +1069,11 @@ String _requiredString(Object? value, String name) {
   return value;
 }
 
+bool _lowerHex(String value) =>
+    value.isNotEmpty && RegExp(r'^[0-9a-f]+$').hasMatch(value);
+
+bool _sha256(String value) => value.length == 64 && _lowerHex(value);
+
 int _positiveInt(Object? value, String name) {
   if (value is! int || value <= 0) {
     throw FormatException('$name must be a positive integer');
@@ -931,14 +1100,6 @@ double _finite(Object? value, String name) {
     throw FormatException('$name must be finite');
   }
   return value.toDouble();
-}
-
-double _positiveFinite(Object? value, String name) {
-  final parsed = _finite(value, name);
-  if (parsed <= 0) {
-    throw FormatException('$name must be positive');
-  }
-  return parsed;
 }
 
 double _nonNegativeFinite(Object? value, String name) {

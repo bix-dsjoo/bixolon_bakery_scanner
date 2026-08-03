@@ -4,10 +4,11 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from bakery_scanner.contracts import Box
-from bakery_scanner.detectors.rfdetr import RFDetrRunner
+from bakery_scanner.detectors.rfdetr import RFDetrRunner, VerifiedPathBindings
 
 
 class _FakeModel:
@@ -61,6 +62,108 @@ def test_rfdetr_loader_passes_cpu_device_to_the_backend_factory(tmp_path):
 
     assert runner.source == "rfdetr_large_bakery_v1"
     assert calls == [{"pretrain_weights": str(checkpoint.resolve()), "num_classes": 1, "device": "cpu"}]
+
+
+def test_rfdetr_cuda_loader_requires_a_checkpoint_digest(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pth"
+    checkpoint.write_bytes(b"checkpoint")
+
+    with pytest.raises(ValueError, match="CUDA evidence checkpoint requires SHA-256"):
+        RFDetrRunner.load(
+            checkpoint,
+            score_threshold=0.5,
+            device="cuda",
+            model_factory=lambda **_kwargs: pytest.fail("factory must not run"),
+        )
+
+
+def test_rfdetr_loader_rejects_checkpoint_replaced_during_model_construction(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pth"
+    checkpoint.write_bytes(b"verified checkpoint")
+    expected = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+    class Backend:
+        def predict(self, *args, **kwargs):
+            raise AssertionError("not used")
+
+    replacement_denied = False
+
+    def mutate_checkpoint(**_kwargs):
+        nonlocal replacement_denied
+        with pytest.raises(PermissionError):
+            checkpoint.write_bytes(b"replaced checkpoint")
+        replacement_denied = True
+        return Backend()
+
+    RFDetrRunner.load(
+        checkpoint,
+        score_threshold=0.5,
+        expected_sha256=expected,
+        model_factory=mutate_checkpoint,
+    )
+    assert replacement_denied is True
+
+
+def test_rfdetr_binding_denies_replacement_until_warmup_finalization(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pth"
+    checkpoint.write_bytes(b"verified checkpoint")
+    expected = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+    class Backend:
+        def predict(self, *args, **kwargs):
+            raise AssertionError("not used")
+
+    runner = RFDetrRunner.load(
+        checkpoint, score_threshold=0.5, expected_sha256=expected,
+        model_factory=lambda **_kwargs: Backend(),
+    )
+    with pytest.raises(PermissionError):
+        checkpoint.write_bytes(b"replacement during warmup")
+    runner.finalize_artifact_binding()
+    checkpoint.write_bytes(b"released after warmup")
+
+
+def test_windows_verified_path_bindings_deny_classifier_artifact_replacement(tmp_path):
+    config = tmp_path / "gpu_rfdetr_classifier_policy.yaml"
+    repvit = tmp_path / "repvit.pth"
+    dino_support = tmp_path / "dino-support.safetensors"
+    config.write_bytes(b"runtime: {device: CUDA:0}")
+    repvit.write_bytes(b"repvit")
+    dino_support.write_bytes(b"support")
+    entries = tuple(
+        (path, hashlib.sha256(path.read_bytes()).hexdigest(), label)
+        for path, label in (
+            (config, "classifier config"),
+            (repvit, "RepViT checkpoint"),
+            (dino_support, "DINO support"),
+        )
+    )
+
+    with VerifiedPathBindings(entries, device="cuda"):
+        for path in (config, repvit, dino_support):
+            with pytest.raises(PermissionError):
+                path.write_bytes(b"replacement")
+            with pytest.raises(PermissionError):
+                path.unlink()
+
+
+def test_verified_path_bindings_release_after_warmup_success_or_error(tmp_path):
+    artifact = tmp_path / "dino-local-bank.pt"
+    artifact.write_bytes(b"verified")
+    entries = ((artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), "DINO local bank"),)
+
+    bindings = VerifiedPathBindings(entries, device="cuda")
+    bindings.__enter__()
+    with pytest.raises(PermissionError):
+        artifact.write_bytes(b"replacement during lazy warmup")
+    bindings.release(verify=True)
+    artifact.write_bytes(b"released after successful warmup")
+
+    expected = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    failed = VerifiedPathBindings(((artifact, expected, "DINO local bank"),), device="cuda")
+    failed.__enter__()
+    failed.release(verify=False)
+    artifact.write_bytes(b"released after failed warmup")
 
 
 def test_rfdetr_manifest_pins_corrected_gt_zero_fp_threshold():

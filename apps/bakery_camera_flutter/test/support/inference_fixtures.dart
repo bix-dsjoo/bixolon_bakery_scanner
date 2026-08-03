@@ -53,10 +53,16 @@ InferenceResult buildUiInferenceResult({
   'timings_ms': {
     'decode_preprocess': 10.0,
     'detector': 120.0,
+    'crop': 0.0,
     'repvit': 50.0,
     'dinov3': dinov3Ms,
+    'fusion': 0.0,
     'postprocess': 20.0,
     'total': totalMs,
+  },
+  'diagnostics': {
+    'object_count': includeUnchangedRegisteredObject ? 3 : 2,
+    'dino_object_count': dinov3Ms > 0 ? 1 : 0,
   },
 });
 
@@ -103,10 +109,16 @@ InferenceResult buildOrderingInferenceResult({double dinov3Ms = 0}) =>
       'timings_ms': {
         'decode_preprocess': 12.0,
         'detector': 240.0,
+        'crop': 0.0,
         'repvit': 80.0,
         'dinov3': dinov3Ms,
+        'fusion': 0.0,
         'postprocess': 20.0,
         'total': 352.0,
+      },
+      'diagnostics': {
+        'object_count': 3,
+        'dino_object_count': dinov3Ms > 0 ? 1 : 0,
       },
     });
 

@@ -6,6 +6,7 @@ import pytest
 from bakery_scanner.classification.config import (
     ClassifierConfig,
     ClassifierRuntimeConfig,
+    _resolve_path,
     preprocess_sha256,
 )
 from bakery_scanner.classification.runtime import configure_cpu_process
@@ -31,6 +32,108 @@ def test_classifier_config_allows_explicit_cpu_smoke_runtime(tmp_path):
     config = ClassifierConfig.load(path)
 
     assert config.runtime.device == "CPU"
+
+
+def test_classifier_config_uses_staged_policies_and_explicit_external_artifacts(
+    tmp_path,
+):
+    snapshot = tmp_path / "snapshot"
+    artifact_root = tmp_path / "external-artifacts"
+    (snapshot / "configs").mkdir(parents=True)
+    (snapshot / "policies" / "classification").mkdir(parents=True)
+    (snapshot / "configs" / "classifier_policy.yaml").write_text(
+        Path("configs/classifier_policy.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    for name in (
+        "policy_v2_manifest_rebound_cpu_smoke.json",
+        "fusion_local_or_global_consensus_margin_v1.json",
+    ):
+        (snapshot / "policies" / "classification" / name).write_bytes(
+            (Path("policies") / "classification" / name).read_bytes()
+        )
+
+    config = ClassifierConfig.load(
+        snapshot / "configs" / "classifier_policy.yaml",
+        artifact_root=artifact_root,
+    )
+
+    assert config.repvit.checkpoint == (
+        artifact_root / "models" / "repvit_m1_15plus5_v1" / "repvit_m1_15plus5_v1.pt"
+    ).resolve()
+    assert config.dinov3.support == (
+        artifact_root / "artifacts" / "e2e_current_source" / "classification" / "dinov3_vits16_support.pt"
+    ).resolve()
+    assert config.calibration.fusion_policy == (
+        snapshot / "policies" / "classification" / "fusion_local_or_global_consensus_margin_v1.json"
+    ).resolve()
+
+
+def test_classifier_config_rejects_absolute_model_paths_outside_artifact_root(
+    tmp_path,
+):
+    config_path = tmp_path / "classifier_policy.yaml"
+    outside = (tmp_path / "outside" / "repvit.pt").resolve()
+    config_path.write_text(
+        Path("configs/classifier_policy.yaml")
+            .read_text(encoding="utf-8")
+            .replace(
+                "../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt",
+                str(outside),
+            ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="artifact_root"):
+        ClassifierConfig.load(config_path, artifact_root=tmp_path / "artifacts")
+
+
+def test_staged_model_namespace_symlink_cannot_escape_artifact_root(tmp_path):
+    content_root = tmp_path / "content"
+    base = content_root / "configs"
+    base.mkdir(parents=True)
+    artifact_root = tmp_path / "artifact-root"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    artifact_root.mkdir()
+    try:
+        os.symlink(outside, artifact_root / "models", target_is_directory=True)
+    except OSError:
+        pytest.skip("Windows symlink privilege is unavailable for real containment test")
+
+    with pytest.raises(ValueError, match="artifact_root"):
+        _resolve_path(
+            base,
+            "../models/repvit/weights.pt",
+            content_root=content_root,
+            artifact_root=artifact_root,
+            require_artifact_containment=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("configured", "replacement", "message"),
+    [
+        ("../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt", "../../escape.pt", "content_root"),
+        ("../models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth", "../../escape.pth", "content_root"),
+        ("../policies/classification/policy_fail_closed_v2.json", "../../escape-policy.json", "content_root"),
+        ("../policies/classification/fusion_local_or_global_consensus_margin_v1.json", "../../escape-fusion.json", "content_root"),
+    ],
+)
+def test_staged_config_rejects_relative_escapes_for_every_path_class(
+    tmp_path, configured, replacement, message
+):
+    config_path = tmp_path / "content" / "configs" / "classifier_policy.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        Path("configs/classifier_policy.yaml")
+            .read_text(encoding="utf-8")
+            .replace(configured, replacement),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ClassifierConfig.load(config_path, artifact_root=tmp_path / "artifact-root")
 
 
 def test_cpu_runtime_accepts_batch_compile_options():

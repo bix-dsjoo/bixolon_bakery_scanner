@@ -9,6 +9,7 @@
     "dino/LICENSE.md",
     "data/catalogs/classes.json",
     "configs/camera_presentation_policy.json",
+    "policies/presentation/camera_action_state_v2.json",
     "configs/gpu_rfdetr_classifier_policy.yaml",
     "configs/cpu_rfdetr_classifier_policy.yaml",
     "models/rfdetr_large_bakery_v1/checkpoint.pth",

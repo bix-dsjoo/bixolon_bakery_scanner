@@ -148,11 +148,14 @@ void main() {
         'timings_ms': {
           'decode_preprocess': 1.0,
           'detector': 2.0,
+          'crop': 0.0,
           'repvit': 0.0,
           'dinov3': 0.0,
+          'fusion': 0.0,
           'postprocess': 1.0,
           'total': 4.0,
         },
+        'diagnostics': {'object_count': 0, 'dino_object_count': 0},
       });
       await _pumpRail(tester, result: result);
 
@@ -256,11 +259,14 @@ InferenceResult _scanRetakeResult() => InferenceResult.fromJson({
   'timings_ms': {
     'decode_preprocess': 1.0,
     'detector': 2.0,
+    'crop': 0.0,
     'repvit': 0.0,
     'dinov3': 0.0,
+    'fusion': 0.0,
     'postprocess': 1.0,
     'total': 4.0,
   },
+  'diagnostics': {'object_count': 0, 'dino_object_count': 0},
 });
 
 InferenceResult _objectRetakeResult() => buildUiInferenceResult(
@@ -294,11 +300,14 @@ InferenceResult _normalResult() => InferenceResult.fromJson({
   'timings_ms': {
     'decode_preprocess': 12.0,
     'detector': 240.0,
+    'crop': 0.0,
     'repvit': 80.0,
     'dinov3': 0.0,
+    'fusion': 0.0,
     'postprocess': 20.0,
     'total': 352.0,
   },
+  'diagnostics': {'object_count': 1, 'dino_object_count': 0},
 });
 
 Future<void> _pumpRail(
@@ -311,7 +320,7 @@ Future<void> _pumpRail(
   final state = ScannerState.initial().copyWith(
     cameraReady: true,
     workerStatus: WorkerStatus.ready,
-    startupMetrics: const StartupMetrics(
+    startupMetrics: StartupMetrics(
       device: 'cpu',
       loadMs: 1500,
       warmupMs: 320,

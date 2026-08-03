@@ -1,0 +1,10 @@
+{
+  "device": "cuda:0",
+  "groups": ["E", "M", "H"],
+  "minimum_group_observations": 100,
+  "minimum_warmups": 20,
+  "overall_p95_limit_ms": 100.0,
+  "per_group_p95_limit_ms": 100.0,
+  "schema_version": 1,
+  "worker_boundary": "file_read_to_in_memory_result_payload"
+}

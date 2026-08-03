@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 from numbers import Integral
 from pathlib import Path
 from typing import Any, Callable
@@ -23,7 +25,7 @@ _SOURCE = "rfdetr_large_bakery_v1"
 class RFDetrRunner:
     """Normalize a loaded RF-DETR-L model into canonical bread proposals."""
 
-    def __init__(self, model: Any, *, score_threshold: float, source: str = _SOURCE) -> None:
+    def __init__(self, model: Any, *, score_threshold: float, source: str = _SOURCE, binding: "_CheckpointBinding | None" = None) -> None:
         if not hasattr(model, "predict"):
             raise TypeError("RF-DETR backend must provide predict()")
         if isinstance(score_threshold, bool) or not isinstance(score_threshold, (int, float)):
@@ -35,6 +37,7 @@ class RFDetrRunner:
         self._model = model
         self._score_threshold = float(score_threshold)
         self.source = source
+        self._binding = binding
 
     @classmethod
     def from_model(cls, model: Any, *, score_threshold: float, source: str = _SOURCE) -> "RFDetrRunner":
@@ -49,21 +52,48 @@ class RFDetrRunner:
         source: str = _SOURCE,
         device: str = "cuda",
         model_factory: Callable[..., Any] | None = None,
+        expected_sha256: str | None = None,
     ) -> "RFDetrRunner":
         checkpoint_path = Path(checkpoint).resolve()
         if not checkpoint_path.is_file():
             raise ValueError(f"RF-DETR checkpoint is missing: {checkpoint_path}")
-        if model_factory is None:
-            try:
-                from rfdetr import RFDETRLarge
-            except ImportError as error:
-                raise RuntimeError("RF-DETR is required for RFDetrRunner.load()") from error
-            model_factory = RFDETRLarge
-        return cls(
-            model_factory(pretrain_weights=str(checkpoint_path), num_classes=1, device=device),
-            score_threshold=score_threshold,
-            source=source,
-        )
+        binding = _CheckpointBinding(checkpoint_path, expected_sha256, device)
+        binding.__enter__()
+        try:
+            if model_factory is None:
+                try:
+                    from rfdetr import RFDETRLarge
+                except ImportError as error:
+                    raise RuntimeError("RF-DETR is required for RFDetrRunner.load()") from error
+                model_factory = RFDETRLarge
+            model = model_factory(
+                pretrain_weights=str(checkpoint_path), num_classes=1, device=device
+            )
+        except Exception:
+            binding.release(verify=False)
+            raise
+        try:
+            return cls(
+                model,
+                score_threshold=score_threshold,
+                source=source,
+                binding=binding,
+            )
+        except Exception:
+            binding.release(verify=False)
+            raise
+
+    def finalize_artifact_binding(self) -> None:
+        binding = self._binding
+        self._binding = None
+        if binding is not None:
+            binding.release(verify=True)
+
+    def close(self) -> None:
+        binding = self._binding
+        self._binding = None
+        if binding is not None:
+            binding.release(verify=False)
 
     def predict(self, image_id: int, image: Image.Image) -> tuple[BreadProposal, ...]:
         if not isinstance(image, Image.Image) or image.mode != "RGB":
@@ -125,3 +155,169 @@ class RFDetrRunner:
                 )
             )
         return tuple(sorted(proposals, key=lambda item: (-item.score, item.box.y, item.box.x, item.box.height, item.box.width)))
+
+
+def _require_checkpoint_sha256(path: Path, expected: str) -> None:
+    _validate_checkpoint_sha256(expected)
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while block := handle.read(1024 * 1024):
+                digest.update(block)
+    except OSError as exc:
+        raise ValueError(f"RF-DETR checkpoint is unavailable: {path}") from exc
+    if digest.hexdigest() != expected:
+        raise ValueError("RF-DETR checkpoint SHA-256 mismatch")
+
+
+def _validate_checkpoint_sha256(expected: str) -> None:
+    if (
+        not isinstance(expected, str)
+        or len(expected) != 64
+        or any(character not in "0123456789abcdef" for character in expected)
+    ):
+        raise ValueError("RF-DETR checkpoint SHA-256 is invalid")
+
+
+class _CheckpointBinding:
+    """Keep a verified path-based checkpoint immutable while a backend opens it.
+
+    Windows uses a kernel handle that permits concurrent reads but denies writes
+    and deletion.  POSIX cannot apply that share mode to a pathname; CPU loads
+    retain the adjacent pre/post digest check, while CUDA evidence loads fail
+    closed there rather than imply an OS-enforced binding that does not exist.
+    """
+
+    def __init__(self, path: Path, expected_sha256: str | None, device: str) -> None:
+        self.path = path
+        self.expected_sha256 = expected_sha256
+        self.device = device
+        self._handle: int | None = None
+        self._active = False
+
+    def __enter__(self) -> "_CheckpointBinding":
+        if str(self.device).lower().startswith("cuda") and self.expected_sha256 is None:
+            raise ValueError("CUDA evidence checkpoint requires SHA-256")
+        try:
+            if self.expected_sha256 is None:
+                self._active = True
+                return self
+            _validate_checkpoint_sha256(self.expected_sha256)
+            if os.name == "nt":
+                self._handle = _open_windows_read_binding(self.path)
+            elif str(self.device).lower().startswith("cuda"):
+                raise ValueError("CUDA evidence checkpoint binding requires Windows share-deny locking")
+            _require_checkpoint_sha256(self.path, self.expected_sha256)
+            self._active = True
+            return self
+        except Exception:
+            self.release(verify=False)
+            raise
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release(verify=exc_type is None)
+
+    def release(self, *, verify: bool) -> None:
+        if not self._active and self._handle is None:
+            return
+        try:
+            if verify and self.expected_sha256 is not None:
+                _require_checkpoint_sha256(self.path, self.expected_sha256)
+        finally:
+            if self._handle is not None:
+                _close_windows_handle(self._handle)
+                self._handle = None
+            self._active = False
+
+
+class VerifiedPathBindings:
+    """Bind a declared artifact set through a path-based backend construction."""
+
+    def __init__(
+        self,
+        entries: tuple[tuple[Path, str, str], ...],
+        *,
+        device: str,
+    ) -> None:
+        normalized: dict[Path, tuple[str, str]] = {}
+        for raw_path, expected, label in entries:
+            path = Path(raw_path).resolve()
+            _validate_checkpoint_sha256(expected)
+            if path in normalized and normalized[path][0] != expected:
+                raise ValueError("artifact binding path-set has conflicting digests")
+            normalized[path] = (expected, label)
+        if not normalized:
+            raise ValueError("artifact binding path-set is empty")
+        self._entries = tuple(
+            (path, expected, label)
+            for path, (expected, label) in sorted(normalized.items(), key=lambda item: str(item[0]))
+        )
+        self.device = device
+        self._handles: list[int] = []
+        self._active = False
+
+    def __enter__(self) -> "VerifiedPathBindings":
+        cuda = str(self.device).lower().startswith("cuda")
+        if cuda and os.name != "nt":
+            raise ValueError("CUDA evidence artifact binding requires Windows share-deny locking")
+        try:
+            if os.name == "nt":
+                self._handles = [_open_windows_read_binding(path) for path, _, _ in self._entries]
+            for path, expected, label in self._entries:
+                _require_checkpoint_sha256(path, expected)
+        except Exception:
+            self._close()
+            raise
+        self._active = True
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release(verify=exc_type is None)
+
+    def release(self, *, verify: bool) -> None:
+        if not self._active:
+            return
+        try:
+            if verify:
+                for path, expected, _label in self._entries:
+                    _require_checkpoint_sha256(path, expected)
+        finally:
+            self._close()
+            self._active = False
+
+    def _close(self) -> None:
+        while self._handles:
+            _close_windows_handle(self._handles.pop())
+
+
+def _open_windows_read_binding(path: Path) -> int:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0x80000000,  # GENERIC_READ
+        0x00000001,  # FILE_SHARE_READ: explicitly deny write and delete
+        None,
+        3,  # OPEN_EXISTING
+        0x00000080,  # FILE_ATTRIBUTE_NORMAL
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle is None or handle == invalid:
+        raise ValueError("RF-DETR checkpoint share-deny binding could not be acquired")
+    return int(handle)
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.CloseHandle(ctypes.c_void_p(handle)):
+        raise OSError(ctypes.get_last_error(), "CloseHandle failed for RF-DETR checkpoint")

@@ -25,6 +25,77 @@ void main() {
     expect(result.timings.totalMs, 42.0);
   });
 
+  test('requires eight timing stages and exact object diagnostics', () {
+    final json = _resultJson();
+    json['timings_ms'] = {
+      'decode_preprocess': 1.0,
+      'detector': 20.0,
+      'crop': 3.0,
+      'repvit': 8.0,
+      'dinov3': 5.0,
+      'fusion': 2.0,
+      'postprocess': 8.0,
+      'total': 42.0,
+    };
+    json['diagnostics'] = {'object_count': 1, 'dino_object_count': 0};
+
+    final result = InferenceResult.fromJson(json);
+
+    expect(result.timings.cropMs, 3.0);
+    expect(result.timings.fusionMs, 2.0);
+    expect(result.diagnostics.objectCount, result.objects.length);
+    expect(result.diagnostics.dinoObjectCount, 0);
+  });
+
+  test('rejects a total shorter than an individual timing stage', () {
+    final json = _resultJson();
+    (json['timings_ms'] as Map<String, Object?>)['detector'] = 200.0;
+    (json['timings_ms'] as Map<String, Object?>)['total'] = 1.0;
+
+    expect(() => InferenceResult.fromJson(json), throwsFormatException);
+  });
+
+  test('accepts camera action state v2 while preserving exact Top3', () {
+    final presentation = _presentationJson(
+      state: 'unknown',
+      candidateObjectIds: const ['object-1'],
+      policyId: 'camera_action_state_v2',
+    );
+    final result = InferenceResult.fromJson(
+      _resultJson(
+        objects: [_unknownObject('object-1')],
+        counts: const {},
+        unknownCount: 1,
+        presentation: presentation,
+      ),
+    );
+
+    expect(result.presentation.policyId, 'camera_action_state_v2');
+    expect(result.objects.single.candidates, hasLength(3));
+    expect(result.objects.single.candidates.map((row) => row.rank), [1, 2, 3]);
+  });
+
+  test('camera action state v2 rejects candidate evidence weak retake', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          objects: [_unknownObject('object-1')],
+          counts: const {},
+          unknownCount: 1,
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'object',
+            retakeObjectIds: const ['object-1'],
+            instructionCode: 'candidate_evidence_weak',
+            policyId: 'camera_action_state_v2',
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test('parses object retake without changing canonical counts', () {
     final result = InferenceResult.fromJson(
       _resultJson(
@@ -360,6 +431,22 @@ void main() {
     }
   });
 
+  test('Unknown candidates require descending scores and ascending SKU ties', () {
+    final object = _unknownObject('object-1');
+    object['top3'] = [
+      {'rank': 1, 'sku_id': 7, 'sku_name': 'Flower Bread', 'score': 0.41},
+      {'rank': 2, 'sku_id': 2, 'sku_name': 'Croffle', 'score': 0.41},
+      {'rank': 3, 'sku_id': 4, 'sku_name': 'Scon', 'score': 0.27},
+    ];
+
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(objects: [object], counts: const {}, unknownCount: 1),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test(
     'Unknown accepts an omitted reason while preserving ranked evidence',
     () {
@@ -494,6 +581,37 @@ void main() {
     expect((result as ResultWorkerEvent).result.requestId, 'analysis-1');
   });
 
+  test('parses optional lifecycle code identity and rejects malformed values', () {
+    final identity = {
+      'code_commit': 'a' * 40,
+      'code_identity_sha256': 'b' * 64,
+    };
+    final ready = WorkerEvent.fromJson({
+      'type': 'ready',
+      'device': 'cuda:0',
+      'code_identity': identity,
+    }) as ReadyWorkerEvent;
+    final stopped = WorkerEvent.fromJson({
+      'type': 'stopped',
+      'request_id': 'shutdown-1',
+      'code_identity': identity,
+    }) as StoppedWorkerEvent;
+
+    expect(ready.codeIdentity!.codeCommit, 'a' * 40);
+    expect(stopped.codeIdentity!.codeIdentitySha256, 'b' * 64);
+    expect(
+      () => WorkerEvent.fromJson({
+        'type': 'ready',
+        'device': 'cuda:0',
+        'code_identity': {
+          'code_commit': 'A' * 40,
+          'code_identity_sha256': 'b' * 64,
+        },
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('startup metrics reject malformed real-contract metadata', () {
     for (final mutation in <void Function(Map<String, Object?>)>[
       (metrics) => metrics.remove('detector_id'),
@@ -519,6 +637,17 @@ Map<String, Object?> _startupMetricsJson() {
     'dinov3_id': 'dinov3_vits16_15plus5_v1',
     'fusion_policy_id': 'fusion_local_or_global_v1',
     'detector_threshold': 0.42,
+    'applied_artifact_hashes': {
+      for (final key in const [
+        'detector_checkpoint_sha256', 'detector_calibration_sha256',
+        'detector_manifest_sha256', 'repvit_checkpoint_sha256',
+        'repvit_manifest_sha256', 'repvit_prototype_sha256',
+        'dinov3_weights_sha256', 'dinov3_support_sha256',
+        'dinov3_local_bank_sha256', 'classifier_calibration_sha256',
+        'preprocess_sha256', 'fusion_policy_sha256',
+        'presentation_policy_sha256',
+      ]) key: 'a' * 64,
+    },
   };
 }
 
@@ -554,10 +683,16 @@ Map<String, Object?> _resultJson({
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,
+      'crop': 0.0,
       'repvit': 8.0,
       'dinov3': 5.0,
+      'fusion': 0.0,
       'postprocess': 8.0,
       'total': 42.0,
+    },
+    'diagnostics': {
+      'object_count': resultObjects.length,
+      'dino_object_count': 0,
     },
   };
 }
@@ -569,6 +704,7 @@ Map<String, Object?> _presentationJson({
   List<String> retakeObjectIds = const [],
   String? instructionCode,
   List<String> candidateObjectIds = const [],
+  String policyId = 'camera_action_state_v1',
 }) {
   return {
     'state': state,
@@ -577,7 +713,7 @@ Map<String, Object?> _presentationJson({
     'retake_object_ids': retakeObjectIds,
     'instruction_code': instructionCode,
     'candidate_object_ids': candidateObjectIds,
-    'policy_id': 'camera_action_state_v1',
+    'policy_id': policyId,
     'policy_sha256': '1' * 64,
   };
 }

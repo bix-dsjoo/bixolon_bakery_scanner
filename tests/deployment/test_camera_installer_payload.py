@@ -41,10 +41,12 @@ def payload_root(tmp_path: Path) -> Path:
         repo_root,
         repo_root / "deployment" / "camera_installer" / "payload-paths.json",
     )
-    policy_relative = "configs/camera_presentation_policy.json"
-    assert policy_relative in {
+    policy_relative = "policies/presentation/camera_action_state_v2.json"
+    allowlisted_files = {
         relative for relative, _ in allowlist["pipeline_files"]
     }
+    assert policy_relative in allowlisted_files
+    assert "configs/camera_presentation_policy.json" in allowlisted_files
 
     release_dir = tmp_path / "release"
     release_dir.mkdir()
@@ -86,12 +88,20 @@ def payload_root(tmp_path: Path) -> Path:
 def test_camera_payload_contains_hashed_presentation_policy(
     payload_root: Path,
 ) -> None:
-    policy = payload_root / "pipeline" / "configs" / "camera_presentation_policy.json"
+    policy = (
+        payload_root
+        / "pipeline"
+        / "policies"
+        / "presentation"
+        / "camera_action_state_v2.json"
+    )
     manifest = _load_payload_manifest(payload_root)
 
     assert policy.is_file()
     assert (
-        manifest["files"]["pipeline/configs/camera_presentation_policy.json"]
+        manifest["files"][
+            "pipeline/policies/presentation/camera_action_state_v2.json"
+        ]
         ["sha256"]
         == _sha256(policy)
     )

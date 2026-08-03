@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "receipt_id": "rtx5080_gpu_batch_fp32_20260803",
+  "status": "unverified_missing_artifact",
+  "protocol": "rtx5080_worker_p95_v1",
+  "code_commit": "a3356ba0f7a97e7f1bb8d20d759222e08e54f603",
+  "artifact_preflight": {
+    "status": "failed",
+    "missing_artifact_ids": [
+      "rfdetr_large_bakery_v1_checkpoint",
+      "repvit_m1_15plus5_v1_checkpoint",
+      "repvit_m1_15plus5_v1_prototypes",
+      "dinov3_vits16_15plus5_v1_weights",
+      "dinov3_vits16_15plus5_v1_support",
+      "dinov3_vits16_15plus5_v1_local_bank"
+    ],
+    "mismatched_artifact_ids": []
+  },
+  "external_manifest": {
+    "status": "absent",
+    "sha256": null
+  },
+  "benchmark": {
+    "status": "not_run",
+    "reason": "artifact preflight and external manifest gates did not pass"
+  },
+  "parity_receipt_id": null,
+  "unverified_boundaries": [
+    "artifact integrity",
+    "external E/M/H manifest identity",
+    "grouped CUDA measurement",
+    "GPU/reference decision parity",
+    "Flutter static analysis",
+    "Flutter contract tests"
+  ]
+}

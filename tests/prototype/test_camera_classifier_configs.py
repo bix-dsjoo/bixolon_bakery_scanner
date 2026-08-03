@@ -13,7 +13,7 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def test_gpu_and_cpu_rfdetr_configs_differ_only_by_device(repo_root: Path):
+def test_gpu_rfdetr_config_uses_all_object_pytorch_batching(repo_root: Path):
     cpu = yaml.safe_load(
         (repo_root / "configs/cpu_rfdetr_classifier_policy.yaml").read_text("utf-8")
     )
@@ -22,8 +22,20 @@ def test_gpu_and_cpu_rfdetr_configs_differ_only_by_device(repo_root: Path):
     )
 
     assert cpu["runtime"] == {"device": "CPU", "precision": "FP32"}
-    assert gpu["runtime"] == {"device": "CUDA:0", "precision": "FP32"}
-    cpu["runtime"] = gpu["runtime"]
+    assert gpu["runtime"] == {
+        "device": "CUDA:0",
+        "precision": "FP32",
+        "mode": "batch_pytorch",
+        "repvit_microbatch_objects": "all",
+        "dinov3_microbatch_objects": "all",
+    }
+    cpu["runtime"] = {
+        "device": "CUDA:0",
+        "precision": "FP32",
+        "mode": "batch_pytorch",
+        "repvit_microbatch_objects": "all",
+        "dinov3_microbatch_objects": "all",
+    }
     assert cpu == gpu
     assert gpu["calibration"]["fusion_policy"].endswith(
         "fusion_local_or_global_consensus_margin_v1.json"

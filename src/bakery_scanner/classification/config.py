@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Literal
@@ -174,13 +175,22 @@ class ClassifierConfig(_StrictModel):
     calibration: CalibrationConfig
 
     @classmethod
-    def load(cls, path: Path) -> "ClassifierConfig":
+    def load(
+        cls,
+        path: Path,
+        *,
+        artifact_root: Path | None = None,
+    ) -> "ClassifierConfig":
         config_path = path.resolve()
         with config_path.open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle)
         if not isinstance(payload, dict):
             raise ValueError("configuration root must be a mapping")
         base = config_path.parent
+        content_root = base.parent
+        resolved_artifact_root = (
+            Path(artifact_root).resolve() if artifact_root is not None else None
+        )
         payload = dict(payload)
         for section, names in {
             "repvit": ("checkpoint", "manifest", "prototype_bank"),
@@ -190,7 +200,13 @@ class ClassifierConfig(_StrictModel):
             values = dict(payload.get(section) or {})
             for name in names:
                 if values.get(name) is not None:
-                    values[name] = _resolve_path(base, values.get(name))
+                    values[name] = _resolve_path(
+                        base,
+                        values.get(name),
+                        content_root=content_root,
+                        artifact_root=resolved_artifact_root,
+                        require_artifact_containment=section in {"repvit", "dinov3"},
+                    )
             payload[section] = values
         result = cls.model_validate(payload)
         if "locked_acceptance" in result.calibration.artifact.parts:
@@ -200,10 +216,53 @@ class ClassifierConfig(_StrictModel):
         return result
 
 
-def _resolve_path(base: Path, raw: object) -> Path:
+def _resolve_path(
+    base: Path,
+    raw: object,
+    *,
+    content_root: Path | None = None,
+    artifact_root: Path | None = None,
+    require_artifact_containment: bool = False,
+) -> Path:
     if not isinstance(raw, (str, Path)) or not str(raw):
         raise ValueError("configured path must be a non-empty string")
     candidate = Path(raw)
-    return (
+    resolved = (
         candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
     )
+    if content_root is None or artifact_root is None:
+        return resolved
+    if require_artifact_containment:
+        if candidate.is_absolute() and not _is_within(resolved, artifact_root):
+            raise ValueError(
+                "configured model/artifact path must remain under artifact_root"
+            )
+        if candidate.is_absolute():
+            return resolved
+        try:
+            relative = resolved.relative_to(content_root)
+        except ValueError as exc:
+            raise ValueError(
+                "configured model/artifact path must not escape staged content_root"
+            ) from exc
+        if not relative.parts or relative.parts[0] not in {"models", "artifacts"}:
+            raise ValueError("configured model/artifact path is outside staged artifact namespaces")
+        mapped = (artifact_root / relative).resolve()
+        if not _is_within(mapped, artifact_root):
+            raise ValueError(
+                "configured model/artifact path must remain under artifact_root"
+            )
+        return mapped
+    if not _is_within(resolved, content_root):
+        raise ValueError("configured calibration/policy path must remain under content_root")
+    return resolved
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Containment comparison with Windows case-insensitive drive semantics."""
+    try:
+        normalized_path = os.path.normcase(str(path.resolve()))
+        normalized_root = os.path.normcase(str(root.resolve()))
+        return os.path.commonpath((normalized_path, normalized_root)) == normalized_root
+    except ValueError:
+        return False

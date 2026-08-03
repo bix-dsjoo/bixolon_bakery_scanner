@@ -450,6 +450,21 @@ Map<String, Object?> _readyJson() {
       'dinov3_id': 'dinov3_vits16_15plus5_v1',
       'fusion_policy_id': 'fusion_local_or_global_v1',
       'detector_threshold': 0.42,
+      'applied_artifact_hashes': {
+        'detector_checkpoint_sha256': 'a' * 64,
+        'detector_calibration_sha256': 'a' * 64,
+        'detector_manifest_sha256': 'a' * 64,
+        'repvit_checkpoint_sha256': 'a' * 64,
+        'repvit_manifest_sha256': 'a' * 64,
+        'repvit_prototype_sha256': 'a' * 64,
+        'dinov3_weights_sha256': 'a' * 64,
+        'dinov3_support_sha256': 'a' * 64,
+        'dinov3_local_bank_sha256': 'a' * 64,
+        'classifier_calibration_sha256': 'a' * 64,
+        'preprocess_sha256': 'a' * 64,
+        'fusion_policy_sha256': 'a' * 64,
+        'presentation_policy_sha256': 'a' * 64,
+      },
     },
   };
 }
@@ -504,11 +519,14 @@ Map<String, Object?> _resultJson(String requestId) {
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,
+      'crop': 0.0,
       'repvit': 8.0,
       'dinov3': 0.0,
+      'fusion': 0.0,
       'postprocess': 8.0,
       'total': 37.0,
     },
+    'diagnostics': {'object_count': 1, 'dino_object_count': 0},
   };
 }
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
+from bakery_scanner.prototype.camera_runtime import StartupMetrics
 from bakery_scanner.prototype.camera_worker import serve
 
 _POLICY_SHA256 = "a" * 64
@@ -64,8 +65,23 @@ class FakeRuntime:
         return {
             "type": "result",
             "request_id": request_id,
+            "image": {"width": 1, "height": 1},
+            "device": self.device,
             "objects": [],
+            "counts": {},
+            "unknown_count": 0,
             "presentation": self.presentation,
+            "timings_ms": {
+                "decode_preprocess": 0.0,
+                "detector": 0.0,
+                "crop": 0.0,
+                "repvit": 0.0,
+                "dinov3": 0.0,
+                "fusion": 0.0,
+                "postprocess": 0.0,
+                "total": 0.0,
+            },
+            "diagnostics": {"object_count": 0, "dino_object_count": 0},
         }
 
     def close(self) -> None:
@@ -118,6 +134,55 @@ def test_ready_includes_final_runtime_device_and_startup_metrics():
     }
 
 
+def test_ready_serializes_immutable_real_startup_provenance():
+    hashes = {key: "a" * 64 for key in (
+        "detector_checkpoint_sha256", "detector_calibration_sha256", "detector_manifest_sha256",
+        "repvit_checkpoint_sha256", "repvit_manifest_sha256", "repvit_prototype_sha256",
+        "dinov3_weights_sha256", "dinov3_support_sha256", "dinov3_local_bank_sha256",
+        "classifier_calibration_sha256", "preprocess_sha256", "fusion_policy_sha256",
+        "presentation_policy_sha256",
+    )}
+    metrics = StartupMetrics(
+        device="cpu", load_ms=1.0, warmup_ms=1.0, fallback_reason=None,
+        detector_id="detector", repvit_id="repvit", dinov3_id="dino",
+        fusion_policy_id="fusion", detector_threshold=0.5, applied_artifact_hashes=hashes,
+    )
+    runtime = FakeRuntime(startup_metrics=metrics)
+    stdout = io.StringIO()
+    serve(io.StringIO('{"type":"shutdown","request_id":"stop"}\n'), stdout, runtime_factory=lambda _emit: runtime)
+    assert _events(stdout)[2]["startup_metrics"]["applied_artifact_hashes"] == hashes
+
+
+def test_worker_binds_child_code_identity_to_ready_and_stopped_events():
+    stdout = io.StringIO()
+    identity = {"code_commit": "a" * 40, "code_identity_sha256": "b" * 64}
+
+    serve(
+        io.StringIO('{"type":"shutdown","request_id":"stop-attested"}\n'),
+        stdout,
+        runtime_factory=lambda emit: FakeRuntime(device="cuda:0"),
+        code_identity=identity,
+    )
+
+    events = _events(stdout)
+    assert events[2]["code_identity"] == identity
+    assert events[-1] == {
+        "type": "stopped",
+        "request_id": "stop-attested",
+        "code_identity": identity,
+    }
+
+
+def test_worker_rejects_noncanonical_optional_code_identity():
+    with pytest.raises(ValueError, match="code identity"):
+        serve(
+            io.StringIO(),
+            io.StringIO(),
+            runtime_factory=lambda emit: FakeRuntime(),
+            code_identity={"code_commit": "A" * 40, "code_identity_sha256": "b" * 64},
+        )
+
+
 def test_worker_recovers_from_malformed_input_and_handles_following_request():
     stdin = io.StringIO('{"type":"ping","request_id":}\n'
                         '{"type":"ping","request_id":"ping-2"}\n'
@@ -155,9 +220,24 @@ def test_worker_emits_legal_correlated_progress_before_result(tmp_path: Path):
         {
             "type": "result",
             "request_id": "analysis-1",
+            "image": {"width": 1, "height": 1},
+            "device": "cpu",
             "objects": [],
+            "counts": {},
+            "unknown_count": 0,
             "presentation": _normal_presentation(),
-        },
+            "timings_ms": {
+                "decode_preprocess": 0.0,
+                "detector": 0.0,
+                "crop": 0.0,
+                "repvit": 0.0,
+                "dinov3": 0.0,
+                "fusion": 0.0,
+                "postprocess": 0.0,
+                "total": 0.0,
+            },
+            "diagnostics": {"object_count": 0, "dino_object_count": 0},
+            },
     ]
 
 
@@ -330,6 +410,22 @@ def test_cli_rejects_warmup_image_outside_repository_root(tmp_path: Path):
         assert "under the repository root" in str(exc)
     else:
         raise AssertionError("outside warm-up image must be rejected")
+
+
+def test_cli_allows_verified_external_warmup_image_only_when_requested(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"jpeg")
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_external", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.resolve_paths(root, outside, allow_external_warmup=True) == (
+        root.resolve(), outside.resolve()
+    )
 
 
 def test_cli_resolves_bundled_application_and_dinov3_import_roots(

@@ -1206,6 +1206,7 @@ InferenceResult _registeredResult() => InferenceResult.fromJson({
   'unknown_count': 0,
   'presentation': buildPresentationJson(),
   'timings_ms': _timings,
+  'diagnostics': {'object_count': 1, 'dino_object_count': 0},
 });
 
 InferenceResult _emptyResult({String requestId = 'analysis-empty'}) =>
@@ -1224,13 +1225,16 @@ InferenceResult _emptyResult({String requestId = 'analysis-empty'}) =>
         instructionCode: 'no_bread_detected',
       ),
       'timings_ms': _timings,
+      'diagnostics': {'object_count': 0, 'dino_object_count': 0},
     });
 
 const _timings = {
   'decode_preprocess': 1.0,
   'detector': 2.0,
+  'crop': 0.0,
   'repvit': 3.0,
   'dinov3': 0.0,
+  'fusion': 0.0,
   'postprocess': 4.0,
   'total': 10.0,
 };

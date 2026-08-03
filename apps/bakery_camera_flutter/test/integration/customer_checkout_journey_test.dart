@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:drift/drift.dart' show OrderingTerm;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/customer_checkout_journey_fixture.dart';
@@ -75,6 +76,122 @@ void main() {
       expect(await journey.hasVerifiedAuditEvidence(attempt), isTrue);
       expect(journey.customerReturnedToReady, isTrue);
     },
+  );
+
+  test(
+    'controller audits Top3 and catalog choices without changing Unknown inference',
+    () async {
+      await _expectCustomerResolution(
+        choose: (journey) => journey.controller.chooseTop3('object-2', 10),
+        expectedSource: 'customer_top3',
+        expectedCandidateRank: 1,
+      );
+      await _expectCustomerResolution(
+        choose: (journey) =>
+            journey.controller.chooseCatalog('object-2', 'milk-bread'),
+        expectedSource: 'customer_catalog',
+        expectedCandidateRank: null,
+      );
+    },
+  );
+}
+
+Future<void> _expectCustomerResolution({
+  required Future<void> Function(CustomerCheckoutJourneyFixture) choose,
+  required String expectedSource,
+  required int? expectedCandidateRank,
+}) async {
+  final journey = await CustomerCheckoutJourneyFixture.create();
+  try {
+    await journey.controller.initialize();
+    await journey.controller.scan();
+    final before = await _unknownEvidenceSnapshot(journey);
+
+    expect(before.skuId, isNull);
+    expect(before.skuName, 'Unknown');
+    expect(before.decisionPath, 'unknown_top3');
+    expect(before.provenanceJson, isNotEmpty);
+    expect(before.candidates, [
+      (rank: 1, skuId: 10, skuName: 'Sugar Donut', score: 0.88),
+      (rank: 2, skuId: 11, skuName: 'Cream Donut', score: 0.76),
+      (rank: 3, skuId: 12, skuName: 'Glazed Donut', score: 0.62),
+    ]);
+    await choose(journey);
+
+    final resolution = await (journey.database
+          .select(journey.database.objectResolutions)
+        ..where(
+          (row) => row.inferenceObjectId.equals(before.inferenceObjectId),
+        ))
+        .getSingle();
+    expect(resolution.source, expectedSource);
+    expect(resolution.candidateRank, expectedCandidateRank);
+    if (expectedCandidateRank != null) {
+      expect(resolution.candidateRank, inInclusiveRange(1, 3));
+    }
+    final after = await _unknownEvidenceSnapshot(journey);
+    expect(after.inferenceObjectId, before.inferenceObjectId);
+    expect(after.skuId, before.skuId);
+    expect(after.skuName, before.skuName);
+    expect(after.decisionPath, before.decisionPath);
+    expect(after.confidence, before.confidence);
+    expect(after.bboxJson, before.bboxJson);
+    expect(after.detectorSource, before.detectorSource);
+    expect(after.detectorScore, before.detectorScore);
+    expect(after.provenanceJson, before.provenanceJson);
+    expect(after.unknownReason, before.unknownReason);
+    expect(after.candidates, before.candidates);
+  } finally {
+    await journey.dispose();
+  }
+}
+
+Future<
+  ({
+    String inferenceObjectId,
+    int? skuId,
+    String skuName,
+    String decisionPath,
+    double confidence,
+    String bboxJson,
+    String detectorSource,
+    double detectorScore,
+    String provenanceJson,
+    String? unknownReason,
+    List<({int rank, int skuId, String skuName, double score})> candidates,
+  })
+> _unknownEvidenceSnapshot(CustomerCheckoutJourneyFixture journey) async {
+  final unknown = await (journey.database
+        .select(journey.database.inferenceObjects)
+        ..where((row) => row.objectId.equals('object-2')))
+      .getSingle();
+  final candidates = await (journey.database
+        .select(journey.database.inferenceCandidates)
+      ..where(
+        (row) => row.inferenceObjectId.equals(unknown.inferenceObjectId),
+      )
+      ..orderBy([(row) => OrderingTerm.asc(row.rank)]))
+      .get();
+  return (
+    inferenceObjectId: unknown.inferenceObjectId,
+    skuId: unknown.skuId,
+    skuName: unknown.skuName,
+    decisionPath: unknown.decisionPath,
+    confidence: unknown.confidence,
+    bboxJson: unknown.bboxJson,
+    detectorSource: unknown.detectorSource,
+    detectorScore: unknown.detectorScore,
+    provenanceJson: unknown.provenanceJson,
+    unknownReason: unknown.unknownReason,
+    candidates: [
+      for (final candidate in candidates)
+        (
+          rank: candidate.rank,
+          skuId: candidate.skuId,
+          skuName: candidate.skuName,
+          score: candidate.score,
+        ),
+    ],
   );
 }
 

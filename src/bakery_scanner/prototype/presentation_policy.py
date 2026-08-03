@@ -8,17 +8,23 @@ import math
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 
-_POLICY_FIELDS = {
+_V1_POLICY_FIELDS = {
     "box_overlap_iou",
     "candidate_top12_min_margin",
     "candidate_top1_min_score",
     "policy_id",
     "schema_version",
 }
-_POLICY_ID = "camera_action_state_v1"
+_V2_POLICY_FIELDS = {
+    "box_overlap_iou",
+    "policy_id",
+    "schema_version",
+}
+_V1_POLICY_ID = "camera_action_state_v1"
+_V2_POLICY_ID = "camera_action_state_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,8 +56,9 @@ class PresentationDecision:
 @dataclass(frozen=True, slots=True)
 class PresentationPolicy:
     box_overlap_iou: float
-    candidate_top12_min_margin: float
-    candidate_top1_min_score: float
+    candidate_top12_min_margin: float | None
+    candidate_top1_min_score: float | None
+    schema_version: Literal[1, 2]
     policy_id: str
     policy_sha256: str
 
@@ -68,25 +75,42 @@ class PresentationPolicy:
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError(f"presentation policy is invalid: {policy_path}") from exc
-        if not isinstance(payload, dict) or set(payload) != _POLICY_FIELDS:
+        if not isinstance(payload, dict):
             raise ValueError("presentation policy schema is invalid")
-        if payload["schema_version"] != 1 or isinstance(payload["schema_version"], bool):
+        schema_version = payload.get("schema_version")
+        if isinstance(schema_version, bool) or schema_version not in (1, 2):
             raise ValueError("presentation policy schema_version is invalid")
-        if payload["policy_id"] != _POLICY_ID:
-            raise ValueError("presentation policy ID is invalid")
-
-        values = {
-            field: _policy_probability(payload[field], field)
-            for field in (
-                "box_overlap_iou",
+        if schema_version == 1:
+            if set(payload) != _V1_POLICY_FIELDS:
+                raise ValueError("presentation policy schema is invalid")
+            if payload["policy_id"] != _V1_POLICY_ID:
+                raise ValueError("presentation policy ID is invalid")
+            candidate_top12_min_margin = _policy_probability(
+                payload["candidate_top12_min_margin"],
                 "candidate_top12_min_margin",
+            )
+            candidate_top1_min_score = _policy_probability(
+                payload["candidate_top1_min_score"],
                 "candidate_top1_min_score",
             )
-        }
+            policy_id = _V1_POLICY_ID
+        else:
+            if set(payload) != _V2_POLICY_FIELDS:
+                raise ValueError("presentation policy schema is invalid")
+            if payload["policy_id"] != _V2_POLICY_ID:
+                raise ValueError("presentation policy ID is invalid")
+            candidate_top12_min_margin = None
+            candidate_top1_min_score = None
+            policy_id = _V2_POLICY_ID
         return cls(
-            policy_id=_POLICY_ID,
+            box_overlap_iou=_policy_probability(
+                payload["box_overlap_iou"], "box_overlap_iou"
+            ),
+            candidate_top12_min_margin=candidate_top12_min_margin,
+            candidate_top1_min_score=candidate_top1_min_score,
+            schema_version=schema_version,
+            policy_id=policy_id,
             policy_sha256=hashlib.sha256(payload_bytes).hexdigest(),
-            **values,
         )
 
     def evaluate(
@@ -105,12 +129,18 @@ class PresentationPolicy:
             normalized_proposals, self.box_overlap_iou
         ):
             return self._object_retake("separate_breads", object_ids)
-        if object_ids := _weak_unknown_ids(
-            normalized_decisions,
-            self.candidate_top1_min_score,
-            self.candidate_top12_min_margin,
-        ):
-            return self._object_retake("candidate_evidence_weak", object_ids)
+        if self.schema_version == 1:
+            if (
+                self.candidate_top1_min_score is None
+                or self.candidate_top12_min_margin is None
+            ):
+                raise ValueError("v1 presentation policy thresholds are missing")
+            if object_ids := _weak_unknown_ids(
+                normalized_decisions,
+                self.candidate_top1_min_score,
+                self.candidate_top12_min_margin,
+            ):
+                return self._object_retake("candidate_evidence_weak", object_ids)
         if object_ids := _unknown_ids(normalized_decisions):
             return self._unknown(object_ids)
         return self._normal()
