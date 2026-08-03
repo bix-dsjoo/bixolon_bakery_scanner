@@ -17,6 +17,7 @@ from bakery_scanner.experiments.rpc_manifest import (
     RpcImage,
     RpcIndex,
     RpcObject,
+    write_new_json,
 )
 from bakery_scanner.experiments.rpc_research_worker import (
     OracleFeatureRow,
@@ -186,9 +187,11 @@ def test_extract_has_no_caller_controlled_output_root(
 def _support_row(
     source_identity: str,
     category_id: int,
-    dino_global: tuple[float, ...],
+    dino_global: tuple[float, float],
     capture_stratum: str,
 ) -> OracleFeatureRow:
+    vector = [0.0] * 384
+    vector[:2] = dino_global
     return OracleFeatureRow(
         source_identity,
         annotation_id=category_id * 100 + len(source_identity),
@@ -197,7 +200,7 @@ def _support_row(
         difficulty="E",
         source_byte_size=123,
         source_sha256=hashlib.sha256(source_identity.encode("utf-8")).hexdigest(),
-        dino_global=dino_global,
+        dino_global=tuple(vector),
         capture_stratum=capture_stratum,
         feature_array_sha256="f" * 64,
     )
@@ -250,4 +253,133 @@ def test_support_bank_rejects_duplicate_sources_and_classes_without_full_prefixe
             selector="rnd",
             seed=101,
             maximum_shots=2,
+        )
+
+
+def _task1_feature_manifest(tmp_path: Path) -> Path:
+    """Build a canonical Task 1-shaped cache without adding generated payloads to Git."""
+    feature_root = tmp_path / "features"
+    feature_root.mkdir()
+    names = (
+        "roll_camera1-top.jpg",
+        "roll_camera2-top.jpg",
+        "roll_camera1-bottom.jpg",
+        "roll_camera2-bottom.jpg",
+    )
+    globals_array = np.zeros((4, 384), dtype=np.float16)
+    globals_array[:, 0] = (1.0, 0.0, -1.0, 0.5)
+    globals_array[:, 1] = (0.0, 1.0, 0.0, 0.5)
+    array_path = feature_root / "dinov3_global.float16.npy"
+    np.save(array_path, globals_array)
+    array_bytes = array_path.read_bytes()
+    rows = [
+        {
+            "identity": f"train2019:{index + 1}:{name}:{100 + index}",
+            "source_identity": f"train2019:{index + 1}:{name}",
+            "annotation_id": 100 + index,
+            "category_id": 7,
+            "bbox_xywh": [1.0, 2.0, 3.0, 4.0],
+            "difficulty": "E",
+        }
+        for index, name in enumerate(names)
+    ]
+    manifest = {
+        "schema_version": 1,
+        "kind": "rpc-research-oracle-features",
+        "canonical_frame": "exif_visual_rgb_v1",
+        "feature_dtype": "float16",
+        "execution": {"device": "cpu", "determinism": "cpu-float32-inference-mode-model-eval-v1"},
+        "preprocessing": {},
+        "code_sha256": "a" * 64,
+        "runtime": {},
+        "artifacts": {},
+        "arrays": {
+            "repvit_global": {"file": "repvit_global.float16.npy", "byte_size": 1, "sha256": "b" * 64, "shape": [4, 384]},
+            "dinov3_global": {
+                "file": array_path.name,
+                "byte_size": len(array_bytes),
+                "sha256": hashlib.sha256(array_bytes).hexdigest(),
+                "shape": [4, 384],
+            },
+            "dinov3_patches": {"file": "dinov3_patches.float16.npy", "byte_size": 1, "sha256": "c" * 64, "shape": [4, 196, 384]},
+        },
+        "images": [
+            {
+                "source_identity": row["source_identity"],
+                "source_byte_size": 100 + index,
+                "source_sha256": hashlib.sha256(row["source_identity"].encode()).hexdigest(),
+            }
+            for index, row in enumerate(rows)
+        ],
+        "rows": rows,
+    }
+    manifest_path = feature_root / "manifest.json"
+    write_new_json(manifest_path, manifest)
+    return manifest_path
+
+
+def test_support_bank_consumes_verified_task1_dino_global_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """An ad-hoc row payload cannot replace the hash-verified Task 1 feature cache."""
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path)
+    manifest_path = _task1_feature_manifest(tmp_path)
+
+    bank = worker.materialize_support_bank_from_feature_manifest(
+        manifest_path, selector="rnd", seed=101, maximum_shots=2
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert bank.feature_array_sha256 == manifest["arrays"]["dinov3_global"]["sha256"]
+    assert bank.prefix(1)[0].source_sha256 == manifest["images"][0]["source_sha256"]
+    with (manifest_path.parent / "dinov3_global.float16.npy").open("ab") as handle:
+        handle.write(b"forged")
+    with pytest.raises(ValueError, match="DINO global feature array SHA-256 mismatch"):
+        worker.materialize_support_bank_from_feature_manifest(
+            manifest_path, selector="rnd", seed=101, maximum_shots=2
+        )
+
+
+def test_support_prefixes_are_globally_nested_for_multiple_classes():
+    """A class-grouped flattening would make one-shot output differ from a larger prefix."""
+    rows = (
+        _support_row("seven-a.jpg", 7, (1.0, 0.0), "camera-a"),
+        _support_row("seven-b.jpg", 7, (0.0, 1.0), "camera-b"),
+        _support_row("eight-a.jpg", 8, (1.0, 0.0), "camera-a"),
+        _support_row("eight-b.jpg", 8, (0.0, 1.0), "camera-b"),
+    )
+    bank = worker.materialize_support_bank(rows, selector="rnd", seed=101, maximum_shots=2)
+
+    assert bank.prefix(1) == bank.prefix(2)[:2]
+
+
+def test_diverse_multi_seed_banks_are_distinct_or_rejected():
+    """Seeds that only change metadata must not masquerade as independent DIV draws."""
+    rows = tuple(
+        _support_row(f"same-stratum-{index}.jpg", 7, (1.0, 0.0), "camera-a")
+        for index in range(8)
+    )
+
+    banks = worker.materialize_support_banks(rows, selector="div", seeds=(5, 10), maximum_shots=3)
+
+    assert banks[0].ordered_support_identities != banks[1].ordered_support_identities
+    with pytest.raises(ValueError, match="same ordered support draw"):
+        worker.materialize_support_banks(
+            (_support_row("only.jpg", 7, (1.0, 0.0), "camera-a"),),
+            selector="div",
+            seeds=(5, 10),
+            maximum_shots=1,
+        )
+
+
+def test_support_selection_rejects_non_384_dino_global_vectors():
+    """Allowing any feature width would decouple support selection from Task 1 DINO globals."""
+    with pytest.raises(ValueError, match="DINO global feature must have dimension 384"):
+        OracleFeatureRow(
+            "wrong-width.jpg", 11, 7, (1.0, 2.0, 3.0, 4.0), "E",
+            source_byte_size=123,
+            source_sha256="a" * 64,
+            dino_global=tuple([1.0] * 383),
+            capture_stratum="camera-a",
+            feature_array_sha256="f" * 64,
         )

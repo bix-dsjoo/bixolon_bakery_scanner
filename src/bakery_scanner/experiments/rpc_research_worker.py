@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import platform
@@ -35,6 +36,9 @@ _DINO_PATCH_COUNT = 196
 _CANONICAL_FRAME = "exif_visual_rgb_v1"
 _RESEARCH_RUNS_ROOT = Path(r"C:\workspace\rpc_fewshot_runs")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_TRAIN_CAPTURE_SOURCE = re.compile(
+    r"^train2019:[1-9][0-9]*:(?P<product>.+)_camera(?P<camera>[0-9]+)-(?P<side>[^_]+)\.jpg$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,10 +118,11 @@ class OracleFeatureRow:
             values = tuple(self.dino_global)
             if (
                 not values
+                or len(values) != _FEATURE_DIMENSION
                 or any(isinstance(value, bool) or not isinstance(value, Real) for value in values)
                 or not all(math.isfinite(float(value)) for value in values)
             ):
-                raise ValueError("DINO global feature must be a finite numeric vector")
+                raise ValueError("DINO global feature must have dimension 384 and finite numeric values")
             object.__setattr__(self, "dino_global", tuple(float(value) for value in values))
 
     @property
@@ -198,7 +203,11 @@ class SupportBank:
             raise ValueError("shot count must be positive")
         if shot_count > self.maximum_shots:
             raise ValueError("non-prefix support extension is not allowed")
-        return tuple(example for order in self.class_orders for example in order[:shot_count])
+        return tuple(
+            order[rank]
+            for rank in range(shot_count)
+            for order in self.class_orders
+        )
 
 
 def materialize_support_bank(
@@ -249,6 +258,159 @@ def materialize_support_bank(
     )
 
 
+def materialize_support_banks(
+    rows: Sequence[OracleFeatureRow], *, selector: str, seeds: Sequence[int], maximum_shots: int
+) -> tuple[SupportBank, ...]:
+    """Materialize independent declared seed draws and reject duplicate DIV evidence."""
+    frozen_seeds = tuple(seeds)
+    if not frozen_seeds or len(frozen_seeds) != len(set(frozen_seeds)) or any(
+        type(seed) is not int for seed in frozen_seeds
+    ):
+        raise ValueError("support seeds must be distinct integers")
+    banks = tuple(
+        materialize_support_bank(rows, selector=selector, seed=seed, maximum_shots=maximum_shots)
+        for seed in frozen_seeds
+    )
+    if selector == "div":
+        observed: set[tuple[tuple[int, tuple[str, ...]], ...]] = set()
+        for bank in banks:
+            order = bank.ordered_support_identities
+            if order in observed:
+                raise ValueError("distinct DIV seeds produced the same ordered support draw")
+            observed.add(order)
+    return banks
+
+
+def materialize_support_bank_from_feature_manifest(
+    feature_manifest_path: Path, *, selector: str, seed: int, maximum_shots: int
+) -> SupportBank:
+    """Build a bank only from a canonical, hash-verified Task 1 feature cache."""
+    manifest_path = Path(feature_manifest_path).resolve()
+    root = _RESEARCH_RUNS_ROOT.resolve()
+    if not manifest_path.is_relative_to(root):
+        raise ValueError(f"feature manifest must be under {root}")
+    try:
+        content = manifest_path.read_bytes()
+        manifest = json.loads(content.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot read Task 1 feature manifest") from exc
+    if not isinstance(manifest, dict) or canonical_json_bytes(manifest) != content:
+        raise ValueError("Task 1 feature manifest is not canonical")
+    if (
+        manifest.get("schema_version") != 1
+        or manifest.get("kind") != "rpc-research-oracle-features"
+        or manifest.get("canonical_frame") != _CANONICAL_FRAME
+        or manifest.get("feature_dtype") != "float16"
+    ):
+        raise ValueError("invalid Task 1 feature manifest")
+    raw_rows = manifest.get("rows")
+    raw_images = manifest.get("images")
+    arrays = manifest.get("arrays")
+    if not isinstance(raw_rows, list) or not raw_rows or not isinstance(raw_images, list) or not isinstance(arrays, dict):
+        raise ValueError("invalid Task 1 feature manifest")
+    dino_entry = arrays.get("dinov3_global")
+    if not isinstance(dino_entry, dict) or set(dino_entry) != {"file", "byte_size", "sha256", "shape"}:
+        raise ValueError("invalid Task 1 DINO global array manifest")
+    file_name, byte_size, array_digest, shape = (
+        dino_entry["file"], dino_entry["byte_size"], dino_entry["sha256"], dino_entry["shape"]
+    )
+    if (
+        file_name != "dinov3_global.float16.npy"
+        or type(byte_size) is not int
+        or byte_size <= 0
+        or not isinstance(array_digest, str)
+        or _SHA256.fullmatch(array_digest) is None
+        or shape != [len(raw_rows), _FEATURE_DIMENSION]
+    ):
+        raise ValueError("invalid Task 1 DINO global array manifest")
+    array_path = (manifest_path.parent / file_name).resolve()
+    if not array_path.is_relative_to(manifest_path.parent):
+        raise ValueError("Task 1 DINO global array escapes feature manifest directory")
+    if not array_path.is_file():
+        raise ValueError("Task 1 DINO global feature array changed")
+    if _sha256_file(array_path) != array_digest:
+        raise ValueError("DINO global feature array SHA-256 mismatch")
+    if array_path.stat().st_size != byte_size:
+        raise ValueError("Task 1 DINO global feature array byte size mismatch")
+    try:
+        dino_globals = np.load(array_path, allow_pickle=False)
+    except (OSError, ValueError) as exc:
+        raise ValueError("cannot load Task 1 DINO global feature array") from exc
+    if (
+        not isinstance(dino_globals, np.ndarray)
+        or dino_globals.dtype != np.float16
+        or dino_globals.shape != (len(raw_rows), _FEATURE_DIMENSION)
+        or not np.isfinite(dino_globals).all()
+    ):
+        raise ValueError("invalid Task 1 DINO global feature array")
+    images = _task1_images_by_identity(raw_images)
+    rows = tuple(
+        _support_row_from_task1_manifest(raw, images, dino_globals[index], array_digest)
+        for index, raw in enumerate(raw_rows)
+    )
+    return materialize_support_bank(rows, selector=selector, seed=seed, maximum_shots=maximum_shots)
+
+
+def _task1_images_by_identity(raw_images: list[object]) -> dict[str, tuple[int, str]]:
+    images: dict[str, tuple[int, str]] = {}
+    for raw in raw_images:
+        if not isinstance(raw, dict) or set(raw) != {"source_identity", "source_byte_size", "source_sha256"}:
+            raise ValueError("invalid Task 1 source manifest")
+        identity, byte_size, digest = raw.get("source_identity"), raw.get("source_byte_size"), raw.get("source_sha256")
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or type(byte_size) is not int
+            or byte_size <= 0
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or identity in images
+        ):
+            raise ValueError("invalid Task 1 source manifest")
+        images[identity] = (byte_size, digest)
+    return images
+
+
+def _support_row_from_task1_manifest(
+    raw: object,
+    images: Mapping[str, tuple[int, str]],
+    dino_global: np.ndarray,
+    feature_array_sha256: str,
+) -> OracleFeatureRow:
+    if not isinstance(raw, dict) or set(raw) != {
+        "identity", "source_identity", "annotation_id", "category_id", "bbox_xywh", "difficulty"
+    }:
+        raise ValueError("invalid Task 1 feature row")
+    identity = raw.get("source_identity")
+    annotation_id, category_id, bbox, difficulty = (
+        raw.get("annotation_id"), raw.get("category_id"), raw.get("bbox_xywh"), raw.get("difficulty")
+    )
+    if (
+        not isinstance(identity, str)
+        or raw.get("identity") != f"{identity}:{annotation_id}"
+        or identity not in images
+        or not isinstance(bbox, list)
+    ):
+        raise ValueError("invalid Task 1 feature row")
+    match = _TRAIN_CAPTURE_SOURCE.fullmatch(identity)
+    if match is None:
+        raise ValueError("Task 1 support rows must be train2019 capture sources")
+    source_byte_size, source_sha256 = images[identity]
+    capture_stratum = f"{match['product']}:camera{match['camera']}-{match['side']}"
+    return OracleFeatureRow(
+        identity,
+        annotation_id,  # type: ignore[arg-type]
+        category_id,  # type: ignore[arg-type]
+        tuple(bbox),  # type: ignore[arg-type]
+        difficulty,  # type: ignore[arg-type]
+        source_byte_size=source_byte_size,
+        source_sha256=source_sha256,
+        dino_global=tuple(float(value) for value in dino_global),
+        capture_stratum=capture_stratum,
+        feature_array_sha256=feature_array_sha256,
+    )
+
+
 def _support_example(row: OracleFeatureRow) -> SupportExample:
     if (
         row.source_byte_size is None
@@ -281,7 +443,12 @@ def _diverse_support_order(
     )
     first = min(
         candidates,
-        key=lambda item: (_vector_distance(normalized[item.source_identity], centroid), item.source_sha256, item.source_identity),
+        key=lambda item: (
+            _vector_distance(normalized[item.source_identity], centroid),
+            _seeded_digest(seed, item.source_identity),
+            item.source_sha256,
+            item.source_identity,
+        ),
     )
     selected = [first]
     remaining = {candidate.source_identity: candidate for candidate in candidates if candidate != first}
@@ -303,6 +470,7 @@ def _diverse_support_order(
                     _vector_distance(normalized[item.source_identity], normalized[chosen.source_identity])
                     for chosen in selected
                 ),
+                _seeded_digest(seed, item.source_identity),
                 item.source_sha256,
                 item.source_identity,
             ),
