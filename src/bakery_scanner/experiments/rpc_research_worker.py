@@ -88,8 +88,6 @@ def extract_oracle_features(
     index: RpcIndex,
     artifacts: ResearchArtifacts,
     output: Path,
-    *,
-    allowed_output_root: Path | None = None,
 ) -> Path:
     """Materialize no-replace float16 oracle features and their canonical manifest.
 
@@ -101,7 +99,7 @@ def extract_oracle_features(
         raise ValueError("index must be an RpcIndex")
     if not isinstance(artifacts, ResearchArtifacts):
         raise ValueError("artifacts must be ResearchArtifacts")
-    root = Path(allowed_output_root or _RESEARCH_RUNS_ROOT).resolve()
+    root = _RESEARCH_RUNS_ROOT.resolve()
     destination = Path(output).resolve()
     if not destination.is_relative_to(root):
         raise ValueError(f"output must be under {root}")

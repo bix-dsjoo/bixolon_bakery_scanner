@@ -90,11 +90,10 @@ def test_extract_oracle_features_records_two_globals_and_196_patches(
     """Removing a global branch or any patch row leaves an incomplete research cache."""
     monkeypatch.setattr(worker, "_load_feature_models", lambda _artifacts: (_RepVitFeatureFixture(), _DinoFeatureFixture()))
     artifacts = _fixture_artifacts(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path)
     output = tmp_path / "features"
 
-    manifest_path = extract_oracle_features(
-        _one_image_index(tmp_path), artifacts, output, allowed_output_root=tmp_path
-    )
+    manifest_path = extract_oracle_features(_one_image_index(tmp_path), artifacts, output)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["rows"] == [{
@@ -121,9 +120,7 @@ def test_extract_oracle_features_records_two_globals_and_196_patches(
     assert len(manifest["code_sha256"]) == 64
     assert manifest["runtime"]["torch"] == torch.__version__
     with pytest.raises(FileExistsError):
-        extract_oracle_features(
-            _one_image_index(tmp_path), artifacts, output, allowed_output_root=tmp_path
-        )
+        extract_oracle_features(_one_image_index(tmp_path), artifacts, output)
 
 
 def test_extract_revalidates_artifacts_before_loading_models(
@@ -133,11 +130,10 @@ def test_extract_revalidates_artifacts_before_loading_models(
     artifacts = _fixture_artifacts(tmp_path, monkeypatch)
     artifacts.repvit_path.write_bytes(b"substituted")
     monkeypatch.setattr(worker, "_load_feature_models", lambda _artifacts: pytest.fail("loaded stale model"))
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path)
 
     with pytest.raises(ValueError, match="RepViT SHA-256 mismatch"):
-        extract_oracle_features(
-            _one_image_index(tmp_path), artifacts, tmp_path / "features", allowed_output_root=tmp_path
-        )
+        extract_oracle_features(_one_image_index(tmp_path), artifacts, tmp_path / "features")
 
 
 def test_canonical_oracle_crop_transforms_orientation_six_bbox(tmp_path: Path):
@@ -168,8 +164,20 @@ def test_extract_rejects_output_outside_research_runs_root(
 ):
     """The producer itself prevents a caller from writing generated payloads into Git."""
     artifacts = _fixture_artifacts(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path / "allowed")
 
     with pytest.raises(ValueError, match="output must be under"):
+        extract_oracle_features(_one_image_index(tmp_path), artifacts, tmp_path / "outside")
+
+
+def test_extract_has_no_caller_controlled_output_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A caller cannot bypass the external-research storage boundary with a keyword."""
+    artifacts = _fixture_artifacts(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker, "_load_feature_models", lambda _artifacts: (_RepVitFeatureFixture(), _DinoFeatureFixture()))
+
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
         extract_oracle_features(
-            _one_image_index(tmp_path), artifacts, tmp_path / "outside", allowed_output_root=tmp_path / "allowed"
+            _one_image_index(tmp_path), artifacts, tmp_path / "features", allowed_output_root=tmp_path
         )
