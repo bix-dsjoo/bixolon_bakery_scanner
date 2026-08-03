@@ -1102,14 +1102,6 @@ double _finite(Object? value, String name) {
   return value.toDouble();
 }
 
-double _positiveFinite(Object? value, String name) {
-  final parsed = _finite(value, name);
-  if (parsed <= 0) {
-    throw FormatException('$name must be positive');
-  }
-  return parsed;
-}
-
 double _nonNegativeFinite(Object? value, String name) {
   final parsed = _finite(value, name);
   if (parsed < 0) {
