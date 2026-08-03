@@ -27,6 +27,7 @@ from bakery_scanner.classification.risk_calibrator import RiskCalibrator
 from bakery_scanner.classification.runtime import (
     ClassifierPipeline,
     CudaTimingCollector,
+    TightContextRepVitEvidence,
     SerialStageTimings,
 )
 from bakery_scanner.contracts import Box
@@ -396,6 +397,145 @@ def test_infer_many_batches_repvit_and_only_rechecks_direct_rejections():
     assert dino.received_object_count == 2
     assert result.dino_object_count == 2
     assert result.timings.total_ms >= result.timings.crop_ms + result.timings.repvit_ms
+
+
+class StaticPairRunner(RecordingRunner):
+    def __init__(self, evidence: tuple[TightContextRepVitEvidence, ...], *, fail_chunk: int | None = None) -> None:
+        super().__init__(evidence[0].scores)
+        self.evidence = evidence
+        self.fail_chunk = fail_chunk
+        self.chunks: list[tuple[tuple[Image.Image, ...], tuple[bool, ...]]] = []
+        self.cursor = 0
+
+    def score_tight_context_chunk(self, rows, *, valid_mask):
+        self.chunks.append((tuple(rows), tuple(valid_mask)))
+        if self.fail_chunk == len(self.chunks):
+            raise RuntimeError("repvit static chunk failed")
+        valid_objects = sum(valid_mask) // 2
+        selected = self.evidence[self.cursor : self.cursor + valid_objects]
+        self.cursor += valid_objects
+        return selected
+
+
+class StaticContextDino(FullEvidenceDino):
+    def __init__(self, evidence: tuple[DinoGlobalLocalEvidence, ...], *, fail_chunk: int | None = None) -> None:
+        super().__init__(evidence[0].global_scores)
+        self.evidence = evidence
+        self.fail_chunk = fail_chunk
+        self.chunks = []
+        self.cursor = 0
+
+    def score_context_chunk_global_and_local_evidence(
+        self, crops, product_boxes, local_bank, *, repvit_scores, valid_mask
+    ):
+        self.chunks.append((tuple(crops), tuple(product_boxes), tuple(valid_mask), tuple(repvit_scores)))
+        if self.fail_chunk == len(self.chunks):
+            raise RuntimeError("dino static chunk failed")
+        valid_objects = sum(valid_mask)
+        selected = self.evidence[self.cursor : self.cursor + valid_objects]
+        self.cursor += valid_objects
+        return selected
+
+
+def _paired_evidence(
+    aggregate: ModelScoreVector,
+    tight: ModelScoreVector | None = None,
+    context: ModelScoreVector | None = None,
+) -> TightContextRepVitEvidence:
+    return TightContextRepVitEvidence(
+        scores=aggregate,
+        tight_scores=tight or aggregate,
+        context_scores=context or aggregate,
+        feature=torch.ones(384),
+        crop_disagreement=0.01,
+    )
+
+
+def test_direct_gate_rejects_tight_context_top1_disagreement():
+    aggregate = _repvit_scores({6: 0.80, 5: 0.20})
+    repvit = StaticPairRunner((
+        _paired_evidence(
+            aggregate,
+            tight=_repvit_scores({6: 0.80, 5: 0.20}),
+            context=_repvit_scores({5: 0.80, 6: 0.20}),
+        ),
+    ))
+    dino = StaticContextDino((
+        DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5),
+    ))
+    pipeline = _pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=object())
+
+    result = pipeline.infer_many(
+        _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+    )
+
+    assert result.dino_object_count == 1
+    assert result.decisions[0].decision_path is not DecisionPath.REPVIT_DIRECT
+    assert repvit.chunks[0][1] == (True, True) + (False,) * 12
+    assert dino.chunks[0][2] == (True,) + (False,) * 6
+    assert dino.chunks[0][0][0].size == (44, 22)
+
+
+def test_static_repvit_chunks_eight_objects_as_ordered_pairs_and_restores_order():
+    boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
+    evidence = tuple(_paired_evidence(_repvit_scores({sku_id: 0.80, 20 if sku_id != 20 else 19: 0.20})) for sku_id in range(1, 9))
+    repvit = StaticPairRunner(evidence)
+    pipeline = _pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must stay lazy"))
+
+    result = pipeline.infer_many(
+        _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+    )
+
+    assert [decision.box for decision in result.decisions] == list(boxes)
+    assert len(repvit.chunks) == 2
+    assert all(len(rows) == 14 and len(mask) == 14 for rows, mask in repvit.chunks)
+    assert repvit.chunks[0][1] == (True,) * 14
+    assert repvit.chunks[1][1] == (True, True) + (False,) * 12
+    assert [crop.size for crop in repvit.chunks[0][0][:4]] == [(8, 10), (10, 12), (8, 10), (10, 12)]
+
+
+def test_static_dino_receives_only_rejected_context_crops_in_seven_object_chunks():
+    boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
+    rejected = tuple(_paired_evidence(_repvit_scores({6: 0.50, 5: 0.30})) for _ in boxes)
+    dino_rows = tuple(DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5) for _ in boxes)
+    repvit = StaticPairRunner(rejected)
+    dino = StaticContextDino(dino_rows)
+    pipeline = _pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=object())
+
+    result = pipeline.infer_many(
+        _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+    )
+
+    assert len(result.decisions) == 8
+    assert result.dino_object_count == 8
+    assert len(dino.chunks) == 2
+    assert dino.chunks[0][2] == (True,) * 7
+    assert dino.chunks[1][2] == (True,) + (False,) * 6
+    assert all(crop.size == (10, 12) for crop in dino.chunks[0][0])
+
+
+def test_static_chunk_failure_aborts_whole_operation_without_partial_decisions():
+    boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
+    evidence = tuple(_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})) for _ in boxes)
+    repvit = StaticPairRunner(evidence, fail_chunk=2)
+
+    with pytest.raises(RuntimeError, match="static chunk failed"):
+        _pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load")).infer_many(
+            _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+
+def test_static_batch_contract_accepts_one_two_and_more_than_seven_objects():
+    for count in (1, 2, 8):
+        boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(count))
+        evidence = tuple(_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})) for _ in boxes)
+        result = _pipeline(
+            repvit=StaticPairRunner(evidence),
+            dino_loader=lambda: pytest.fail("DINO must stay lazy"),
+        ).infer_many(
+            _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+        assert len(result.decisions) == count
 
 
 def test_batch_shared_cuda_timing_never_synchronizes_the_host_clock():

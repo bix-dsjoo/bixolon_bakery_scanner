@@ -22,6 +22,7 @@ from .contracts import (
     ClassificationDecision,
     DecisionPath,
     ModelProvenance,
+    ModelScoreVector,
     SkuCandidate,
     StageTimings,
 )
@@ -31,7 +32,7 @@ from .full_evidence import FullEvidenceRow
 from .fusion_policy import FusionPolicyArtifact
 from .local_bank import LocalPatchBank
 from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
-from .preprocess import make_padded_crops_with_product_boxes
+from .preprocess import build_crop_pair, make_padded_crops_with_product_boxes
 from .repvit import RepVitM1Runner, RepVitPrototypeBank
 
 
@@ -207,6 +208,27 @@ class BatchInferenceResult:
             raise ValueError("batch decisions must contain ClassificationDecision values")
         if type(self.dino_object_count) is not int or not 0 <= self.dino_object_count <= len(self.decisions):
             raise ValueError("dino_object_count must be within the decision count")
+
+
+@dataclass(frozen=True, slots=True)
+class TightContextRepVitEvidence:
+    """Pair-aware RepViT evidence required by the static 15+5 direct gate."""
+
+    scores: ModelScoreVector
+    tight_scores: ModelScoreVector
+    context_scores: ModelScoreVector
+    feature: torch.Tensor
+    crop_disagreement: float
+
+    def __post_init__(self) -> None:
+        if self.scores.sku_ids != self.tight_scores.sku_ids or self.scores.sku_ids != self.context_scores.sku_ids:
+            raise ValueError("tight/context RepViT class order must align")
+        if any(scores.model_id != "repvit_m1_15plus5_v1" or scores.score_kind != "probability" for scores in (self.scores, self.tight_scores, self.context_scores)):
+            raise ValueError("tight/context evidence must use canonical RepViT probabilities")
+        if tuple(self.feature.shape) != (384,) or not torch.isfinite(self.feature).all().item():
+            raise ValueError("tight/context RepViT feature must have shape (384,)")
+        if not math.isfinite(self.crop_disagreement) or self.crop_disagreement < 0.0:
+            raise ValueError("tight/context crop disagreement must be finite and non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,11 +593,23 @@ class ClassifierPipeline:
         image: Image.Image | CanonicalImage,
         boxes: Sequence[Box],
         *,
-        repvit_max_objects: int,
-        dino_max_objects: int,
+        repvit_max_objects: int | None = None,
+        dino_max_objects: int | None = None,
+        repvit_rows_per_invocation: int | None = None,
+        dino_objects_per_invocation: int | None = None,
         cuda_timing: CudaTimingCollector | None = None,
     ) -> BatchInferenceResult:
         """Classify ordered detector boxes with shared batch evidence extraction."""
+        if repvit_rows_per_invocation is not None or dino_objects_per_invocation is not None:
+            if repvit_max_objects is not None or dino_max_objects is not None:
+                raise ValueError("legacy and static classifier batch contracts cannot be mixed")
+            return self._infer_many_tight_context(
+                image,
+                boxes,
+                repvit_rows_per_invocation=repvit_rows_per_invocation,
+                dino_objects_per_invocation=dino_objects_per_invocation,
+                cuda_timing=cuda_timing,
+            )
         total_started = self._host_now()
         owns_cuda_timing = False
         frame = _canonical_frame(image)
@@ -739,6 +773,222 @@ class ClassifierPipeline:
             ),
             len(recheck_indexes),
         )
+
+    def _infer_many_tight_context(
+        self,
+        image: Image.Image | CanonicalImage,
+        boxes: Sequence[Box],
+        *,
+        repvit_rows_per_invocation: int | None,
+        dino_objects_per_invocation: int | None,
+        cuda_timing: CudaTimingCollector | None,
+    ) -> BatchInferenceResult:
+        """Run the isolated Task 5 static tight/context evidence contract."""
+        if repvit_rows_per_invocation != 14:
+            raise ValueError("repvit_rows_per_invocation must be the static value 14")
+        if dino_objects_per_invocation != 7:
+            raise ValueError("dino_objects_per_invocation must be the static value 7")
+        total_started = self._host_now()
+        owns_cuda_timing = False
+        frame = _canonical_frame(image)
+        ordered_boxes = tuple(boxes)
+        for box in ordered_boxes:
+            _validate_visual_box(frame, box)
+        if not ordered_boxes:
+            total_finished = self._host_now()
+            return BatchInferenceResult(
+                (),
+                BatchStageTimings(0.0, 0.0, 0.0, 0.0, _milliseconds(total_started, total_finished)),
+                0,
+            )
+        if self.config.runtime.device == "CUDA:0" and torch.cuda.is_available() and cuda_timing is None:
+            cuda_timing = CudaTimingCollector("cuda:0", synchronize=self.clock.synchronize)
+            owns_cuda_timing = True
+
+        crop_started = self._host_now()
+        pairs = tuple(build_crop_pair(frame, box) for box in ordered_boxes)
+        crop_finished = self._host_now()
+
+        repvit_started = self._host_now()
+        repvit_evidence: list[object] = []
+        object_capacity = repvit_rows_per_invocation // 2
+        for start in range(0, len(pairs), object_capacity):
+            valid_pairs = pairs[start : start + object_capacity]
+            padded_pairs = _pad_static_chunk(valid_pairs, object_capacity)
+            rows = tuple(crop for pair in padded_pairs for crop in (pair.tight, pair.context))
+            valid_mask = tuple(
+                row_index < 2 * len(valid_pairs)
+                for row_index in range(repvit_rows_per_invocation)
+            )
+            action = lambda rows=rows, valid_mask=valid_mask, valid_count=len(valid_pairs): self._score_tight_context_chunk(
+                rows, valid_mask=valid_mask, valid_count=valid_count
+            )
+            chunk_evidence = cuda_timing.measure("repvit", action) if cuda_timing is not None else action()
+            repvit_evidence.extend(chunk_evidence)
+        repvit_finished = self._host_now()
+        if len(repvit_evidence) != len(ordered_boxes):
+            raise ValueError("RepViT static evidence must align with input boxes")
+
+        decisions: list[ClassificationDecision | None] = [None] * len(ordered_boxes)
+        recheck_indexes: list[int] = []
+        nearest_distances: list[float] = []
+        for index, (box, evidence) in enumerate(zip(ordered_boxes, repvit_evidence, strict=True)):
+            _require_tight_context_evidence(evidence)
+            nearest_distance = min(self.prototype_bank.distances(evidence.feature))
+            nearest_distances.append(nearest_distance)
+            direct = None
+            if _pair_top1_agrees(evidence):
+                direct = self.policy.direct(
+                    evidence.scores,
+                    evidence=DirectEvidence(
+                        crop_disagreement=evidence.crop_disagreement,
+                        nearest_prototype_distance=nearest_distance,
+                    ),
+                    box=box,
+                )
+            if direct is None:
+                recheck_indexes.append(index)
+            else:
+                decisions[index] = direct
+
+        dino_started = self._host_now()
+        fusion_ms = 0.0
+        if recheck_indexes:
+            dino = self._get_dino()
+            local_bank = self._get_local_bank()
+            if local_bank is None:
+                raise ValueError("static DINO inference requires a local support bank")
+            for start in range(0, len(recheck_indexes), dino_objects_per_invocation):
+                valid_indexes = recheck_indexes[start : start + dino_objects_per_invocation]
+                padded_indexes = _pad_static_chunk(tuple(valid_indexes), dino_objects_per_invocation)
+                context_crops = tuple(pairs[index].context for index in padded_indexes)
+                product_boxes = tuple(pairs[index].context_product_box for index in padded_indexes)
+                aligned_repvit = tuple(repvit_evidence[index].scores for index in padded_indexes)
+                valid_mask = tuple(index < len(valid_indexes) for index in range(dino_objects_per_invocation))
+                action = lambda: self._score_context_dino_chunk(
+                    dino,
+                    context_crops,
+                    product_boxes,
+                    local_bank,
+                    repvit_scores=aligned_repvit,
+                    valid_mask=valid_mask,
+                    valid_count=len(valid_indexes),
+                )
+                # Do not catch chunk failures: the Task 5 contract aborts the scan.
+                dino_evidence = cuda_timing.measure("dinov3", action) if cuda_timing is not None else action()
+                fusion_started = self._host_now()
+                for index, evidence in zip(valid_indexes, dino_evidence, strict=True):
+                    if self.fusion_policy is not None:
+                        decisions[index] = self._fusion_decision(
+                            repvit_scores=repvit_evidence[index].scores,
+                            dino_scores=evidence.global_scores,
+                            local_scores=evidence.local_scores,
+                            crop_disagreement=repvit_evidence[index].crop_disagreement,
+                            nearest_prototype_distance=nearest_distances[index],
+                            patch_count=evidence.product_patch_count,
+                            patch_ratio=evidence.product_patch_ratio,
+                            box=ordered_boxes[index],
+                        )
+                    else:
+                        decisions[index] = self.policy.after_local_recheck(
+                            repvit_evidence[index].scores,
+                            evidence.global_scores,
+                            evidence.local_scores,
+                            box=ordered_boxes[index],
+                        )
+                fusion_finished = self._host_now()
+                fusion_ms += _milliseconds(fusion_started, fusion_finished)
+        dino_finished = self._host_now()
+        if any(decision is None for decision in decisions):
+            raise RuntimeError("static batch inference did not produce every decision")
+        total_finished = self._host_now()
+        repvit_ms = _milliseconds(repvit_started, repvit_finished)
+        dino_ms = _milliseconds(dino_started, dino_finished)
+        if owns_cuda_timing:
+            assert cuda_timing is not None
+            event_timings = cuda_timing.finalize()
+            repvit_ms = event_timings.get("repvit", 0.0)
+            dino_ms = event_timings.get("dinov3", 0.0)
+            total_finished = self._host_now()
+        total_ms = _milliseconds(total_started, total_finished)
+        completed = tuple(
+            self._with_metadata(
+                decision,
+                frame=frame,
+                repvit_ms=repvit_ms,
+                dinov3_ms=0.0 if index not in recheck_indexes else dino_ms,
+                total_ms=total_ms,
+                failure_code=decision.provenance.failure_code,
+            )
+            for index, decision in enumerate(decisions)
+            if decision is not None
+        )
+        return BatchInferenceResult(
+            completed,
+            BatchStageTimings(
+                crop_ms=_milliseconds(crop_started, crop_finished),
+                repvit_ms=repvit_ms,
+                dinov3_ms=dino_ms,
+                fusion_ms=fusion_ms,
+                total_ms=total_ms,
+            ),
+            len(recheck_indexes),
+        )
+
+    def _score_tight_context_chunk(
+        self,
+        rows: tuple[Image.Image, ...],
+        *,
+        valid_mask: tuple[bool, ...],
+        valid_count: int,
+    ) -> tuple[object, ...]:
+        score_static = getattr(self.repvit, "score_tight_context_chunk", None)
+        if callable(score_static):
+            result = tuple(score_static(rows, valid_mask=valid_mask))
+        else:
+            score_many = getattr(self.repvit, "score_many_with_evidence", None)
+            if not callable(score_many):
+                raise ValueError("RepViT runner does not expose tight/context static scoring")
+            groups = tuple((rows[index], rows[index + 1]) for index in range(0, len(rows), 2))
+            result = tuple(score_many(groups, max_objects=7))
+        if len(result) not in {valid_count, 7}:
+            raise ValueError("RepViT static chunk evidence must align with valid or padded objects")
+        return result[:valid_count]
+
+    def _score_context_dino_chunk(
+        self,
+        dino: object,
+        crops: tuple[Image.Image, ...],
+        product_boxes: tuple[Box, ...],
+        local_bank: object,
+        *,
+        repvit_scores: tuple[ModelScoreVector, ...],
+        valid_mask: tuple[bool, ...],
+        valid_count: int,
+    ) -> tuple[object, ...]:
+        score_static = getattr(dino, "score_context_chunk_global_and_local_evidence", None)
+        if callable(score_static):
+            result = tuple(score_static(
+                crops,
+                product_boxes,
+                local_bank,
+                repvit_scores=repvit_scores,
+                valid_mask=valid_mask,
+            ))
+        else:
+            score_many = getattr(dino, "score_many_global_and_local_evidence", None)
+            if not callable(score_many):
+                raise ValueError("DINO runner does not expose context static scoring")
+            result = tuple(score_many(
+                tuple((crop,) for crop in crops),
+                tuple((box,) for box in product_boxes),
+                local_bank,
+                repvit_scores=repvit_scores,
+                max_objects=7,
+            ))
+        if len(result) not in {valid_count, 7}:
+            raise ValueError("DINO static chunk evidence must align with valid or padded objects")
+        return result[:valid_count]
 
     def preflight_benchmark(
         self,
@@ -1021,6 +1271,38 @@ class ClassifierPipeline:
 
 def _milliseconds(started: float, finished: float) -> float:
     return (finished - started) * 1000.0
+
+
+def _pad_static_chunk(values: tuple[Any, ...], capacity: int) -> tuple[Any, ...]:
+    if not values or len(values) > capacity:
+        raise ValueError("static chunk must contain one through capacity valid values")
+    return values + (values[-1],) * (capacity - len(values))
+
+
+def _require_tight_context_evidence(evidence: object) -> None:
+    required = ("scores", "tight_scores", "context_scores", "feature", "crop_disagreement")
+    if any(not hasattr(evidence, name) for name in required):
+        raise ValueError("RepViT static evidence must include tight and context scores")
+    if not all(
+        isinstance(getattr(evidence, name), ModelScoreVector)
+        for name in ("scores", "tight_scores", "context_scores")
+    ):
+        raise ValueError("RepViT static evidence score vectors are invalid")
+
+
+def _pair_top1_agrees(evidence: object) -> bool:
+    tight = evidence.tight_scores
+    context = evidence.context_scores
+    if tight.sku_ids != context.sku_ids:
+        return False
+    return _score_top1(tight) == _score_top1(context)
+
+
+def _score_top1(scores: ModelScoreVector) -> int:
+    return min(
+        scores.sku_ids,
+        key=lambda sku_id: (-scores.values[scores.sku_ids.index(sku_id)], sku_id),
+    )
 
 
 def _canonical_frame(image: Image.Image | CanonicalImage) -> CanonicalImage:
