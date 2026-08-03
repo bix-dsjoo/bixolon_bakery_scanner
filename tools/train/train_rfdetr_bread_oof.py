@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sys
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -27,6 +28,7 @@ def run_fold_training(
     staged_root: Path,
     output_root: Path,
     pretrain_weights_sha256: str | None = None,
+    runtime_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Materialize one train-only fold and invoke the supplied RF-DETR model.
 
@@ -48,7 +50,7 @@ def run_fold_training(
     selected = _select_training_images(staged, manifest["scene_ids"]["train"])
     train_root = run_root / "train"
     _write_train_subset(staged.root, staged.annotations, selected, train_root, fold_index=fold_index)
-    notes = _training_notes(manifest, staged.root, pretrain_weights_sha256=pretrain_weights_sha256)
+    notes = _training_notes(manifest, staged.root, pretrain_weights_sha256=pretrain_weights_sha256, runtime_identity=runtime_identity)
     model = model_factory()
     if not hasattr(model, "train"):
         raise TypeError("RF-DETR model factory must return a model with train()")
@@ -63,7 +65,20 @@ def run_fold_training(
         output_dir=str(run_root / "checkpoint"),
         notes=notes,
     )
-    return notes
+    checkpoint = run_root / "checkpoint" / "best_model.pth"
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"declared RF-DETR checkpoint was not produced: {checkpoint}")
+    receipt = {
+        "checkpoint": {
+            "bytes": checkpoint.stat().st_size,
+            "file_name": checkpoint.name,
+            "sha256": _sha256(checkpoint),
+        },
+        "provenance": notes,
+        "status": "verified_success",
+    }
+    _write_json_new_atomic(receipt_path, receipt)
+    return receipt
 
 
 def _load_manifest(source: Mapping[str, object] | Path) -> dict[str, object]:
@@ -78,6 +93,11 @@ def _load_manifest(source: Mapping[str, object] | Path) -> dict[str, object]:
     for key in ("source_sha256", "manifest_sha256"):
         if not _is_sha256(payload.get(key)):
             raise ValueError(f"split manifest {key} must be SHA-256")
+    declared_hash = payload["manifest_sha256"]
+    canonical_payload = dict(payload)
+    canonical_payload.pop("manifest_sha256", None)
+    if _canonical_payload_sha256(canonical_payload) != declared_hash:
+        raise ValueError("split manifest SHA-256 does not match canonical Task 1 payload")
     raw_roles = payload.get("scene_ids")
     if not isinstance(raw_roles, dict) or set(raw_roles) != {"train", "calibration", "evaluation"}:
         raise ValueError("split manifest must provide exactly train, calibration, and evaluation scene roles")
@@ -99,6 +119,8 @@ def _load_manifest(source: Mapping[str, object] | Path) -> dict[str, object]:
 
 
 def _select_training_images(staged: Any, train_scene_ids: tuple[str, ...]) -> tuple[Any, ...]:
+    for row in staged.images:
+        _portable_staged_filename(row.file_name)
     by_scene = {_staged_scene_id(row.file_name): row for row in staged.images}
     if len(by_scene) != len(staged.images):
         raise ValueError("staged dataset has duplicate scene identities")
@@ -137,11 +159,12 @@ def _write_train_subset(staged_root: Path, annotation_path: Path, selected: tupl
     train_ids = selected_ids - {validation_row.image_id} or {validation_row.image_id}
     validation_ids = {validation_row.image_id}
     for row in selected:
-        source = staged_root / "images" / row.file_name
+        file_name = _portable_staged_filename(row.file_name)
+        source = _contained_path(staged_root / "images", file_name)
         if row.image_id in train_ids:
-            shutil.copy2(source, train_images_root / row.file_name)
+            shutil.copy2(source, _contained_path(train_images_root, file_name))
         if row.image_id in validation_ids:
-            shutil.copy2(source, validation_images_root / row.file_name)
+            shutil.copy2(source, _contained_path(validation_images_root, file_name))
     all_payload = {"images": images, "annotations": annotations, "categories": categories}
     (train_root / "annotations.json").write_text(json.dumps(all_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     _write_coco_split(annotations_root / "instances_train2017.json", images, annotations, categories, train_ids)
@@ -157,7 +180,7 @@ def _write_coco_split(path: Path, images: list[dict[str, object]], annotations: 
     path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")), encoding="utf-8")
 
 
-def _training_notes(manifest: Mapping[str, object], staged_root: Path, *, pretrain_weights_sha256: str | None) -> dict[str, object]:
+def _training_notes(manifest: Mapping[str, object], staged_root: Path, *, pretrain_weights_sha256: str | None, runtime_identity: Mapping[str, object] | None) -> dict[str, object]:
     notes = {
         "base_seed": _BASE_SEED,
         "category_map": dict(_CATEGORY_MAP),
@@ -167,13 +190,18 @@ def _training_notes(manifest: Mapping[str, object], staged_root: Path, *, pretra
         "seed": _BASE_SEED,
         "training_seed": _BASE_SEED + int(manifest["fold_index"]),
         "source_sha256": manifest["source_sha256"],
+        "role_scene_ids": {role: list(manifest["scene_ids"][role]) for role in ("train", "calibration", "evaluation")},
         "staged_annotations_sha256": _sha256(staged_root / "annotations.json"),
         "staged_manifest_sha256": _sha256(staged_root / "staged_manifest.json"),
+        "code_sha256": _sha256(Path(__file__)),
     }
     if pretrain_weights_sha256 is not None:
         if not _is_sha256(pretrain_weights_sha256):
             raise ValueError("pretrain checkpoint SHA-256 is invalid")
         notes["pretrain_weights_sha256"] = pretrain_weights_sha256
+    if runtime_identity is not None:
+        notes["runtime_identity"] = dict(runtime_identity)
+        notes["runtime_identity_sha256"] = _canonical_payload_sha256(runtime_identity)
     return notes
 
 
@@ -189,15 +217,67 @@ def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+def _canonical_payload_sha256(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _portable_staged_filename(value: object) -> str:
+    if not isinstance(value, str) or not value or value in {".", ".."} or "/" in value or "\\" in value or Path(value).name != value:
+        raise ValueError("staged file name must be a basename-only portable filename")
+    return value
+
+
+def _contained_path(root: Path, file_name: str) -> Path:
+    resolved_root = root.resolve()
+    resolved_path = (resolved_root / file_name).resolve()
+    if resolved_path.parent != resolved_root:
+        raise ValueError("staged source or destination escapes intended root")
+    return resolved_path
+
+
+def _write_json_new_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite existing receipt: {path}")
+    temporary = path.with_name(f".{path.name}.tmp")
+    if temporary.exists():
+        raise FileExistsError(f"refusing to replace receipt temporary file: {temporary}")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def _write_unverified_receipt(run_root: Path, *, fold_index: int, status: str, detail: str) -> None:
     run_root.mkdir(parents=True, exist_ok=True)
     receipt_path = run_root / _RECEIPT_NAME
     if receipt_path.exists():
         raise FileExistsError(f"refusing to overwrite existing receipt: {receipt_path}")
-    receipt_path.write_text(
-        json.dumps({"fold_index": fold_index, "status": status, "detail": detail}, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    _write_json_new_atomic(receipt_path, {"fold_index": fold_index, "status": status, "detail": detail})
+
+
+def _verify_runtime_identity(identity: Mapping[str, object]) -> dict[str, object]:
+    required = {"schema_version", "python_sha256", "python_bytes", "python_version", "packages"}
+    if set(identity) != required or identity.get("schema_version") != 1:
+        raise ValueError("runtime identity must contain the exact schema version and fields")
+    if not _is_sha256(identity.get("python_sha256")) or identity.get("python_bytes") != Path(sys.executable).stat().st_size:
+        raise ValueError("runtime identity python executable byte identity does not match")
+    if _sha256(Path(sys.executable)) != identity["python_sha256"] or identity.get("python_version") != f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}":
+        raise ValueError("runtime identity python executable does not match")
+    packages = identity.get("packages")
+    if not isinstance(packages, dict) or set(packages) != {"rfdetr"}:
+        raise ValueError("runtime identity must bind exactly the rfdetr package")
+    package = packages["rfdetr"]
+    if not isinstance(package, dict) or set(package) != {"version", "sha256"} or not isinstance(package.get("version"), str) or not _is_sha256(package.get("sha256")):
+        raise ValueError("runtime identity rfdetr package binding is invalid")
+    try:
+        actual_version = version("rfdetr")
+    except PackageNotFoundError as error:
+        raise ValueError("runtime identity rfdetr package is unavailable") from error
+    try:
+        package_init = Path(distribution("rfdetr").locate_file("rfdetr/__init__.py"))
+    except PackageNotFoundError as error:
+        raise ValueError("runtime identity rfdetr package files are unavailable") from error
+    if package["version"] != actual_version or not package_init.is_file() or _sha256(package_init) != package["sha256"]:
+        raise ValueError("runtime identity rfdetr package version does not match")
+    return {"schema_version": 1, "python_sha256": identity["python_sha256"], "python_bytes": identity["python_bytes"], "python_version": identity["python_version"], "packages": {"rfdetr": {"version": package["version"], "sha256": package["sha256"]}}}
 
 
 def main() -> int:
@@ -208,11 +288,13 @@ def main() -> int:
     parser.add_argument("--staged-root", type=Path)
     parser.add_argument("--pretrain-weights", type=Path)
     parser.add_argument("--pretrain-sha256")
+    parser.add_argument("--runtime-identity", type=Path)
     arguments = parser.parse_args()
     output_root = arguments.output.resolve()
-    selected_folds = range(5) if arguments.fold == "all" else (int(arguments.fold),)
-    if output_root.exists() and any((output_root / f"fold-{index}" / _RECEIPT_NAME).exists() for index in selected_folds):
-        raise FileExistsError("refusing to overwrite an existing fold receipt")
+    selected_folds = tuple(range(5)) if arguments.fold == "all" else (int(arguments.fold),)
+    existing = [output_root / f"fold-{index}" for index in selected_folds if (output_root / f"fold-{index}").exists()]
+    if existing:
+        raise FileExistsError(f"refusing to reuse existing fold output directory: {existing[0]}")
     staged_root = arguments.staged_root
     if staged_root is None:
         configured_staged_root = os.environ.get("BIXOLON_RFDETR_STAGED_ROOT")
@@ -220,6 +302,16 @@ def main() -> int:
     if staged_root is None or not staged_root.is_dir():
         for index in selected_folds:
             _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_missing_staged_coco", detail="supply --staged-root or BIXOLON_RFDETR_STAGED_ROOT")
+        return 2
+    if arguments.runtime_identity is None or not arguments.runtime_identity.is_file():
+        for index in selected_folds:
+            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_missing_runtime_identity", detail="supply a verified --runtime-identity manifest")
+        return 2
+    try:
+        runtime_identity = _verify_runtime_identity(json.loads(arguments.runtime_identity.read_text(encoding="utf-8")))
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        for index in selected_folds:
+            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_runtime_identity_mismatch", detail=str(error))
         return 2
     try:
         from rfdetr import RFDETRLarge
@@ -246,6 +338,7 @@ def main() -> int:
                 staged_root=staged_root,
                 output_root=output_root,
                 pretrain_weights_sha256=arguments.pretrain_sha256,
+                runtime_identity=runtime_identity,
             )
         except ImportError as error:
             for remaining in pending_folds[position:]:

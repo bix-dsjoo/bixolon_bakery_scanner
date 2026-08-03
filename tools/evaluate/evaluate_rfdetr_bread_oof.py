@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+
+from tools.train.train_rfdetr_bread_oof import _is_sha256, _load_manifest
 
 
 _ERRORS = ("miss", "duplicate", "non_target", "split", "merge")
@@ -24,6 +28,40 @@ class DetectorPolicyReceipt:
     selected_from_image_ids: tuple[int, ...]
     calibration_metrics: DetectorMetrics
     non_target_rejection: str = "unverified_without_negative_scenes"
+
+
+def evaluate_bound_detector(
+    calibration_rows: Sequence[Mapping[str, object]],
+    evaluation_rows: Sequence[Mapping[str, object]],
+    *,
+    split_manifest: Mapping[str, object] | Path,
+    provenance: Mapping[str, object],
+) -> dict[str, object]:
+    """Select on the exact calibration role, then evaluate the frozen policy once."""
+    manifest = _load_manifest(split_manifest)
+    calibration = _normalise_bound_rows(calibration_rows, manifest["scene_ids"]["calibration"], "calibration")
+    evaluation = _normalise_bound_rows(evaluation_rows, manifest["scene_ids"]["evaluation"], "evaluation")
+    verified_provenance = _verify_provenance(provenance, manifest)
+    policy = select_detector_policy(calibration, evaluation)
+    frozen_threshold = policy.score_threshold
+    frozen = evaluate_detector(
+        [target for row in evaluation for target in row["ground_truth"]],
+        [prediction for row in evaluation for prediction in row["predictions"] if prediction["score"] >= frozen_threshold],
+    )
+    receipt = {
+        "evaluation": {"matched": frozen.matched, "error_counts": frozen.error_counts},
+        "policy": {
+            "calibration_metrics": {"matched": policy.calibration_metrics.matched, "error_counts": policy.calibration_metrics.error_counts},
+            "non_target_rejection": policy.non_target_rejection,
+            "score_threshold": frozen_threshold,
+            "selected_from_image_ids": list(policy.selected_from_image_ids),
+        },
+        "provenance": verified_provenance,
+        "role_scene_ids": {"calibration": list(manifest["scene_ids"]["calibration"]), "evaluation": list(manifest["scene_ids"]["evaluation"])},
+        "status": "verified_success",
+    }
+    receipt["receipt_sha256"] = _canonical_sha256(receipt)
+    return receipt
 
 
 def select_detector_policy(calibration_rows: Sequence[Mapping[str, object]], evaluation_rows: Sequence[Mapping[str, object]]) -> DetectorPolicyReceipt:
@@ -108,6 +146,52 @@ def _normalise_rows(rows: Sequence[Mapping[str, object]]) -> tuple[dict[str, obj
     return tuple(output)
 
 
+def _normalise_bound_rows(rows: Sequence[Mapping[str, object]], expected_scene_ids: Sequence[str], role: str) -> tuple[dict[str, object], ...]:
+    normalised = _normalise_rows(rows)
+    scenes: list[str] = []
+    for original in rows:
+        scene_id = original.get("scene_id") if isinstance(original, Mapping) else None
+        if not isinstance(scene_id, str) or not scene_id:
+            raise ValueError(f"{role} row must contain scene_id")
+        scenes.append(scene_id)
+    if len(set(scenes)) != len(scenes) or set(scenes) != set(expected_scene_ids) or len(scenes) != len(expected_scene_ids):
+        raise ValueError(f"{role} rows must exactly match declared split role scene IDs")
+    if len({row["image_id"] for row in normalised}) != len(normalised):
+        raise ValueError(f"{role} image IDs must be unique")
+    return normalised
+
+
+def _verify_provenance(provenance: Mapping[str, object], manifest: Mapping[str, object]) -> dict[str, str]:
+    required = (
+        "fold_manifest_sha256", "source_sha256", "staged_annotations_sha256", "staged_manifest_sha256",
+        "detector_checkpoint_sha256", "calibration_predictions_sha256", "evaluation_predictions_sha256",
+        "config_sha256", "code_sha256", "runtime_identity_sha256",
+    )
+    if set(provenance) != set(required):
+        raise ValueError("detector provenance must contain the complete declared hash set")
+    result = {key: str(provenance[key]) for key in required}
+    if any(not _is_sha256(value) for value in result.values()):
+        raise ValueError("detector provenance values must be SHA-256")
+    if result["fold_manifest_sha256"] != manifest["manifest_sha256"] or result["source_sha256"] != manifest["source_sha256"]:
+        raise ValueError("detector provenance does not bind the verified split manifest")
+    return result
+
+
+def _canonical_sha256(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _write_json_new_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite existing evaluation receipt: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    if temporary.exists():
+        raise FileExistsError(f"refusing to replace evaluation receipt temporary file: {temporary}")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def _normalise_objects(rows: Iterable[Mapping[str, object]], *, require_score: bool, image_id: int | None = None) -> tuple[dict[str, object], ...]:
     output = []
     for row in rows:
@@ -150,6 +234,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--evaluation", type=Path, required=True)
+    parser.add_argument("--split-manifest", type=Path, required=True)
+    parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
     output = arguments.output.resolve()
@@ -157,13 +243,9 @@ def main() -> int:
         raise FileExistsError(f"refusing to overwrite existing evaluation receipt: {output}")
     calibration = json.loads(arguments.calibration.read_text(encoding="utf-8"))
     evaluation = json.loads(arguments.evaluation.read_text(encoding="utf-8"))
-    policy = select_detector_policy(calibration, evaluation)
-    frozen = evaluate_detector(
-        [target for row in _normalise_rows(evaluation) for target in row["ground_truth"]],
-        [prediction for row in _normalise_rows(evaluation) for prediction in row["predictions"] if prediction["score"] >= policy.score_threshold],
-    )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"policy": {"score_threshold": policy.score_threshold, "selected_from_image_ids": policy.selected_from_image_ids, "non_target_rejection": policy.non_target_rejection}, "evaluation": {"matched": frozen.matched, "error_counts": frozen.error_counts}}, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    provenance = json.loads(arguments.provenance.read_text(encoding="utf-8"))
+    receipt = evaluate_bound_detector(calibration, evaluation, split_manifest=arguments.split_manifest, provenance=provenance)
+    _write_json_new_atomic(output, receipt)
     return 0
 
 

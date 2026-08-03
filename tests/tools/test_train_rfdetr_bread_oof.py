@@ -6,6 +6,7 @@ import hashlib
 import json
 import sys
 import types
+from importlib.metadata import distribution, version
 from pathlib import Path
 
 from PIL import Image
@@ -19,6 +20,9 @@ SPLIT_SHA = "a" * 64
 class _FakeModel:
     def train(self, **kwargs: object) -> None:
         self.train_kwargs = kwargs
+        checkpoint = Path(str(kwargs["output_dir"])) / "best_model.pth"
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_bytes(b"trained checkpoint")
 
 
 def _write_staged_dataset(root: Path) -> Path:
@@ -63,18 +67,29 @@ def _write_staged_dataset(root: Path) -> Path:
 
 
 def _split_manifest() -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": 1,
         "fold_index": 2,
         "seed": 20260803,
         "source_sha256": "b" * 64,
-        "manifest_sha256": SPLIT_SHA,
         "scene_ids": {
             "train": ["group_15class:g15_e_0001.jpg"],
             "calibration": ["group_15class:g15_e_0002.jpg"],
             "evaluation": ["group_15class:g15_e_0003.jpg"],
         },
+        "group_ids": {"train": ["group_15class:1"], "calibration": ["group_15class:2"], "evaluation": ["group_15class:3"]},
+        "sku_counts": {role: {str(index): 0 for index in range(1, 21)} for role in ("train", "calibration", "evaluation")},
+        "difficulty_counts": {role: {difficulty: 0 for difficulty in ("E", "M", "H")} for role in ("train", "calibration", "evaluation")},
     }
+    payload["manifest_sha256"] = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return payload
+
+
+def _write_runtime_identity(path: Path) -> Path:
+    executable = Path(sys.executable)
+    package_init = Path(distribution("rfdetr").locate_file("rfdetr/__init__.py"))
+    path.write_text(json.dumps({"schema_version": 1, "python_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(), "python_bytes": executable.stat().st_size, "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}", "packages": {"rfdetr": {"version": version("rfdetr"), "sha256": hashlib.sha256(package_init.read_bytes()).hexdigest()}}}), encoding="utf-8")
+    return path
 
 
 def test_fold_training_uses_only_train_role(tmp_path: Path):
@@ -114,13 +129,83 @@ def test_training_notes_bind_split_seed_and_source_hash(tmp_path: Path):
     )
 
     notes = fake_model.train_kwargs["notes"]
-    assert notes["fold_manifest_sha256"] == SPLIT_SHA
+    assert notes["fold_manifest_sha256"] == _split_manifest()["manifest_sha256"]
     assert notes["seed"] == 20260803
     assert notes["base_seed"] == 20260803
     assert notes["training_seed"] == 20260805
     assert notes["source_sha256"] == "b" * 64
     assert notes["category_map"] == {"1": "bread"}
     assert notes["staged_annotations_sha256"] == hashlib.sha256((staged_root / "annotations.json").read_bytes()).hexdigest()
+
+
+def test_tampered_fold_roles_are_rejected_before_any_staging_write(tmp_path: Path):
+    """Moving a held-out scene into train without its canonical hash must fail closed."""
+    manifest = _split_manifest()
+    manifest["scene_ids"]["train"].append("group_15class:g15_e_0003.jpg")
+    output = tmp_path / "runs"
+
+    import pytest
+
+    with pytest.raises(ValueError, match="manifest SHA-256"):
+        run_fold_training(
+            manifest,
+            fold_index=2,
+            model_factory=_FakeModel,
+            staged_root=_write_staged_dataset(tmp_path / "staged"),
+            output_root=output,
+        )
+    assert not output.exists()
+
+
+def test_successful_training_writes_checkpoint_bound_immutable_receipt(tmp_path: Path):
+    """A train return without a hashed checkpoint receipt would be a false success claim."""
+    output = tmp_path / "runs"
+    receipt = run_fold_training(
+        _split_manifest(),
+        fold_index=2,
+        model_factory=_FakeModel,
+        staged_root=_write_staged_dataset(tmp_path / "staged"),
+        output_root=output,
+    )
+
+    stored = json.loads((output / "fold-2" / "receipt.json").read_text(encoding="utf-8"))
+    assert stored["status"] == "verified_success"
+    assert stored["checkpoint"]["sha256"] == hashlib.sha256((output / "fold-2" / "checkpoint" / "best_model.pth").read_bytes()).hexdigest()
+    assert stored["provenance"] == receipt["provenance"]
+
+
+def test_staged_file_name_escape_is_rejected_before_copying(tmp_path: Path):
+    """A staged filename containing a separator must not escape either copy root."""
+    staged = _write_staged_dataset(tmp_path / "staged")
+    manifest = _split_manifest()
+    payload = json.loads((staged / "staged_manifest.json").read_text(encoding="utf-8"))
+    payload[0]["file_name"] = "group_15class__g15_e_0001/escape.png"
+    (staged / "images" / "group_15class__g15_e_0001").mkdir()
+    Image.new("RGB", (12, 8)).save(staged / "images" / "group_15class__g15_e_0001" / "escape.png")
+    annotations = json.loads((staged / "annotations.json").read_text(encoding="utf-8"))
+    annotations["images"][0]["file_name"] = payload[0]["file_name"]
+    (staged / "annotations.json").write_text(json.dumps(annotations), encoding="utf-8")
+    (staged / "staged_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    import pytest
+
+    with pytest.raises(ValueError, match="basename"):
+        run_fold_training(manifest, fold_index=2, model_factory=_FakeModel, staged_root=staged, output_root=tmp_path / "runs")
+    assert not (tmp_path / "runs" / "fold-2" / "train2017" / "escape.png").exists()
+
+
+def test_all_fold_preflight_rejects_later_empty_directory_without_partial_receipts(tmp_path: Path, monkeypatch):
+    """An empty later fold directory must block --fold all before fold zero writes."""
+    output = tmp_path / "runs"
+    (output / "fold-4").mkdir(parents=True)
+    monkeypatch.delenv("BIXOLON_RFDETR_STAGED_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["train_rfdetr_bread_oof.py", "--splits", str(tmp_path / "splits"), "--fold", "all", "--output", str(output)])
+
+    import pytest
+
+    with pytest.raises(FileExistsError, match="fold output directory"):
+        main()
+    assert not (output / "fold-0").exists()
 
 
 def test_existing_receipt_is_never_overwritten(tmp_path: Path):
@@ -172,6 +257,7 @@ def test_cli_marks_missing_train_extra_unverified_after_safe_staging(tmp_path: P
     checkpoint = tmp_path / "checkpoint.pth"
     checkpoint.write_bytes(b"checkpoint")
     output = tmp_path / "runs"
+    runtime_identity = _write_runtime_identity(tmp_path / "runtime.json")
     monkeypatch.setitem(sys.modules, "rfdetr", types.SimpleNamespace(RFDETRLarge=MissingTrainExtra))
     monkeypatch.setattr(
         sys,
@@ -180,8 +266,23 @@ def test_cli_marks_missing_train_extra_unverified_after_safe_staging(tmp_path: P
             "train_rfdetr_bread_oof.py", "--splits", str(splits), "--fold", "2", "--output", str(output),
             "--staged-root", str(staged), "--pretrain-weights", str(checkpoint),
             "--pretrain-sha256", hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+            "--runtime-identity", str(runtime_identity),
         ],
     )
 
     assert main() == 2
     assert json.loads((output / "fold-2" / "receipt.json").read_text(encoding="utf-8"))["status"] == "unverified_missing_rfdetr_train_runtime"
+
+
+def test_cli_runtime_identity_mismatch_is_unverified_before_training(tmp_path: Path, monkeypatch):
+    """A runtime manifest for another executable must prevent RF-DETR construction."""
+    staged = _write_staged_dataset(tmp_path / "staged")
+    identity = _write_runtime_identity(tmp_path / "runtime.json")
+    payload = json.loads(identity.read_text(encoding="utf-8"))
+    payload["python_sha256"] = "0" * 64
+    identity.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "runs"
+    monkeypatch.setattr(sys, "argv", ["train_rfdetr_bread_oof.py", "--splits", str(tmp_path / "splits"), "--fold", "2", "--output", str(output), "--staged-root", str(staged), "--runtime-identity", str(identity)])
+
+    assert main() == 2
+    assert json.loads((output / "fold-2" / "receipt.json").read_text(encoding="utf-8"))["status"] == "unverified_runtime_identity_mismatch"
