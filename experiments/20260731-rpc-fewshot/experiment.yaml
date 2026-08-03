@@ -2,6 +2,7 @@ schema_version: 1
 experiment_id: 20260731-rpc-fewshot-stage1
 status: planned
 stage: stage1
+class_fold_manifest: data/splits/rpc_2019_five_class_folds_v1.yaml
 support_seeds: [101, 102, 103, 104, 105]
 folds: [0, 1, 2, 3, 4]
 # One immutable scoring plan covers every declared Stage-1 pair, shot, fold,
