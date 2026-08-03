@@ -187,6 +187,19 @@ def load_development_ground_truth(
     )
 
 
+def load_calibration_ground_truth(
+    path: Path, *, trusted_source_root: Path
+) -> LoadedGroundTruth:
+    """Load only the authenticated val2019 calibration cohort."""
+    return _load_role_ground_truth(
+        path,
+        trusted_source_root=trusted_source_root,
+        expected_kind="rpc-fewshot-calibration-ground-truth",
+        split="val2019",
+        role="calibration",
+    )
+
+
 def load_stage_ground_truth(
     path: Path, *, stage: str, trusted_source_root: Path
 ) -> LoadedGroundTruth:
@@ -254,6 +267,25 @@ def materialize_development_ground_truth(
         kind="rpc-fewshot-development-ground-truth",
         split="val2019",
         role="development_selection",
+    )
+
+
+def materialize_calibration_ground_truth(
+    source_manifest_path: Path,
+    scene_role_manifest_path: Path,
+    output: Path,
+    *,
+    trusted_source_root: Path,
+) -> None:
+    """Materialize the trusted val2019 calibration cohort only."""
+    _materialize_role_ground_truth(
+        source_manifest_path,
+        scene_role_manifest_path,
+        output,
+        trusted_source_root=trusted_source_root,
+        kind="rpc-fewshot-calibration-ground-truth",
+        split="val2019",
+        role="calibration",
     )
 
 
@@ -461,17 +493,20 @@ def _checkout_cohort_from_lineage(
     """Derive a complete, role-specific checkout cohort from authenticated RPC lineage."""
     if (split, role) == ("test2019", "locked_acceptance"):
         return _locked_test_cohort_from_lineage(source, source_digest, roles, trusted_index=trusted_index)
-    if (split, role) != ("val2019", "development_selection"):
+    if (split, role) not in {
+        ("val2019", "development_selection"),
+        ("val2019", "calibration"),
+    }:
         raise ValueError("unsupported trusted checkout cohort")
     if (
         source.get("schema_version") != 1 or source.get("kind") != "rpc-fewshot-resolved-inputs"
         or source.get("source") != "RPC 2019" or not isinstance(source.get("images"), list)
         or not isinstance(source.get("objects"), list)
     ):
-        raise ValueError("invalid development ground-truth source manifest")
+        raise ValueError("invalid val2019 role ground-truth source manifest")
     contract = trusted_index.contract
     if source.get("annotation_sha256") != dict(contract.annotation_sha256) or source.get("image_counts") != dict(contract.image_counts):
-        raise ValueError("development ground-truth source does not match RPC 2019 contract")
+        raise ValueError("val2019 role ground-truth source does not match RPC 2019 contract")
     _validate_resolved_source_against_trusted_split(source, trusted_index, split)
     if (
         roles.get("schema_version") != 1 or roles.get("kind") != "rpc-fewshot-scene-roles"
@@ -482,10 +517,10 @@ def _checkout_cohort_from_lineage(
     assignments: set[tuple[str, int, str, str, str]] = set()
     for item in roles["assignments"]:
         if not isinstance(item, Mapping):
-            raise ValueError("invalid development ground-truth scene-role assignment")
+            raise ValueError("invalid val2019 role ground-truth scene-role assignment")
         row = (item.get("split"), item.get("image_id"), item.get("role"), item.get("burst_id"), item.get("difficulty"))
         if not isinstance(row[0], str) or type(row[1]) is not int or not isinstance(row[2], str) or not isinstance(row[3], str) or not isinstance(row[4], str):
-            raise ValueError("invalid development ground-truth scene-role assignment")
+            raise ValueError("invalid val2019 role ground-truth scene-role assignment")
         assignments.add(row)  # type: ignore[arg-type]
     if len(assignments) != len(roles["assignments"]) or assignments != expected_roles:
         raise ValueError("scene-role manifest does not exactly equal canonical trusted val/test roles")
@@ -504,10 +539,10 @@ def _checkout_cohort_from_lineage(
         sample_id, _ = image_rows[item.image_id]
         burst_id, difficulty = role_by_image[item.image_id]
         if not isinstance(sample_id, str) or difficulty not in {"easy", "medium", "hard"}:
-            raise ValueError("invalid trusted development source identity")
+            raise ValueError("invalid trusted val2019 role source identity")
         expected.append(LockedGroundTruthRow(sample_id, item.annotation_id, burst_id, {"easy":"E", "medium":"M", "hard":"H"}[difficulty], item.category_id))
     if not expected:
-        raise ValueError("development role has no trusted objects")
+        raise ValueError("val2019 role has no trusted objects")
     return tuple(sorted(expected, key=lambda row: row.object_id))
 
 

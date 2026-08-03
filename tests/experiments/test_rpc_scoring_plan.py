@@ -34,7 +34,9 @@ from bakery_scanner.experiments.rpc_protocol import (
     stage_one_conditions,
 )
 from bakery_scanner.experiments.rpc_scoring import (
+    load_calibration_ground_truth,
     load_locked_ground_truth,
+    materialize_calibration_ground_truth,
     materialize_locked_ground_truth,
 )
 from bakery_scanner.experiments import rpc_scoring as _rpc_scoring
@@ -45,6 +47,8 @@ from bakery_scanner.experiments.rpc_support import SupportCandidate, materialize
 ROOT = Path(__file__).parents[2]
 _TEST_TRUSTED_ROOT = Path("C:/rpc-test-trusted-root")
 _public_load_locked_ground_truth = load_locked_ground_truth
+_public_load_calibration_ground_truth = load_calibration_ground_truth
+_public_materialize_calibration_ground_truth = materialize_calibration_ground_truth
 _public_materialize_locked_ground_truth = materialize_locked_ground_truth
 
 @lru_cache(maxsize=1)
@@ -79,7 +83,9 @@ _public_locked_conditions = locked_conditions
 _REAL_VERIFIED_DEFAULT_RPC_INDEX_LOADER = _rpc_scoring._load_verified_default_rpc_index
 
 
-def _install_trusted_index_for_test(index: RpcIndex) -> None:
+def _install_trusted_index_for_test(
+    index: RpcIndex, *, val_role: str = "development_selection"
+) -> None:
     """Private scorer seam; production APIs still require a trusted root."""
     _rpc_scoring._load_verified_default_rpc_index = lambda _root: index
     _rpc_scoring._build_canonical_scene_roles = lambda trusted: tuple(
@@ -89,7 +95,7 @@ def _install_trusted_index_for_test(index: RpcIndex) -> None:
             role=(
                 "locked_acceptance"
                 if image.split == "test2019"
-                else "development_selection"
+                else val_role
             ),
             burst_id=(
                 "burst"
@@ -133,6 +139,29 @@ def materialize_locked_ground_truth(
         scene_role_manifest_path,
         output,
         trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+
+
+def materialize_calibration_ground_truth(
+    source_manifest_path: Path,
+    scene_role_manifest_path: Path,
+    output: Path,
+    *,
+    trusted_index: RpcIndex,
+) -> None:
+    _install_trusted_index_for_test(trusted_index, val_role="calibration")
+    _public_materialize_calibration_ground_truth(
+        source_manifest_path,
+        scene_role_manifest_path,
+        output,
+        trusted_source_root=_TEST_TRUSTED_ROOT,
+    )
+
+
+def load_calibration_ground_truth(path: Path, *, trusted_index: RpcIndex):
+    _install_trusted_index_for_test(trusted_index, val_role="calibration")
+    return _public_load_calibration_ground_truth(
+        path, trusted_source_root=_TEST_TRUSTED_ROOT
     )
 
 
@@ -892,6 +921,41 @@ def test_locked_ground_truth_materializer_derives_the_full_source_cohort(
     )
 
     loaded = load_locked_ground_truth(output, trusted_index=_trusted_index())
+    assert {row.identity for row in loaded.rows} == {
+        ("novel", 1, "burst", "E", 1),
+        ("base", 2, "burst", "E", 2),
+    }
+
+
+def test_calibration_ground_truth_materializer_derives_authenticated_val_cohort(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "source.json"
+    _write_canonical(source_path, DEVELOPMENT_SOURCE_MANIFEST)
+    roles_path = tmp_path / "roles.json"
+    _write_canonical(
+        roles_path,
+        {
+            **DEVELOPMENT_SCENE_ROLE_MANIFEST,
+            "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "assignments": [
+                {
+                    **assignment,
+                    "role": "calibration"
+                    if assignment["split"] == "val2019"
+                    else assignment["role"],
+                }
+                for assignment in DEVELOPMENT_SCENE_ROLE_MANIFEST["assignments"]
+            ],
+        },
+    )
+    output = tmp_path / "calibration-ground-truth.json"
+
+    materialize_calibration_ground_truth(
+        source_path, roles_path, output, trusted_index=_trusted_index()
+    )
+
+    loaded = load_calibration_ground_truth(output, trusted_index=_trusted_index())
     assert {row.identity for row in loaded.rows} == {
         ("novel", 1, "burst", "E", 1),
         ("base", 2, "burst", "E", 2),
