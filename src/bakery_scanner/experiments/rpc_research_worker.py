@@ -87,8 +87,8 @@ class OracleFeatureRow:
     def __post_init__(self) -> None:
         if not isinstance(self.source_identity, str) or not self.source_identity:
             raise ValueError("source identity must be non-empty")
-        if type(self.annotation_id) is not int or self.annotation_id <= 0:
-            raise ValueError("annotation ID must be positive")
+        if type(self.annotation_id) is not int or self.annotation_id < 0:
+            raise ValueError("annotation ID must be non-negative")
         if type(self.category_id) is not int or self.category_id <= 0:
             raise ValueError("category ID must be positive")
         if not isinstance(self.difficulty, str) or len(self.difficulty) != 1:
@@ -228,8 +228,8 @@ class FeatureProvenance:
     def __post_init__(self) -> None:
         if not isinstance(self.source_identity, str) or not self.source_identity:
             raise ValueError("feature source identity must be non-empty")
-        if type(self.annotation_id) is not int or self.annotation_id <= 0:
-            raise ValueError("feature annotation ID must be positive")
+        if type(self.annotation_id) is not int or self.annotation_id < 0:
+            raise ValueError("feature annotation ID must be non-negative")
         for name in (
             "source_sha256",
             "repvit_global_array_sha256",

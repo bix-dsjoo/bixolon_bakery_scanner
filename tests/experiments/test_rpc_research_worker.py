@@ -44,6 +44,22 @@ def test_oracle_feature_row_is_bound_to_source_and_box():
     assert row.identity == "val2019:7:item.jpg:11"
 
 
+def test_research_feature_records_accept_zero_based_coco_annotation_id():
+    """RPC COCO annotation identifiers begin at zero in production input."""
+    oracle = OracleFeatureRow("train2019:0:item.jpg", 0, 7, (1.0, 2.0, 3.0, 4.0), "U")
+    provenance = FeatureProvenance(
+        "train2019:0:item.jpg",
+        0,
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "d" * 64,
+    )
+
+    assert oracle.identity == "train2019:0:item.jpg:0"
+    assert provenance.annotation_id == 0
+
+
 class _RepVitFeatureFixture(torch.nn.Module):
     def forward_features(self, batch: torch.Tensor) -> torch.Tensor:
         values = torch.arange(1, 385, dtype=torch.float32, device=batch.device)
