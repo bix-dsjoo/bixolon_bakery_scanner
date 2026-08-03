@@ -20,7 +20,7 @@ from .config import ClassifierConfig
 from .contracts import ModelScoreVector
 from .errors import DinoInferenceError
 from .local_bank import LocalPatchBank
-from .preprocess import build_transform
+from .preprocess import ClassifierPreprocessDescriptor, build_transform
 
 _SKU_IDS = tuple(range(1, 21))
 _EMBEDDING_DIMENSION = 384
@@ -91,29 +91,32 @@ class DinoV3Rechecker:
         self.device = device
 
     @classmethod
+    def validate_artifacts(
+        cls,
+        config: ClassifierConfig,
+        *,
+        expected_preprocess_sha256: str,
+    ) -> None:
+        """Admit static DINO evidence without constructing the conditional model."""
+        _load_validated_artifacts(
+            config,
+            expected_preprocess_sha256=expected_preprocess_sha256,
+        )
+
+    @classmethod
     def load(
         cls,
         config: ClassifierConfig,
         *,
         device: torch.device | None = None,
+        expected_preprocess_sha256: str | None = None,
     ) -> "DinoV3Rechecker":
-        dinov3 = config.dinov3
-        _verify_sha256(dinov3.weights, dinov3.weights_sha256, "weights")
-        _verify_sha256(dinov3.support, dinov3.support_sha256, "support")
-        _verify_sha256(config.repvit.manifest, config.repvit.manifest_sha256, "RepViT manifest")
-
-        weights = torch.load(dinov3.weights, map_location="cpu", weights_only=True)
-        support = torch.load(dinov3.support, map_location="cpu", weights_only=True)
-        transform = build_transform(config.preprocess.input_size)
-        prototypes = _validate_support(
-            support,
-            weights=weights,
-            weights_path=dinov3.weights,
-            weights_sha256=dinov3.weights_sha256,
-            repvit_manifest=config.repvit.manifest,
-            runtime_transform=transform,
+        weights, prototypes, transform = _load_validated_artifacts(
+            config,
+            expected_preprocess_sha256=expected_preprocess_sha256,
         )
 
+        dinov3 = config.dinov3
         target_device = device or torch.device(config.runtime.device.lower())
         model = vit_small(
             patch_size=16,
@@ -133,7 +136,6 @@ class DinoV3Rechecker:
             dinov3.artifact_id,
             target_device,
         )
-
     def score(self, crops: Sequence[Image.Image]) -> ModelScoreVector:
         if len(crops) != 3:
             raise ValueError("DINOv3 requires exactly three crops")
@@ -378,6 +380,30 @@ def _verify_sha256(path: Path, expected: str, label: str) -> None:
         raise ValueError(f"DINOv3 {label} SHA-256 mismatch")
 
 
+def _load_validated_artifacts(
+    config: ClassifierConfig,
+    *,
+    expected_preprocess_sha256: str | None,
+) -> tuple[object, torch.Tensor, Callable[[Image.Image], torch.Tensor]]:
+    dinov3 = config.dinov3
+    _verify_sha256(dinov3.weights, dinov3.weights_sha256, "weights")
+    _verify_sha256(dinov3.support, dinov3.support_sha256, "support")
+    _verify_sha256(config.repvit.manifest, config.repvit.manifest_sha256, "RepViT manifest")
+    weights = torch.load(dinov3.weights, map_location="cpu", weights_only=True)
+    support = torch.load(dinov3.support, map_location="cpu", weights_only=True)
+    transform = build_transform(config.preprocess.input_size)
+    prototypes = _validate_support(
+        support,
+        weights=weights,
+        weights_path=dinov3.weights,
+        weights_sha256=dinov3.weights_sha256,
+        repvit_manifest=config.repvit.manifest,
+        runtime_transform=transform,
+        expected_preprocess_sha256=expected_preprocess_sha256,
+    )
+    return weights, prototypes, transform
+
+
 def _product_patch_mask(box: Box, crop_size: tuple[int, int], token_count: int, device: torch.device) -> torch.Tensor:
     width, height = crop_size
     grid = int(token_count**0.5)
@@ -407,6 +433,7 @@ def _validate_support(
     weights_sha256: str,
     repvit_manifest: Path,
     runtime_transform: Callable[[Image.Image], torch.Tensor],
+    expected_preprocess_sha256: str | None = None,
 ) -> torch.Tensor:
     if not isinstance(value, dict):
         raise ValueError("DINOv3 support must be a mapping")
@@ -439,6 +466,16 @@ def _validate_support(
     runtime_metadata = _describe_transform(runtime_transform)
     if value.get("transform") != runtime_metadata:
         raise ValueError("DINOv3 support transform metadata does not match runtime transform")
+    if expected_preprocess_sha256 is not None:
+        descriptor = ClassifierPreprocessDescriptor()
+        metadata = value.get("oof_metadata")
+        if (
+            expected_preprocess_sha256 != descriptor.sha256()
+            or not isinstance(metadata, dict)
+            or metadata.get("preprocessing_sha256") != expected_preprocess_sha256
+            or metadata.get("preprocessing_descriptor") != descriptor.to_payload()
+        ):
+            raise ValueError("DINOv3 support OOF preprocessing descriptor or SHA-256 mismatch")
 
     prototypes = value.get("prototypes")
     _validate_prototypes(prototypes)

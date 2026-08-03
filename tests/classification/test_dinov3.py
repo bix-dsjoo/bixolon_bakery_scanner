@@ -23,6 +23,7 @@ from bakery_scanner.classification.dinov3 import (
 )
 from bakery_scanner.classification.local_bank import LocalPatchBank
 from bakery_scanner.classification.preprocess import build_transform
+from bakery_scanner.classification.preprocess import ClassifierPreprocessDescriptor
 
 
 _SKU_IDS = tuple(range(1, 21))
@@ -455,6 +456,26 @@ def test_load_rejects_unknown_support_schema(monkeypatch, tmp_path):
     _fail_on_model_construction(monkeypatch)
     with pytest.raises(ValueError, match="schema_version"):
         DinoV3Rechecker.load(config, device=torch.device("cpu"))
+
+
+@pytest.mark.parametrize("value", (None, "legacy"))
+def test_static_load_rejects_missing_or_mismatched_oof_preprocess(monkeypatch, tmp_path, value):
+    descriptor = ClassifierPreprocessDescriptor()
+    support = _valid_support()
+    if value is not None:
+        support["oof_metadata"] = {
+            "preprocessing_descriptor": descriptor.to_payload(),
+            "preprocessing_sha256": "0" * 64,
+        }
+    config = _write_fake_artifacts(tmp_path, support)
+    _fail_on_model_construction(monkeypatch)
+
+    with pytest.raises(ValueError, match="OOF preprocessing"):
+        DinoV3Rechecker.load(
+            config,
+            device=torch.device("cpu"),
+            expected_preprocess_sha256=descriptor.sha256(),
+        )
 
 
 def test_load_canonicalizes_default_cuda_device(monkeypatch, tmp_path):

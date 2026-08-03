@@ -379,8 +379,9 @@ class ClassifierPipeline:
             fusion_policy is not None
             and fusion_policy.schema_version == 3
             and fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
-            and fusion_policy.artifact_hashes["preprocess_sha256"] == ClassifierPreprocessDescriptor().sha256()
         )
+        if static_policy and fusion_policy.artifact_hashes["preprocess_sha256"] != ClassifierPreprocessDescriptor().sha256():
+            raise ValueError("schema-3 fusion policy requires static preprocessing identity")
         active_preprocess_sha256 = (
             ClassifierPreprocessDescriptor().sha256()
             if static_policy else preprocess_sha256(config.preprocess)
@@ -417,7 +418,20 @@ class ClassifierPipeline:
                 calibration_id=f"fusion_policy_{fusion_policy.decision_rule}",
                 calibration_sha256=hashlib.sha256(fusion_payload).hexdigest(),
             )
-        repvit = RepVitM1Runner.load(config)
+        admitted_local_bank = None
+        if static_policy:
+            DinoV3Rechecker.validate_artifacts(
+                config,
+                expected_preprocess_sha256=active_preprocess_sha256,
+            )
+            admitted_local_bank = _load_local_bank(
+                config,
+                preprocess_identity=active_preprocess_sha256,
+            )
+        repvit = RepVitM1Runner.load(
+            config,
+            **({"expected_preprocess_sha256": active_preprocess_sha256} if static_policy else {}),
+        )
         if "repvit" in config.runtime.compile_models:
             repvit.model = torch.compile(repvit.model)
         if config.repvit.prototype_bank is None or config.repvit.prototype_bank_sha256 is None:
@@ -431,12 +445,20 @@ class ClassifierPipeline:
         return cls(
             config=config,
             repvit=repvit,
-            dino_loader=lambda: DinoV3Rechecker.load(config),
+            dino_loader=lambda: DinoV3Rechecker.load(
+                config,
+                **({"expected_preprocess_sha256": active_preprocess_sha256} if static_policy else {}),
+            ),
             policy=policy,
             prototype_bank=prototype_bank,
             fusion_policy=fusion_policy,
             fusion_provenance=fusion_provenance,
-            local_bank_loader=lambda: _load_local_bank(config, preprocess_identity=active_preprocess_sha256),
+            local_bank=admitted_local_bank,
+            local_bank_loader=(
+                None
+                if static_policy
+                else lambda: _load_local_bank(config, preprocess_identity=active_preprocess_sha256)
+            ),
             stage_timing_sink=stage_timing_sink,
         )
 
@@ -985,7 +1007,6 @@ class ClassifierPipeline:
             self.fusion_policy is not None
             and self.fusion_policy.schema_version == 3
             and self.fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
-            and self.fusion_policy.artifact_hashes["preprocess_sha256"] == ClassifierPreprocessDescriptor().sha256()
         )
 
     def _score_tight_context_chunk(
@@ -1379,6 +1400,7 @@ def _load_local_bank(config: ClassifierConfig, *, preprocess_identity: str | Non
         config.dinov3.local_bank,
         dino_weights_sha256=config.dinov3.weights_sha256,
         preprocess_sha256=preprocess_identity or preprocess_sha256(config.preprocess),
+        **({"expected_oof_preprocess_sha256": preprocess_identity} if preprocess_identity == ClassifierPreprocessDescriptor().sha256() else {}),
     )
     if bank.sha256 != config.dinov3.local_bank_sha256:
         raise ValueError("DINO local patch bank SHA-256 mismatch")

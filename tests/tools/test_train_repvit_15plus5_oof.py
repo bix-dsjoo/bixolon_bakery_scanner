@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import sys
 from pathlib import Path
@@ -9,11 +11,14 @@ import pytest
 import torch
 from PIL import Image
 
+from bakery_scanner.contracts import Box
+
 from tools.train.train_repvit_15plus5_oof import (
     CalibrationCheckpoint,
     CANONICAL_CLASS_MAP,
     EvidenceSource,
     FoldSources,
+    LoadedExample,
     TorchRepVitTrainingBackend,
     balanced_epoch_rows,
     build_repvit_sources,
@@ -128,6 +133,44 @@ def test_torch_backend_initializes_20_way_head_from_declared_base(monkeypatch, t
     assert torch.equal(loaded.stem.weight, base_model.stem.weight)
 
 
+def test_training_step_keeps_frozen_early_batchnorm_buffers_immutable() -> None:
+    class Model(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stem = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3, padding=1), torch.nn.BatchNorm2d(4))
+            self.stages = torch.nn.ModuleList((
+                torch.nn.Sequential(torch.nn.Conv2d(4, 4, 3, padding=1), torch.nn.BatchNorm2d(4)),
+                torch.nn.Sequential(torch.nn.Conv2d(4, 4, 3, padding=1), torch.nn.BatchNorm2d(4)),
+            ))
+            self.head = torch.nn.Linear(4, 20)
+
+        def forward(self, value):
+            value = self.stem(value)
+            for stage in self.stages:
+                value = stage(value)
+            return self.head(value.mean(dim=(2, 3)))
+
+    model = Model()
+    configure_repvit_trainable_parameters(model)
+    early_bn = model.stages[0][1]
+    before_buffers = tuple(value.detach().clone() for value in (
+        early_bn.running_mean, early_bn.running_var, early_bn.num_batches_tracked,
+    ))
+    before_head = model.head.weight.detach().clone()
+    source = EvidenceSource(1, "isolated", "fixture", None, "a" * 64)
+    example = LoadedExample(
+        source,
+        (Image.new("RGB", (16, 16), "white"),),
+        (Box(0, 0, 16, 16),),
+    )
+
+    TorchRepVitTrainingBackend(device="cpu", batch_size=1).train_epoch(model, (example,), seed=1)
+
+    after_buffers = (early_bn.running_mean, early_bn.running_var, early_bn.num_batches_tracked)
+    assert all(torch.equal(before, after) for before, after in zip(before_buffers, after_buffers, strict=True))
+    assert not torch.equal(before_head, model.head.weight)
+
+
 def test_checkpoint_selection_uses_only_calibration_role(tmp_path: Path) -> None:
     candidates = (
         CalibrationCheckpoint(1, tmp_path / "epoch-1.pt", "calibration", 0.4),
@@ -226,27 +269,83 @@ def _sha256(path: Path) -> str:
 
 
 def test_runtime_receipt_verifies_interpreter_package_and_artifact_bytes(tmp_path: Path) -> None:
-    module = tmp_path / "module.py"
-    module.write_bytes(b"module")
+    module = Path(importlib.import_module("pytest").__file__).resolve()
     base = tmp_path / "base.pt"
     base.write_bytes(b"base")
     payload = {
         "schema_version": 1,
         "interpreter": {"path": str(Path(sys.executable).resolve()), "bytes": Path(sys.executable).stat().st_size, "sha256": _sha256(Path(sys.executable))},
-        "packages": {"fixture": {"version": "1.0", "module_path": str(module.resolve()), "bytes": module.stat().st_size, "sha256": _sha256(module)}},
+        "packages": {"pytest": {"distribution": "pytest", "version": importlib.metadata.version("pytest"), "module_path": str(module), "bytes": module.stat().st_size, "sha256": _sha256(module)}},
         "artifacts": {"base": {"path": str(base.resolve()), "bytes": base.stat().st_size, "sha256": _sha256(base)}},
     }
     payload["receipt_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     receipt = tmp_path / "runtime.json"
     receipt.write_text(json.dumps(payload), encoding="utf-8")
 
-    verified = verify_runtime_receipt(receipt, required_packages=("fixture",), required_artifacts={"base": base})
+    verified = verify_runtime_receipt(receipt, required_packages=("pytest",), required_artifacts={"base": base})
 
     assert verified["receipt_sha256"] == payload["receipt_sha256"]
     blank = tmp_path / "blank.json"
     blank.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="runtime receipt"):
-        verify_runtime_receipt(blank, required_packages=("fixture",), required_artifacts={"base": base})
+        verify_runtime_receipt(blank, required_packages=("pytest",), required_artifacts={"base": base})
+
+
+@pytest.mark.parametrize("mutation", ("module_path", "version"))
+def test_runtime_receipt_rejects_package_path_substitution_or_version_mismatch(tmp_path: Path, mutation: str) -> None:
+    module = Path(importlib.import_module("pytest").__file__).resolve()
+    substitute = tmp_path / "pytest.py"
+    substitute.write_bytes(module.read_bytes())
+    base = tmp_path / "base.pt"
+    base.write_bytes(b"base")
+    package = {
+        "distribution": "pytest",
+        "version": importlib.metadata.version("pytest"),
+        "module_path": str(module),
+        "bytes": module.stat().st_size,
+        "sha256": _sha256(module),
+    }
+    if mutation == "module_path":
+        package["module_path"] = str(substitute.resolve())
+    else:
+        package["version"] = "9999.0"
+    payload = {
+        "schema_version": 1,
+        "interpreter": {"path": str(Path(sys.executable).resolve()), "bytes": Path(sys.executable).stat().st_size, "sha256": _sha256(Path(sys.executable))},
+        "packages": {"pytest": package},
+        "artifacts": {"base": {"path": str(base.resolve()), "bytes": base.stat().st_size, "sha256": _sha256(base)}},
+    }
+    payload["receipt_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    receipt = tmp_path / "runtime.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="package pytest"):
+        verify_runtime_receipt(receipt, required_packages=("pytest",), required_artifacts={"base": base})
+
+
+def test_runtime_receipt_rejects_import_shadow_not_owned_by_distribution(monkeypatch, tmp_path: Path) -> None:
+    genuine_module = Path(importlib.import_module("pytest").__file__).resolve()
+    shadow = tmp_path / "pytest.py"
+    shadow.write_bytes(genuine_module.read_bytes())
+    base = tmp_path / "base.pt"
+    base.write_bytes(b"base")
+    payload = {
+        "schema_version": 1,
+        "interpreter": {"path": str(Path(sys.executable).resolve()), "bytes": Path(sys.executable).stat().st_size, "sha256": _sha256(Path(sys.executable))},
+        "packages": {"pytest": {"distribution": "pytest", "version": importlib.metadata.version("pytest"), "module_path": str(shadow.resolve()), "bytes": shadow.stat().st_size, "sha256": _sha256(shadow)}},
+        "artifacts": {"base": {"path": str(base.resolve()), "bytes": base.stat().st_size, "sha256": _sha256(base)}},
+    }
+    payload["receipt_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    receipt = tmp_path / "runtime.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    real_import = importlib.import_module
+    monkeypatch.setattr(
+        "tools.train.train_repvit_15plus5_oof.importlib.import_module",
+        lambda name: type("Shadow", (), {"__file__": str(shadow)})() if name == "pytest" else real_import(name),
+    )
+
+    with pytest.raises(ValueError, match="distribution.*own"):
+        verify_runtime_receipt(receipt, required_packages=("pytest",), required_artifacts={"base": base})
 
 
 def test_canonical_split_admission_rejects_self_hashed_reassignment(tmp_path: Path) -> None:
@@ -287,7 +386,20 @@ def test_multifold_failure_retains_pending_evidence_without_publishing(tmp_path:
         return _write_fold_fixture(pending, fold_index)
 
     with pytest.raises(RuntimeError, match="fold two"):
-        run_output_transaction(output, (0, 1), producer="repvit", fold_action=fail_second)
+        run_output_transaction(
+            output,
+            (0, 1),
+            producer="repvit",
+            fold_action=fail_second,
+            failure_context={
+                "base_checkpoint": {"path": "C:/base.pt", "bytes": 4, "sha256": "a" * 64},
+                "runtime_identity": {"receipt_sha256": "b" * 64},
+                "source_manifest_sha256": "c" * 64,
+                "preprocess_sha256": "d" * 64,
+                "code_sha256": "e" * 64,
+            },
+            failure_unresolved_roles=("repvit_fold_artifacts",),
+        )
 
     assert not output.exists()
     pending = list(tmp_path.glob(".published.pending-*"))
@@ -296,6 +408,11 @@ def test_multifold_failure_retains_pending_evidence_without_publishing(tmp_path:
     failure = json.loads((pending[0] / "transaction.json").read_text(encoding="utf-8"))
     assert failure["status"] == "failed_incomplete_transaction"
     assert failure["completed_folds"] == [0]
+    assert failure["resolved_context"]["base_checkpoint"]["sha256"] == "a" * 64
+    assert failure["unresolved_roles"] == ["repvit_fold_artifacts"]
+    fold_receipt = json.loads((pending[0] / "fold-1" / "receipt.json").read_text(encoding="utf-8"))
+    assert fold_receipt["resolved_context"] == failure["resolved_context"]
+    assert fold_receipt["unresolved_roles"] == ["repvit_fold_artifacts"]
 
 
 def _write_fold_fixture(root: Path, fold_index: int) -> dict[str, object]:

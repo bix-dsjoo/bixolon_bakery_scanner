@@ -236,6 +236,7 @@ def support_metadata(
         "model_id": "dinov3_vits16_15plus5_v1",
         "weights_sha256": weights_sha256,
         "preprocessing_sha256": preprocessing_sha256,
+        "preprocessing_descriptor": ClassifierPreprocessDescriptor().to_payload(),
         "fold_index": rows.fold_index,
         "fold_manifest_sha256": rows.fold_manifest_sha256,
         "source_manifest_sha256": rows.source_manifest_sha256,
@@ -487,7 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     selected = tuple(range(5)) if arguments.fold == "all" else (int(arguments.fold),)
     output = arguments.output.resolve()
-    context = _input_context(arguments.splits)
+    context = _input_context(arguments.splits, code_path=Path(__file__))
     missing = []
     for label, path in (("DINO weights", arguments.weights), ("runtime receipt", arguments.runtime_receipt)):
         if path is None or not path.is_file():
@@ -500,11 +501,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if not _is_sha256(arguments.weights_sha256) or _file_sha256(arguments.weights) != arguments.weights_sha256:
         return _unverified(output, selected, status="unverified_dinov3_weights_hash_mismatch", detail="declared DINOv3 weights SHA-256 did not verify", context=context, unresolved_roles=("dinov3_weights_identity",))
+    resolved_files = {"dinov3_weights": arguments.weights}
+    context = _input_context(arguments.splits, resolved_files=resolved_files, code_path=Path(__file__))
     try:
         sources = load_fold_sources(arguments.dataset_root, arguments.splits)
     except Exception as exc:
         return _unverified(output, selected, status="unverified_dinov3_sources", detail=f"verified fold sources unavailable: {type(exc).__name__}: {exc}", context=context, unresolved_roles=("canonical_sources",))
-    context = _input_context(arguments.splits, sources=sources)
+    context = _input_context(
+        arguments.splits,
+        sources=sources,
+        resolved_files={**resolved_files, "runtime_receipt_candidate": arguments.runtime_receipt},
+        code_path=Path(__file__),
+    )
     try:
         runtime_identity = verify_runtime_receipt(
             arguments.runtime_receipt,
@@ -513,6 +521,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except Exception as exc:
         return _unverified(output, selected, status="unverified_dinov3_runtime", detail=f"runtime receipt verification failed: {type(exc).__name__}: {exc}", context=context, unresolved_roles=("runtime_identity",))
+    context = _input_context(
+        arguments.splits,
+        sources=sources,
+        runtime_identity=runtime_identity,
+        resolved_files={**resolved_files, "runtime_receipt": arguments.runtime_receipt},
+        code_path=Path(__file__),
+    )
     extractor_holder: dict[str, TorchDinoSupportExtractor] = {}
 
     def build_fold(fold_index: int, pending: Path) -> dict[str, object]:
@@ -536,6 +551,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected,
         producer="dinov3_vits16_15plus5_oof",
         fold_action=build_fold,
+        failure_context=context,
+        failure_unresolved_roles=("dinov3_fold_artifacts",),
     )
     return 0
 

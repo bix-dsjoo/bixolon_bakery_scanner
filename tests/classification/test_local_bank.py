@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from bakery_scanner.classification.local_bank import LocalPatchBank, source_balanced_coreset
+from bakery_scanner.classification.preprocess import ClassifierPreprocessDescriptor
 
 
 def _payload(*, weights_sha256: str = "a" * 64):
@@ -34,6 +35,26 @@ def test_local_bank_rejects_mismatched_dino_hash_and_scores_masked_tokens(tmp_pa
 
     assert scores == {6: pytest.approx(1.0)}
     assert hashlib.sha256(path.read_bytes()).hexdigest() == bank.sha256
+
+
+def test_static_local_bank_rejects_nested_oof_preprocess_mismatch(tmp_path):
+    descriptor = ClassifierPreprocessDescriptor()
+    payload = _payload()
+    payload["preprocess_sha256"] = descriptor.sha256()
+    payload["oof_metadata"] = {
+        "preprocessing_descriptor": descriptor.to_payload(),
+        "preprocessing_sha256": "0" * 64,
+    }
+    path = tmp_path / "bank.pt"
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="OOF preprocessing"):
+        LocalPatchBank.load(
+            path,
+            dino_weights_sha256="a" * 64,
+            preprocess_sha256=descriptor.sha256(),
+            expected_oof_preprocess_sha256=descriptor.sha256(),
+        )
 
 
 def test_local_bank_averages_each_query_patch_top_three_reference_matches(tmp_path):

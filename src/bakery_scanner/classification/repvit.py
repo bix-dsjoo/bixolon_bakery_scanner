@@ -13,9 +13,11 @@ import timm
 import torch
 from PIL import Image
 
+from bakery_scanner.pipelines.rtx5080_15plus5.contracts import CANONICAL_SKUS
+
 from .config import ClassifierConfig
 from .contracts import ModelScoreVector
-from .preprocess import build_transform
+from .preprocess import ClassifierPreprocessDescriptor, build_transform
 
 _SKU_IDS = tuple(range(1, 21))
 
@@ -48,6 +50,12 @@ class RepVitPrototypeBank:
             raise ValueError("RepViT prototype artifact is invalid")
         if payload.get("checkpoint_sha256") != checkpoint_sha256 or payload.get("preprocess_sha256") != expected_preprocess_sha256:
             raise ValueError("RepViT prototype artifact provenance mismatch")
+        static_descriptor = ClassifierPreprocessDescriptor()
+        if (
+            expected_preprocess_sha256 == static_descriptor.sha256()
+            and payload.get("preprocess_descriptor") != static_descriptor.to_payload()
+        ):
+            raise ValueError("RepViT prototype artifact preprocess descriptor mismatch")
         value = payload.get("prototypes")
         if not isinstance(value, torch.Tensor) or tuple(value.shape) != (20, 384) or not torch.isfinite(value).all().item():
             raise ValueError("RepViT prototypes must have shape (20, 384)")
@@ -78,14 +86,20 @@ class RepVitM1Runner:
         self.device = device
 
     @classmethod
-    def load(cls, config: ClassifierConfig, *, device: torch.device | None = None) -> "RepVitM1Runner":
+    def load(
+        cls,
+        config: ClassifierConfig,
+        *,
+        device: torch.device | None = None,
+        expected_preprocess_sha256: str | None = None,
+    ) -> "RepVitM1Runner":
         repvit = config.repvit
         _verify_sha256(repvit.checkpoint, repvit.checkpoint_sha256, "checkpoint")
         _verify_sha256(repvit.manifest, repvit.manifest_sha256, "manifest")
         checkpoint = torch.load(repvit.checkpoint, map_location="cpu", weights_only=True)
         class_index = checkpoint.get("class_index") if isinstance(checkpoint, dict) else None
         _require_class_index(class_index)
-        _require_manifest_class_map(repvit.manifest)
+        _require_manifest_class_map(repvit.manifest, expected_preprocess_sha256=expected_preprocess_sha256)
         if device is None:
             device = torch.device(config.runtime.device.lower())
         model = timm.create_model("repvit_m1", pretrained=False, num_classes=20)
@@ -239,12 +253,20 @@ def _require_class_index(value: object) -> None:
         raise ValueError("RepViT checkpoint class_index must map {1: 0, ..., 20: 19}")
 
 
-def _require_manifest_class_map(path: Path) -> None:
+def _require_manifest_class_map(path: Path, *, expected_preprocess_sha256: str | None = None) -> None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         class_map = payload["class_map"]
-        sku_ids = tuple(row["id"] for row in class_map)
     except (OSError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise ValueError("RepViT manifest class_map is invalid") from exc
-    if sku_ids != _SKU_IDS:
-        raise ValueError("RepViT manifest class_map must match checkpoint canonical class order")
+    expected_class_map = [{"id": sku_id, "name": name} for sku_id, name in CANONICAL_SKUS.items()]
+    if class_map != expected_class_map:
+        raise ValueError("RepViT manifest class_map must match the exact canonical ID/name order")
+    if expected_preprocess_sha256 is not None:
+        descriptor = ClassifierPreprocessDescriptor()
+        if (
+            expected_preprocess_sha256 != descriptor.sha256()
+            or payload.get("preprocess_sha256") != expected_preprocess_sha256
+            or payload.get("preprocess_descriptor") != descriptor.to_payload()
+        ):
+            raise ValueError("RepViT manifest static preprocess descriptor or SHA-256 mismatch")

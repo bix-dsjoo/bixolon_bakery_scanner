@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import math
 import os
@@ -158,7 +160,19 @@ def configure_repvit_trainable_parameters(model: object) -> tuple[str, ...]:
     final_prefix = f"stages.{len(stages) - 1}."
     if not selected or any(not name.startswith((final_prefix, "head.")) for name in selected):
         raise ValueError("RepViT trainable parameters must be limited to final stage and head")
+    _set_repvit_finetune_mode(model)
     return selected
+
+
+def _set_repvit_finetune_mode(model: object) -> None:
+    """Keep frozen modules deterministic while enabling only the declared trainable branches."""
+    stages = getattr(model, "stages", None)
+    head = getattr(model, "head", None)
+    if not isinstance(model, torch.nn.Module) or stages is None or head is None or len(stages) < 1:
+        raise ValueError("RepViT fine-tune mode requires stages and head")
+    model.eval()
+    stages[-1].train()
+    head.train()
 
 
 def select_calibration_checkpoint(
@@ -233,6 +247,7 @@ class TorchRepVitTrainingBackend:
         if self._optimizer is None:
             self._optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=self.learning_rate)
         model.train()
+        _set_repvit_finetune_mode(model)
         total_loss = 0.0
         count = 0
         for start in range(0, len(examples), self.batch_size):
@@ -358,6 +373,7 @@ def run_fold_training(
             "artifact_type": "repvit_m1_15plus5_feature_prototypes",
             "checkpoint_sha256": _file_sha256(checkpoint_path),
             "preprocess_sha256": descriptor_sha256,
+            "preprocess_descriptor": ClassifierPreprocessDescriptor().to_payload(),
             "class_order": list(CANONICAL_CLASS_ORDER),
             "prototypes": prototypes.detach().cpu().float(),
         }, prototype_path)
@@ -370,6 +386,7 @@ def run_fold_training(
             "checkpoint_sha256": _file_sha256(checkpoint_path),
             "prototype_bank_sha256": _file_sha256(prototype_path),
             "preprocess_sha256": descriptor_sha256,
+            "preprocess_descriptor": ClassifierPreprocessDescriptor().to_payload(),
             "fold_manifest_sha256": training_rows.fold_manifest_sha256,
             "source_manifest_sha256": training_rows.source_manifest_sha256,
         })
@@ -593,9 +610,30 @@ def verify_runtime_receipt(
     if not isinstance(packages, dict) or not set(required_packages) <= set(packages):
         raise ValueError("runtime receipt required packages are missing")
     for name, record in packages.items():
-        if not isinstance(record, dict) or not isinstance(record.get("version"), str) or not record["version"]:
+        if not isinstance(record, dict):
             raise ValueError(f"runtime receipt package {name} is invalid")
-        _verify_declared_file(record, Path(str(record.get("module_path", ""))).resolve(), label=f"package {name}", path_key="module_path")
+        try:
+            module = importlib.import_module(name)
+            module_file = getattr(module, "__file__", None)
+            distribution = importlib.metadata.distribution(name)
+            actual_version = distribution.version
+        except (ImportError, importlib.metadata.PackageNotFoundError) as exc:
+            raise ValueError(f"runtime receipt package {name} is not installed") from exc
+        if (
+            not isinstance(module_file, str)
+            or not module_file
+            or record.get("distribution") != name
+            or record.get("version") != actual_version
+        ):
+            raise ValueError(f"runtime receipt package {name} version is invalid")
+        resolved_module = Path(module_file).resolve()
+        installed_files = distribution.files
+        if installed_files is None or not any(
+            Path(distribution.locate_file(entry)).resolve() == resolved_module
+            for entry in installed_files
+        ):
+            raise ValueError(f"runtime receipt package {name} distribution does not own imported module")
+        _verify_declared_file(record, resolved_module, label=f"package {name}", path_key="module_path")
     artifacts = payload["artifacts"]
     if not isinstance(artifacts, dict) or not set(required_artifacts) <= set(artifacts):
         raise ValueError("runtime receipt required artifacts are missing")
@@ -606,7 +644,7 @@ def verify_runtime_receipt(
 
 
 def _verify_declared_file(record: Mapping[str, object], expected: Path, *, label: str, path_key: str = "path") -> None:
-    if set(record) - {path_key, "bytes", "sha256", "version"} or Path(str(record.get(path_key, ""))).resolve() != expected:
+    if set(record) - {path_key, "bytes", "sha256", "version", "distribution"} or Path(str(record.get(path_key, ""))).resolve() != expected:
         raise ValueError(f"runtime receipt {label} path is invalid")
     if not expected.is_file() or record.get("bytes") != expected.stat().st_size or not _is_sha256(record.get("sha256")) or _file_sha256(expected) != record["sha256"]:
         raise ValueError(f"runtime receipt {label} bytes are invalid")
@@ -667,6 +705,8 @@ def run_output_transaction(
     producer: str,
     fold_action: Callable[[int, Path], dict[str, object]],
     transaction_status: str = "verified_success",
+    failure_context: Mapping[str, object] | None = None,
+    failure_unresolved_roles: Sequence[str] = (),
 ) -> tuple[dict[str, object], ...]:
     """Publish a requested fold set only after every fold reaches a terminal receipt."""
     output = Path(output).resolve()
@@ -694,6 +734,19 @@ def run_output_transaction(
         os.replace(pending, output)
         return tuple(receipts)
     except Exception as exc:
+        resolved_context = dict(failure_context or {})
+        for fold_index in selected:
+            receipt_path = pending / f"fold-{fold_index}" / _RECEIPT_NAME
+            if not receipt_path.exists():
+                _write_json_new(receipt_path, {
+                    "schema_version": 1,
+                    "producer": producer,
+                    "fold_index": fold_index,
+                    "status": "unverified_failed_transaction",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                    "resolved_context": resolved_context,
+                    "unresolved_roles": list(failure_unresolved_roles),
+                })
         _write_json_new(pending / "transaction.json", {
             "schema_version": 1,
             "producer": producer,
@@ -702,6 +755,8 @@ def run_output_transaction(
             "completed_folds": completed,
             "error_type": type(exc).__name__,
             "error": str(exc),
+            "resolved_context": resolved_context,
+            "unresolved_roles": list(failure_unresolved_roles),
         })
         raise
 
@@ -711,8 +766,11 @@ def _input_context(
     *,
     sources: FoldSources | None = None,
     runtime_identity: Mapping[str, object] | None = None,
+    resolved_files: Mapping[str, Path] | None = None,
+    code_path: Path | None = None,
 ) -> dict[str, object]:
     split_root = Path(split_root).resolve()
+    resolved_code = Path(code_path or __file__).resolve()
     split_files = {
         path.name: {"bytes": path.stat().st_size, "sha256": _file_sha256(path)}
         for path in sorted(split_root.glob("*.json")) if path.is_file()
@@ -721,12 +779,26 @@ def _input_context(
         "preprocess_sha256": ClassifierPreprocessDescriptor().sha256(),
         "split_root": str(split_root),
         "split_files": split_files,
+        "code": {
+            "path": str(resolved_code),
+            "bytes": resolved_code.stat().st_size,
+            "sha256": _file_sha256(resolved_code),
+        },
     }
     if sources is not None:
         context["source_manifest_sha256"] = sources.source_manifest_sha256
         context["fold_manifest_sha256"] = {str(key): value for key, value in sources.fold_manifest_sha256.items()}
     if runtime_identity is not None:
         context["runtime_identity"] = dict(runtime_identity)
+    if resolved_files is not None:
+        context["resolved_files"] = {
+            role: {
+                "path": str(Path(path).resolve()),
+                "bytes": Path(path).stat().st_size,
+                "sha256": _file_sha256(Path(path)),
+            }
+            for role, path in resolved_files.items()
+        }
     return context
 
 
@@ -796,11 +868,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if not _is_sha256(arguments.base_checkpoint_sha256) or _file_sha256(arguments.base_checkpoint) != arguments.base_checkpoint_sha256:
         return _unverified_receipts(output, selected, status="unverified_repvit_base_hash_mismatch", detail="declared RepViT base checkpoint SHA-256 did not verify", context=context, unresolved_roles=("base_checkpoint_identity",))
+    resolved_files = {"base_checkpoint": arguments.base_checkpoint}
+    context = _input_context(arguments.splits, resolved_files=resolved_files)
     try:
         sources = load_fold_sources(arguments.dataset_root, arguments.splits)
     except Exception as exc:
         return _unverified_receipts(output, selected, status="unverified_repvit_sources", detail=f"verified fold sources unavailable: {type(exc).__name__}: {exc}", context=context, unresolved_roles=("canonical_sources",))
-    context = _input_context(arguments.splits, sources=sources)
+    context = _input_context(
+        arguments.splits,
+        sources=sources,
+        resolved_files={**resolved_files, "runtime_receipt_candidate": arguments.runtime_receipt},
+    )
     try:
         runtime_identity = verify_runtime_receipt(
             arguments.runtime_receipt,
@@ -809,6 +887,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except Exception as exc:
         return _unverified_receipts(output, selected, status="unverified_repvit_runtime", detail=f"runtime receipt verification failed: {type(exc).__name__}: {exc}", context=context, unresolved_roles=("runtime_identity",))
+    context = _input_context(
+        arguments.splits,
+        sources=sources,
+        runtime_identity=runtime_identity,
+        resolved_files={**resolved_files, "runtime_receipt": arguments.runtime_receipt},
+    )
     run_output_transaction(
         output,
         selected,
@@ -823,6 +907,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root=pending,
             epochs=arguments.epochs,
         ),
+        failure_context=context,
+        failure_unresolved_roles=("repvit_fold_artifacts",),
     )
     return 0
 

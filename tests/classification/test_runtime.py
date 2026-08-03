@@ -496,11 +496,16 @@ def test_static_preprocess_hash_is_distinct_and_mismatch_aborts_before_repvit():
     aggregate = _repvit_scores({6: 0.80, 5: 0.20})
     repvit = StaticPairRunner((_paired_evidence(aggregate),))
 
+    pipeline = _static_pipeline(
+        repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=object(),
+    )
+    assert pipeline.fusion_policy is not None
+    hashes = dict(pipeline.fusion_policy.artifact_hashes)
+    hashes["preprocess_sha256"] = legacy_hash
+    pipeline.fusion_policy = replace(pipeline.fusion_policy, artifact_hashes=hashes)
+
     with pytest.raises(ValueError, match="static preprocessing"):
-        _fusion_pipeline(
-            mode="batch_pytorch", repvit=repvit,
-            dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=object(),
-        ).infer_many(
+        pipeline.infer_many(
             _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
         )
 
@@ -952,7 +957,7 @@ def test_runtime_fusion_local_agreement_uses_dino_evidence_despite_risk_abstenti
     assert result.provenance.calibration_id == "fusion_policy_v1"
 
 
-def test_runtime_records_high_margin_consensus_abstention_reason():
+def test_legacy_runtime_rejects_schema3_consensus_policy():
     config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
     selected = _calibration(direct_threshold=0.99)
     provenance = ModelProvenance(
@@ -987,10 +992,8 @@ def test_runtime_records_high_margin_consensus_abstention_reason():
         fusion_provenance=replace(provenance, calibration_id="fusion_policy_v1", calibration_sha256="9" * 64),
     )
 
-    result = pipeline.infer(_image(), _box())
-
-    assert result.decision == "unknown"
-    assert result.unknown_reason == "fusion_global_consensus_margin"
+    with pytest.raises(ValueError, match="schema-3 static policy"):
+        pipeline.infer(_image(), _box())
 
 
 def test_recheck_confirmation_keeps_fused_confidence_meaning():
@@ -1279,6 +1282,115 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
     assert dino_loads == 0
 
 
+def test_load_rejects_schema3_policy_bound_to_legacy_preprocess(monkeypatch, tmp_path):
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    calibration = _calibration(
+        repvit_checkpoint_sha256=config.repvit.checkpoint_sha256,
+        repvit_manifest_sha256=config.repvit.manifest_sha256,
+        repvit_prototype_sha256=config.repvit.prototype_bank_sha256,
+        dinov3_weights_sha256=config.dinov3.weights_sha256,
+        dinov3_support_sha256=config.dinov3.support_sha256,
+        preprocess_sha256=preprocess_sha256(config.preprocess),
+    )
+    calibration_path = tmp_path / "policy.json"
+    calibration_path.write_bytes(calibration.to_json_bytes())
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": preprocess_sha256(config.preprocess),
+        },
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    fusion_path = tmp_path / "fusion.json"
+    fusion_path.write_bytes(fusion.to_json_bytes())
+    configured = config.model_copy(update={
+        "calibration": config.calibration.model_copy(update={
+            "artifact": calibration_path,
+            "fusion_policy": fusion_path,
+            "fusion_policy_sha256": hashlib.sha256(fusion_path.read_bytes()).hexdigest(),
+        })
+    })
+    monkeypatch.setattr("bakery_scanner.classification.runtime.ClassifierConfig.load", lambda path: configured)
+    monkeypatch.setattr("bakery_scanner.classification.runtime.RepVitM1Runner.load", lambda *args, **kwargs: pytest.fail("models must not load"))
+
+    with pytest.raises(ValueError, match="schema-3.*static preprocessing"):
+        ClassifierPipeline.load(tmp_path / "classifier.yaml")
+
+
+@pytest.mark.parametrize("invalid_artifact", ("dino_support", "local_bank"))
+def test_schema3_load_eagerly_admits_dino_metadata_before_repvit_or_inference(
+    monkeypatch, tmp_path, invalid_artifact
+):
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    static_sha256 = ClassifierPreprocessDescriptor().sha256()
+    calibration = _calibration(
+        repvit_checkpoint_sha256=config.repvit.checkpoint_sha256,
+        repvit_manifest_sha256=config.repvit.manifest_sha256,
+        repvit_prototype_sha256=config.repvit.prototype_bank_sha256,
+        dinov3_weights_sha256=config.dinov3.weights_sha256,
+        dinov3_support_sha256=config.dinov3.support_sha256,
+        preprocess_sha256=static_sha256,
+    )
+    calibration_path = tmp_path / "policy.json"
+    calibration_path.write_bytes(calibration.to_json_bytes())
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": static_sha256,
+        },
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    fusion_path = tmp_path / "fusion.json"
+    fusion_path.write_bytes(fusion.to_json_bytes())
+    configured = config.model_copy(update={
+        "calibration": config.calibration.model_copy(update={
+            "artifact": calibration_path,
+            "fusion_policy": fusion_path,
+            "fusion_policy_sha256": hashlib.sha256(fusion_path.read_bytes()).hexdigest(),
+        })
+    })
+    monkeypatch.setattr("bakery_scanner.classification.runtime.ClassifierConfig.load", lambda path: configured)
+    monkeypatch.setattr("bakery_scanner.classification.runtime.RepVitM1Runner.load", lambda *args, **kwargs: pytest.fail("RepViT must not load before static DINO admission"))
+
+    if invalid_artifact == "dino_support":
+        monkeypatch.setattr(
+            "bakery_scanner.classification.runtime.DinoV3Rechecker.validate_artifacts",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("DINO support OOF preprocessing mismatch")),
+            raising=False,
+        )
+    else:
+        monkeypatch.setattr("bakery_scanner.classification.runtime.DinoV3Rechecker.validate_artifacts", lambda *args, **kwargs: None, raising=False)
+        monkeypatch.setattr(
+            "bakery_scanner.classification.runtime._load_local_bank",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("local bank OOF preprocessing mismatch")),
+        )
+
+    with pytest.raises(ValueError, match="OOF preprocessing mismatch"):
+        ClassifierPipeline.load(tmp_path / "classifier.yaml")
+
+
 def _pipeline(
     *,
     repvit: RecordingRunner,
@@ -1349,9 +1461,8 @@ def _fusion_pipeline(
             "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
             "preprocess_sha256": preprocess_sha256(config.preprocess),
         },
-        decision_rule="fusion_local_or_global_consensus_margin_v1",
-        schema_version=3,
-        consensus_margin_floor=0.85,
+        decision_rule="fusion_local_agree_v1",
+        schema_version=2,
     )
     return ClassifierPipeline(
         config=config,
