@@ -1197,7 +1197,9 @@ def extract_oracle_features(
             dino_array[start:stop] = dino.cpu().numpy().astype(np.float16, copy=False)
             patch_array[start:stop] = patches.cpu().numpy().astype(np.float16, copy=False)
         del repvit_array, dino_array, patch_array
-        manifest = _feature_manifest(rows, image_by_identity, artifacts, temporary)
+        manifest = _feature_manifest(
+            rows, image_by_identity, artifacts, temporary, batch_size=batch_size
+        )
         manifest_path = temporary / "manifest.json"
         write_new_json(manifest_path, manifest)
         os.rename(temporary, destination)
@@ -1362,6 +1364,8 @@ def _feature_manifest(
     image_by_identity: dict[str, RpcImage],
     artifacts: ResearchArtifacts,
     directory: Path,
+    *,
+    batch_size: int,
 ) -> dict[str, object]:
     arrays = {
         "repvit_global": _array_manifest(directory / "repvit_global.float16.npy", [len(rows), _FEATURE_DIMENSION]),
@@ -1374,6 +1378,7 @@ def _feature_manifest(
         "canonical_frame": _CANONICAL_FRAME,
         "feature_dtype": "float16",
         "execution": {
+            "batch_size": batch_size,
             "device": "cpu",
             "determinism": "cpu-float32-inference-mode-model-eval-v1",
         },

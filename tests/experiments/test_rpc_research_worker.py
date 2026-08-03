@@ -170,6 +170,7 @@ def test_extract_oracle_features_records_two_globals_and_196_patches(
     assert np.linalg.norm(repvit.astype(np.float32), axis=1) == pytest.approx([1.0], abs=2e-3)
     assert np.linalg.norm(dino.astype(np.float32), axis=1) == pytest.approx([1.0], abs=2e-3)
     assert manifest["execution"] == {
+        "batch_size": 1,
         "determinism": "cpu-float32-inference-mode-model-eval-v1",
         "device": "cpu",
     }
@@ -195,6 +196,7 @@ def test_extract_oracle_features_batches_canonical_crops_without_reordering(
 
     assert repvit.batch_sizes == dino.batch_sizes == [2]
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["execution"]["batch_size"] == 2
     assert [row["annotation_id"] for row in manifest["rows"]] == [11, 12]
 
 
