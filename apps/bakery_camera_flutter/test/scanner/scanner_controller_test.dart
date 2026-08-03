@@ -206,6 +206,57 @@ void main() {
       },
     );
 
+    test(
+      'checkout staging callback completes after decode and before inference',
+      () async {
+        await controller.initialize();
+        final callbackGate = Completer<void>();
+        ScannerCapture? stagedCapture;
+
+        final analysis = controller.analyze(
+          beforeInference: (capture) {
+            stagedCapture = capture;
+            return callbackGate.future;
+          },
+        );
+        await _pump();
+
+        expect(
+          stagedCapture,
+          isA<ScannerCapture>()
+              .having((value) => value.path, 'path', camera.capture.path)
+              .having(
+                (value) => value.imageSize,
+                'canonical size',
+                const CapturedImageSize(width: 1920, height: 1080),
+              ),
+        );
+        expect(worker.analyzeCalls, 0);
+
+        callbackGate.complete();
+        await worker.analysisStarted;
+        worker.completeAnalysis(_emptyResult());
+        await analysis;
+      },
+    );
+
+    test('checkout staging failure prevents worker inference', () async {
+      await controller.initialize();
+
+      await expectLater(
+        controller.analyze(
+          beforeInference: (_) async {
+            throw StateError('audit storage unavailable');
+          },
+        ),
+        throwsStateError,
+      );
+
+      expect(worker.analyzeCalls, 0);
+      expect(controller.state.capturedImagePath, camera.capture.path);
+      expect(camera.releasedPaths, isEmpty);
+    });
+
     test('analysis is disabled when no camera is available', () async {
       camera.initializeResult = false;
 
@@ -337,6 +388,26 @@ void main() {
         expect(controller.state.captureMs, isNull);
         expect(controller.state.pressToRenderedResultMs, isNull);
         expect(controller.state.canAnalyze, isTrue);
+      },
+    );
+
+    test(
+      'checkout release removes only the durably retained current capture',
+      () async {
+        await controller.initialize();
+        final analysis = controller.analyze();
+        await worker.analysisStarted;
+        worker.completeAnalysis(_confirmedResult());
+        await analysis;
+        final result = controller.state.result;
+
+        await controller.releaseCurrentCapture();
+
+        expect(camera.releasedPaths, [camera.capture.path]);
+        expect(controller.state.capturedImagePath, isNull);
+        expect(controller.state.capturedImageSize, isNull);
+        expect(controller.state.result, same(result));
+        expect(controller.state.phase, ScannerPhase.result);
       },
     );
 

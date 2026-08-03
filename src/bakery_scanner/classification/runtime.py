@@ -426,7 +426,7 @@ class ClassifierPipeline:
             dinov3_finished = self._timestamp()
             serial_dinov3_finished = time.perf_counter() if serial_started is not None else None
             serial_fusion_started = time.perf_counter() if serial_started is not None else None
-            decision = self.policy.dino_failure(repvit_scores, box=box)
+            decision = self._dino_failure_decision(repvit_scores, box=box)
             serial_fusion_finished = time.perf_counter() if serial_started is not None else None
             total_finished = self._timestamp()
             if self._stage_timing_sink is not None:
@@ -562,7 +562,7 @@ class ClassifierPipeline:
                         raise ValueError("DINO batch evidence must align with rejected objects")
                 except DinoInferenceError as exc:
                     for index in batch_indexes:
-                        decisions[index] = self.policy.dino_failure(
+                        decisions[index] = self._dino_failure_decision(
                             repvit_evidence[index].scores, box=ordered_boxes[index]
                         )
                     for index in batch_indexes:
@@ -863,6 +863,13 @@ class ClassifierPipeline:
                 )
             ),
         )
+
+    def _dino_failure_decision(self, repvit_scores, *, box: Box) -> ClassificationDecision:
+        """Preserve the configured pipeline provenance for fail-closed DINO errors."""
+        decision = self.policy.dino_failure(repvit_scores, box=box)
+        if self.fusion_provenance is None:
+            return decision
+        return replace(decision, provenance=self.fusion_provenance)
 
     def _with_metadata(
         self,

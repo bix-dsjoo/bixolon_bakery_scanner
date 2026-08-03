@@ -19,12 +19,12 @@ void main() {
     expect(bixolonControlRadius, 6);
   });
 
-  testWidgets('status dot is compact and carries its status label', (tester) async {
+  testWidgets('status dot is compact and carries its status label', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const MaterialApp(
-        home: Scaffold(
-          body: BixolonStatusDot(label: 'Camera connected'),
-        ),
+        home: Scaffold(body: BixolonStatusDot(label: 'Camera connected')),
       ),
     );
 

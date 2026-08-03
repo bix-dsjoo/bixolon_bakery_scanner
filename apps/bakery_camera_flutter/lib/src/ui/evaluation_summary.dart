@@ -40,10 +40,7 @@ final class EvaluationSummary extends StatelessWidget {
           runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            _Latency(
-              label: '화면 표시까지',
-              milliseconds: data.pressToRenderMs,
-            ),
+            _Latency(label: '화면 표시까지', milliseconds: data.pressToRenderMs),
             _Latency(label: '모델 추론', milliseconds: data.modelInferenceMs),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),

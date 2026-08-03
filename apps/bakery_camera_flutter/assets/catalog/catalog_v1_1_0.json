@@ -1,0 +1,66 @@
+{
+  "revision_id": "catalog-v1.1.0",
+  "currency": "KRW",
+  "products": [
+    {
+      "product_id": "product-almond-campagne",
+      "display_name": "아몬드 깜빠뉴",
+      "unit_price": 4800,
+      "recognition_sku_id": 17,
+      "category_id": "rustic-bread",
+      "photo_asset_path": null,
+      "active": true,
+      "sort_order": 10
+    },
+    {
+      "product_id": "product-walnut-donut",
+      "display_name": "호두 도넛",
+      "unit_price": 3200,
+      "recognition_sku_id": 1,
+      "category_id": "donut",
+      "photo_asset_path": null,
+      "active": true,
+      "sort_order": 20
+    },
+    {
+      "product_id": "product-croissant",
+      "display_name": "크루아상",
+      "unit_price": 3000,
+      "recognition_sku_id": 6,
+      "category_id": "pastry",
+      "photo_asset_path": null,
+      "active": true,
+      "sort_order": 30
+    },
+    {
+      "product_id": "product-pastry-bread",
+      "display_name": "페이스트리 빵",
+      "unit_price": 3500,
+      "recognition_sku_id": 19,
+      "category_id": "pastry",
+      "photo_asset_path": null,
+      "active": true,
+      "sort_order": 40
+    },
+    {
+      "product_id": "product-mini-bread",
+      "display_name": "미니 식빵",
+      "unit_price": 2500,
+      "recognition_sku_id": 18,
+      "category_id": "loaf",
+      "photo_asset_path": null,
+      "active": true,
+      "sort_order": 50
+    },
+    {
+      "product_id": "product-cream-bun",
+      "display_name": "크림빵",
+      "unit_price": 2800,
+      "recognition_sku_id": null,
+      "category_id": "filled-bread",
+      "photo_asset_path": null,
+      "active": true,
+      "sort_order": 60
+    }
+  ]
+}

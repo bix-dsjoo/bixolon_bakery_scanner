@@ -67,6 +67,30 @@ void main() {
     ]);
   });
 
+  test(
+    'diagnostic snapshot preserves verified startup and fatal facts',
+    () async {
+      await _startReady(client, ownedProcess);
+
+      final ready = client.diagnosticSnapshot;
+      expect(ready.status, WorkerStatus.ready);
+      expect(ready.startupMetrics?.detectorThreshold, 0.42);
+      expect(ready.fatalEvent, isNull);
+
+      ownedProcess.emitJson({
+        'type': 'fatal',
+        'code': 'artifact_mismatch',
+        'message': 'SHA-256 mismatch',
+      });
+      await _pump();
+
+      final fatal = client.diagnosticSnapshot;
+      expect(fatal.status, WorkerStatus.fatal);
+      expect(fatal.startupMetrics?.device, 'cpu');
+      expect(fatal.fatalEvent?.code, 'artifact_mismatch');
+    },
+  );
+
   test('progress phases remain ordered and request-correlated', () async {
     await _startReady(client, ownedProcess);
     final progress = <ProgressWorkerEvent>[];

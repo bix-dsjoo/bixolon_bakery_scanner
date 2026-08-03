@@ -12,6 +12,7 @@ import '../inference/inference_worker_client.dart';
 typedef MonotonicClock = double Function();
 typedef CapturedImageSizeReader =
     Future<CapturedImageSize> Function(String absolutePath);
+typedef BeforeInference = Future<void> Function(ScannerCapture capture);
 
 abstract interface class InferenceSession {
   WorkerStatus get status;
@@ -60,6 +61,13 @@ final class CapturedImageSize {
 
   @override
   int get hashCode => Object.hash(width, height);
+}
+
+final class ScannerCapture {
+  const ScannerCapture({required this.path, required this.imageSize});
+
+  final String path;
+  final CapturedImageSize imageSize;
 }
 
 enum ScannerPhase {
@@ -301,7 +309,7 @@ final class ScannerController extends ChangeNotifier {
     }
   }
 
-  Future<void> analyze() async {
+  Future<void> analyze({BeforeInference? beforeInference}) async {
     _ensureOpen();
     if (!_state.canAnalyze) {
       throw StateError('analysis requires a ready camera and model');
@@ -335,6 +343,9 @@ final class ScannerController extends ChangeNotifier {
 
       final imageSize = await _readImageSize(capture.path);
       _replaceState(_state.copyWith(capturedImageSize: imageSize));
+      await beforeInference?.call(
+        ScannerCapture(path: capture.path, imageSize: imageSize),
+      );
       final result = await _worker.analyze(capture.path);
       _replaceState(
         _state.copyWith(
@@ -347,6 +358,56 @@ final class ScannerController extends ChangeNotifier {
       );
     } catch (error, stackTrace) {
       final message = captureCompleted ? '분석을 완료하지 못했습니다' : '이미지를 촬영하지 못했습니다';
+      _replaceState(
+        _state.copyWith(
+          isAnalyzing: false,
+          phase: ScannerPhase.failure,
+          analysisError: message,
+          awaitingRenderedResult: false,
+        ),
+      );
+      Error.throwWithStackTrace(StateError('$message: $error'), stackTrace);
+    }
+  }
+
+  Future<void> retryAnalysis({BeforeInference? beforeInference}) async {
+    _ensureOpen();
+    final capturePath = _state.capturedImagePath;
+    if (_state.isAnalyzing ||
+        _state.phase != ScannerPhase.failure ||
+        _state.workerStatus != WorkerStatus.ready ||
+        capturePath == null) {
+      throw StateError('retry requires a retained failed capture');
+    }
+    _replaceState(
+      _state.copyWith(
+        isAnalyzing: true,
+        phase: ScannerPhase.detecting,
+        analysisError: null,
+        result: null,
+        awaitingRenderedResult: false,
+        selectedObjectId: null,
+      ),
+    );
+    try {
+      final imageSize =
+          _state.capturedImageSize ?? await _readImageSize(capturePath);
+      _replaceState(_state.copyWith(capturedImageSize: imageSize));
+      await beforeInference?.call(
+        ScannerCapture(path: capturePath, imageSize: imageSize),
+      );
+      final result = await _worker.analyze(capturePath);
+      _replaceState(
+        _state.copyWith(
+          isAnalyzing: false,
+          phase: ScannerPhase.result,
+          result: result,
+          awaitingRenderedResult: true,
+          selectedObjectId: _initialSelectedObjectId(result),
+        ),
+      );
+    } catch (error, stackTrace) {
+      const message = '분석을 완료하지 못했습니다.';
       _replaceState(
         _state.copyWith(
           isAnalyzing: false,
@@ -414,6 +475,21 @@ final class ScannerController extends ChangeNotifier {
         awaitingRenderedResult: false,
         selectedObjectId: null,
       ),
+    );
+  }
+
+  Future<void> releaseCurrentCapture() async {
+    _ensureOpen();
+    if (_state.isAnalyzing) {
+      throw StateError('cannot release a capture during analysis');
+    }
+    final path = _state.capturedImagePath;
+    if (path == null) {
+      return;
+    }
+    await _camera.releaseCapture(path);
+    _replaceState(
+      _state.copyWith(capturedImagePath: null, capturedImageSize: null),
     );
   }
 

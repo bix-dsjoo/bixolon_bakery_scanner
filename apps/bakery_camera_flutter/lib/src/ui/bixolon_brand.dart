@@ -22,7 +22,7 @@ class BixolonWordmark extends StatelessWidget {
       'BIXOLON',
       style: textStyle.copyWith(
         color: bixolonOrange,
-        fontWeight: FontWeight.w800,
+        fontWeight: FontWeight.w700,
         letterSpacing: 0.4,
       ),
     );
@@ -64,7 +64,6 @@ class BixolonBrandDecoration extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => const ExcludeSemantics(
-    child: SizedBox.shrink(),
-  );
+  Widget build(BuildContext context) =>
+      const ExcludeSemantics(child: SizedBox.shrink());
 }

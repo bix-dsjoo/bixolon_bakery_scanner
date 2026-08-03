@@ -20,7 +20,10 @@ from bakery_scanner.classification.contracts import (
 )
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
-from bakery_scanner.prototype.camera_runtime import CameraInferenceRuntime
+from bakery_scanner.prototype.camera_runtime import (
+    CameraInferenceRuntime,
+    _load_detector_manifest,
+)
 
 
 def _write_image(path: Path, size: tuple[int, int] = (80, 60)) -> Path:
@@ -572,6 +575,19 @@ def test_initialize_rejects_malformed_detector_manifest(detector_repo):
             detector_repo.warmup_image,
             preference="cpu",
         )
+
+
+def test_load_detector_manifest_accepts_canonical_source_uri(detector_repo):
+    manifest_path = detector_repo.model_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["source_uri"] = "artifact://rfdetr_large_bakery_v1/checkpoint.pth"
+    del manifest["source_path"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded = _load_detector_manifest(detector_repo.root)
+
+    assert loaded.checkpoint == detector_repo.detector_checkpoint
+    assert loaded.calibration == detector_repo.detector_calibration
 
 
 @pytest.mark.parametrize(
