@@ -32,7 +32,7 @@ void main() {
       await fixture.controller.scan();
       expect(fixture.controller.state.phase, CheckoutPhase.customerReview);
       await fixture.controller.chooseTop3('object-2', 10);
-      await fixture.controller.continueToOrderReview();
+      expect(fixture.controller.state.phase, CheckoutPhase.orderReview);
       await fixture.controller.overrideResolvedProduct(
         'object-1',
         'milk-bread',

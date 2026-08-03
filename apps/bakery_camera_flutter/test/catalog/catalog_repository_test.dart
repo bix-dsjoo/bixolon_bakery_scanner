@@ -21,12 +21,12 @@ void main() {
   tearDown(() => database.close());
 
   test(
-    'search uses normalized Korean display name and stable sort order',
+    'search uses normalized display name and stable sort order',
     () async {
-      final result = await repository.search('  크 림  ');
+      final result = await repository.search('  E g G  ');
       final sorted = List<Product>.of(result)..sort(Product.customerSort);
 
-      expect(result.map((product) => product.displayName), contains('크림빵'));
+      expect(result.map((product) => product.displayName), contains('Egg Tart'));
       expect(result, orderedEquals(sorted));
     },
   );

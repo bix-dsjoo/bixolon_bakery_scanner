@@ -108,7 +108,6 @@ final class CustomerCheckoutJourneyFixture {
     await controller.initialize();
     await controller.scan();
     await controller.chooseTop3('object-2', 10);
-    await controller.continueToOrderReview();
     await controller.addManualProduct('milk-bread');
     await controller.setQuantity('milk-bread', 2);
     await controller.pay();
