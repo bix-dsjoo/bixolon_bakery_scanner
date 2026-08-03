@@ -68,22 +68,25 @@ def evaluate_artifact_bound_detector(
     *, split_manifest: Path, artifacts: Mapping[str, Mapping[str, object]], allowed_root: Path
 ) -> dict[str, object]:
     """Load and verify every external evaluation input before detector policy selection."""
-    required = {"staged_manifest", "detector_checkpoint", "calibration_predictions", "evaluation_predictions", "evaluation_config", "code_identity", "runtime_identity"}
+    required = {"staged_manifest", "staged_annotations", "detector_checkpoint", "calibration_predictions", "evaluation_predictions", "evaluation_config", "code_identity", "runtime_identity"}
     if set(artifacts) != required:
         raise ValueError("evaluation artifacts must contain the exact required semantic roles")
     verified = {role: _verify_artifact_descriptor(artifacts[role], role, allowed_root) for role in sorted(required)}
     code_path = verified["code_identity"]["path"]
     if code_path != Path(__file__).resolve():
         raise ValueError("code identity artifact must identify this evaluator implementation")
-    runtime_payload = json.loads(verified["runtime_identity"]["path"].read_text(encoding="utf-8"))
+    json.loads(verified["staged_manifest"]["bytes_data"].decode("utf-8"))
+    json.loads(verified["staged_annotations"]["bytes_data"].decode("utf-8"))
+    json.loads(verified["evaluation_config"]["bytes_data"].decode("utf-8"))
+    runtime_payload = json.loads(verified["runtime_identity"]["bytes_data"].decode("utf-8"))
     from tools.train.train_rfdetr_bread_oof import _verify_runtime_identity
     _verify_runtime_identity(runtime_payload)
-    calibration_rows = json.loads(verified["calibration_predictions"]["path"].read_text(encoding="utf-8"))
-    evaluation_rows = json.loads(verified["evaluation_predictions"]["path"].read_text(encoding="utf-8"))
+    calibration_rows = json.loads(verified["calibration_predictions"]["bytes_data"].decode("utf-8"))
+    evaluation_rows = json.loads(verified["evaluation_predictions"]["bytes_data"].decode("utf-8"))
     provenance = {
         "fold_manifest_sha256": _load_manifest(split_manifest)["manifest_sha256"],
         "source_sha256": _load_manifest(split_manifest)["source_sha256"],
-        "staged_annotations_sha256": verified["staged_manifest"]["sha256"],
+        "staged_annotations_sha256": verified["staged_annotations"]["sha256"],
         "staged_manifest_sha256": verified["staged_manifest"]["sha256"],
         "detector_checkpoint_sha256": verified["detector_checkpoint"]["sha256"],
         "calibration_predictions_sha256": verified["calibration_predictions"]["sha256"],
@@ -105,9 +108,11 @@ def _verify_artifact_descriptor(descriptor: Mapping[str, object], role: str, all
     path = Path(str(descriptor["path"])).resolve()
     if root not in path.parents or not path.is_file():
         raise ValueError(f"{role} artifact is missing or outside allowed root")
-    if path.stat().st_size != descriptor["bytes"] or _canonical_file_sha256(path) != descriptor["sha256"]:
+    with path.open("rb") as handle:
+        bytes_data = handle.read()
+    if len(bytes_data) != descriptor["bytes"] or hashlib.sha256(bytes_data).hexdigest() != descriptor["sha256"]:
         raise ValueError(f"{role} artifact byte identity mismatch")
-    return {"path": path, "bytes": descriptor["bytes"], "sha256": descriptor["sha256"]}
+    return {"path": path, "bytes": descriptor["bytes"], "sha256": descriptor["sha256"], "bytes_data": bytes_data}
 
 
 def _canonical_file_sha256(path: Path) -> str:
