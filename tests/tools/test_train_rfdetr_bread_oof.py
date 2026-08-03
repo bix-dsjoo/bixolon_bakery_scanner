@@ -92,6 +92,10 @@ def _write_runtime_identity(path: Path) -> Path:
     return path
 
 
+def _runtime_identity(tmp_path: Path) -> dict[str, object]:
+    return json.loads(_write_runtime_identity(tmp_path / "runtime-direct.json").read_text(encoding="utf-8"))
+
+
 def test_fold_training_uses_only_train_role(tmp_path: Path):
     """Changing the selected role to calibration/evaluation must fail this contract."""
     fake_model = _FakeModel()
@@ -101,6 +105,7 @@ def test_fold_training_uses_only_train_role(tmp_path: Path):
         model_factory=lambda: fake_model,
         staged_root=_write_staged_dataset(tmp_path / "staged"),
         output_root=tmp_path / "runs",
+        runtime_identity=_runtime_identity(tmp_path),
     )
 
     assert str(fake_model.train_kwargs["dataset_dir"]).endswith("fold-2\\train")
@@ -126,6 +131,7 @@ def test_training_notes_bind_split_seed_and_source_hash(tmp_path: Path):
         model_factory=lambda: fake_model,
         staged_root=staged_root,
         output_root=tmp_path / "runs",
+        runtime_identity=_runtime_identity(tmp_path),
     )
 
     notes = fake_model.train_kwargs["notes"]
@@ -153,6 +159,7 @@ def test_tampered_fold_roles_are_rejected_before_any_staging_write(tmp_path: Pat
             model_factory=_FakeModel,
             staged_root=_write_staged_dataset(tmp_path / "staged"),
             output_root=output,
+            runtime_identity=_runtime_identity(tmp_path),
         )
     assert not output.exists()
 
@@ -166,12 +173,43 @@ def test_successful_training_writes_checkpoint_bound_immutable_receipt(tmp_path:
         model_factory=_FakeModel,
         staged_root=_write_staged_dataset(tmp_path / "staged"),
         output_root=output,
+        runtime_identity=_runtime_identity(tmp_path),
     )
 
     stored = json.loads((output / "fold-2" / "receipt.json").read_text(encoding="utf-8"))
     assert stored["status"] == "verified_success"
     assert stored["checkpoint"]["sha256"] == hashlib.sha256((output / "fold-2" / "checkpoint" / "best_model.pth").read_bytes()).hexdigest()
     assert stored["provenance"] == receipt["provenance"]
+
+
+def test_direct_training_requires_runtime_before_model_factory(tmp_path: Path):
+    """A caller cannot bypass runtime verification to obtain a success receipt."""
+    invoked = False
+
+    def factory():
+        nonlocal invoked
+        invoked = True
+        return _FakeModel()
+
+    import pytest
+
+    with pytest.raises(TypeError):
+        run_fold_training(_split_manifest(), fold_index=2, model_factory=factory, staged_root=_write_staged_dataset(tmp_path / "staged"), output_root=tmp_path / "runs")
+    assert invoked is False
+
+
+def test_missing_declared_checkpoint_never_writes_success_receipt(tmp_path: Path):
+    """A backend returning without best_model.pth is not a completed fold."""
+    class NoCheckpoint:
+        def train(self, **_kwargs: object) -> None:
+            return None
+
+    import pytest
+
+    output = tmp_path / "runs"
+    with pytest.raises(FileNotFoundError, match="checkpoint"):
+        run_fold_training(_split_manifest(), fold_index=2, model_factory=NoCheckpoint, staged_root=_write_staged_dataset(tmp_path / "staged"), output_root=output, runtime_identity=_runtime_identity(tmp_path))
+    assert not (output / "fold-2" / "receipt.json").exists()
 
 
 def test_staged_file_name_escape_is_rejected_before_copying(tmp_path: Path):
@@ -190,7 +228,7 @@ def test_staged_file_name_escape_is_rejected_before_copying(tmp_path: Path):
     import pytest
 
     with pytest.raises(ValueError, match="basename"):
-        run_fold_training(manifest, fold_index=2, model_factory=_FakeModel, staged_root=staged, output_root=tmp_path / "runs")
+        run_fold_training(manifest, fold_index=2, model_factory=_FakeModel, staged_root=staged, output_root=tmp_path / "runs", runtime_identity=_runtime_identity(tmp_path))
     assert not (tmp_path / "runs" / "fold-2" / "train2017" / "escape.png").exists()
 
 
@@ -224,6 +262,7 @@ def test_existing_receipt_is_never_overwritten(tmp_path: Path):
             model_factory=lambda: _FakeModel(),
             staged_root=_write_staged_dataset(tmp_path / "staged"),
             output_root=tmp_path / "runs",
+            runtime_identity=_runtime_identity(tmp_path),
         )
 
 

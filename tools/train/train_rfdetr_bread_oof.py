@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -27,8 +28,8 @@ def run_fold_training(
     model_factory: Callable[[], Any],
     staged_root: Path,
     output_root: Path,
+    runtime_identity: Mapping[str, object],
     pretrain_weights_sha256: str | None = None,
-    runtime_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Materialize one train-only fold and invoke the supplied RF-DETR model.
 
@@ -36,6 +37,7 @@ def run_fold_training(
     Calibration and evaluation identities are recorded for audit but never staged
     into the directory handed to ``RFDETRLarge.train``.
     """
+    verified_runtime_identity = _verify_runtime_identity(runtime_identity)
     manifest = _load_manifest(split_manifest)
     if manifest["fold_index"] != fold_index:
         raise ValueError("requested fold does not match split manifest")
@@ -50,7 +52,7 @@ def run_fold_training(
     selected = _select_training_images(staged, manifest["scene_ids"]["train"])
     train_root = run_root / "train"
     _write_train_subset(staged.root, staged.annotations, selected, train_root, fold_index=fold_index)
-    notes = _training_notes(manifest, staged.root, pretrain_weights_sha256=pretrain_weights_sha256, runtime_identity=runtime_identity)
+    notes = _training_notes(manifest, staged.root, pretrain_weights_sha256=pretrain_weights_sha256, runtime_identity=verified_runtime_identity)
     model = model_factory()
     if not hasattr(model, "train"):
         raise TypeError("RF-DETR model factory must return a model with train()")
@@ -180,7 +182,7 @@ def _write_coco_split(path: Path, images: list[dict[str, object]], annotations: 
     path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")), encoding="utf-8")
 
 
-def _training_notes(manifest: Mapping[str, object], staged_root: Path, *, pretrain_weights_sha256: str | None, runtime_identity: Mapping[str, object] | None) -> dict[str, object]:
+def _training_notes(manifest: Mapping[str, object], staged_root: Path, *, pretrain_weights_sha256: str | None, runtime_identity: Mapping[str, object]) -> dict[str, object]:
     notes = {
         "base_seed": _BASE_SEED,
         "category_map": dict(_CATEGORY_MAP),
@@ -199,9 +201,8 @@ def _training_notes(manifest: Mapping[str, object], staged_root: Path, *, pretra
         if not _is_sha256(pretrain_weights_sha256):
             raise ValueError("pretrain checkpoint SHA-256 is invalid")
         notes["pretrain_weights_sha256"] = pretrain_weights_sha256
-    if runtime_identity is not None:
-        notes["runtime_identity"] = dict(runtime_identity)
-        notes["runtime_identity_sha256"] = _canonical_payload_sha256(runtime_identity)
+    notes["runtime_identity"] = dict(runtime_identity)
+    notes["runtime_identity_sha256"] = _canonical_payload_sha256(runtime_identity)
     return notes
 
 
@@ -295,39 +296,45 @@ def main() -> int:
     existing = [output_root / f"fold-{index}" for index in selected_folds if (output_root / f"fold-{index}").exists()]
     if existing:
         raise FileExistsError(f"refusing to reuse existing fold output directory: {existing[0]}")
+    if output_root.exists():
+        raise FileExistsError(f"refusing to reuse existing output root: {output_root}")
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    pending_root = Path(tempfile.mkdtemp(prefix=f".{output_root.name}.pending-", dir=output_root.parent))
+
+    def publish(status: int) -> int:
+        expected = tuple(pending_root / f"fold-{index}" / _RECEIPT_NAME for index in selected_folds)
+        if not all(path.is_file() for path in expected):
+            _write_json_new_atomic(pending_root / "transaction_receipt.json", {"status": "failed_incomplete_transaction", "folds": list(selected_folds)})
+            print(f"pending transaction retained: {pending_root}", file=sys.stderr)
+            return 1
+        os.replace(pending_root, output_root)
+        return status
+
+    def fail_unverified(status: str, detail: str) -> int:
+        for index in selected_folds:
+            _write_unverified_receipt(pending_root / f"fold-{index}", fold_index=index, status=status, detail=detail)
+        return publish(2)
     staged_root = arguments.staged_root
     if staged_root is None:
         configured_staged_root = os.environ.get("BIXOLON_RFDETR_STAGED_ROOT")
         staged_root = Path(configured_staged_root) if configured_staged_root else None
     if staged_root is None or not staged_root.is_dir():
-        for index in selected_folds:
-            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_missing_staged_coco", detail="supply --staged-root or BIXOLON_RFDETR_STAGED_ROOT")
-        return 2
+        return fail_unverified("unverified_missing_staged_coco", "supply --staged-root or BIXOLON_RFDETR_STAGED_ROOT")
     if arguments.runtime_identity is None or not arguments.runtime_identity.is_file():
-        for index in selected_folds:
-            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_missing_runtime_identity", detail="supply a verified --runtime-identity manifest")
-        return 2
+        return fail_unverified("unverified_missing_runtime_identity", "supply a verified --runtime-identity manifest")
     try:
         runtime_identity = _verify_runtime_identity(json.loads(arguments.runtime_identity.read_text(encoding="utf-8")))
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        for index in selected_folds:
-            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_runtime_identity_mismatch", detail=str(error))
-        return 2
+        return fail_unverified("unverified_runtime_identity_mismatch", str(error))
     try:
         from rfdetr import RFDETRLarge
     except ImportError as error:
-        for index in selected_folds:
-            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_missing_rfdetr_train_runtime", detail=str(error))
-        return 2
+        return fail_unverified("unverified_missing_rfdetr_train_runtime", str(error))
     if arguments.pretrain_weights is None or arguments.pretrain_sha256 is None:
-        for index in selected_folds:
-            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_missing_rfdetr_pretrain_checkpoint", detail="supply --pretrain-weights and --pretrain-sha256")
-        return 2
+        return fail_unverified("unverified_missing_rfdetr_pretrain_checkpoint", "supply --pretrain-weights and --pretrain-sha256")
     pretrain_weights = arguments.pretrain_weights.resolve()
     if not pretrain_weights.is_file() or not _is_sha256(arguments.pretrain_sha256) or _sha256(pretrain_weights) != arguments.pretrain_sha256:
-        for index in selected_folds:
-            _write_unverified_receipt(output_root / f"fold-{index}", fold_index=index, status="unverified_invalid_rfdetr_pretrain_checkpoint", detail="checkpoint is missing or SHA-256 does not match")
-        return 2
+        return fail_unverified("unverified_invalid_rfdetr_pretrain_checkpoint", "checkpoint is missing or SHA-256 does not match")
     pending_folds = tuple(selected_folds)
     for position, index in enumerate(pending_folds):
         try:
@@ -336,15 +343,19 @@ def main() -> int:
                 fold_index=index,
                 model_factory=lambda: RFDETRLarge(pretrain_weights=str(pretrain_weights), num_classes=1, device="cuda:0"),
                 staged_root=staged_root,
-                output_root=output_root,
+                output_root=pending_root,
                 pretrain_weights_sha256=arguments.pretrain_sha256,
                 runtime_identity=runtime_identity,
             )
         except ImportError as error:
             for remaining in pending_folds[position:]:
-                _write_unverified_receipt(output_root / f"fold-{remaining}", fold_index=remaining, status="unverified_missing_rfdetr_train_runtime", detail=str(error))
-            return 2
-    return 0
+                _write_unverified_receipt(pending_root / f"fold-{remaining}", fold_index=remaining, status="unverified_missing_rfdetr_train_runtime", detail=str(error))
+            return publish(2)
+        except Exception as error:
+            _write_json_new_atomic(pending_root / "transaction_receipt.json", {"status": "failed_unexpected", "failed_fold": index, "detail": str(error)})
+            print(f"pending transaction retained: {pending_root}", file=sys.stderr)
+            return 1
+    return publish(0)
 
 
 if __name__ == "__main__":

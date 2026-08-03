@@ -64,6 +64,60 @@ def evaluate_bound_detector(
     return receipt
 
 
+def evaluate_artifact_bound_detector(
+    *, split_manifest: Path, artifacts: Mapping[str, Mapping[str, object]], allowed_root: Path
+) -> dict[str, object]:
+    """Load and verify every external evaluation input before detector policy selection."""
+    required = {"staged_manifest", "detector_checkpoint", "calibration_predictions", "evaluation_predictions", "evaluation_config", "code_identity", "runtime_identity"}
+    if set(artifacts) != required:
+        raise ValueError("evaluation artifacts must contain the exact required semantic roles")
+    verified = {role: _verify_artifact_descriptor(artifacts[role], role, allowed_root) for role in sorted(required)}
+    code_path = verified["code_identity"]["path"]
+    if code_path != Path(__file__).resolve():
+        raise ValueError("code identity artifact must identify this evaluator implementation")
+    runtime_payload = json.loads(verified["runtime_identity"]["path"].read_text(encoding="utf-8"))
+    from tools.train.train_rfdetr_bread_oof import _verify_runtime_identity
+    _verify_runtime_identity(runtime_payload)
+    calibration_rows = json.loads(verified["calibration_predictions"]["path"].read_text(encoding="utf-8"))
+    evaluation_rows = json.loads(verified["evaluation_predictions"]["path"].read_text(encoding="utf-8"))
+    provenance = {
+        "fold_manifest_sha256": _load_manifest(split_manifest)["manifest_sha256"],
+        "source_sha256": _load_manifest(split_manifest)["source_sha256"],
+        "staged_annotations_sha256": verified["staged_manifest"]["sha256"],
+        "staged_manifest_sha256": verified["staged_manifest"]["sha256"],
+        "detector_checkpoint_sha256": verified["detector_checkpoint"]["sha256"],
+        "calibration_predictions_sha256": verified["calibration_predictions"]["sha256"],
+        "evaluation_predictions_sha256": verified["evaluation_predictions"]["sha256"],
+        "config_sha256": verified["evaluation_config"]["sha256"],
+        "code_sha256": verified["code_identity"]["sha256"],
+        "runtime_identity_sha256": verified["runtime_identity"]["sha256"],
+    }
+    receipt = evaluate_bound_detector(calibration_rows, evaluation_rows, split_manifest=split_manifest, provenance=provenance)
+    receipt["verified_artifacts"] = {role: {"bytes": item["bytes"], "sha256": item["sha256"]} for role, item in verified.items()}
+    receipt["receipt_sha256"] = _canonical_sha256({key: value for key, value in receipt.items() if key != "receipt_sha256"})
+    return receipt
+
+
+def _verify_artifact_descriptor(descriptor: Mapping[str, object], role: str, allowed_root: Path) -> dict[str, object]:
+    if set(descriptor) != {"role", "path", "bytes", "sha256"} or descriptor.get("role") != role or not isinstance(descriptor.get("path"), str) or not isinstance(descriptor.get("bytes"), int) or not _is_sha256(descriptor.get("sha256")):
+        raise ValueError(f"{role} artifact descriptor is invalid")
+    root = allowed_root.resolve()
+    path = Path(str(descriptor["path"])).resolve()
+    if root not in path.parents or not path.is_file():
+        raise ValueError(f"{role} artifact is missing or outside allowed root")
+    if path.stat().st_size != descriptor["bytes"] or _canonical_file_sha256(path) != descriptor["sha256"]:
+        raise ValueError(f"{role} artifact byte identity mismatch")
+    return {"path": path, "bytes": descriptor["bytes"], "sha256": descriptor["sha256"]}
+
+
+def _canonical_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def select_detector_policy(calibration_rows: Sequence[Mapping[str, object]], evaluation_rows: Sequence[Mapping[str, object]]) -> DetectorPolicyReceipt:
     """Choose a threshold solely from calibration rows; evaluation is leak-checked only."""
     calibration = tuple(_normalise_rows(calibration_rows))
@@ -232,19 +286,17 @@ def _iou(first: tuple[float, float, float, float], second: tuple[float, float, f
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--calibration", type=Path, required=True)
-    parser.add_argument("--evaluation", type=Path, required=True)
     parser.add_argument("--split-manifest", type=Path, required=True)
-    parser.add_argument("--provenance", type=Path, required=True)
+    parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--allowed-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
     output = arguments.output.resolve()
     if output.exists():
         raise FileExistsError(f"refusing to overwrite existing evaluation receipt: {output}")
-    calibration = json.loads(arguments.calibration.read_text(encoding="utf-8"))
-    evaluation = json.loads(arguments.evaluation.read_text(encoding="utf-8"))
-    provenance = json.loads(arguments.provenance.read_text(encoding="utf-8"))
-    receipt = evaluate_bound_detector(calibration, evaluation, split_manifest=arguments.split_manifest, provenance=provenance)
+    if arguments.artifacts is None or arguments.allowed_root is None:
+        raise ValueError("--artifacts and --allowed-root are required for verified evaluation")
+    receipt = evaluate_artifact_bound_detector(split_manifest=arguments.split_manifest, artifacts=json.loads(arguments.artifacts.read_text(encoding="utf-8")), allowed_root=arguments.allowed_root)
     _write_json_new_atomic(output, receipt)
     return 0
 
