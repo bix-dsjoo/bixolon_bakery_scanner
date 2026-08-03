@@ -5,5 +5,22 @@ New code imports canonical detection adapters from this package. The historical
 """
 
 from .rfdetr import RFDetrRunner
+from .completeness import (
+    CaptureQuality,
+    CompletenessDecision,
+    CompletenessPolicy,
+    CounterfactualCase,
+    ForegroundAnalyzer,
+    ForegroundEvidence,
+    InvalidDetectorOutput,
+    ReferenceForegroundAnalyzerConfig,
+    build_counterfactuals,
+    evaluate_completeness,
+)
 
-__all__ = ["RFDetrRunner"]
+__all__ = [
+    "CaptureQuality", "CompletenessDecision", "CompletenessPolicy", "CounterfactualCase",
+    "ForegroundAnalyzer", "ForegroundEvidence", "InvalidDetectorOutput",
+    "ReferenceForegroundAnalyzerConfig", "RFDetrRunner", "build_counterfactuals",
+    "evaluate_completeness",
+]
