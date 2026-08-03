@@ -247,7 +247,12 @@ def _resolve_path(
             ) from exc
         if not relative.parts or relative.parts[0] not in {"models", "artifacts"}:
             raise ValueError("configured model/artifact path is outside staged artifact namespaces")
-        return (artifact_root / relative).resolve()
+        mapped = (artifact_root / relative).resolve()
+        if not _is_within(mapped, artifact_root):
+            raise ValueError(
+                "configured model/artifact path must remain under artifact_root"
+            )
+        return mapped
     if not _is_within(resolved, content_root):
         raise ValueError("configured calibration/policy path must remain under content_root")
     return resolved

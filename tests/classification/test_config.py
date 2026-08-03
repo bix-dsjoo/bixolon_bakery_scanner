@@ -6,6 +6,7 @@ import pytest
 from bakery_scanner.classification.config import (
     ClassifierConfig,
     ClassifierRuntimeConfig,
+    _resolve_path,
     preprocess_sha256,
 )
 from bakery_scanner.classification.runtime import configure_cpu_process
@@ -85,6 +86,29 @@ def test_classifier_config_rejects_absolute_model_paths_outside_artifact_root(
 
     with pytest.raises(ValueError, match="artifact_root"):
         ClassifierConfig.load(config_path, artifact_root=tmp_path / "artifacts")
+
+
+def test_staged_model_namespace_symlink_cannot_escape_artifact_root(tmp_path):
+    content_root = tmp_path / "content"
+    base = content_root / "configs"
+    base.mkdir(parents=True)
+    artifact_root = tmp_path / "artifact-root"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    artifact_root.mkdir()
+    try:
+        os.symlink(outside, artifact_root / "models", target_is_directory=True)
+    except OSError:
+        pytest.skip("Windows symlink privilege is unavailable for real containment test")
+
+    with pytest.raises(ValueError, match="artifact_root"):
+        _resolve_path(
+            base,
+            "../models/repvit/weights.pt",
+            content_root=content_root,
+            artifact_root=artifact_root,
+            require_artifact_containment=True,
+        )
 
 
 @pytest.mark.parametrize(
