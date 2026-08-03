@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
+from bakery_scanner.prototype.camera_runtime import StartupMetrics
 from bakery_scanner.prototype.camera_worker import serve
 
 _POLICY_SHA256 = "a" * 64
@@ -131,6 +132,25 @@ def test_ready_includes_final_runtime_device_and_startup_metrics():
         "device": "cuda:0",
         "startup_metrics": {"load_ms": 12.5, "warmup_ms": 7.0},
     }
+
+
+def test_ready_serializes_immutable_real_startup_provenance():
+    hashes = {key: "a" * 64 for key in (
+        "detector_checkpoint_sha256", "detector_calibration_sha256", "detector_manifest_sha256",
+        "repvit_checkpoint_sha256", "repvit_manifest_sha256", "repvit_prototype_sha256",
+        "dinov3_weights_sha256", "dinov3_support_sha256", "dinov3_local_bank_sha256",
+        "classifier_calibration_sha256", "preprocess_sha256", "fusion_policy_sha256",
+        "presentation_policy_sha256",
+    )}
+    metrics = StartupMetrics(
+        device="cpu", load_ms=1.0, warmup_ms=1.0, fallback_reason=None,
+        detector_id="detector", repvit_id="repvit", dinov3_id="dino",
+        fusion_policy_id="fusion", detector_threshold=0.5, applied_artifact_hashes=hashes,
+    )
+    runtime = FakeRuntime(startup_metrics=metrics)
+    stdout = io.StringIO()
+    serve(io.StringIO('{"type":"shutdown","request_id":"stop"}\n'), stdout, runtime_factory=lambda _emit: runtime)
+    assert _events(stdout)[2]["startup_metrics"]["applied_artifact_hashes"] == hashes
 
 
 def test_worker_binds_child_code_identity_to_ready_and_stopped_events():

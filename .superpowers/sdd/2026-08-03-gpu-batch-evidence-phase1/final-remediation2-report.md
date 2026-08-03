@@ -52,7 +52,7 @@
 - Classifier/runtime/worker/receipt/policy: `PYTHONPATH=src python -m pytest tests/classification/test_config.py tests/classification/test_runtime.py tests/prototype/test_camera_runtime.py tests/prototype/test_camera_worker.py tests/benchmarking/test_gpu_worker_receipt.py tests/contract/test_repository_policy.py -q`
   - `148 passed`
 - Full Python: `PYTHONPATH=src python -m pytest -q`
-  - `780 passed, 4 skipped, 15 deselected`
+  - `781 passed, 4 skipped, 15 deselected`
 - `git diff --check` completed without output.
 - Flutter was unavailable, so Dart execution remains unverified. CUDA/artifact
   suites remain unverified where required hardware or external model files are

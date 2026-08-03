@@ -379,11 +379,15 @@ class CameraInferenceRuntime:
         _emit_progress(on_progress, WorkerPhase.DETECTING, emitted)
         detector_started = _timestamp(self._clock, self.device)
         predict = lambda: backend.detector.predict(1, frame.image)
-        proposals = (
-            cuda_timing.measure("detector", predict)
-            if cuda_timing is not None
-            else predict()
-        )
+        try:
+            proposals = (
+                cuda_timing.measure("detector", predict)
+                if cuda_timing is not None
+                else predict()
+            )
+        except Exception as detector_error:
+            _finalize_failed_cuda_timing(cuda_timing, detector_error)
+            raise
         detector_finished = _timestamp(self._clock, self.device)
         ordered = tuple(
             sorted(
@@ -399,7 +403,11 @@ class CameraInferenceRuntime:
             )
         )
 
-        _emit_progress(on_progress, WorkerPhase.CLASSIFYING, emitted)
+        try:
+            _emit_progress(on_progress, WorkerPhase.CLASSIFYING, emitted)
+        except Exception as progress_error:
+            _finalize_failed_cuda_timing(cuda_timing, progress_error)
+            raise
         crop_ms = 0.0
         repvit_ms = 0.0
         dinov3_ms = 0.0
@@ -471,7 +479,11 @@ class CameraInferenceRuntime:
                     )
                     raise ValueError("classifier batch decisions must align with detector proposals")
                 if batch.dino_object_count > 0:
-                    _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+                    try:
+                        _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+                    except Exception as progress_error:
+                        _finalize_failed_cuda_timing(cuda_timing, progress_error)
+                        raise
                 for proposal, decision in zip(ordered, batch.decisions, strict=True):
                     if decision.box != proposal.box:
                         _finalize_failed_cuda_timing(
@@ -485,7 +497,11 @@ class CameraInferenceRuntime:
                 fusion_ms = batch.timings.fusion_ms
                 dino_object_count = batch.dino_object_count
 
-        _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
+        try:
+            _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
+        except Exception as progress_error:
+            _finalize_failed_cuda_timing(cuda_timing, progress_error)
+            raise
         postprocess_started = _timestamp(self._clock, self.device)
         try:
             objects, counts, unknown_count = _aggregate_objects(

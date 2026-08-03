@@ -6,7 +6,7 @@ import contextlib
 import sys
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Protocol, TextIO
 
@@ -195,7 +195,15 @@ def _ready_event(
             event["code_identity"] = dict(code_identity)
         return event
     if is_dataclass(startup_metrics):
-        startup_metrics = asdict(startup_metrics)
+        startup_metrics = {
+            field: (
+                dict(value) if isinstance(value, Mapping) else value
+            )
+            for field, value in (
+                (field.name, getattr(startup_metrics, field.name))
+                for field in fields(startup_metrics)
+            )
+        }
     if not isinstance(startup_metrics, Mapping):
         raise ValueError("runtime startup_metrics must be a mapping or dataclass")
     event["startup_metrics"] = dict(startup_metrics)
