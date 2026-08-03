@@ -23,7 +23,11 @@ from bakery_scanner.classification.contracts import (
 )
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
 from bakery_scanner.classification.policy import PolicyCalibration
-from bakery_scanner.classification.runtime import ClassifierPipeline, SerialStageTimings
+from bakery_scanner.classification.runtime import (
+    ClassifierPipeline,
+    CudaTimingCollector,
+    SerialStageTimings,
+)
 from bakery_scanner.contracts import BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage, load_canonical_image
 from bakery_scanner.detectors.rfdetr import RFDetrRunner
@@ -321,6 +325,13 @@ class CameraInferenceRuntime:
         assert self._backend is not None
         backend = self._backend
         emitted: set[WorkerPhase] = set()
+        cuda_timing = (
+            CudaTimingCollector("cuda:0")
+            if self.device == "cuda:0"
+            and isinstance(backend.detector, RFDetrRunner)
+            and isinstance(backend.classifier, ClassifierPipeline)
+            else None
+        )
 
         total_started = _timestamp(self._clock, self.device)
         frame = load_canonical_image(capture_path)
@@ -328,7 +339,12 @@ class CameraInferenceRuntime:
 
         _emit_progress(on_progress, WorkerPhase.DETECTING, emitted)
         detector_started = _timestamp(self._clock, self.device)
-        proposals = backend.detector.predict(1, frame.image)
+        predict = lambda: backend.detector.predict(1, frame.image)
+        proposals = (
+            cuda_timing.measure("detector", predict)
+            if cuda_timing is not None
+            else predict()
+        )
         detector_finished = _timestamp(self._clock, self.device)
         ordered = tuple(
             sorted(
@@ -389,17 +405,22 @@ class CameraInferenceRuntime:
                         _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
             else:
                 boxes = tuple(proposal.box for proposal in ordered)
-                batch = backend.classifier.infer_many(
-                    frame,
-                    boxes,
-                    repvit_max_objects=_batch_limit(
+                batch_kwargs: dict[str, object] = {
+                    "repvit_max_objects": _batch_limit(
                         backend.classifier.config.runtime.repvit_microbatch_objects,
                         len(boxes),
                     ),
-                    dino_max_objects=_batch_limit(
+                    "dino_max_objects": _batch_limit(
                         backend.classifier.config.runtime.dinov3_microbatch_objects,
                         len(boxes),
                     ),
+                }
+                if cuda_timing is not None:
+                    batch_kwargs["cuda_timing"] = cuda_timing
+                batch = backend.classifier.infer_many(
+                    frame,
+                    boxes,
+                    **batch_kwargs,
                 )
                 if len(batch.decisions) != len(ordered):
                     raise ValueError("classifier batch decisions must align with detector proposals")
@@ -429,14 +450,20 @@ class CameraInferenceRuntime:
         # GPU work is deliberately synchronized once, after every measured
         # stage has been enqueued.  Per-stage synchronization serializes the
         # pipeline and produces misleading timing evidence.
-        _synchronize(self.device)
+        cuda_events = cuda_timing.finalize() if cuda_timing is not None else None
+        if cuda_events is None:
+            _synchronize(self.device)
         total_finished = _timestamp(self._clock, self.device)
         timings = {
             "decode_preprocess": _milliseconds(total_started, decode_finished),
-            "detector": _milliseconds(detector_started, detector_finished),
+            "detector": (
+                cuda_events.get("detector", 0.0)
+                if cuda_events is not None
+                else _milliseconds(detector_started, detector_finished)
+            ),
             "crop": crop_ms,
-            "repvit": repvit_ms,
-            "dinov3": dinov3_ms,
+            "repvit": cuda_events.get("repvit", 0.0) if cuda_events is not None else repvit_ms,
+            "dinov3": cuda_events.get("dinov3", 0.0) if cuda_events is not None else dinov3_ms,
             "fusion": fusion_ms,
             "postprocess": _milliseconds(postprocess_started, postprocess_finished),
             "total": _milliseconds(total_started, total_finished),

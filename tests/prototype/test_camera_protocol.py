@@ -36,6 +36,8 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
     return {
         "type": "result",
         "request_id": "request-1",
+        "image": {"width": 20, "height": 20},
+        "device": "cpu",
         "objects": [
             _object("object-1", sku_id=6, sku_name="Croissant", decision_path="repvit_direct"),
             {
@@ -46,9 +48,9 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
                 "confidence": 0.41,
                 "decision_path": "unknown_top3",
                 "top3": [
-                    {"rank": 1, "sku_id": 4, "score": 0.41},
-                    {"rank": 2, "sku_id": 2, "score": 0.32},
-                    {"rank": 3, "sku_id": 7, "score": 0.27},
+                    {"rank": 1, "sku_id": 4, "sku_name": "Scon", "score": 0.41},
+                    {"rank": 2, "sku_id": 2, "sku_name": "Croffle", "score": 0.32},
+                    {"rank": 3, "sku_id": 7, "sku_name": "Flower Bread", "score": 0.27},
                 ],
                 "unknown_reason": "fusion_rejected",
                 "detector": {"source": "rfdetr_large_bakery_v1", "score": 0.9},
@@ -56,6 +58,8 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
             },
         ],
         "presentation": presentation,
+        "counts": {"6": 1},
+        "unknown_count": 1,
         "timings_ms": {
             "decode_preprocess": 1.0,
             "detector": 1.0,
@@ -381,4 +385,26 @@ def test_validate_result_event_rejects_total_shorter_than_a_stage():
     result["timings_ms"].update({"detector": 200.0, "total": 1.0})
 
     with pytest.raises(ValueError, match="total"):
+        camera_protocol.validate_result_event(result)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.pop("device"),
+        lambda value: value.update({"request_id": ""}),
+        lambda value: value.update({"image": {"width": 0, "height": 20}}),
+        lambda value: value.update({"counts": {"6": 2}}),
+        lambda value: value.update({"unknown_count": 0}),
+        lambda value: value["objects"].__setitem__(0, _object("object-2", sku_id=6, sku_name="Croissant", decision_path="repvit_direct")),
+        lambda value: value["objects"][0].update({"bbox_xyxy": [1.0, 2.0, 25.0, 6.0]}),
+    ],
+)
+def test_validate_result_event_rejects_malformed_result_envelope_counts_order_or_bounds(mutate):
+    result = _result(_presentation())
+    result["counts"] = {"6": 1}
+    result["unknown_count"] = 1
+    mutate(result)
+
+    with pytest.raises(ValueError):
         camera_protocol.validate_result_event(result)

@@ -73,17 +73,22 @@ def test_rfdetr_loader_rejects_checkpoint_replaced_during_model_construction(tmp
         def predict(self, *args, **kwargs):
             raise AssertionError("not used")
 
+    replacement_denied = False
+
     def mutate_checkpoint(**_kwargs):
-        checkpoint.write_bytes(b"replaced checkpoint")
+        nonlocal replacement_denied
+        with pytest.raises(PermissionError):
+            checkpoint.write_bytes(b"replaced checkpoint")
+        replacement_denied = True
         return Backend()
 
-    with pytest.raises(ValueError, match="checkpoint SHA-256 mismatch"):
-        RFDetrRunner.load(
-            checkpoint,
-            score_threshold=0.5,
-            expected_sha256=expected,
-            model_factory=mutate_checkpoint,
-        )
+    RFDetrRunner.load(
+        checkpoint,
+        score_threshold=0.5,
+        expected_sha256=expected,
+        model_factory=mutate_checkpoint,
+    )
+    assert replacement_denied is True
 
 
 def test_rfdetr_manifest_pins_corrected_gt_zero_fp_threshold():

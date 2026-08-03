@@ -24,7 +24,11 @@ from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibrati
 from bakery_scanner.classification.preprocess import build_transform
 from bakery_scanner.classification.repvit import RepVitEvidence
 from bakery_scanner.classification.risk_calibrator import RiskCalibrator
-from bakery_scanner.classification.runtime import ClassifierPipeline, SerialStageTimings
+from bakery_scanner.classification.runtime import (
+    ClassifierPipeline,
+    CudaTimingCollector,
+    SerialStageTimings,
+)
 from bakery_scanner.contracts import Box
 
 
@@ -240,6 +244,39 @@ class TimedRunner(RecordingRunner):
     def score(self, crops: tuple[Image.Image, ...]) -> ModelScoreVector:
         self.clock.advance(self.duration)
         return super().score(crops)
+
+
+def test_cuda_event_collector_records_active_stream_ranges_and_syncs_only_on_finalize(monkeypatch):
+    from bakery_scanner.classification import runtime
+
+    operations: list[tuple[str, object]] = []
+
+    class Event:
+        def __init__(self, *, enable_timing):
+            self.name = f"event-{sum(item[0] == 'event' for item in operations)}"
+            operations.append(("event", enable_timing))
+
+        def record(self, stream):
+            operations.append(("record", (self.name, stream)))
+
+        def elapsed_time(self, other):
+            return 3.5
+
+    monkeypatch.setattr(runtime.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(runtime.torch.cuda, "current_stream", lambda device: "active-stream")
+    monkeypatch.setattr(runtime.torch.cuda, "Event", Event)
+    monkeypatch.setattr(runtime.torch.cuda, "synchronize", lambda device: operations.append(("sync", str(device))))
+    monkeypatch.setattr(runtime.torch.cuda.nvtx, "range_push", lambda name: operations.append(("push", name)))
+    monkeypatch.setattr(runtime.torch.cuda.nvtx, "range_pop", lambda: operations.append(("pop", None)))
+
+    collector = CudaTimingCollector("cuda:0")
+    collector.measure("repvit", lambda: operations.append(("launch", "repvit")))
+    collector.measure("dinov3", lambda: operations.append(("launch", "dinov3")))
+    assert not any(name == "sync" for name, _ in operations)
+
+    assert collector.finalize() == {"repvit": 3.5, "dinov3": 3.5}
+    assert [name for name, _ in operations].count("sync") == 1
+    assert operations.index(("push", "repvit")) < operations.index(("launch", "repvit")) < operations.index(("pop", None))
 
 
 def test_direct_repvit_confirmation_never_loads_or_calls_dino():

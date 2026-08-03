@@ -42,6 +42,12 @@ _OBJECT_FIELDS = frozenset(
         "decision_path", "top3", "unknown_reason", "detector", "provenance",
     }
 )
+_RESULT_FIELDS = frozenset(
+    {
+        "type", "request_id", "image", "device", "objects", "counts",
+        "unknown_count", "presentation", "timings_ms", "diagnostics",
+    }
+)
 _REGISTERED_PATHS = frozenset({"repvit_direct", "dinov3_confirmed", "fusion_ranked"})
 _PROVENANCE_FIELDS = frozenset(
     {
@@ -151,9 +157,22 @@ def progress_event(request_id: str, phase: WorkerPhase) -> dict[str, object]:
 
 def validate_result_event(result: Mapping[str, object]) -> None:
     """Reject malformed or internally inconsistent presentation routing."""
-    if not isinstance(result, Mapping) or result.get("type") != "result":
-        raise ValueError("runtime result type must be result")
-    object_ids, unknown_ids = _result_object_ids(result.get("objects"))
+    if (
+        not isinstance(result, Mapping)
+        or set(result) != _RESULT_FIELDS
+        or result.get("type") != "result"
+    ):
+        raise ValueError("runtime result envelope is invalid")
+    request_id = result["request_id"]
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError("runtime result request_id is invalid")
+    if result["device"] not in {"cpu", "cuda:0"}:
+        raise ValueError("runtime result device is invalid")
+    width, height = _validate_result_image(result["image"])
+    object_ids, unknown_ids, registered_counts = _result_object_ids(
+        result["objects"], width, height
+    )
+    _validate_counts(result["counts"], registered_counts, result["unknown_count"], len(unknown_ids))
     _validate_timings(result.get("timings_ms"))
     _validate_diagnostics(result.get("diagnostics"), len(object_ids))
     presentation = result.get("presentation")
@@ -259,8 +278,11 @@ def _require_exact_ranked_top3(
             or any(not isinstance(item, Mapping) for item in raw_top3)
         ):
             raise ValueError("runtime result candidate Top3 is invalid")
+        if any(set(item) != {"rank", "sku_id", "sku_name", "score"} for item in raw_top3):
+            raise ValueError("runtime result candidate Top3 schema is invalid")
         ranks = tuple(item.get("rank") for item in raw_top3)
         sku_ids = tuple(item.get("sku_id") for item in raw_top3)
+        sku_names = tuple(item.get("sku_name") for item in raw_top3)
         scores = tuple(item.get("score") for item in raw_top3)
         if ranks != (1, 2, 3):
             raise ValueError("runtime result candidate Top3 ranks are invalid")
@@ -274,6 +296,8 @@ def _require_exact_ranked_top3(
             or len(set(sku_ids)) != 3
         ):
             raise ValueError("runtime result candidate Top3 SKUs are invalid")
+        if any(not isinstance(name, str) or not name for name in sku_names):
+            raise ValueError("runtime result candidate Top3 names are invalid")
         if any(
             isinstance(score, bool)
             or not isinstance(score, (int, float))
@@ -291,18 +315,21 @@ def _require_exact_ranked_top3(
             )
 
 
-def _result_object_ids(value: object) -> tuple[set[str], set[str]]:
+def _result_object_ids(
+    value: object, image_width: int, image_height: int
+) -> tuple[set[str], set[str], dict[str, int]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise ValueError("runtime result objects must be a sequence")
     object_ids: set[str] = set()
     unknown_ids: set[str] = set()
-    for item in value:
+    registered_counts: dict[str, int] = {}
+    for position, item in enumerate(value, start=1):
         if not isinstance(item, Mapping) or set(item) != _OBJECT_FIELDS:
             raise ValueError("runtime result objects must be mappings")
         object_id = item.get("object_id")
         if (
             not isinstance(object_id, str)
-            or not object_id
+            or object_id != f"object-{position}"
             or object_id in object_ids
             or "sku_id" not in item
         ):
@@ -316,7 +343,7 @@ def _result_object_ids(value: object) -> tuple[set[str], set[str]]:
         path = item["decision_path"]
         if not isinstance(sku_name, str) or not sku_name or not isinstance(path, str):
             raise ValueError("runtime result object identity is invalid")
-        _validate_object_box(item["bbox_xyxy"])
+        _validate_object_box(item["bbox_xyxy"], image_width, image_height)
         _validate_probability(item["confidence"], "runtime result object confidence")
         _validate_detector(item["detector"])
         _validate_provenance(item["provenance"])
@@ -340,18 +367,61 @@ def _result_object_ids(value: object) -> tuple[set[str], set[str]]:
         object_ids.add(object_id)
         if sku_id is None:
             unknown_ids.add(object_id)
-    return object_ids, unknown_ids
+        else:
+            key = str(sku_id)
+            registered_counts[key] = registered_counts.get(key, 0) + 1
+    return object_ids, unknown_ids, registered_counts
 
 
-def _validate_object_box(value: object) -> None:
+def _validate_object_box(value: object, image_width: int, image_height: int) -> None:
     if not isinstance(value, list) or len(value) != 4:
         raise ValueError("runtime result object box is invalid")
     try:
         x1, y1, x2, y2 = (float(item) for item in value)
     except (TypeError, ValueError) as exc:
         raise ValueError("runtime result object box is invalid") from exc
-    if not all(math.isfinite(item) for item in (x1, y1, x2, y2)) or x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1:
+    if (
+        not all(math.isfinite(item) for item in (x1, y1, x2, y2))
+        or x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1
+        or x2 > image_width or y2 > image_height
+    ):
         raise ValueError("runtime result object box is invalid")
+
+
+def _validate_result_image(value: object) -> tuple[int, int]:
+    if not isinstance(value, Mapping) or set(value) != {"width", "height"}:
+        raise ValueError("runtime result image is invalid")
+    width, height = value["width"], value["height"]
+    if (
+        isinstance(width, bool) or isinstance(height, bool)
+        or not isinstance(width, int) or not isinstance(height, int)
+        or width <= 0 or height <= 0
+    ):
+        raise ValueError("runtime result image is invalid")
+    return width, height
+
+
+def _validate_counts(
+    value: object,
+    expected: Mapping[str, int],
+    unknown_count: object,
+    expected_unknown: int,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("runtime result counts is invalid")
+    normalized: dict[str, int] = {}
+    for sku_id, count in value.items():
+        if (
+            not isinstance(sku_id, str) or not sku_id.isascii() or not sku_id.isdecimal()
+            or str(int(sku_id)) != sku_id or not 1 <= int(sku_id) <= 20
+            or isinstance(count, bool) or not isinstance(count, int) or count < 0
+        ):
+            raise ValueError("runtime result counts is invalid")
+        normalized[sku_id] = count
+    if normalized != dict(expected):
+        raise ValueError("runtime result counts do not match objects")
+    if isinstance(unknown_count, bool) or not isinstance(unknown_count, int) or unknown_count != expected_unknown:
+        raise ValueError("runtime result unknown_count does not match objects")
 
 
 def _validate_probability(value: object, label: str) -> None:

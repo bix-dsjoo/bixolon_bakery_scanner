@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
-from typing import Callable, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 import torch
 from PIL import Image
@@ -71,6 +71,65 @@ class _CudaClock:
 
     def __call__(self) -> float:
         return time.perf_counter()
+
+
+class CudaTimingCollector:
+    """Deferred CUDA-event diagnostics for one request on the active stream.
+
+    The caller owns finalization.  This keeps classifier and detector launches
+    queued together and makes exactly one request-boundary synchronization the
+    point at which event elapsed times are read.
+    """
+
+    def __init__(self, device: torch.device | str = "cuda:0") -> None:
+        self.device = torch.device(device)
+        if self.device.type != "cuda" or not torch.cuda.is_available():
+            raise ValueError("CUDA event timing requires an available CUDA device")
+        try:
+            self._stream = torch.cuda.current_stream(self.device)
+            self._ranges: list[tuple[str, Any, Any]] = []
+        except Exception as exc:
+            raise ValueError("CUDA event timing could not be created") from exc
+        self._finalized = False
+
+    def measure(self, stage: str, action: Callable[[], Any]) -> Any:
+        if self._finalized:
+            raise RuntimeError("CUDA timing collector is already finalized")
+        try:
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record(self._stream)
+        except Exception as exc:
+            raise ValueError("CUDA event timing could not be created") from exc
+        torch.cuda.nvtx.range_push(stage)
+        try:
+            value = action()
+        finally:
+            torch.cuda.nvtx.range_pop()
+        try:
+            end.record(self._stream)
+        except Exception as exc:
+            raise ValueError("CUDA event timing could not be created") from exc
+        self._ranges.append((stage, start, end))
+        return value
+
+    def finalize(self) -> dict[str, float]:
+        if self._finalized:
+            raise RuntimeError("CUDA timing collector is already finalized")
+        try:
+            torch.cuda.synchronize(self.device)
+            totals: dict[str, float] = {}
+            for stage, start, end in self._ranges:
+                elapsed = float(start.elapsed_time(end))
+                if not math.isfinite(elapsed) or elapsed < 0.0:
+                    raise ValueError("CUDA event elapsed time is invalid")
+                totals[stage] = totals.get(stage, 0.0) + elapsed
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise
+            raise ValueError("CUDA event timing could not be finalized") from exc
+        self._finalized = True
+        return totals
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,9 +567,11 @@ class ClassifierPipeline:
         *,
         repvit_max_objects: int,
         dino_max_objects: int,
+        cuda_timing: CudaTimingCollector | None = None,
     ) -> BatchInferenceResult:
         """Classify ordered detector boxes with shared batch evidence extraction."""
         total_started = self._timestamp()
+        owns_cuda_timing = False
         frame = _canonical_frame(image)
         ordered_boxes = tuple(boxes)
         for box in ordered_boxes:
@@ -526,6 +587,10 @@ class ClassifierPipeline:
                 BatchStageTimings(0.0, 0.0, 0.0, 0.0, _milliseconds(total_started, total_finished)),
                 0,
             )
+        if self.config.runtime.device == "CUDA:0" and torch.cuda.is_available():
+            if cuda_timing is None:
+                cuda_timing = CudaTimingCollector("cuda:0")
+                owns_cuda_timing = True
 
         crop_started = self._timestamp()
         crop_groups: list[tuple[Image.Image, ...]] = []
@@ -541,8 +606,13 @@ class ClassifierPipeline:
         if not callable(getattr(self.repvit, "score_many_with_evidence", None)):
             raise ValueError("RepViT runner does not expose batch evidence scoring")
         repvit_started = self._timestamp()
-        repvit_evidence = self.repvit.score_many_with_evidence(
+        score_repvit = lambda: self.repvit.score_many_with_evidence(
             tuple(crop_groups), max_objects=repvit_max_objects
+        )
+        repvit_evidence = (
+            cuda_timing.measure("repvit", score_repvit)
+            if cuda_timing is not None
+            else score_repvit()
         )
         repvit_finished = self._timestamp()
         if len(repvit_evidence) != len(ordered_boxes):
@@ -577,12 +647,17 @@ class ClassifierPipeline:
             for start in range(0, len(recheck_indexes), dino_max_objects):
                 batch_indexes = recheck_indexes[start : start + dino_max_objects]
                 try:
-                    dino_evidence = dino.score_many_global_and_local_evidence(
+                    score_dino = lambda: dino.score_many_global_and_local_evidence(
                         tuple(crop_groups[index] for index in batch_indexes),
                         tuple(product_box_groups[index] for index in batch_indexes),
                         local_bank,
                         repvit_scores=tuple(repvit_evidence[index].scores for index in batch_indexes),
                         max_objects=dino_max_objects,
+                    )
+                    dino_evidence = (
+                        cuda_timing.measure("dinov3", score_dino)
+                        if cuda_timing is not None
+                        else score_dino()
                     )
                     if len(dino_evidence) != len(batch_indexes):
                         raise ValueError("DINO batch evidence must align with rejected objects")
@@ -626,6 +701,12 @@ class ClassifierPipeline:
             raise RuntimeError("batch inference did not produce every decision")
         repvit_ms = _milliseconds(repvit_started, repvit_finished)
         dino_ms = _milliseconds(dino_started, dino_finished)
+        if owns_cuda_timing:
+            assert cuda_timing is not None
+            event_timings = cuda_timing.finalize()
+            repvit_ms = event_timings.get("repvit", 0.0)
+            dino_ms = event_timings.get("dinov3", 0.0)
+            total_finished = self._timestamp()
         total_ms = _milliseconds(total_started, total_finished)
         completed = tuple(
             self._with_metadata(
