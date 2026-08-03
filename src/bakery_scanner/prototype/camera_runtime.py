@@ -315,29 +315,49 @@ class CameraInferenceRuntime:
         dinov3_ms = 0.0
         decisions: list[tuple[BreadProposal, ClassificationDecision]] = []
         if ordered:
-            boxes = tuple(proposal.box for proposal in ordered)
-            batch = backend.classifier.infer_many(
-                frame,
-                boxes,
-                repvit_max_objects=_batch_limit(
-                    backend.classifier.config.runtime.repvit_microbatch_objects,
-                    len(boxes),
-                ),
-                dino_max_objects=_batch_limit(
-                    backend.classifier.config.runtime.dinov3_microbatch_objects,
-                    len(boxes),
-                ),
-            )
-            if len(batch.decisions) != len(ordered):
-                raise ValueError("classifier batch decisions must align with detector proposals")
-            if batch.dino_object_count > 0:
-                _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
-            for proposal, decision in zip(ordered, batch.decisions, strict=True):
-                if decision.box != proposal.box:
-                    raise ValueError("classifier decision box changed detector coordinates")
-                decisions.append((proposal, decision))
-            repvit_ms = batch.timings.repvit_ms
-            dinov3_ms = batch.timings.dinov3_ms
+            if backend.classifier.config.runtime.mode == "serial_reference":
+
+                def on_stage(stage: str) -> None:
+                    if stage == "dinov3":
+                        _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+                    elif stage != "repvit":
+                        raise ValueError(f"unsupported classifier stage: {stage}")
+
+                for proposal in ordered:
+                    decision = backend.classifier.infer(
+                        frame,
+                        proposal.box,
+                        on_stage=on_stage,
+                    )
+                    if decision.box != proposal.box:
+                        raise ValueError("classifier decision box changed detector coordinates")
+                    decisions.append((proposal, decision))
+                    repvit_ms += decision.timings.repvit_ms
+                    dinov3_ms += decision.timings.dinov3_ms
+            else:
+                boxes = tuple(proposal.box for proposal in ordered)
+                batch = backend.classifier.infer_many(
+                    frame,
+                    boxes,
+                    repvit_max_objects=_batch_limit(
+                        backend.classifier.config.runtime.repvit_microbatch_objects,
+                        len(boxes),
+                    ),
+                    dino_max_objects=_batch_limit(
+                        backend.classifier.config.runtime.dinov3_microbatch_objects,
+                        len(boxes),
+                    ),
+                )
+                if len(batch.decisions) != len(ordered):
+                    raise ValueError("classifier batch decisions must align with detector proposals")
+                if batch.dino_object_count > 0:
+                    _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
+                for proposal, decision in zip(ordered, batch.decisions, strict=True):
+                    if decision.box != proposal.box:
+                        raise ValueError("classifier decision box changed detector coordinates")
+                    decisions.append((proposal, decision))
+                repvit_ms = batch.timings.repvit_ms
+                dinov3_ms = batch.timings.dinov3_ms
 
         _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
         postprocess_started = _timestamp(self._clock, self.device)
@@ -604,10 +624,15 @@ def _validate_backend(backend: RuntimeBackend, device: str) -> None:
         raise ValueError("backend device does not match initialization attempt")
     if not callable(getattr(backend.detector, "predict", None)):
         raise TypeError("runtime detector must provide predict()")
-    if not callable(getattr(backend.classifier, "infer_many", None)) or not callable(
-        getattr(backend.classifier, "preflight_models", None)
+    classifier = backend.classifier
+    if (
+        not callable(getattr(classifier, "infer", None))
+        or not callable(getattr(classifier, "infer_many", None))
+        or not callable(getattr(classifier, "preflight_models", None))
     ):
-        raise TypeError("runtime classifier must provide infer_many() and preflight_models()")
+        raise TypeError(
+            "runtime classifier must provide infer(), infer_many(), and preflight_models()"
+        )
     if not callable(getattr(backend, "close", None)):
         raise TypeError("runtime backend must provide close()")
 

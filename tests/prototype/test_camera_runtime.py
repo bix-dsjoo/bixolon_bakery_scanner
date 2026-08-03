@@ -121,6 +121,7 @@ class FakeClassifier:
         self.infer_many_calls = 0
         self.config = SimpleNamespace(
             runtime=SimpleNamespace(
+                mode="serial_reference",
                 repvit_microbatch_objects="all",
                 dinov3_microbatch_objects="all",
             )
@@ -180,6 +181,7 @@ class FakeBatchClassifier(FakeClassifier):
         super().__init__(decisions)
         self.config = SimpleNamespace(
             runtime=SimpleNamespace(
+                mode="batch_pytorch",
                 repvit_microbatch_objects="all",
                 dinov3_microbatch_objects="all",
             )
@@ -848,6 +850,29 @@ def test_camera_runtime_batches_all_ordered_objects_once(tmp_path: Path):
     assert result["timings_ms"]["dinov3"] == 5.0
 
 
+def test_camera_runtime_serial_mode_calls_infer_without_batch(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    first = Box(5, 5, 20, 20)
+    second = Box(35, 5, 20, 20)
+    classifier = FakeClassifier(
+        (_confirmed(6, first), _unknown(second))
+    )
+    classifier.infer_many = lambda *args, **kwargs: pytest.fail(
+        "batch infer_many used for serial mode"
+    )
+    runtime = _runtime(
+        tmp_path,
+        classifier=classifier,
+        proposals=(_proposal(first), _proposal(second)),
+    )
+
+    result = runtime.analyze(image_path, "serial-objects")
+
+    assert classifier.infer_calls == 2
+    assert result["timings_ms"]["repvit"] == 5.0
+    assert result["timings_ms"]["dinov3"] == 5.0
+
+
 def test_camera_runtime_rejects_misaligned_batch_decisions(tmp_path: Path):
     image_path = _write_image(tmp_path / "capture.jpg")
     first = Box(5, 5, 20, 20)
@@ -860,6 +885,40 @@ def test_camera_runtime_rejects_misaligned_batch_decisions(tmp_path: Path):
 
     with pytest.raises(ValueError, match="align"):
         runtime.analyze(image_path, "misaligned")
+
+
+def test_camera_runtime_rejects_batch_decision_coordinate_mismatch(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    detector_box = Box(5, 5, 20, 20)
+    changed_box = Box(6, 5, 20, 20)
+    runtime = _runtime(
+        tmp_path,
+        classifier=FakeBatchClassifier((_confirmed(6, changed_box),)),
+        proposals=(_proposal(detector_box),),
+    )
+
+    with pytest.raises(ValueError, match="changed detector coordinates"):
+        runtime.analyze(image_path, "coordinate-mismatch")
+
+
+def test_camera_runtime_batch_rechecking_uses_dino_object_count(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    box = Box(5, 5, 20, 20)
+    runtime = _runtime(
+        tmp_path,
+        classifier=FakeBatchClassifier((_confirmed(6, box),), dino_object_count=1),
+        proposals=(_proposal(box),),
+    )
+    phases: list[WorkerPhase] = []
+
+    runtime.analyze(image_path, "batch-rechecking", phases.append)
+
+    assert phases == [
+        WorkerPhase.DETECTING,
+        WorkerPhase.CLASSIFYING,
+        WorkerPhase.RECHECKING,
+        WorkerPhase.AGGREGATING,
+    ]
 
 
 def test_empty_scene_never_calls_classifier(tmp_path: Path):
@@ -1033,8 +1092,8 @@ def test_runtime_warms_once_reuses_models_and_closes_idempotently(tmp_path: Path
     assert loader_calls == 1
     assert backend.detector.predict_calls == 3
     assert backend.classifier.preflight_calls == 1
-    assert backend.classifier.infer_calls == 0
-    assert backend.classifier.infer_many_calls == 2
+    assert backend.classifier.infer_calls == 2
+    assert backend.classifier.infer_many_calls == 0
     with pytest.raises(RuntimeError, match="runtime is already warmed"):
         runtime.warmup(warmup_image)
 
