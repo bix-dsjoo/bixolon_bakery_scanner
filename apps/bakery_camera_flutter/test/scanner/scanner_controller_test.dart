@@ -734,11 +734,14 @@ InferenceResult _emptyResult({double workerTotalMs = 37}) {
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,
+      'crop': 0.0,
       'repvit': 8.0,
       'dinov3': 0.0,
+      'fusion': 0.0,
       'postprocess': workerTotalMs - 29,
       'total': workerTotalMs,
     },
+    'diagnostics': {'object_count': 0, 'dino_object_count': 0},
   });
 }
 
@@ -792,10 +795,13 @@ InferenceResult _confirmedResult() {
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,
+      'crop': 0.0,
       'repvit': 8.0,
       'dinov3': 0.0,
+      'fusion': 0.0,
       'postprocess': 8.0,
       'total': 37.0,
     },
+    'diagnostics': {'object_count': 1, 'dino_object_count': 0},
   });
 }

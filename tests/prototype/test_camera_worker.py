@@ -66,6 +66,17 @@ class FakeRuntime:
             "request_id": request_id,
             "objects": [],
             "presentation": self.presentation,
+            "timings_ms": {
+                "decode_preprocess": 0.0,
+                "detector": 0.0,
+                "crop": 0.0,
+                "repvit": 0.0,
+                "dinov3": 0.0,
+                "fusion": 0.0,
+                "postprocess": 0.0,
+                "total": 0.0,
+            },
+            "diagnostics": {"object_count": 0, "dino_object_count": 0},
         }
 
     def close(self) -> None:
@@ -154,10 +165,21 @@ def test_worker_emits_legal_correlated_progress_before_result(tmp_path: Path):
         {"type": "progress", "request_id": "analysis-1", "phase": "aggregating"},
         {
             "type": "result",
-            "request_id": "analysis-1",
-            "objects": [],
-            "presentation": _normal_presentation(),
-        },
+                "request_id": "analysis-1",
+                "objects": [],
+                "presentation": _normal_presentation(),
+                "timings_ms": {
+                    "decode_preprocess": 0.0,
+                    "detector": 0.0,
+                    "crop": 0.0,
+                    "repvit": 0.0,
+                    "dinov3": 0.0,
+                    "fusion": 0.0,
+                    "postprocess": 0.0,
+                    "total": 0.0,
+                },
+                "diagnostics": {"object_count": 0, "dino_object_count": 0},
+            },
     ]
 
 
@@ -330,6 +352,22 @@ def test_cli_rejects_warmup_image_outside_repository_root(tmp_path: Path):
         assert "under the repository root" in str(exc)
     else:
         raise AssertionError("outside warm-up image must be rejected")
+
+
+def test_cli_allows_verified_external_warmup_image_only_when_requested(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"jpeg")
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_external", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.resolve_paths(root, outside, allow_external_warmup=True) == (
+        root.resolve(), outside.resolve()
+    )
 
 
 def test_cli_resolves_bundled_application_and_dinov3_import_roots(

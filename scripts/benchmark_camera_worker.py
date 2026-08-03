@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import queue
@@ -14,17 +15,20 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
+# Keep direct CLI execution bound to this checkout, not an ambient editable install.
+_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
+
+from bakery_scanner.benchmarking.gpu_worker_receipt import (
+    STAGES as GPU_RECEIPT_STAGES,
+    build_receipt,
+)
+
 
 MINIMUM_MEASURED_RUNS = 20
 STARTUP_EVENT_TYPES = frozenset({"loading", "warming", "ready"})
-EXPECTED_TIMING_STAGES = (
-    "decode_preprocess",
-    "detector",
-    "repvit",
-    "dinov3",
-    "postprocess",
-    "total",
-)
+EXPECTED_TIMING_STAGES = GPU_RECEIPT_STAGES
 _EOF = object()
 
 
@@ -35,6 +39,88 @@ def validate_run_count(run_count: int) -> int:
     if run_count < MINIMUM_MEASURED_RUNS:
         raise ValueError(f"benchmark requires at least {MINIMUM_MEASURED_RUNS} runs")
     return run_count
+
+
+def load_external_manifest(
+    manifest_path: Path,
+) -> tuple[tuple[dict[str, str], ...], str]:
+    """Load and verify the fixed external E/M/H benchmark manifest."""
+    path = Path(manifest_path).resolve()
+    if not path.is_file():
+        raise ValueError(f"benchmark manifest is missing: {path}")
+    encoded = path.read_bytes()
+    manifest_sha256 = hashlib.sha256(encoded).hexdigest()
+    try:
+        payload = json.loads(encoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("benchmark manifest must be valid JSON") from exc
+    if not isinstance(payload, Mapping) or set(payload) != {"samples"}:
+        raise ValueError("benchmark manifest schema is invalid")
+    rows = payload["samples"]
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("benchmark manifest samples must be a non-empty list")
+    samples: list[dict[str, str]] = []
+    image_ids: set[str] = set()
+    groups: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != {
+            "image_id", "group", "image_path", "image_sha256"
+        }:
+            raise ValueError("benchmark manifest sample schema is invalid")
+        image_id = _non_empty_string(row["image_id"], "manifest image_id")
+        if image_id in image_ids:
+            raise ValueError("benchmark manifest image_id is duplicated")
+        group = row["group"]
+        if group not in {"E", "M", "H"}:
+            raise ValueError("benchmark manifest group is invalid")
+        image_path = row["image_path"]
+        if not isinstance(image_path, str) or not image_path:
+            raise ValueError("benchmark manifest image_path is invalid")
+        image = Path(image_path)
+        if not image.is_absolute() or not image.is_file():
+            raise ValueError("benchmark manifest image_path must be an existing absolute path")
+        image_sha256 = _sha256(row["image_sha256"], "manifest image_sha256")
+        if hashlib.sha256(image.read_bytes()).hexdigest() != image_sha256:
+            raise ValueError("benchmark manifest image SHA-256 mismatch")
+        image_ids.add(image_id)
+        groups.add(group)
+        samples.append(
+            {
+                "image_id": image_id,
+                "group": group,
+                "image_path": str(image.resolve()),
+                "image_sha256": image_sha256,
+            }
+        )
+    if groups != {"E", "M", "H"}:
+        raise ValueError("benchmark manifest requires at least one E, M, and H sample")
+    return tuple(samples), manifest_sha256
+
+
+def load_benchmark_protocol(path: Path) -> tuple[dict[str, object], str]:
+    """Load the reviewed CUDA-only worker-boundary protocol."""
+    protocol_path = Path(path).resolve()
+    if not protocol_path.is_file():
+        raise ValueError(f"benchmark protocol is missing: {protocol_path}")
+    encoded = protocol_path.read_bytes()
+    protocol_sha256 = hashlib.sha256(encoded).hexdigest()
+    try:
+        protocol = json.loads(encoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("benchmark protocol must be valid JSON") from exc
+    expected = {
+        "device": "cuda:0",
+        "groups": ["E", "M", "H"],
+        "minimum_group_observations": 100,
+        "minimum_warmups": 20,
+        "overall_p95_limit_ms": 100.0,
+        "per_group_p95_limit_ms": 100.0,
+        "schema_version": 1,
+        "worker_boundary": "file_read_to_in_memory_result_payload",
+    }
+    if protocol != expected:
+        raise ValueError("benchmark protocol does not match rtx5080_worker_p95_v1")
+    return expected, protocol_sha256
 
 
 def summarize_ms(values: Iterable[float]) -> dict[str, int | float]:
@@ -56,6 +142,8 @@ def summarize_ms(values: Iterable[float]) -> dict[str, int | float]:
 def build_benchmark_report(
     ready_event: Mapping[str, object],
     measured_events: Iterable[Mapping[str, object]],
+    *,
+    artifacts: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Build a deterministic report from one ready event and measured results."""
     if ready_event.get("type") != "ready":
@@ -66,6 +154,8 @@ def build_benchmark_report(
         raise ValueError("ready startup_metrics must be an object")
     if startup_metrics.get("device") != device:
         raise ValueError("startup device does not match ready device")
+    if device == "cuda:0" and startup_metrics.get("fallback_reason") is not None:
+        raise ValueError("benchmark rejects CUDA fallback")
 
     results: list[Mapping[str, object]] = []
     for event in measured_events:
@@ -98,6 +188,19 @@ def build_benchmark_report(
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{stage} timing must be numeric")
             timing_values[stage].append(float(value))
+
+    if device == "cuda:0":
+        receipt = build_receipt(
+            ready_event,
+            _grouped_gpu_samples(results),
+            artifacts=artifacts,
+        )
+        payload = receipt.to_payload()
+        summaries = payload["summaries"]
+        assert isinstance(summaries, Mapping)
+        payload["groups"] = summaries["groups"]
+        payload["overall"] = summaries["overall"]
+        return payload
 
     return {
         "schema_version": 1,
@@ -136,6 +239,33 @@ def build_benchmark_report(
             for stage in EXPECTED_TIMING_STAGES
         },
     }
+
+
+def _grouped_gpu_samples(
+    results: Sequence[Mapping[str, object]],
+) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {"E": [], "M": [], "H": []}
+    for result in results:
+        diagnostics = result.get("diagnostics")
+        if not isinstance(diagnostics, Mapping) or set(diagnostics) != {
+            "object_count", "dino_object_count"
+        }:
+            raise ValueError("result diagnostics do not match worker contract")
+        group = result.get("group")
+        if group not in grouped:
+            raise ValueError("GPU benchmark result group is invalid")
+        grouped[group].append(
+            {
+                "request_id": result.get("request_id"),
+                "image_id": result.get("image_id"),
+                "group": group,
+                "image_sha256": result.get("image_sha256"),
+                "object_count": diagnostics["object_count"],
+                "dino_object_count": diagnostics["dino_object_count"],
+                "timings_ms": result.get("timings_ms"),
+            }
+        )
+    return grouped
 
 
 class _WorkerProcess:
@@ -204,6 +334,101 @@ class _WorkerProcess:
         if self._process.poll() is None:
             self._process.kill()
             self._process.wait()
+
+
+def run_grouped_benchmark(
+    *,
+    python_executable: Path,
+    repo_root: Path,
+    manifest_path: Path,
+    protocol_path: Path,
+    startup_timeout_seconds: float = 900.0,
+    analysis_timeout_seconds: float = 600.0,
+) -> dict[str, object]:
+    """Run fixed warmups and 100 deterministic measurements for E, M, and H."""
+    samples, manifest_sha256 = load_external_manifest(manifest_path)
+    protocol, protocol_sha256 = load_benchmark_protocol(protocol_path)
+    python_path = Path(python_executable).resolve()
+    root = Path(repo_root).resolve()
+    if not python_path.is_file():
+        raise ValueError(f"Python executable is missing: {python_path}")
+    if not root.is_dir():
+        raise ValueError(f"repository root is missing: {root}")
+    worker_script = root / "scripts" / "run_camera_inference_worker.py"
+    if not worker_script.is_file():
+        raise ValueError(f"camera worker script is missing: {worker_script}")
+    command = (
+        str(python_path), "-u", str(worker_script), "--repo-root", str(root),
+        "--device", "cuda", "--warmup-image", samples[0]["image_path"],
+        "--allow-external-warmup",
+    )
+    samples_by_group = {
+        group: tuple(sample for sample in samples if sample["group"] == group)
+        for group in ("E", "M", "H")
+    }
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
+        worker = _WorkerProcess(command, diagnostics)
+        try:
+            ready = _wait_for_ready(worker, startup_timeout_seconds)
+            if ready.get("device") != protocol["device"]:
+                raise RuntimeError("worker did not start on protocol CUDA device")
+            for index in range(int(protocol["minimum_warmups"])):
+                sample = samples[index % len(samples)]
+                _analyze_sample(
+                    worker, sample, f"warmup-{index + 1:04d}", analysis_timeout_seconds
+                )
+            measured: list[Mapping[str, object]] = []
+            for group in ("E", "M", "H"):
+                group_samples = samples_by_group[group]
+                for index in range(int(protocol["minimum_group_observations"])):
+                    sample = group_samples[index % len(group_samples)]
+                    measured.append(
+                        _analyze_sample(
+                            worker,
+                            sample,
+                            f"benchmark-{group}-{index + 1:04d}",
+                            analysis_timeout_seconds,
+                        )
+                    )
+            worker.send({"type": "shutdown", "request_id": "benchmark-shutdown"})
+            stopped = worker.receive(analysis_timeout_seconds)
+            if stopped != {"type": "stopped", "request_id": "benchmark-shutdown"}:
+                raise RuntimeError("worker did not acknowledge shutdown")
+            if worker.wait(30.0) != 0:
+                raise RuntimeError("worker exited with a non-zero status")
+            return build_benchmark_report(
+                ready,
+                measured,
+                artifacts={
+                    "manifest_sha256": manifest_sha256,
+                    "protocol_sha256": protocol_sha256,
+                },
+            )
+        except Exception as exc:
+            worker.abort()
+            diagnostics.seek(0)
+            detail = diagnostics.read().strip()
+            if detail:
+                exc.add_note(f"worker diagnostics:\n{detail[-8000:]}")
+            raise
+
+
+def _analyze_sample(
+    worker: _WorkerProcess,
+    sample: Mapping[str, str],
+    request_id: str,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    worker.send(
+        {"type": "analyze", "request_id": request_id, "image_path": sample["image_path"]}
+    )
+    result = _wait_for_result(worker, request_id, timeout_seconds)
+    return {
+        **result,
+        "image_id": sample["image_id"],
+        "group": sample["group"],
+        "image_sha256": sample["image_sha256"],
+    }
 
 
 def run_benchmark(
@@ -342,6 +567,16 @@ def _optional_string(value: object, label: str) -> str | None:
     return value
 
 
+def _sha256(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{label} must be a lowercase SHA-256")
+    return value
+
+
 def _finite_non_negative(value: object, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be numeric")
@@ -356,7 +591,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
-    parser.add_argument("--image", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--image", type=Path)
+    source.add_argument("--manifest", type=Path)
+    parser.add_argument("--protocol", type=Path)
     parser.add_argument("--runs", type=int, default=MINIMUM_MEASURED_RUNS)
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args(argv)
@@ -364,13 +602,28 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    report = run_benchmark(
-        python_executable=args.python,
-        repo_root=args.repo_root,
-        device=args.device,
-        image_path=args.image,
-        run_count=args.runs,
-    )
+    if args.manifest is not None:
+        if args.protocol is None:
+            raise ValueError("--protocol is required with --manifest")
+        if args.device != "cuda":
+            raise ValueError("grouped GPU receipt requires --device cuda")
+        report = run_grouped_benchmark(
+            python_executable=args.python,
+            repo_root=args.repo_root,
+            manifest_path=args.manifest,
+            protocol_path=args.protocol,
+        )
+    else:
+        if args.protocol is not None:
+            raise ValueError("--protocol requires --manifest")
+        assert args.image is not None
+        report = run_benchmark(
+            python_executable=args.python,
+            repo_root=args.repo_root,
+            device=args.device,
+            image_path=args.image,
+            run_count=args.runs,
+        )
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

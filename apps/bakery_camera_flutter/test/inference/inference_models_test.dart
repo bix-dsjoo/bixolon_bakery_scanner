@@ -25,6 +25,28 @@ void main() {
     expect(result.timings.totalMs, 42.0);
   });
 
+  test('requires eight timing stages and exact object diagnostics', () {
+    final json = _resultJson();
+    json['timings_ms'] = {
+      'decode_preprocess': 1.0,
+      'detector': 20.0,
+      'crop': 3.0,
+      'repvit': 8.0,
+      'dinov3': 5.0,
+      'fusion': 2.0,
+      'postprocess': 8.0,
+      'total': 42.0,
+    };
+    json['diagnostics'] = {'object_count': 1, 'dino_object_count': 0};
+
+    final result = InferenceResult.fromJson(json);
+
+    expect(result.timings.cropMs, 3.0);
+    expect(result.timings.fusionMs, 2.0);
+    expect(result.diagnostics.objectCount, result.objects.length);
+    expect(result.diagnostics.dinoObjectCount, 0);
+  });
+
   test('accepts camera action state v2 while preserving exact Top3', () {
     final presentation = _presentationJson(
       state: 'unknown',
@@ -595,10 +617,16 @@ Map<String, Object?> _resultJson({
     'timings_ms': {
       'decode_preprocess': 1.0,
       'detector': 20.0,
+      'crop': 0.0,
       'repvit': 8.0,
       'dinov3': 5.0,
+      'fusion': 0.0,
       'postprocess': 8.0,
       'total': 42.0,
+    },
+    'diagnostics': {
+      'object_count': resultObjects.length,
+      'dino_object_count': 0,
     },
   };
 }

@@ -24,6 +24,18 @@ _V1_POLICY_ID = "camera_action_state_v1"
 _V2_POLICY_ID = "camera_action_state_v2"
 _POLICY_IDS = frozenset({_V1_POLICY_ID, _V2_POLICY_ID})
 _LOWER_HEX = frozenset("0123456789abcdef")
+_TIMING_STAGES = frozenset(
+    {
+        "decode_preprocess",
+        "detector",
+        "crop",
+        "repvit",
+        "dinov3",
+        "fusion",
+        "postprocess",
+        "total",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +139,8 @@ def validate_result_event(result: Mapping[str, object]) -> None:
     if not isinstance(result, Mapping) or result.get("type") != "result":
         raise ValueError("runtime result type must be result")
     object_ids, unknown_ids = _result_object_ids(result.get("objects"))
+    _validate_timings(result.get("timings_ms"))
+    _validate_diagnostics(result.get("diagnostics"), len(object_ids))
     presentation = result.get("presentation")
     if (
         not isinstance(presentation, Mapping)
@@ -291,6 +305,38 @@ def _object_id_list(value: object, field: str) -> tuple[str, ...]:
             raise ValueError(f"runtime result {field} is invalid")
         object_ids.append(item)
     return tuple(object_ids)
+
+
+def _validate_diagnostics(value: object, object_count: int) -> None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "object_count", "dino_object_count"
+    }:
+        raise ValueError("runtime result diagnostics schema is invalid")
+    reported_objects = value["object_count"]
+    dino_objects = value["dino_object_count"]
+    if (
+        isinstance(reported_objects, bool)
+        or not isinstance(reported_objects, int)
+        or reported_objects != object_count
+        or isinstance(dino_objects, bool)
+        or not isinstance(dino_objects, int)
+        or not 0 <= dino_objects <= object_count
+    ):
+        raise ValueError("runtime result diagnostics are invalid")
+
+
+def _validate_timings(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != _TIMING_STAGES:
+        raise ValueError("runtime result timings_ms schema is invalid")
+    for stage in _TIMING_STAGES:
+        timing = value[stage]
+        if (
+            isinstance(timing, bool)
+            or not isinstance(timing, (int, float))
+            or not math.isfinite(float(timing))
+            or timing < 0.0
+        ):
+            raise ValueError("runtime result timings_ms values are invalid")
 
 
 def encode_event(event: Mapping[str, object]) -> str:

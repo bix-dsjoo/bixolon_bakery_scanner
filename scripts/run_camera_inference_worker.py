@@ -8,18 +8,24 @@ from pathlib import Path
 from typing import Sequence
 
 
-def resolve_paths(repo_root: Path, warmup_image: Path) -> tuple[Path, Path]:
-    """Resolve CLI paths and reject a warm-up image outside the repository."""
+def resolve_paths(
+    repo_root: Path,
+    warmup_image: Path,
+    *,
+    allow_external_warmup: bool = False,
+) -> tuple[Path, Path]:
+    """Resolve CLI paths, allowing an explicit external benchmark warm-up."""
     root = Path(repo_root).resolve()
     image = Path(warmup_image).resolve()
     if not root.is_dir():
         raise ValueError(f"repository root is not a directory: {root}")
     if not image.is_file():
         raise ValueError(f"warm-up image is not a file: {image}")
-    try:
-        image.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("warm-up image must remain under the repository root") from exc
+    if not allow_external_warmup:
+        try:
+            image.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("warm-up image must remain under the repository root") from exc
     return root, image
 
 
@@ -39,9 +45,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--warmup-image", required=True, type=Path)
+    parser.add_argument("--allow-external-warmup", action="store_true")
     args = parser.parse_args(argv)
     try:
-        root, warmup_image = resolve_paths(args.repo_root, args.warmup_image)
+        root, warmup_image = resolve_paths(
+            args.repo_root,
+            args.warmup_image,
+            allow_external_warmup=args.allow_external_warmup,
+        )
     except ValueError as exc:
         parser.error(str(exc))
 

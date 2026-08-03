@@ -311,8 +311,11 @@ class CameraInferenceRuntime:
         )
 
         _emit_progress(on_progress, WorkerPhase.CLASSIFYING, emitted)
+        crop_ms = 0.0
         repvit_ms = 0.0
         dinov3_ms = 0.0
+        fusion_ms = 0.0
+        dino_object_count = 0
         decisions: list[tuple[BreadProposal, ClassificationDecision]] = []
         if ordered:
             if backend.classifier.config.runtime.mode == "serial_reference":
@@ -334,6 +337,7 @@ class CameraInferenceRuntime:
                     decisions.append((proposal, decision))
                     repvit_ms += decision.timings.repvit_ms
                     dinov3_ms += decision.timings.dinov3_ms
+                    dino_object_count += int(decision.timings.dinov3_ms > 0.0)
             else:
                 boxes = tuple(proposal.box for proposal in ordered)
                 batch = backend.classifier.infer_many(
@@ -358,6 +362,9 @@ class CameraInferenceRuntime:
                     decisions.append((proposal, decision))
                 repvit_ms = batch.timings.repvit_ms
                 dinov3_ms = batch.timings.dinov3_ms
+                crop_ms = batch.timings.crop_ms
+                fusion_ms = batch.timings.fusion_ms
+                dino_object_count = batch.dino_object_count
 
         _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
         postprocess_started = _timestamp(self._clock, self.device)
@@ -373,8 +380,10 @@ class CameraInferenceRuntime:
         timings = {
             "decode_preprocess": _milliseconds(total_started, decode_finished),
             "detector": _milliseconds(detector_started, detector_finished),
+            "crop": crop_ms,
             "repvit": repvit_ms,
             "dinov3": dinov3_ms,
+            "fusion": fusion_ms,
             "postprocess": _milliseconds(postprocess_started, postprocess_finished),
             "total": _milliseconds(total_started, postprocess_finished),
         }
@@ -388,6 +397,10 @@ class CameraInferenceRuntime:
             "unknown_count": unknown_count,
             "presentation": presentation,
             "timings_ms": timings,
+            "diagnostics": {
+                "object_count": len(objects),
+                "dino_object_count": dino_object_count,
+            },
         }
 
     def close(self) -> None:

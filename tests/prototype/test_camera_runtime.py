@@ -844,11 +844,14 @@ def test_analyze_returns_deterministic_fail_closed_result_contract(tmp_path: Pat
     assert set(result["timings_ms"]) == {
         "decode_preprocess",
         "detector",
+        "crop",
         "repvit",
         "dinov3",
+        "fusion",
         "postprocess",
         "total",
     }
+    assert result["diagnostics"] == {"object_count": 3, "dino_object_count": 1}
     assert result["timings_ms"]["repvit"] == 7.0
     assert result["timings_ms"]["dinov3"] == 5.0
     assert phases == [
@@ -898,6 +901,8 @@ def test_camera_runtime_batches_all_ordered_objects_once(tmp_path: Path):
     ]
     assert result["timings_ms"]["repvit"] == 7.0
     assert result["timings_ms"]["dinov3"] == 5.0
+    assert result["timings_ms"]["crop"] == 1.0
+    assert result["timings_ms"]["fusion"] == 1.0
 
 
 def test_camera_runtime_serial_mode_calls_infer_without_batch(tmp_path: Path):

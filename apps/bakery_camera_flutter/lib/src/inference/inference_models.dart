@@ -202,8 +202,10 @@ final class StageTimings {
   const StageTimings({
     required this.decodePreprocessMs,
     required this.detectorMs,
+    required this.cropMs,
     required this.repvitMs,
     required this.dinov3Ms,
+    required this.fusionMs,
     required this.postprocessMs,
     required this.totalMs,
   });
@@ -212,8 +214,10 @@ final class StageTimings {
     _expectFields(json, const {
       'decode_preprocess',
       'detector',
+      'crop',
       'repvit',
       'dinov3',
+      'fusion',
       'postprocess',
       'total',
     });
@@ -223,8 +227,10 @@ final class StageTimings {
         'decode_preprocess timing',
       ),
       detectorMs: _nonNegativeFinite(json['detector'], 'detector timing'),
+      cropMs: _nonNegativeFinite(json['crop'], 'crop timing'),
       repvitMs: _nonNegativeFinite(json['repvit'], 'repvit timing'),
       dinov3Ms: _nonNegativeFinite(json['dinov3'], 'dinov3 timing'),
+      fusionMs: _nonNegativeFinite(json['fusion'], 'fusion timing'),
       postprocessMs: _nonNegativeFinite(
         json['postprocess'],
         'postprocess timing',
@@ -235,10 +241,41 @@ final class StageTimings {
 
   final double decodePreprocessMs;
   final double detectorMs;
+  final double cropMs;
   final double repvitMs;
   final double dinov3Ms;
+  final double fusionMs;
   final double postprocessMs;
   final double totalMs;
+}
+
+final class InferenceDiagnostics {
+  const InferenceDiagnostics({
+    required this.objectCount,
+    required this.dinoObjectCount,
+  });
+
+  factory InferenceDiagnostics.fromJson(
+    Map<String, Object?> json, {
+    required int actualObjectCount,
+  }) {
+    _expectFields(json, const {'object_count', 'dino_object_count'});
+    final objectCount = _nonNegativeInt(json['object_count'], 'object_count');
+    final dinoObjectCount = _nonNegativeInt(
+      json['dino_object_count'],
+      'dino_object_count',
+    );
+    if (objectCount != actualObjectCount || dinoObjectCount > objectCount) {
+      throw const FormatException('inference diagnostics are inconsistent');
+    }
+    return InferenceDiagnostics(
+      objectCount: objectCount,
+      dinoObjectCount: dinoObjectCount,
+    );
+  }
+
+  final int objectCount;
+  final int dinoObjectCount;
 }
 
 final class StartupMetrics {
@@ -512,6 +549,7 @@ final class InferenceResult {
     required this.unknownCount,
     required this.presentation,
     required this.timings,
+    required this.diagnostics,
   }) : objects = List.unmodifiable(objects),
        counts = UnmodifiableMapView(counts);
 
@@ -526,6 +564,7 @@ final class InferenceResult {
       'unknown_count',
       'presentation',
       'timings_ms',
+      'diagnostics',
     });
     if (json['type'] != 'result') {
       throw const FormatException('inference result type must be result');
@@ -596,6 +635,10 @@ final class InferenceResult {
         objects: objects,
       ),
       timings: StageTimings.fromJson(_map(json['timings_ms'], 'timings_ms')),
+      diagnostics: InferenceDiagnostics.fromJson(
+        _map(json['diagnostics'], 'diagnostics'),
+        actualObjectCount: objects.length,
+      ),
     );
   }
 
@@ -608,6 +651,7 @@ final class InferenceResult {
   final int unknownCount;
   final InferencePresentation presentation;
   final StageTimings timings;
+  final InferenceDiagnostics diagnostics;
 
   int get registeredCount =>
       counts.values.fold<int>(0, (sum, count) => sum + count);

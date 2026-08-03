@@ -355,10 +355,16 @@ String canonicalInferenceReceiptJson({
       'timings_ms': {
         'decode_preprocess': result.timings.decodePreprocessMs,
         'detector': result.timings.detectorMs,
+        'crop': result.timings.cropMs,
         'repvit': result.timings.repvitMs,
         'dinov3': result.timings.dinov3Ms,
+        'fusion': result.timings.fusionMs,
         'postprocess': result.timings.postprocessMs,
         'total': result.timings.totalMs,
+      },
+      'diagnostics': {
+        'object_count': result.diagnostics.objectCount,
+        'dino_object_count': result.diagnostics.dinoObjectCount,
       },
     },
   };

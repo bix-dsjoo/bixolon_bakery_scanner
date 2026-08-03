@@ -49,6 +49,17 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
             },
         ],
         "presentation": presentation,
+        "timings_ms": {
+            "decode_preprocess": 1.0,
+            "detector": 1.0,
+            "crop": 1.0,
+            "repvit": 1.0,
+            "dinov3": 1.0,
+            "fusion": 1.0,
+            "postprocess": 1.0,
+            "total": 1.0,
+        },
+        "diagnostics": {"object_count": 2, "dino_object_count": 1},
     }
 
 
@@ -268,3 +279,28 @@ def test_validate_result_event_requires_exact_ranked_top3_for_v2_candidate(top3)
 def test_validate_result_event_rejects_inconsistent_presentation(presentation):
     with pytest.raises(ValueError):
         camera_protocol.validate_result_event(_result(presentation))
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        {},
+        {"object_count": 1, "dino_object_count": 1},
+        {"object_count": 2, "dino_object_count": 3},
+        {"object_count": True, "dino_object_count": 1},
+    ],
+)
+def test_validate_result_event_rejects_invalid_diagnostics(diagnostics):
+    result = _result(_presentation())
+    result["diagnostics"] = diagnostics
+
+    with pytest.raises(ValueError, match="diagnostics"):
+        camera_protocol.validate_result_event(result)
+
+
+def test_validate_result_event_requires_exact_eight_stage_timings():
+    result = _result(_presentation())
+    result["timings_ms"].pop("fusion")
+
+    with pytest.raises(ValueError, match="timings_ms"):
+        camera_protocol.validate_result_event(result)
