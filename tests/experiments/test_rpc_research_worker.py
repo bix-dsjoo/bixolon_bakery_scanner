@@ -26,6 +26,7 @@ from bakery_scanner.experiments.rpc_research_worker import (
     ResearchArtifacts,
     extract_oracle_features,
     fit_m0_base_rows,
+    fit_m0_base_rows_from_embeddings,
     fit_m0_head,
     score_m1,
     score_m2,
@@ -560,6 +561,23 @@ def test_m0_base_training_rejects_noncanonical_shot_count(monkeypatch: pytest.Mo
 
     with pytest.raises(ValueError, match="exactly 2 support examples"):
         fit_m0_base_rows(base_features)
+
+
+def test_m0_base_embedding_training_requires_cpu_balanced_feature_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(worker, "_M0_TRAINING_STEPS", 1)
+    monkeypatch.setattr(worker, "_M0_BASE_SHOTS", 1)
+    category_ids = tuple(range(1, 161))
+    embeddings = torch.zeros((160, 384), dtype=torch.float16)
+    embeddings[:, 0] = torch.arange(1, 161, dtype=torch.float16)
+    embeddings[:, 1] = 1.0
+
+    rows = fit_m0_base_rows_from_embeddings(category_ids, embeddings)
+
+    assert rows.shape == (160, 384)
+    with pytest.raises(ValueError, match="CPU"):
+        fit_m0_base_rows_from_embeddings(category_ids, embeddings.to("meta"))
 
 
 def test_branch_predictions_have_sorted_catalog_scores_and_provenance():

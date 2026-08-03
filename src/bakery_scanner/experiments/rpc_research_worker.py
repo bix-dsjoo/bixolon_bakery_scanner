@@ -418,6 +418,51 @@ def score_m2(
     )
 
 
+def fit_m0_base_rows_from_embeddings(
+    category_ids: Sequence[int], repvit_embeddings: torch.Tensor
+) -> torch.Tensor:
+    """Fit an immutable M0 base head from one CPU, balanced feature matrix."""
+    categories = tuple(category_ids)
+    if (
+        not isinstance(repvit_embeddings, torch.Tensor)
+        or repvit_embeddings.device.type != "cpu"
+        or repvit_embeddings.ndim != 2
+        or repvit_embeddings.shape != (len(categories), _FEATURE_DIMENSION)
+        or not repvit_embeddings.is_floating_point()
+    ):
+        raise ValueError("M0 base embeddings must be a CPU floating-point [N, 384] tensor")
+    if len(categories) != 160 * _M0_BASE_SHOTS:
+        raise ValueError(
+            f"M0 base classes must contain exactly {_M0_BASE_SHOTS} support examples"
+        )
+    if (
+        any(type(category_id) is not int or category_id not in _RPC_CATEGORY_IDS for category_id in categories)
+        or not torch.isfinite(repvit_embeddings).all().item()
+    ):
+        raise ValueError("invalid M0 base embedding matrix")
+    ordered_categories = tuple(sorted(set(categories)))
+    if len(ordered_categories) != 160 or any(categories.count(category_id) != _M0_BASE_SHOTS for category_id in ordered_categories):
+        raise ValueError(
+            f"M0 base classes must contain exactly {_M0_BASE_SHOTS} support examples"
+        )
+    values = functional.normalize(repvit_embeddings.detach().to(dtype=torch.float32), dim=1)
+    rows = torch.stack(
+        [functional.normalize(values[[index for index, value in enumerate(categories) if value == category_id]].mean(dim=0), dim=0)
+         for category_id in ordered_categories]
+    ).detach().clone()
+    rows.requires_grad_(True)
+    category_to_index = {category_id: index for index, category_id in enumerate(ordered_categories)}
+    targets = torch.tensor([category_to_index[category_id] for category_id in categories], dtype=torch.long)
+    weights = torch.tensor([1.0 / _M0_BASE_SHOTS] * len(categories), dtype=torch.float32)
+    optimizer = torch.optim.SGD((rows,), lr=_M0_LEARNING_RATE)
+    for _ in range(_M0_TRAINING_STEPS):
+        optimizer.zero_grad(set_to_none=True)
+        losses = functional.cross_entropy(values @ rows.T, targets, reduction="none")
+        (losses * weights).sum().div(weights.sum()).backward()
+        optimizer.step()
+    return rows.detach().clone().contiguous()
+
+
 def fit_m0_base_rows(base_features: Sequence[FeatureExample]) -> torch.Tensor:
     """Train one deterministic frozen RepViT head for a 160-SKU base fold.
 
@@ -426,7 +471,7 @@ def fit_m0_base_rows(base_features: Sequence[FeatureExample]) -> torch.Tensor:
     balanced 150-shot training set and subsequent ``fit_m0_head`` calls cannot
     update these rows.
     """
-    grouped: dict[int, list[FeatureExample]] = {}
+    rows: list[FeatureExample] = []
     seen: set[tuple[str, int]] = set()
     for feature in base_features:
         if not isinstance(feature, FeatureExample):
@@ -437,34 +482,11 @@ def fit_m0_base_rows(base_features: Sequence[FeatureExample]) -> torch.Tensor:
         if identity in seen:
             raise ValueError("M0 base support provenance contains duplicate examples")
         seen.add(identity)
-        grouped.setdefault(feature.category_id, []).append(feature)
-    if len(grouped) != 160:
-        raise ValueError("M0 base features must contain exactly 160 classes")
-    categories = tuple(sorted(grouped))
-    if any(len(values) != _M0_BASE_SHOTS for values in grouped.values()):
-        raise ValueError(
-            f"M0 base classes must contain exactly {_M0_BASE_SHOTS} support examples"
-        )
-    frozen = {category_id: tuple(values) for category_id, values in grouped.items()}
-    rows = _mean_prototypes(frozen, "repvit_global", categories).detach().clone()
-    rows.requires_grad_(True)
-    vectors, targets, weights = [], [], []
-    for target, category_id in enumerate(categories):
-        examples = frozen[category_id]
-        for example in examples:
-            vectors.append(_unit_tensor(example.repvit_global, "M0 base feature"))
-            targets.append(target)
-            weights.append(1.0 / len(examples))
-    training_vectors = torch.stack(vectors)
-    training_targets = torch.tensor(targets, dtype=torch.long)
-    training_weights = torch.tensor(weights, dtype=torch.float32)
-    optimizer = torch.optim.SGD((rows,), lr=_M0_LEARNING_RATE)
-    for _ in range(_M0_TRAINING_STEPS):
-        optimizer.zero_grad(set_to_none=True)
-        losses = functional.cross_entropy(training_vectors @ rows.T, training_targets, reduction="none")
-        (losses * training_weights).sum().div(training_weights.sum()).backward()
-        optimizer.step()
-    return rows.detach().clone().contiguous()
+        rows.append(feature)
+    return fit_m0_base_rows_from_embeddings(
+        tuple(feature.category_id for feature in rows),
+        torch.tensor([feature.repvit_global for feature in rows], dtype=torch.float32),
+    )
 
 
 def fit_m0_head(
