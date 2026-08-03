@@ -114,6 +114,22 @@ class SerialStageTimings:
                 raise ValueError("serial stage timings must be finite and non-negative")
 
 
+def _combined_timing_sink(
+    configured: _StageTimingSink | None,
+    callback: _StageTimingSink | None,
+) -> _StageTimingSink | None:
+    if configured is None:
+        return callback
+    if callback is None:
+        return configured
+
+    def emit(timings: SerialStageTimings) -> None:
+        configured(timings)
+        callback(timings)
+
+    return emit
+
+
 @dataclass(frozen=True, slots=True)
 class BatchInferenceResult:
     decisions: tuple[ClassificationDecision, ...]
@@ -321,11 +337,13 @@ class ClassifierPipeline:
         box: Box,
         *,
         on_stage: Callable[[str], None] | None = None,
+        on_timing: _StageTimingSink | None = None,
     ) -> ClassificationDecision:
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         total_started = self._timestamp()
-        serial_started = time.perf_counter() if self._stage_timing_sink is not None else None
+        timing_sink = _combined_timing_sink(self._stage_timing_sink, on_timing)
+        serial_started = time.perf_counter() if timing_sink is not None else None
         crops, product_boxes = make_padded_crops_with_product_boxes(
             frame.image,
             box,
@@ -352,8 +370,9 @@ class ClassifierPipeline:
         )
         if direct is not None:
             total_finished = self._timestamp()
-            if self._stage_timing_sink is not None:
+            if timing_sink is not None:
                 self._observe_serial_timing(
+                    sink=timing_sink,
                     total_started=serial_started,
                     crop_finished=crop_finished,
                     repvit_started=serial_repvit_started,
@@ -429,8 +448,9 @@ class ClassifierPipeline:
             decision = self._dino_failure_decision(repvit_scores, box=box)
             serial_fusion_finished = time.perf_counter() if serial_started is not None else None
             total_finished = self._timestamp()
-            if self._stage_timing_sink is not None:
+            if timing_sink is not None:
                 self._observe_serial_timing(
+                    sink=timing_sink,
                     total_started=serial_started,
                     crop_finished=crop_finished,
                     repvit_started=serial_repvit_started,
@@ -455,8 +475,9 @@ class ClassifierPipeline:
 
         dinov3_finished = self._timestamp()
         total_finished = self._timestamp()
-        if self._stage_timing_sink is not None:
+        if timing_sink is not None:
             self._observe_serial_timing(
+                sink=timing_sink,
                 total_started=serial_started,
                 crop_finished=crop_finished,
                 repvit_started=serial_repvit_started,
@@ -762,6 +783,7 @@ class ClassifierPipeline:
     def _observe_serial_timing(
         self,
         *,
+        sink: _StageTimingSink,
         total_started: float | None,
         crop_finished: float | None,
         repvit_started: float | None,
@@ -772,9 +794,6 @@ class ClassifierPipeline:
         fusion_started: float | None = None,
         fusion_finished: float | None = None,
     ) -> None:
-        sink = self._stage_timing_sink
-        if sink is None:
-            return
         if (
             total_started is None
             or crop_finished is None

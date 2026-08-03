@@ -16,6 +16,27 @@ from scripts.benchmark_camera_worker import (
 )
 
 
+def _gpu_receipt_artifacts() -> dict[str, str]:
+    return {
+        "benchmark_manifest_sha256": "a" * 64,
+        "benchmark_protocol_sha256": "b" * 64,
+        "code_commit": "c" * 40,
+        "code_identity_sha256": "d" * 64,
+    }
+
+
+def _applied_hashes() -> dict[str, str]:
+    names = (
+        "detector_checkpoint_sha256", "detector_calibration_sha256",
+        "detector_manifest_sha256", "repvit_checkpoint_sha256",
+        "repvit_manifest_sha256", "repvit_prototype_sha256",
+        "dinov3_weights_sha256", "dinov3_support_sha256",
+        "dinov3_local_bank_sha256", "classifier_calibration_sha256",
+        "preprocess_sha256", "fusion_policy_sha256", "presentation_policy_sha256",
+    )
+    return {name: f"{index:064x}" for index, name in enumerate(names, 1)}
+
+
 def _result(run: int, total_ms: float) -> dict[str, object]:
     return {
         "type": "result",
@@ -129,7 +150,8 @@ def test_benchmark_preserves_group_object_and_dino_counts():
         "startup_metrics": {
             "device": "cuda:0", "load_ms": 1.0, "warmup_ms": 1.0,
             "fallback_reason": None, "detector_id": "detector", "repvit_id": "repvit",
-            "dinov3_id": "dinov3", "fusion_policy_id": "policy", "detector_threshold": 0.5,
+                "dinov3_id": "dinov3", "fusion_policy_id": "policy", "detector_threshold": 0.5,
+                "applied_artifact_hashes": _applied_hashes(),
         },
     }
     results = []
@@ -143,7 +165,7 @@ def test_benchmark_preserves_group_object_and_dino_counts():
             }
             results.append(event)
 
-    report = build_benchmark_report(ready, results)
+    report = build_benchmark_report(ready, results, artifacts=_gpu_receipt_artifacts())
 
     assert report["groups"]["H"]["dino_execution_rate"] == 1.0
     assert report["groups"]["E"]["object_count"]["max"] == 3.0

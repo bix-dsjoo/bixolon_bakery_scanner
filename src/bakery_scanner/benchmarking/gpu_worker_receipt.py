@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
 
 
@@ -21,6 +22,19 @@ STAGES = (
     "total",
 )
 _LOWER_HEX = frozenset("0123456789abcdef")
+_APPLIED_HASH_FIELDS = frozenset(
+    {
+        "detector_checkpoint_sha256", "detector_calibration_sha256",
+        "detector_manifest_sha256", "repvit_checkpoint_sha256",
+        "repvit_manifest_sha256", "repvit_prototype_sha256",
+        "dinov3_weights_sha256", "dinov3_support_sha256",
+        "dinov3_local_bank_sha256", "classifier_calibration_sha256",
+        "preprocess_sha256", "fusion_policy_sha256", "presentation_policy_sha256",
+    }
+)
+_EVIDENCE_HASH_FIELDS = frozenset(
+    {"benchmark_manifest_sha256", "benchmark_protocol_sha256", "code_identity_sha256"}
+)
 
 
 def summarize_ms(values: Iterable[float]) -> dict[str, int | float]:
@@ -65,7 +79,8 @@ class GpuSample:
             stage: _finite_non_negative(self.timings_ms[stage], f"{stage} timing")
             for stage in STAGES
         }
-        object.__setattr__(self, "timings_ms", normalized)
+        _validate_total(normalized, "sample timings_ms")
+        object.__setattr__(self, "timings_ms", _freeze(normalized))
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -102,14 +117,20 @@ class GpuWorkerReceipt:
         _validate_group_observations(self.samples)
         if not isinstance(self.summaries, Mapping):
             raise ValueError("GPU worker receipt summaries must be an object")
+        expected_summaries = _summaries(self.samples)
+        if dict(self.summaries) != expected_summaries:
+            raise ValueError("GPU worker receipt summaries do not match samples")
+        object.__setattr__(self, "runtime", _freeze(self.runtime))
+        object.__setattr__(self, "artifacts", _freeze(self.artifacts))
+        object.__setattr__(self, "summaries", _freeze(expected_summaries))
 
     def to_payload(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
-            "runtime": dict(self.runtime),
-            "artifacts": dict(self.artifacts),
+            "runtime": _thaw(self.runtime),
+            "artifacts": _thaw(self.artifacts),
             "samples": [sample.to_payload() for sample in self.samples],
-            "summaries": dict(self.summaries),
+            "summaries": _thaw(self.summaries),
         }
 
 
@@ -176,7 +197,7 @@ def _runtime_from_ready(ready_event: Mapping[str, object]) -> dict[str, object]:
         raise ValueError("GPU receipt startup device must be cuda:0")
     if startup.get("fallback_reason") is not None:
         raise ValueError("GPU receipt rejects CUDA fallback")
-    return {"device": "cuda:0", "startup_metrics": dict(startup)}
+    return {"device": "cuda:0", "startup_metrics": _thaw(startup)}
 
 
 def _receipt_artifacts(
@@ -184,18 +205,15 @@ def _receipt_artifacts(
 ) -> dict[str, str]:
     startup = ready_event["startup_metrics"]
     assert isinstance(startup, Mapping)
-    metadata = {
-        "detector_id": _non_empty_string(startup.get("detector_id"), "detector_id"),
-        "repvit_id": _non_empty_string(startup.get("repvit_id"), "repvit_id"),
-        "dinov3_id": _non_empty_string(startup.get("dinov3_id"), "dinov3_id"),
-        "fusion_policy_id": _non_empty_string(
-            startup.get("fusion_policy_id"), "fusion_policy_id"
-        ),
-    }
-    if artifacts is not None:
-        if not isinstance(artifacts, Mapping):
-            raise ValueError("GPU receipt artifacts must be a mapping")
-        metadata.update(artifacts)
+    applied = startup.get("applied_artifact_hashes")
+    if not isinstance(applied, Mapping) or set(applied) != _APPLIED_HASH_FIELDS:
+        raise ValueError("GPU receipt applied provenance is invalid")
+    metadata = dict(applied)
+    if not isinstance(artifacts, Mapping) or set(artifacts) != (
+        _EVIDENCE_HASH_FIELDS | {"code_commit"}
+    ):
+        raise ValueError("GPU receipt evidence provenance is invalid")
+    metadata.update(artifacts)
     _validate_artifacts(metadata)
     return metadata
 
@@ -248,12 +266,17 @@ def _validate_runtime(runtime: Mapping[str, object]) -> None:
 
 
 def _validate_artifacts(artifacts: Mapping[str, str]) -> None:
-    if not isinstance(artifacts, Mapping) or not artifacts:
-        raise ValueError("GPU worker receipt artifacts must be non-empty")
+    if not isinstance(artifacts, Mapping) or set(artifacts) != (
+        _APPLIED_HASH_FIELDS | _EVIDENCE_HASH_FIELDS | {"code_commit"}
+    ):
+        raise ValueError("GPU worker receipt provenance is incomplete")
     for key, value in artifacts.items():
-        _non_empty_string(key, "artifact key")
-        _non_empty_string(value, f"artifact {key}")
-        if key.endswith("sha256"):
+        if key == "code_commit":
+            if not isinstance(value, str) or len(value) not in (40, 64) or any(
+                character not in _LOWER_HEX for character in value
+            ):
+                raise ValueError("GPU worker receipt code_commit is invalid")
+        else:
             _sha256(value, f"artifact {key}")
 
 
@@ -290,3 +313,24 @@ def _finite_non_negative(value: object, label: str) -> float:
     if not math.isfinite(number) or number < 0.0:
         raise ValueError(f"{label} must be finite and non-negative")
     return number
+
+
+def _validate_total(timings: Mapping[str, float], label: str) -> None:
+    if timings["total"] < max(timings[stage] for stage in STAGES if stage != "total"):
+        raise ValueError(f"{label} total must cover every stage")
+
+
+def _freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list) or isinstance(value, tuple):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value

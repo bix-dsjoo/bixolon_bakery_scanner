@@ -18,7 +18,11 @@ from bakery_scanner.classification.contracts import (
     SkuCandidate,
     StageTimings,
 )
-from bakery_scanner.classification.runtime import BatchInferenceResult, BatchStageTimings
+from bakery_scanner.classification.runtime import (
+    BatchInferenceResult,
+    BatchStageTimings,
+    SerialStageTimings,
+)
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
 from bakery_scanner.prototype.camera_runtime import (
@@ -112,6 +116,7 @@ class FakeClassifier:
         *,
         fail_warmup: bool = False,
         fail_analyze: bool = False,
+        serial_timings: tuple[SerialStageTimings, ...] | None = None,
     ) -> None:
         self.decisions = decisions
         self.fail_warmup = fail_warmup
@@ -119,6 +124,7 @@ class FakeClassifier:
         self.preflight_calls = 0
         self.infer_calls = 0
         self.infer_many_calls = 0
+        self.serial_timings = serial_timings
         self.config = SimpleNamespace(
             runtime=SimpleNamespace(
                 mode="serial_reference",
@@ -132,7 +138,7 @@ class FakeClassifier:
         if self.fail_warmup:
             raise RuntimeError("warm-up failed")
 
-    def infer(self, image, box: Box, *, on_stage=None) -> ClassificationDecision:
+    def infer(self, image, box: Box, *, on_stage=None, on_timing=None) -> ClassificationDecision:
         if self.fail_analyze:
             raise RuntimeError("analysis failed")
         decision = self.decisions[self.infer_calls % len(self.decisions)]
@@ -141,6 +147,20 @@ class FakeClassifier:
             on_stage("repvit")
             if decision.timings.dinov3_ms > 0:
                 on_stage("dinov3")
+        if on_timing is not None:
+            if self.serial_timings is None:
+                on_timing(
+                    SerialStageTimings(
+                        0.0,
+                        decision.timings.repvit_ms,
+                        decision.timings.dinov3_ms,
+                        0.0,
+                        decision.timings.total_ms,
+                        decision.timings.dinov3_ms > 0.0,
+                    )
+                )
+            else:
+                on_timing(self.serial_timings[(self.infer_calls - 1) % len(self.serial_timings)])
         return decision
 
     def infer_many(
@@ -246,10 +266,12 @@ class SerialOnlyClassifier(PreflightOnlyClassifier):
         self.decision = decision
         self.infer_calls = 0
 
-    def infer(self, image, box: Box, *, on_stage=None) -> ClassificationDecision:
+    def infer(self, image, box: Box, *, on_stage=None, on_timing=None) -> ClassificationDecision:
         self.infer_calls += 1
         if on_stage is not None:
             on_stage("repvit")
+        if on_timing is not None:
+            on_timing(SerialStageTimings(0.0, 2.0, 0.0, 0.0, 2.0, False))
         return self.decision
 
 
@@ -926,6 +948,30 @@ def test_camera_runtime_serial_mode_calls_infer_without_batch(tmp_path: Path):
     assert classifier.infer_calls == 2
     assert result["timings_ms"]["repvit"] == 5.0
     assert result["timings_ms"]["dinov3"] == 5.0
+
+
+def test_camera_runtime_serial_mode_uses_observed_stage_timings_and_zero_ms_dino(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    first = Box(5, 5, 20, 20)
+    second = Box(35, 5, 20, 20)
+    classifier = FakeClassifier(
+        (_confirmed(6, first), _unknown(second)),
+        serial_timings=(
+            SerialStageTimings(2.0, 3.0, 0.0, 4.0, 9.0, False),
+            SerialStageTimings(5.0, 7.0, 0.0, 11.0, 23.0, True),
+        ),
+    )
+    runtime = _runtime(
+        tmp_path, classifier=classifier, proposals=(_proposal(first), _proposal(second))
+    )
+
+    result = runtime.analyze(image_path, "serial-observed")
+
+    assert result["timings_ms"]["crop"] == 7.0
+    assert result["timings_ms"]["repvit"] == 10.0
+    assert result["timings_ms"]["dinov3"] == 0.0
+    assert result["timings_ms"]["fusion"] == 15.0
+    assert result["diagnostics"]["dino_object_count"] == 1
 
 
 def test_camera_runtime_accepts_serial_only_classifier(tmp_path: Path):

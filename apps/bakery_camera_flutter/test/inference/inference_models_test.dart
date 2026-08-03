@@ -47,6 +47,14 @@ void main() {
     expect(result.diagnostics.dinoObjectCount, 0);
   });
 
+  test('rejects a total shorter than an individual timing stage', () {
+    final json = _resultJson();
+    (json['timings_ms'] as Map<String, Object?>)['detector'] = 200.0;
+    (json['timings_ms'] as Map<String, Object?>)['total'] = 1.0;
+
+    expect(() => InferenceResult.fromJson(json), throwsFormatException);
+  });
+
   test('accepts camera action state v2 while preserving exact Top3', () {
     final presentation = _presentationJson(
       state: 'unknown',

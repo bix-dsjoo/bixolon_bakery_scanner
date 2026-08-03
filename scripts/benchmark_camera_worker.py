@@ -123,6 +123,49 @@ def load_benchmark_protocol(path: Path) -> tuple[dict[str, object], str]:
     return expected, protocol_sha256
 
 
+def resolve_code_identity(root: Path) -> dict[str, str]:
+    """Bind evidence to one clean checkout and its runtime-defining files."""
+    repository = Path(root).resolve()
+    try:
+        status = subprocess.run(
+            ("git", "-C", str(repository), "status", "--porcelain"),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if status.stdout.strip():
+            raise ValueError("benchmark evidence requires a clean checked-out source")
+        commit = subprocess.run(
+            ("git", "-C", str(repository), "rev-parse", "HEAD"),
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError("benchmark evidence requires a resolvable git checkout") from exc
+    if len(commit) not in (40, 64) or any(character not in "0123456789abcdef" for character in commit):
+        raise ValueError("benchmark checkout commit is invalid")
+    files = (
+        repository / "pyproject.toml",
+        repository / "configs" / "gpu_rfdetr_classifier_policy.yaml",
+        repository / "models" / "rfdetr_large_bakery_v1" / "manifest.json",
+        repository / "policies" / "presentation" / "camera_action_state_v2.json",
+    )
+    try:
+        bound = "\n".join(
+            f"{path.relative_to(repository).as_posix()}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+            for path in files
+        )
+    except OSError as exc:
+        raise ValueError("benchmark code identity files are unavailable") from exc
+    return {
+        "code_commit": commit,
+        "code_identity_sha256": hashlib.sha256(
+            f"{commit}\n{bound}\n".encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def summarize_ms(values: Iterable[float]) -> dict[str, int | float]:
     """Summarize milliseconds with deterministic nearest-rank percentiles."""
     ordered = sorted(float(value) for value in values)
@@ -354,6 +397,7 @@ def run_grouped_benchmark(
         raise ValueError(f"Python executable is missing: {python_path}")
     if not root.is_dir():
         raise ValueError(f"repository root is missing: {root}")
+    code_identity = resolve_code_identity(root)
     worker_script = root / "scripts" / "run_camera_inference_worker.py"
     if not worker_script.is_file():
         raise ValueError(f"camera worker script is missing: {worker_script}")
@@ -400,8 +444,9 @@ def run_grouped_benchmark(
                 ready,
                 measured,
                 artifacts={
-                    "manifest_sha256": manifest_sha256,
-                    "protocol_sha256": protocol_sha256,
+                    "benchmark_manifest_sha256": manifest_sha256,
+                    "benchmark_protocol_sha256": protocol_sha256,
+                    **code_identity,
                 },
             )
         except Exception as exc:

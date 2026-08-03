@@ -337,6 +337,8 @@ def _validate_timings(value: object) -> None:
             or timing < 0.0
         ):
             raise ValueError("runtime result timings_ms values are invalid")
+    if value["total"] < max(value[stage] for stage in _TIMING_STAGES - {"total"}):
+        raise ValueError("runtime result timings_ms total must cover every stage")
 
 
 def encode_event(event: Mapping[str, object]) -> str:

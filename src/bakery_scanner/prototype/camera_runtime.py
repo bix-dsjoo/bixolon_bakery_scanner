@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Protocol, cast
 
@@ -23,7 +23,7 @@ from bakery_scanner.classification.contracts import (
 )
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
 from bakery_scanner.classification.policy import PolicyCalibration
-from bakery_scanner.classification.runtime import ClassifierPipeline
+from bakery_scanner.classification.runtime import ClassifierPipeline, SerialStageTimings
 from bakery_scanner.contracts import BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage, load_canonical_image
 from bakery_scanner.detectors.rfdetr import RFDetrRunner
@@ -67,6 +67,7 @@ class StartupMetrics:
     dinov3_id: str
     fusion_policy_id: str
     detector_threshold: float
+    applied_artifact_hashes: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.device not in {"cpu", "cuda:0"}:
@@ -79,12 +80,18 @@ class StartupMetrics:
             0.0 <= self.detector_threshold <= 1.0
         ):
             raise ValueError("detector_threshold must lie in [0, 1]")
+        if not isinstance(self.applied_artifact_hashes, Mapping):
+            raise ValueError("applied_artifact_hashes must be a mapping")
 
 
 @dataclass(frozen=True, slots=True)
 class _DetectorManifest:
     checkpoint: Path
     calibration: Path
+    manifest: Path
+    checkpoint_sha256: str
+    calibration_sha256: str
+    manifest_sha256: str
     score_threshold: float
     source_label: str
 
@@ -241,6 +248,11 @@ class CameraInferenceRuntime:
                 raise
 
             metadata = _backend_metadata(backend, manifest)
+            applied_hashes = (
+                _applied_artifact_hashes(manifest, config, presentation_policy)
+                if backend_loader is None
+                else {}
+            )
             metrics = StartupMetrics(
                 device=device,
                 load_ms=_milliseconds(load_started, load_finished),
@@ -251,6 +263,7 @@ class CameraInferenceRuntime:
                 dinov3_id=metadata["dinov3_id"],
                 fusion_policy_id=metadata["fusion_policy_id"],
                 detector_threshold=float(metadata["detector_threshold"]),
+                applied_artifact_hashes=applied_hashes,
             )
             return cls(
                 root=root_path,
@@ -327,17 +340,32 @@ class CameraInferenceRuntime:
                         raise ValueError(f"unsupported classifier stage: {stage}")
 
                 for proposal in ordered:
+                    observation: SerialStageTimings | None = None
+
+                    def on_timing(value: SerialStageTimings) -> None:
+                        nonlocal observation
+                        if observation is not None:
+                            raise ValueError("classifier emitted duplicate serial timing observation")
+                        observation = value
+
                     decision = backend.classifier.infer(
                         frame,
                         proposal.box,
                         on_stage=on_stage,
+                        on_timing=on_timing,
                     )
                     if decision.box != proposal.box:
                         raise ValueError("classifier decision box changed detector coordinates")
                     decisions.append((proposal, decision))
-                    repvit_ms += decision.timings.repvit_ms
-                    dinov3_ms += decision.timings.dinov3_ms
-                    dino_object_count += int(decision.timings.dinov3_ms > 0.0)
+                    if observation is None:
+                        raise ValueError("classifier did not emit serial timing observation")
+                    crop_ms += observation.crop_ms
+                    repvit_ms += observation.repvit_ms
+                    dinov3_ms += observation.dinov3_ms
+                    fusion_ms += observation.fusion_ms
+                    dino_object_count += int(observation.dino_executed)
+                    if observation.dino_executed:
+                        _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
             else:
                 boxes = tuple(proposal.box for proposal in ordered)
                 batch = backend.classifier.infer_many(
@@ -479,8 +507,10 @@ def _load_detector_manifest(root: Path) -> _DetectorManifest:
     source_key = next(iter(source_keys & _MANIFEST_SOURCE_KEYS))
     if not isinstance(payload[source_key], str) or not payload[source_key]:
         raise ValueError("detector manifest source reference is invalid")
-    checkpoint = _manifest_artifact(model_dir, payload["checkpoint"], "checkpoint")
-    calibration = _manifest_artifact(
+    checkpoint, checkpoint_sha256 = _manifest_artifact(
+        model_dir, payload["checkpoint"], "checkpoint"
+    )
+    calibration, calibration_sha256 = _manifest_artifact(
         model_dir, payload["calibration"], "calibration"
     )
     threshold = payload["score_threshold"]
@@ -494,12 +524,16 @@ def _load_detector_manifest(root: Path) -> _DetectorManifest:
     return _DetectorManifest(
         checkpoint=checkpoint,
         calibration=calibration,
+        manifest=manifest_path,
+        checkpoint_sha256=checkpoint_sha256,
+        calibration_sha256=calibration_sha256,
+        manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         score_threshold=float(threshold),
         source_label=_DETECTOR_ID,
     )
 
 
-def _manifest_artifact(model_dir: Path, raw: object, label: str) -> Path:
+def _manifest_artifact(model_dir: Path, raw: object, label: str) -> tuple[Path, str]:
     if not isinstance(raw, dict) or set(raw) != _ARTIFACT_KEYS:
         raise ValueError(f"detector {label} manifest schema is invalid")
     filename = raw["file"]
@@ -514,7 +548,7 @@ def _manifest_artifact(model_dir: Path, raw: object, label: str) -> Path:
         raise ValueError(f"detector {label} SHA-256 is invalid")
     path = model_dir / filename
     _require_file_hash(path, expected, f"detector {label}")
-    return path
+    return path, expected
 
 
 def _classifier_config_path(root: Path, device: str) -> Path:

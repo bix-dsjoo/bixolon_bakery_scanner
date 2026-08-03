@@ -304,3 +304,11 @@ def test_validate_result_event_requires_exact_eight_stage_timings():
 
     with pytest.raises(ValueError, match="timings_ms"):
         camera_protocol.validate_result_event(result)
+
+
+def test_validate_result_event_rejects_total_shorter_than_a_stage():
+    result = _result(_presentation())
+    result["timings_ms"].update({"detector": 200.0, "total": 1.0})
+
+    with pytest.raises(ValueError, match="total"):
+        camera_protocol.validate_result_event(result)

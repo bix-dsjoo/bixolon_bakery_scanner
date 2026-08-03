@@ -221,7 +221,7 @@ final class StageTimings {
       'postprocess',
       'total',
     });
-    return StageTimings(
+    final timings = StageTimings(
       decodePreprocessMs: _nonNegativeFinite(
         json['decode_preprocess'],
         'decode_preprocess timing',
@@ -237,6 +237,19 @@ final class StageTimings {
       ),
       totalMs: _nonNegativeFinite(json['total'], 'total timing'),
     );
+    if (timings.totalMs <
+        [
+          timings.decodePreprocessMs,
+          timings.detectorMs,
+          timings.cropMs,
+          timings.repvitMs,
+          timings.dinov3Ms,
+          timings.fusionMs,
+          timings.postprocessMs,
+        ].reduce((maximum, value) => value > maximum ? value : maximum)) {
+      throw const FormatException('total timing must cover every stage');
+    }
+    return timings;
   }
 
   final double decodePreprocessMs;
