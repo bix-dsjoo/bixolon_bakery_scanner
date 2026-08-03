@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -8,14 +9,18 @@ from bakery_scanner.data.oof15plus5 import build_oof_folds, write_oof_manifests
 from bakery_scanner.data.sku_scene import SkuSceneInventory, load_inventory
 
 
-DATASET_ROOT = Path(r"C:\workspace\bixolon_bakery_scanner\datasets")
+pytestmark = pytest.mark.artifact
 
 
 @pytest.fixture(scope="module")
 def inventory() -> SkuSceneInventory:
-    if not DATASET_ROOT.is_dir():
-        pytest.skip(f"external dataset is unavailable: {DATASET_ROOT}")
-    return load_inventory(DATASET_ROOT)
+    configured_root = os.environ.get("BAKERY_SCANNER_DATASET_ROOT")
+    if configured_root is None:
+        pytest.fail("set BAKERY_SCANNER_DATASET_ROOT to run external-data OOF tests")
+    root = Path(configured_root)
+    if not root.is_dir():
+        pytest.fail(f"configured external dataset is unavailable: {root}")
+    return load_inventory(root)
 
 
 def test_same_batch_capture_number_never_crosses_fold(inventory: SkuSceneInventory) -> None:

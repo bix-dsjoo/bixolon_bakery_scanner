@@ -28,7 +28,6 @@ _BASE_SKUS = frozenset({1, 2, 3, 5, 7, 8, 10, 11, 12, 13, 14, 17, 18, 19, 20})
 _INCREMENTAL_SKUS = frozenset({4, 6, 9, 15, 16})
 _EXPECTED_COUNTS = {"group_15class": (90, 379), "group_20class_batch01": (103, 506), "group_20class_batch02": (106, 521)}
 _SCENE_PATTERN = re.compile(r"^(?:g15|g20_b(?:01|02))_([emh])_(\d{4})\.jpg$", re.IGNORECASE)
-_CLASS_PATTERN = re.compile(r"^Bread(\d{2})_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,18 +179,11 @@ def _load_isolated(root: Path) -> dict[int, tuple[SourceImage, ...]]:
     for collection, sku_ids, expected_count in (("base", _BASE_SKUS, 84), ("incremental", _INCREMENTAL_SKUS, 5)):
         collection_root = root / "classifier" / collection
         actual_directories = {path.name: path for path in collection_root.iterdir() if path.is_dir()}
-        expected_directories: dict[int, Path] = {}
-        for directory_name, directory in actual_directories.items():
-            match = _CLASS_PATTERN.match(directory_name)
-            if match is None:
-                raise ValueError(f"invalid isolated SKU directory: {directory}")
-            sku_id = int(match.group(1))
-            if sku_id not in sku_ids or sku_id in expected_directories:
-                raise ValueError(f"exact isolated class map mismatch: {collection}")
-            expected_directories[sku_id] = directory
-        if set(expected_directories) != set(sku_ids):
+        expected_directories = {f"Bread{sku_id:02d}_{_SKU_NAMES[sku_id]}": sku_id for sku_id in sku_ids}
+        if set(actual_directories) != set(expected_directories):
             raise ValueError(f"exact isolated class map mismatch: {collection}")
-        for sku_id, directory in sorted(expected_directories.items()):
+        for directory_name, sku_id in sorted(expected_directories.items(), key=lambda item: item[1]):
+            directory = actual_directories[directory_name]
             images = tuple(sorted(path for path in directory.iterdir() if path.is_file()))
             if len(images) != expected_count:
                 raise ValueError(f"exact isolated image count mismatch: SKU {sku_id}")
@@ -209,6 +201,8 @@ def _assert_exact_counts(inventory: SkuSceneInventory) -> None:
         raise ValueError("exact inventory difficulty counts mismatch")
     if set(inventory.isolated_by_sku) != set(_SKU_NAMES):
         raise ValueError("exact isolated SKU identities mismatch")
+    if {box.sku_id for scene in inventory.scenes for box in scene.boxes} != set(_SKU_NAMES):
+        raise ValueError("exact SKU box coverage mismatch")
 
 
 def _file_sha256(path: Path) -> str:
