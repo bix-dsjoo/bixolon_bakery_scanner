@@ -218,6 +218,7 @@ class VerifiedPathBindings:
         )
         self.device = device
         self._handles: list[int] = []
+        self._active = False
 
     def __enter__(self) -> "VerifiedPathBindings":
         cuda = str(self.device).lower().startswith("cuda")
@@ -231,15 +232,22 @@ class VerifiedPathBindings:
         except Exception:
             self._close()
             raise
+        self._active = True
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release(verify=exc_type is None)
+
+    def release(self, *, verify: bool) -> None:
+        if not self._active:
+            return
         try:
-            if exc_type is None:
+            if verify:
                 for path, expected, _label in self._entries:
                     _require_checkpoint_sha256(path, expected)
         finally:
             self._close()
+            self._active = False
 
     def _close(self) -> None:
         while self._handles:

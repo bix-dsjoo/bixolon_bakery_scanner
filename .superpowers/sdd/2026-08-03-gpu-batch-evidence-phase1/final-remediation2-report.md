@@ -32,6 +32,10 @@
   map emitted by Python and exposes a detached immutable copy. CUDA classifier
   startup binds the classifier config and every declared RepViT/DINO,
   calibration, and fusion-policy path together for the complete model load.
+- The transferred CUDA classifier binding remains held through detector/classifier
+  preflight, lazy DINO/local-bank loading, and startup synchronization. It
+  rehashes and releases only after successful warm-up; failure and close paths
+  release handles safely, so normal inference retains no artifact locks.
 
 ## Verification
 
@@ -40,7 +44,7 @@
 - Classifier/runtime/worker/receipt/policy: `PYTHONPATH=src python -m pytest tests/classification/test_config.py tests/classification/test_runtime.py tests/prototype/test_camera_runtime.py tests/prototype/test_camera_worker.py tests/benchmarking/test_gpu_worker_receipt.py tests/contract/test_repository_policy.py -q`
   - `148 passed`
 - Full Python: `PYTHONPATH=src python -m pytest -q`
-  - `778 passed, 4 skipped, 15 deselected`
+  - `779 passed, 4 skipped, 15 deselected`
 - `git diff --check` completed without output.
 - Flutter was unavailable, so Dart execution remains unverified. CUDA/artifact
   suites remain unverified where required hardware or external model files are

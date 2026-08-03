@@ -128,6 +128,25 @@ def test_windows_verified_path_bindings_deny_classifier_artifact_replacement(tmp
                 path.unlink()
 
 
+def test_verified_path_bindings_release_after_warmup_success_or_error(tmp_path):
+    artifact = tmp_path / "dino-local-bank.pt"
+    artifact.write_bytes(b"verified")
+    entries = ((artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), "DINO local bank"),)
+
+    bindings = VerifiedPathBindings(entries, device="cuda")
+    bindings.__enter__()
+    with pytest.raises(PermissionError):
+        artifact.write_bytes(b"replacement during lazy warmup")
+    bindings.release(verify=True)
+    artifact.write_bytes(b"released after successful warmup")
+
+    expected = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    failed = VerifiedPathBindings(((artifact, expected, "DINO local bank"),), device="cuda")
+    failed.__enter__()
+    failed.release(verify=False)
+    artifact.write_bytes(b"released after failed warmup")
+
+
 def test_rfdetr_manifest_pins_corrected_gt_zero_fp_threshold():
     root = Path(__file__).resolve().parents[1]
     model_root = root / "models" / "rfdetr_large_bakery_v1"

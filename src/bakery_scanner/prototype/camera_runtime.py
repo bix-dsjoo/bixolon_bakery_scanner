@@ -110,6 +110,7 @@ class _LoadedBackend:
         detector: RFDetrRunner,
         classifier: ClassifierPipeline,
         detector_threshold: float,
+        artifact_bindings: VerifiedPathBindings | None = None,
     ) -> None:
         self.device = device
         self.detector = detector
@@ -123,12 +124,17 @@ class _LoadedBackend:
             else ""
         )
         self.detector_threshold = detector_threshold
+        self._artifact_bindings = artifact_bindings
         self._closed = False
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        bindings = self._artifact_bindings
+        self._artifact_bindings = None
+        if bindings is not None:
+            bindings.release(verify=False)
         classifier = self.classifier
         detector = self.detector
         self.classifier = cast(ClassifierPipeline, None)
@@ -137,6 +143,12 @@ class _LoadedBackend:
             closer = getattr(owned, "close", None)
             if callable(closer):
                 closer()
+
+    def finalize_artifact_bindings(self) -> None:
+        bindings = self._artifact_bindings
+        self._artifact_bindings = None
+        if bindings is not None:
+            bindings.release(verify=True)
 
 
 class CameraInferenceRuntime:
@@ -257,6 +269,9 @@ class CameraInferenceRuntime:
             try:
                 warmup_started = _timestamp(runtime_clock, device)
                 _warm_backend(backend, warmup_path, device)
+                finalizer = getattr(backend, "finalize_artifact_bindings", None)
+                if callable(finalizer):
+                    finalizer()
                 warmup_finished = _timestamp(runtime_clock, device)
             except Exception:
                 try:
@@ -714,23 +729,33 @@ def _load_default_backend(
         device="cuda" if device == "cuda:0" else "cpu",
         expected_sha256=manifest.checkpoint_sha256,
     )
+    bindings: VerifiedPathBindings | None = None
+    classifier: ClassifierPipeline | None = None
     try:
         if device == "cuda:0":
-            with VerifiedPathBindings(
+            bindings = VerifiedPathBindings(
                 _classifier_binding_entries(config, config_path), device="cuda"
-            ):
-                classifier = ClassifierPipeline.load(
-                    config_path, artifact_root=artifact_root
-                )
-                if classifier.config != config:
-                    raise ValueError("classifier config changed after integrity validation")
+            )
+            bindings.__enter__()
+            classifier = ClassifierPipeline.load(
+                config_path, artifact_root=artifact_root
+            )
+            if classifier.config != config:
+                raise ValueError("classifier config changed after integrity validation")
         else:
             classifier = ClassifierPipeline.load(config_path, artifact_root=artifact_root)
     except Exception:
+        if classifier is not None:
+            closer = getattr(classifier, "close", None)
+            if callable(closer):
+                closer()
+        if bindings is not None:
+            bindings.release(verify=False)
         closer = getattr(detector, "close", None)
         if callable(closer):
             closer()
         raise
+    assert classifier is not None
     if classifier.config != config:
         raise ValueError("classifier config changed after integrity validation")
     _require_file_hash(
@@ -743,6 +768,7 @@ def _load_default_backend(
         detector=detector,
         classifier=classifier,
         detector_threshold=manifest.score_threshold,
+        artifact_bindings=bindings,
     )
 
 
