@@ -531,6 +531,7 @@ def test_m0_keeps_frozen_base_rows_unchanged():
 def test_m0_base_training_emits_deterministic_frozen_rows(monkeypatch: pytest.MonkeyPatch):
     """Each fold's base classifier is trained once before novel-SKU adaptation."""
     monkeypatch.setattr(worker, "_M0_TRAINING_STEPS", 1)
+    monkeypatch.setattr(worker, "_M0_BASE_SHOTS", 1)
     base_features = tuple(
         _scoring_example(
             category_id,
@@ -548,6 +549,17 @@ def test_m0_base_training_emits_deterministic_frozen_rows(monkeypatch: pytest.Mo
     assert first.requires_grad is False
     assert torch.isfinite(first).all()
     assert torch.equal(first, second)
+
+
+def test_m0_base_training_rejects_noncanonical_shot_count(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(worker, "_M0_BASE_SHOTS", 2)
+    base_features = tuple(
+        _scoring_example(category_id, f"base-{category_id}", repvit=(1.0, 0.0), dino=(1.0, 0.0))
+        for category_id in range(1, 161)
+    )
+
+    with pytest.raises(ValueError, match="exactly 2 support examples"):
+        fit_m0_base_rows(base_features)
 
 
 def test_branch_predictions_have_sorted_catalog_scores_and_provenance():

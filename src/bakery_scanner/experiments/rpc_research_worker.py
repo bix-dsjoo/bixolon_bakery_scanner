@@ -36,6 +36,7 @@ _DINO_PATCH_COUNT = 196
 _CANONICAL_FRAME = "exif_visual_rgb_v1"
 _RESEARCH_RUNS_ROOT = Path(r"C:\workspace\rpc_fewshot_runs")
 _RPC_CATEGORY_IDS = tuple(range(1, 201))
+_M0_BASE_SHOTS = 150
 _M0_TRAINING_STEPS = 40
 _M0_LEARNING_RATE = 0.1
 _M2_KERNEL_SCALE = 1.0
@@ -437,11 +438,13 @@ def fit_m0_base_rows(base_features: Sequence[FeatureExample]) -> torch.Tensor:
             raise ValueError("M0 base support provenance contains duplicate examples")
         seen.add(identity)
         grouped.setdefault(feature.category_id, []).append(feature)
-    if len(grouped) != 160 or any(not values for values in grouped.values()):
-        raise ValueError("M0 base features must contain exactly 160 non-empty classes")
+    if len(grouped) != 160:
+        raise ValueError("M0 base features must contain exactly 160 classes")
     categories = tuple(sorted(grouped))
-    if len({len(values) for values in grouped.values()}) != 1:
-        raise ValueError("M0 base features must be class-balanced")
+    if any(len(values) != _M0_BASE_SHOTS for values in grouped.values()):
+        raise ValueError(
+            f"M0 base classes must contain exactly {_M0_BASE_SHOTS} support examples"
+        )
     frozen = {category_id: tuple(values) for category_id, values in grouped.items()}
     rows = _mean_prototypes(frozen, "repvit_global", categories).detach().clone()
     rows.requires_grad_(True)
