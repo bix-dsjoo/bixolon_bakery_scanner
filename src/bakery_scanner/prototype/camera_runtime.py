@@ -30,7 +30,7 @@ from bakery_scanner.classification.runtime import (
 )
 from bakery_scanner.contracts import BreadProposal
 from bakery_scanner.data.preprocess import CanonicalImage, load_canonical_image
-from bakery_scanner.detectors.rfdetr import RFDetrRunner
+from bakery_scanner.detectors.rfdetr import RFDetrRunner, VerifiedPathBindings
 
 from .camera_protocol import WorkerPhase
 from .presentation_policy import PresentationPolicy
@@ -715,7 +715,17 @@ def _load_default_backend(
         expected_sha256=manifest.checkpoint_sha256,
     )
     try:
-        classifier = ClassifierPipeline.load(config_path, artifact_root=artifact_root)
+        if device == "cuda:0":
+            with VerifiedPathBindings(
+                _classifier_binding_entries(config, config_path), device="cuda"
+            ):
+                classifier = ClassifierPipeline.load(
+                    config_path, artifact_root=artifact_root
+                )
+                if classifier.config != config:
+                    raise ValueError("classifier config changed after integrity validation")
+        else:
+            classifier = ClassifierPipeline.load(config_path, artifact_root=artifact_root)
     except Exception:
         closer = getattr(detector, "close", None)
         if callable(closer):
@@ -733,6 +743,37 @@ def _load_default_backend(
         detector=detector,
         classifier=classifier,
         detector_threshold=manifest.score_threshold,
+    )
+
+
+def _classifier_binding_entries(
+    config: ClassifierConfig, config_path: Path
+) -> tuple[tuple[Path, str, str], ...]:
+    """Return every path `ClassifierPipeline.load` may open with its expected hash."""
+    if (
+        config.repvit.prototype_bank is None
+        or config.repvit.prototype_bank_sha256 is None
+        or config.dinov3.local_bank is None
+        or config.dinov3.local_bank_sha256 is None
+        or config.calibration.artifact_sha256 is None
+        or config.calibration.fusion_policy is None
+        or config.calibration.fusion_policy_sha256 is None
+    ):
+        raise ValueError("classifier artifact binding requires complete declared artifacts")
+    path = Path(config_path).resolve()
+    if not path.is_file():
+        raise ValueError("classifier config binding file is missing")
+    config_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    return (
+        (path, config_sha256, "classifier config"),
+        (config.repvit.checkpoint, config.repvit.checkpoint_sha256, "RepViT checkpoint"),
+        (config.repvit.manifest, config.repvit.manifest_sha256, "RepViT manifest"),
+        (config.repvit.prototype_bank, config.repvit.prototype_bank_sha256, "RepViT prototype bank"),
+        (config.dinov3.weights, config.dinov3.weights_sha256, "DINOv3 weights"),
+        (config.dinov3.support, config.dinov3.support_sha256, "DINOv3 support"),
+        (config.dinov3.local_bank, config.dinov3.local_bank_sha256, "DINOv3 local bank"),
+        (config.calibration.artifact, config.calibration.artifact_sha256, "classifier calibration"),
+        (config.calibration.fusion_policy, config.calibration.fusion_policy_sha256, "fusion policy"),
     )
 
 

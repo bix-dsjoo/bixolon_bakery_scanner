@@ -605,7 +605,7 @@ final class FakeWorker implements InferenceSession {
     eventController.add(
       ReadyWorkerEvent(
         device: 'cuda:0',
-        metrics: const StartupMetrics(
+        metrics: StartupMetrics(
           device: 'cuda:0',
           loadMs: 120,
           warmupMs: 30,

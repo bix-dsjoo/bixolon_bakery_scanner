@@ -320,7 +320,7 @@ Future<void> _pumpRail(
   final state = ScannerState.initial().copyWith(
     cameraReady: true,
     workerStatus: WorkerStatus.ready,
-    startupMetrics: const StartupMetrics(
+    startupMetrics: StartupMetrics(
       device: 'cpu',
       loadMs: 1500,
       warmupMs: 320,

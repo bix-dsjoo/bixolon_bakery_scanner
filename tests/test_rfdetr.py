@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from bakery_scanner.contracts import Box
-from bakery_scanner.detectors.rfdetr import RFDetrRunner
+from bakery_scanner.detectors.rfdetr import RFDetrRunner, VerifiedPathBindings
 
 
 class _FakeModel:
@@ -102,6 +102,30 @@ def test_rfdetr_loader_rejects_checkpoint_replaced_during_model_construction(tmp
         model_factory=mutate_checkpoint,
     )
     assert replacement_denied is True
+
+
+def test_windows_verified_path_bindings_deny_classifier_artifact_replacement(tmp_path):
+    config = tmp_path / "gpu_rfdetr_classifier_policy.yaml"
+    repvit = tmp_path / "repvit.pth"
+    dino_support = tmp_path / "dino-support.safetensors"
+    config.write_bytes(b"runtime: {device: CUDA:0}")
+    repvit.write_bytes(b"repvit")
+    dino_support.write_bytes(b"support")
+    entries = tuple(
+        (path, hashlib.sha256(path.read_bytes()).hexdigest(), label)
+        for path, label in (
+            (config, "classifier config"),
+            (repvit, "RepViT checkpoint"),
+            (dino_support, "DINO support"),
+        )
+    )
+
+    with VerifiedPathBindings(entries, device="cuda"):
+        for path in (config, repvit, dino_support):
+            with pytest.raises(PermissionError):
+                path.write_bytes(b"replacement")
+            with pytest.raises(PermissionError):
+                path.unlink()
 
 
 def test_rfdetr_manifest_pins_corrected_gt_zero_fp_threshold():

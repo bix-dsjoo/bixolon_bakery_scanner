@@ -28,13 +28,19 @@
   fails closed because pathname share-deny semantics are unavailable.
 - Direct CUDA RF-DETR loading also fails closed before model construction when
   no expected checkpoint digest is supplied.
+- Dart `StartupMetrics` now requires the exact 13-key applied-artifact hash
+  map emitted by Python and exposes a detached immutable copy. CUDA classifier
+  startup binds the classifier config and every declared RepViT/DINO,
+  calibration, and fusion-policy path together for the complete model load.
 
 ## Verification
 
 - Focused: `PYTHONPATH=src python -m pytest tests/classification/test_runtime.py tests/test_rfdetr.py tests/prototype/test_camera_protocol.py tests/prototype/test_camera_runtime.py tests/prototype/test_camera_worker.py tests/contract/test_repository_policy.py -q`
   - `163 passed`
+- Classifier/runtime/worker/receipt/policy: `PYTHONPATH=src python -m pytest tests/classification/test_config.py tests/classification/test_runtime.py tests/prototype/test_camera_runtime.py tests/prototype/test_camera_worker.py tests/benchmarking/test_gpu_worker_receipt.py tests/contract/test_repository_policy.py -q`
+  - `148 passed`
 - Full Python: `PYTHONPATH=src python -m pytest -q`
-  - `777 passed, 4 skipped, 15 deselected`
+  - `778 passed, 4 skipped, 15 deselected`
 - `git diff --check` completed without output.
 - Flutter was unavailable, so Dart execution remains unverified. CUDA/artifact
   suites remain unverified where required hardware or external model files are

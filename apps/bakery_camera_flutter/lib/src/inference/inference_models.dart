@@ -306,7 +306,7 @@ final class InferenceDiagnostics {
 }
 
 final class StartupMetrics {
-  const StartupMetrics({
+  StartupMetrics({
     required this.device,
     required this.loadMs,
     required this.warmupMs,
@@ -316,7 +316,10 @@ final class StartupMetrics {
     required this.dinov3Id,
     required this.fusionPolicyId,
     required this.detectorThreshold,
-  });
+    Map<String, String> appliedArtifactHashes = const {},
+  }) : appliedArtifactHashes = UnmodifiableMapView(
+         Map<String, String>.from(appliedArtifactHashes),
+       );
 
   factory StartupMetrics.fromJson(Map<String, Object?> json) {
     _expectFields(json, const {
@@ -329,12 +332,42 @@ final class StartupMetrics {
       'dinov3_id',
       'fusion_policy_id',
       'detector_threshold',
+      'applied_artifact_hashes',
     });
     final device = _requiredString(json['device'], 'startup device');
     if (device != 'cpu' && device != 'cuda:0') {
       throw const FormatException('startup device must be cpu or cuda:0');
     }
     final fallbackValue = json['fallback_reason'];
+    final rawHashes = _map(
+      json['applied_artifact_hashes'],
+      'startup applied_artifact_hashes',
+    );
+    const hashKeys = {
+      'detector_checkpoint_sha256',
+      'detector_calibration_sha256',
+      'detector_manifest_sha256',
+      'repvit_checkpoint_sha256',
+      'repvit_manifest_sha256',
+      'repvit_prototype_sha256',
+      'dinov3_weights_sha256',
+      'dinov3_support_sha256',
+      'dinov3_local_bank_sha256',
+      'classifier_calibration_sha256',
+      'preprocess_sha256',
+      'fusion_policy_sha256',
+      'presentation_policy_sha256',
+    };
+    _expectFields(rawHashes, hashKeys);
+    final appliedArtifactHashes = <String, String>{
+      for (final key in hashKeys)
+        key: _requiredString(rawHashes[key], 'startup $key'),
+    };
+    if (appliedArtifactHashes.values.any((value) => !_sha256(value))) {
+      throw const FormatException(
+        'startup applied_artifact_hashes must contain SHA-256 hashes',
+      );
+    }
     return StartupMetrics(
       device: device,
       loadMs: _nonNegativeFinite(json['load_ms'], 'startup load_ms'),
@@ -353,6 +386,7 @@ final class StartupMetrics {
         json['detector_threshold'],
         'startup detector_threshold',
       ),
+      appliedArtifactHashes: appliedArtifactHashes,
     );
   }
 
@@ -365,6 +399,7 @@ final class StartupMetrics {
   final String dinov3Id;
   final String fusionPolicyId;
   final double detectorThreshold;
+  final Map<String, String> appliedArtifactHashes;
 }
 
 enum InferencePresentationState {

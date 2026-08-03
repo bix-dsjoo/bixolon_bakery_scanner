@@ -194,6 +194,58 @@ class _CheckpointBinding:
                 self._handle = None
 
 
+class VerifiedPathBindings:
+    """Bind a declared artifact set through a path-based backend construction."""
+
+    def __init__(
+        self,
+        entries: tuple[tuple[Path, str, str], ...],
+        *,
+        device: str,
+    ) -> None:
+        normalized: dict[Path, tuple[str, str]] = {}
+        for raw_path, expected, label in entries:
+            path = Path(raw_path).resolve()
+            _validate_checkpoint_sha256(expected)
+            if path in normalized and normalized[path][0] != expected:
+                raise ValueError("artifact binding path-set has conflicting digests")
+            normalized[path] = (expected, label)
+        if not normalized:
+            raise ValueError("artifact binding path-set is empty")
+        self._entries = tuple(
+            (path, expected, label)
+            for path, (expected, label) in sorted(normalized.items(), key=lambda item: str(item[0]))
+        )
+        self.device = device
+        self._handles: list[int] = []
+
+    def __enter__(self) -> "VerifiedPathBindings":
+        cuda = str(self.device).lower().startswith("cuda")
+        if cuda and os.name != "nt":
+            raise ValueError("CUDA evidence artifact binding requires Windows share-deny locking")
+        try:
+            if os.name == "nt":
+                self._handles = [_open_windows_read_binding(path) for path, _, _ in self._entries]
+            for path, expected, label in self._entries:
+                _require_checkpoint_sha256(path, expected)
+        except Exception:
+            self._close()
+            raise
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        try:
+            if exc_type is None:
+                for path, expected, _label in self._entries:
+                    _require_checkpoint_sha256(path, expected)
+        finally:
+            self._close()
+
+    def _close(self) -> None:
+        while self._handles:
+            _close_windows_handle(self._handles.pop())
+
+
 def _open_windows_read_binding(path: Path) -> int:
     import ctypes
 

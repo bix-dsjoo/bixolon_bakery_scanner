@@ -637,6 +637,17 @@ Map<String, Object?> _startupMetricsJson() {
     'dinov3_id': 'dinov3_vits16_15plus5_v1',
     'fusion_policy_id': 'fusion_local_or_global_v1',
     'detector_threshold': 0.42,
+    'applied_artifact_hashes': {
+      for (final key in const [
+        'detector_checkpoint_sha256', 'detector_calibration_sha256',
+        'detector_manifest_sha256', 'repvit_checkpoint_sha256',
+        'repvit_manifest_sha256', 'repvit_prototype_sha256',
+        'dinov3_weights_sha256', 'dinov3_support_sha256',
+        'dinov3_local_bank_sha256', 'classifier_calibration_sha256',
+        'preprocess_sha256', 'fusion_policy_sha256',
+        'presentation_policy_sha256',
+      ]) key: 'a' * 64,
+    },
   };
 }
 

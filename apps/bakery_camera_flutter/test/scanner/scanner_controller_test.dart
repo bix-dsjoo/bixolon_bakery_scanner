@@ -699,7 +699,7 @@ final class FakeMonotonicClock {
 }
 
 StartupMetrics _startupMetrics() {
-  return const StartupMetrics(
+  return StartupMetrics(
     device: 'cpu',
     loadMs: 120,
     warmupMs: 30,
