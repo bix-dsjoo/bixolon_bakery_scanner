@@ -52,6 +52,8 @@ def test_direct_constructors_cannot_bypass_static_candidate_values() -> None:
         CandidateRuntimeConfig("CPU", "FP16", 3, 7, 100.0, valid.runtime.stage_budgets_ms)
     with pytest.raises(ValueError, match="stage_budgets_ms"):
         CandidateRuntimeConfig("CUDA:0", "FP16", 3, 7, 100.0, {**valid.runtime.stage_budgets_ms, "detector": 35.0})
+    with pytest.raises(ValueError, match="stage_budgets_ms keys must be strings"):
+        CandidateRuntimeConfig("CUDA:0", "FP16", 3, 7, 100.0, {**valid.runtime.stage_budgets_ms, 42: 0.0})
     with pytest.raises(ValueError, match="pipeline_id"):
         CandidateConfig(
             "arbitrary_pipeline", valid.admission_manifest, valid.evaluation_config, valid.runtime,

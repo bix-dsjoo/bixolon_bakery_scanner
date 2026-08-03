@@ -210,7 +210,9 @@ def _finite_float(value: object, name: str) -> float:
 
 def _float_mapping(value: object, name: str) -> dict[str, float]:
     raw = _mapping(value, name)
-    return {key: _finite_float(item, f"{name}.{key}") for key, item in raw.items() if isinstance(key, str)}
+    if not all(isinstance(key, str) for key in raw):
+        raise ValueError(f"{name} keys must be strings")
+    return {key: _finite_float(item, f"{name}.{key}") for key, item in raw.items()}
 
 
 def _int_mapping(value: object, name: str) -> dict[str, int]:
