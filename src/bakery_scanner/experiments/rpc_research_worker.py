@@ -42,7 +42,7 @@ _M0_LEARNING_RATE = 0.1
 _M2_KERNEL_SCALE = 1.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TRAIN_CAPTURE_SOURCE = re.compile(
-    r"^train2019:[1-9][0-9]*:(?P<product>.+)_camera(?P<camera>[0-9]+)-(?P<side>[^_]+)\.jpg$"
+    r"^train2019:[0-9]+:(?P<product>.+)_camera(?P<camera>[0-9]+)-(?P<side>[^_]+)\.jpg$"
 )
 
 

@@ -440,6 +440,27 @@ def test_support_bank_can_select_train_rows_from_mixed_feature_manifest(
     assert all(example.source_identity.startswith("train2019:") for example in bank.prefix(2))
 
 
+def test_support_bank_accepts_zero_based_train_image_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A legitimate zero-based train image ID remains a usable support source."""
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path)
+    manifest_path = _task1_feature_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    source_identity = "train2019:0:roll_camera1-top.jpg"
+    manifest["rows"][0]["source_identity"] = source_identity
+    manifest["rows"][0]["identity"] = f"{source_identity}:100"
+    manifest["images"][0]["source_identity"] = source_identity
+    manifest["images"][0]["source_sha256"] = hashlib.sha256(source_identity.encode()).hexdigest()
+    manifest_path.write_bytes(worker.canonical_json_bytes(manifest))
+
+    bank = worker.materialize_support_bank_from_feature_manifest(
+        manifest_path, selector="rnd", seed=101, maximum_shots=1, source_split="train2019"
+    )
+
+    assert bank.prefix(1)[0].source_identity == source_identity
+
+
 def test_support_prefixes_are_globally_nested_for_multiple_classes():
     """A class-grouped flattening would make one-shot output differ from a larger prefix."""
     rows = (
