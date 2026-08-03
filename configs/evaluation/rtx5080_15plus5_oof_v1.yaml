@@ -1,0 +1,17 @@
+schema_version: 1
+iou_threshold: 0.50
+seed: 20260803
+fold_count: 5
+role_counts:
+  train: 3
+  calibration: 1
+  evaluation: 1
+utility_floors:
+  normal_scan_acceptance: {overall: 0.80, each: 0.70}
+  unnecessary_retake: {overall: 0.20, each: 0.30}
+  auto_sku_approval_coverage: {overall: 0.70, each: 0.60}
+  unknown_rate: {overall: 0.30, each: 0.40}
+  unknown_top3_recall: {overall: 0.95, each: 0.90}
+incremental_auto_sku_approval_coverage_floor: 0.50
+counterfactual_completeness_block_rate: 1.0
+latency_paths: [E, M, H, overall, dinov3, needs_retake, unknown]

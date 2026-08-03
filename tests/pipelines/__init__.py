@@ -1,0 +1,1 @@
+"""Pipeline contract test package."""
