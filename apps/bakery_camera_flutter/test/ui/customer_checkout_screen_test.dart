@@ -17,6 +17,7 @@ import 'package:bakery_camera_prototype/src/ui/components/checkout_scaffold.dart
 import 'package:flutter/foundation.dart';
 import 'package:bakery_camera_prototype/src/ui/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/customer_checkout_journey_fixture.dart';
@@ -119,6 +120,14 @@ void main() {
         find.byKey(const Key('captured-review-full-scene')),
         findsOneWidget,
       );
+      expect(
+        find.byKey(const Key('order-review-catalog-panel')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('checkout-review-task-pane')),
+        findsOneWidget,
+      );
       expect(find.byKey(const Key('customer-catalog-close')), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('customer-catalog-close')));
@@ -193,7 +202,70 @@ void main() {
     },
   );
 
-  testWidgets('manual catalog does not reserve an empty action rail', (
+  testWidgets(
+    'manual catalog uses the same panel without replacing the order',
+    (tester) async {
+      final fixture = (await tester.runAsync(() async {
+        final fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+        await fixture.controller.scan();
+        await fixture.controller.chooseTop3('object-2', 10);
+        return fixture;
+      }))!;
+      addTearDown(() => tester.runAsync(fixture.dispose));
+
+      await _pump(
+        tester,
+        CustomerCheckoutScreen(controller: fixture.controller),
+      );
+      await tester.tap(find.text('상품 추가'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('order-review-catalog-panel')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('order-review-scene-pane')), findsOneWidget);
+      expect(find.byKey(const Key('order-review-task-pane')), findsOneWidget);
+      expect(find.byKey(const Key('customer-action-rail')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'catalog panel owns Escape focus and restores the invoking action',
+    (tester) async {
+      final fixture = (await tester.runAsync(() async {
+        final fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+        await fixture.controller.scan();
+        await fixture.controller.chooseTop3('object-2', 10);
+        return fixture;
+      }))!;
+      addTearDown(() => tester.runAsync(fixture.dispose));
+
+      await _pump(
+        tester,
+        CustomerCheckoutScreen(controller: fixture.controller),
+      );
+      final addAction = find.widgetWithText(OutlinedButton, '상품 추가');
+      final invokingFocus = await _focusWithKeyboard(tester, addAction);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+
+      final close = tester.widget<IconButton>(
+        find.byKey(const Key('customer-catalog-close')),
+      );
+      expect(close.focusNode?.hasPrimaryFocus, isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('order-review-catalog-panel')), findsNothing);
+      expect(FocusManager.instance.primaryFocus, same(invokingFocus));
+    },
+  );
+
+  testWidgets('failed catalog action remains open and explains the problem', (
     tester,
   ) async {
     final fixture = (await tester.runAsync(() async {
@@ -208,9 +280,13 @@ void main() {
     await _pump(tester, CustomerCheckoutScreen(controller: fixture.controller));
     await tester.tap(find.text('상품 추가'));
     await tester.pumpAndSettle();
+    await tester.runAsync(fixture.controller.close);
 
-    expect(find.text('상품 찾기'), findsOneWidget);
-    expect(find.byKey(const Key('customer-action-rail')), findsNothing);
+    await tester.tap(find.text('우유 식빵').last);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('order-review-catalog-panel')), findsOneWidget);
+    expect(find.text('상품을 변경하지 못했어요.'), findsOneWidget);
   });
 
   testWidgets(
@@ -568,6 +644,29 @@ Future<void> _pump(WidgetTester tester, Widget child) => tester.pumpWidget(
     home: Scaffold(body: child),
   ),
 );
+
+Future<FocusNode> _focusWithKeyboard(WidgetTester tester, Finder target) async {
+  for (var index = 0; index < 20; index += 1) {
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    final focus = FocusManager.instance.primaryFocus;
+    final context = focus?.context;
+    if (focus != null &&
+        context is Element &&
+        find
+            .descendant(
+              of: target,
+              matching: find.byElementPredicate(
+                (element) => identical(element, context),
+              ),
+            )
+            .evaluate()
+            .isNotEmpty) {
+      return focus;
+    }
+  }
+  throw TestFailure('Could not focus the requested widget with Tab.');
+}
 
 Future<_RetainedAuditImage> _retainReviewJpeg() async {
   final directory = await Directory.systemTemp.createTemp('customer-review-');

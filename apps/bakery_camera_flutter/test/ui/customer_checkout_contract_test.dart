@@ -174,7 +174,11 @@ void main() {
   testWidgets('catalog has an explicit return and customer category labels', (
     tester,
   ) async {
-    final catalog = _Catalog([_product('donut', 'Walnut Donut', 'donut', 1)]);
+    final catalog = _Catalog([
+      _product('donut', 'Walnut Donut', 'donut', 1),
+      _product('bread', 'Milk Bread', 'bread', 2),
+      _product('sandwich', 'Ham Sandwich', 'sandwich', 3),
+    ]);
     final snapshot = await catalog.activeCatalog();
     final discovery = await catalog.customerDiscoveryFor(snapshot);
 
@@ -205,6 +209,8 @@ void main() {
     await tester.tap(find.text('Open catalog'));
     await tester.pumpAndSettle();
     expect(find.text('도넛'), findsWidgets);
+    expect(find.text('빵'), findsWidgets);
+    expect(find.text('샌드위치'), findsWidgets);
     expect(find.byKey(const Key('customer-catalog-close')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('customer-catalog-close')));
@@ -622,6 +628,50 @@ void main() {
     expect(find.byTooltip('인식 상품 변경'), findsOneWidget);
     expect(find.textContaining('상품 변경'), findsNothing);
   });
+
+  testWidgets(
+    'duplicate recognized products use overlay numbers for correction',
+    (tester) async {
+      final objects = buildUiInferenceResult().objects;
+      final product = _product('croissant', 'Croissant', 'pastry', 6);
+      final selectedObjects = <String>[];
+
+      await _pump(
+        tester,
+        OrderReviewView(
+          state: CheckoutState(
+            phase: CheckoutPhase.orderReview,
+            objectDrafts: [
+              ObjectDraft.accepted(
+                inferenceObject: objects.first,
+                product: product,
+              ),
+              ObjectDraft.accepted(
+                inferenceObject: objects.last,
+                product: product,
+              ),
+            ],
+            lines: [CheckoutLine(product: product, quantity: 2)],
+          ),
+          onSetQuantity: (_, _) {},
+          onAddProduct: () {},
+          onOverrideObject: selectedObjects.add,
+          onCountMismatch: () {},
+          onPay: () {},
+          onRemoveProduct: (_) {},
+        ),
+      );
+
+      await tester.tap(find.byTooltip('인식 상품 변경'));
+      await tester.pumpAndSettle();
+      expect(find.text('01번 빵 변경'), findsOneWidget);
+      expect(find.text('02번 빵 변경'), findsOneWidget);
+
+      await tester.tap(find.text('02번 빵 변경'));
+      await tester.pumpAndSettle();
+      expect(selectedObjects, [objects.last.objectId]);
+    },
+  );
 
   testWidgets('completion supports policy auto reset and manual continuation', (
     tester,

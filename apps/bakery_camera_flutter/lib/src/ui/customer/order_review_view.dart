@@ -88,6 +88,7 @@ class _OrderReviewViewState extends State<OrderReviewView> {
       taskTitle: '주문 내역',
       taskContent: _OrderTaskPane(
         state: state,
+        presentation: presentation,
         selectedObjectId: _selectedObjectId,
         onSelectLine: _selectLine,
         onSetQuantity: widget.onSetQuantity,
@@ -122,6 +123,7 @@ class _OrderReviewViewState extends State<OrderReviewView> {
 class _OrderTaskPane extends StatelessWidget {
   const _OrderTaskPane({
     required this.state,
+    required this.presentation,
     required this.selectedObjectId,
     required this.onSelectLine,
     required this.onSetQuantity,
@@ -130,6 +132,7 @@ class _OrderTaskPane extends StatelessWidget {
   });
 
   final CheckoutState state;
+  final CustomerReviewPresentation presentation;
   final String? selectedObjectId;
   final ValueChanged<List<String>> onSelectLine;
   final void Function(String productId, int quantity) onSetQuantity;
@@ -142,6 +145,10 @@ class _OrderTaskPane extends StatelessWidget {
         draft.inferenceObject.objectId,
   ];
 
+  int _displayNumber(String objectId) => presentation.objects
+      .firstWhere((object) => object.objectId == objectId)
+      .displayNumber;
+
   @override
   Widget build(BuildContext context) => ListView.separated(
     padding: const EdgeInsets.only(left: 4),
@@ -153,6 +160,7 @@ class _OrderTaskPane extends StatelessWidget {
         selectedObjectId: selectedObjectId,
         onSetQuantity: onSetQuantity,
         recognizedObjectIds: _recognizedObjectIds(line),
+        displayNumberForObject: _displayNumber,
         onSelectLine: onSelectLine,
         onOverrideObject: onOverrideObject,
         onRemove:
@@ -178,6 +186,7 @@ class _OrderLine extends StatelessWidget {
     required this.selectedObjectId,
     required this.onSetQuantity,
     required this.recognizedObjectIds,
+    required this.displayNumberForObject,
     required this.onSelectLine,
     required this.onOverrideObject,
     required this.onRemove,
@@ -187,6 +196,7 @@ class _OrderLine extends StatelessWidget {
   final String? selectedObjectId;
   final void Function(String productId, int quantity) onSetQuantity;
   final List<String> recognizedObjectIds;
+  final int Function(String objectId) displayNumberForObject;
   final ValueChanged<List<String>> onSelectLine;
   final ValueChanged<String> onOverrideObject;
   final VoidCallback? onRemove;
@@ -231,7 +241,9 @@ class _OrderLine extends StatelessWidget {
                 for (var index = 0; index < recognizedObjectIds.length; index++)
                   PopupMenuItem(
                     value: recognizedObjectIds[index],
-                    child: Text('${index + 1}번째 상품 변경'),
+                    child: Text(
+                      '${displayNumberForObject(recognizedObjectIds[index]).toString().padLeft(2, '0')}번 빵 변경',
+                    ),
                   ),
               ],
               icon: const Icon(Icons.edit_outlined),

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../catalog/product.dart';
 import '../../checkout/checkout_controller.dart';
@@ -38,8 +39,7 @@ class CustomerCheckoutScreen extends StatefulWidget {
 }
 
 class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
-  String? _catalogObjectId;
-  bool _catalogAddsProduct = false;
+  _CatalogRequest? _catalogRequest;
 
   @override
   void initState() {
@@ -66,35 +66,47 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
     if (mounted) setState(() {});
   }
 
-  void _showCatalogForObject(String objectId) => setState(() {
-    _catalogObjectId = objectId;
-    _catalogAddsProduct = false;
+  void _showCatalogForObject(String objectId) => _showCatalog(objectId);
+
+  void _showAddCatalog() => _showCatalog(null);
+
+  void _showCatalog(String? objectId) => setState(() {
+    _catalogRequest = _CatalogRequest(
+      objectId: objectId,
+      invokingFocus: FocusManager.instance.primaryFocus,
+    );
   });
 
-  void _showAddCatalog() => setState(() {
-    _catalogObjectId = null;
-    _catalogAddsProduct = true;
-  });
-
-  void _closeCatalog() => setState(() {
-    _catalogObjectId = null;
-    _catalogAddsProduct = false;
-  });
+  void _closeCatalog() {
+    final invokingFocus = _catalogRequest?.invokingFocus;
+    setState(() => _catalogRequest = null);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (invokingFocus?.context != null && invokingFocus!.canRequestFocus) {
+        invokingFocus.requestFocus();
+      }
+    });
+  }
 
   Future<void> _selectCatalog(String productId) async {
-    final objectId = _catalogObjectId;
-    setState(() {
-      _catalogObjectId = null;
-      _catalogAddsProduct = false;
-    });
-    if (objectId != null) {
-      if (widget.controller.state.phase == CheckoutPhase.orderReview) {
-        await widget.controller.overrideResolvedProduct(objectId, productId);
+    final request = _catalogRequest;
+    if (request == null || request.saving) return;
+    setState(() => _catalogRequest = request.savingSelection());
+    try {
+      final objectId = request.objectId;
+      if (objectId != null) {
+        if (widget.controller.state.phase == CheckoutPhase.orderReview) {
+          await widget.controller.overrideResolvedProduct(objectId, productId);
+        } else {
+          await widget.controller.chooseCatalog(objectId, productId);
+        }
       } else {
-        await widget.controller.chooseCatalog(objectId, productId);
+        await widget.controller.addManualProduct(productId);
       }
-    } else {
-      await widget.controller.addManualProduct(productId);
+      if (mounted) _closeCatalog();
+    } catch (_) {
+      if (mounted) {
+        setState(() => _catalogRequest = request.withError('상품을 변경하지 못했어요.'));
+      }
     }
   }
 
@@ -102,99 +114,77 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
   Widget build(BuildContext context) {
     final Widget content;
     final state = widget.controller.state;
-    if (_catalogAddsProduct) {
-      content = CheckoutScaffold(
-        title: '상품 찾기',
-        child: Padding(
-          padding: const EdgeInsets.only(top: 16),
-          child: CatalogPicker(
+    content = switch (state.phase) {
+      CheckoutPhase.ready => ReadyView(
+        onScan: () => widget.controller.scan(),
+        previewController: widget.controller.previewController,
+      ),
+      CheckoutPhase.analyzing => const AnalyzingView(),
+      CheckoutPhase.retakeRequired => RetakeRequiredView(
+        state: state,
+        manualCartEligible: widget.controller.manualCartEligible,
+        onRetake: () => widget.controller.retake(),
+        onManualEntry: () => widget.controller.enterManualCart(),
+      ),
+      CheckoutPhase.customerReview => CustomerReviewView(
+        state: state,
+        productForCandidate: widget.controller.productForCandidate,
+        onChooseTop3: (objectId, skuId) =>
+            widget.controller.chooseTop3(objectId, skuId),
+        onOpenCatalog: _showCatalogForObject,
+        onRetakeCapture: () => widget.controller.reportCountMismatch(),
+        onContinue: () => widget.controller.continueToOrderReview(),
+      ),
+      CheckoutPhase.orderReview => OrderReviewView(
+        state: state,
+        onSetQuantity: (productId, quantity) =>
+            widget.controller.setQuantity(productId, quantity),
+        onAddProduct: _showAddCatalog,
+        onOverrideObject: _showCatalogForObject,
+        onCountMismatch: () => widget.controller.restartCapture(),
+        onPay: () => widget.controller.pay(),
+        onRemoveProduct: (productId) =>
+            widget.controller.removeProduct(productId),
+      ),
+      CheckoutPhase.paying => PaymentView(state: state),
+      CheckoutPhase.paymentComplete => PaymentCompleteView(
+        state: state,
+        policy: widget.controller.completionPolicy,
+        onNext: () async {
+          await widget.controller.startNextCustomer();
+          widget.onPaymentCompleted?.call();
+        },
+      ),
+      CheckoutPhase.recoverableFailure => _FailureView(
+        state: state,
+        onRetry: () => widget.controller.retryFailure(),
+      ),
+      CheckoutPhase.terminalFailure => _UnavailableView(
+        onNext: () => widget.controller.startNextCustomer(),
+      ),
+    };
+    final request = _catalogRequest;
+    final layeredContent = Stack(
+      children: [
+        content,
+        if (request != null)
+          _OrderReviewCatalogPanel(
             discovery: widget.controller.customerCatalogDiscovery,
             search: widget.controller.searchSessionCatalog,
             onSelected: (product) => _selectCatalog(product.productId),
             onClose: _closeCatalog,
+            saving: request.saving,
+            errorText: request.errorText,
           ),
-        ),
-      );
-    } else {
-      content = switch (state.phase) {
-        CheckoutPhase.ready => ReadyView(
-          onScan: () => widget.controller.scan(),
-          previewController: widget.controller.previewController,
-        ),
-        CheckoutPhase.analyzing => const AnalyzingView(),
-        CheckoutPhase.retakeRequired => RetakeRequiredView(
-          state: state,
-          manualCartEligible: widget.controller.manualCartEligible,
-          onRetake: () => widget.controller.retake(),
-          onManualEntry: () => widget.controller.enterManualCart(),
-        ),
-        CheckoutPhase.customerReview => CustomerReviewView(
-          state: state,
-          productForCandidate: widget.controller.productForCandidate,
-          onChooseTop3: (objectId, skuId) =>
-              widget.controller.chooseTop3(objectId, skuId),
-          onOpenCatalog: _showCatalogForObject,
-          onRetakeCapture: () => widget.controller.reportCountMismatch(),
-          onContinue: () => widget.controller.continueToOrderReview(),
-          catalogDiscovery: _catalogObjectId == null
-              ? null
-              : widget.controller.customerCatalogDiscovery,
-          catalogSearch: _catalogObjectId == null
-              ? null
-              : widget.controller.searchSessionCatalog,
-          onCatalogSelected: _catalogObjectId == null
-              ? null
-              : (product) => _selectCatalog(product.productId),
-          onCloseCatalog: _catalogObjectId == null ? null : _closeCatalog,
-        ),
-        CheckoutPhase.orderReview => Stack(
-          children: [
-            OrderReviewView(
-              state: state,
-              onSetQuantity: (productId, quantity) =>
-                  widget.controller.setQuantity(productId, quantity),
-              onAddProduct: _showAddCatalog,
-              onOverrideObject: _showCatalogForObject,
-              onCountMismatch: () => widget.controller.restartCapture(),
-              onPay: () => widget.controller.pay(),
-              onRemoveProduct: (productId) =>
-                  widget.controller.removeProduct(productId),
-            ),
-            if (_catalogObjectId != null)
-              _OrderReviewCatalogPanel(
-                discovery: widget.controller.customerCatalogDiscovery,
-                search: widget.controller.searchSessionCatalog,
-                onSelected: (product) => _selectCatalog(product.productId),
-                onClose: _closeCatalog,
-              ),
-          ],
-        ),
-        CheckoutPhase.paying => PaymentView(state: state),
-        CheckoutPhase.paymentComplete => PaymentCompleteView(
-          state: state,
-          policy: widget.controller.completionPolicy,
-          onNext: () async {
-            await widget.controller.startNextCustomer();
-            widget.onPaymentCompleted?.call();
-          },
-        ),
-        CheckoutPhase.recoverableFailure => _FailureView(
-          state: state,
-          onRetry: () => widget.controller.retryFailure(),
-        ),
-        CheckoutPhase.terminalFailure => _UnavailableView(
-          onNext: () => widget.controller.startNextCustomer(),
-        ),
-      };
-    }
+      ],
+    );
     final scopedContent = KioskDisplayNameScope(
       displayName: widget.controller.kioskDisplayName,
-      child: content,
+      child: layeredContent,
     );
     if (widget.onEnterAdmin == null ||
         state.phase != CheckoutPhase.ready ||
-        _catalogObjectId != null ||
-        _catalogAddsProduct) {
+        _catalogRequest != null) {
       return scopedContent;
     }
     return KioskHeaderActionScope(
@@ -207,18 +197,76 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
   }
 }
 
-class _OrderReviewCatalogPanel extends StatelessWidget {
+final class _CatalogRequest {
+  const _CatalogRequest({
+    required this.objectId,
+    required this.invokingFocus,
+    this.saving = false,
+    this.errorText,
+  });
+
+  final String? objectId;
+  final FocusNode? invokingFocus;
+  final bool saving;
+  final String? errorText;
+
+  _CatalogRequest savingSelection() => _CatalogRequest(
+    objectId: objectId,
+    invokingFocus: invokingFocus,
+    saving: true,
+  );
+
+  _CatalogRequest withError(String message) => _CatalogRequest(
+    objectId: objectId,
+    invokingFocus: invokingFocus,
+    errorText: message,
+  );
+}
+
+class _CloseCatalogIntent extends Intent {
+  const _CloseCatalogIntent();
+}
+
+class _OrderReviewCatalogPanel extends StatefulWidget {
   const _OrderReviewCatalogPanel({
     required this.discovery,
     required this.search,
     required this.onSelected,
     required this.onClose,
+    required this.saving,
+    required this.errorText,
   });
 
   final CustomerCatalogDiscovery discovery;
   final Future<List<Product>> Function(String query) search;
   final ValueChanged<Product> onSelected;
   final VoidCallback onClose;
+  final bool saving;
+  final String? errorText;
+
+  @override
+  State<_OrderReviewCatalogPanel> createState() =>
+      _OrderReviewCatalogPanelState();
+}
+
+class _OrderReviewCatalogPanelState extends State<_OrderReviewCatalogPanel> {
+  final _scopeNode = FocusScopeNode(debugLabel: 'catalog-panel');
+  final _closeFocusNode = FocusNode(debugLabel: 'catalog-panel-close');
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _closeFocusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _closeFocusNode.dispose();
+    _scopeNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -227,49 +275,97 @@ class _OrderReviewCatalogPanel extends StatelessWidget {
         .clamp(0.0, 480.0)
         .toDouble();
     return Positioned.fill(
-      child: Stack(
-        children: [
-          ModalBarrier(
-            color: Colors.black.withValues(alpha: 0.14),
-            dismissible: true,
-            semanticsLabel: '상품 변경 닫기',
-            onDismiss: onClose,
-          ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: SizedBox(
-                  key: const Key('order-review-catalog-panel'),
-                  width: width,
-                  child: Material(
-                    elevation: 2,
-                    clipBehavior: Clip.antiAlias,
-                    borderRadius: BorderRadius.circular(tokens.modalRadius),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: Theme.of(context).dividerColor,
-                        ),
-                        borderRadius: BorderRadius.circular(tokens.modalRadius),
-                      ),
-                      child: SingleChildScrollView(
+      child: FocusTraversalGroup(
+        child: Shortcuts(
+          shortcuts: const {
+            SingleActivator(LogicalKeyboardKey.escape): _CloseCatalogIntent(),
+          },
+          child: Actions(
+            actions: {
+              _CloseCatalogIntent: CallbackAction<_CloseCatalogIntent>(
+                onInvoke: (_) {
+                  widget.onClose();
+                  return null;
+                },
+              ),
+            },
+            child: FocusScope(
+              node: _scopeNode,
+              child: Stack(
+                children: [
+                  ModalBarrier(
+                    color: Colors.black.withValues(alpha: 0.14),
+                    dismissible: !widget.saving,
+                    semanticsLabel: '상품 변경 닫기',
+                    onDismiss: widget.onClose,
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: SafeArea(
+                      child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: CatalogPicker(
-                          discovery: discovery,
-                          search: search,
-                          onSelected: onSelected,
-                          onClose: onClose,
+                        child: SizedBox(
+                          key: const Key('order-review-catalog-panel'),
+                          width: width,
+                          child: Material(
+                            elevation: 2,
+                            clipBehavior: Clip.antiAlias,
+                            borderRadius: BorderRadius.circular(
+                              tokens.modalRadius,
+                            ),
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: Theme.of(context).dividerColor,
+                                ),
+                                borderRadius: BorderRadius.circular(
+                                  tokens.modalRadius,
+                                ),
+                              ),
+                              child: SingleChildScrollView(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    if (widget.errorText case final error?) ...[
+                                      Semantics(
+                                        liveRegion: true,
+                                        child: Text(
+                                          error,
+                                          style: TextStyle(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.error,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                    ],
+                                    IgnorePointer(
+                                      ignoring: widget.saving,
+                                      child: CatalogPicker(
+                                        discovery: widget.discovery,
+                                        search: widget.search,
+                                        onSelected: widget.onSelected,
+                                        onClose: widget.onClose,
+                                        closeFocusNode: _closeFocusNode,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
+                ],
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }

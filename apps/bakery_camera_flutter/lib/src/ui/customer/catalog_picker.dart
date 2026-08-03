@@ -11,6 +11,7 @@ class CatalogPicker extends StatefulWidget {
     required this.search,
     required this.onSelected,
     this.onClose,
+    this.closeFocusNode,
     super.key,
   });
 
@@ -18,6 +19,7 @@ class CatalogPicker extends StatefulWidget {
   final Future<List<Product>> Function(String query) search;
   final ValueChanged<Product> onSelected;
   final VoidCallback? onClose;
+  final FocusNode? closeFocusNode;
 
   @override
   State<CatalogPicker> createState() => _CatalogPickerState();
@@ -60,6 +62,7 @@ class _CatalogPickerState extends State<CatalogPicker> {
           children: [
             IconButton(
               key: const Key('customer-catalog-close'),
+              focusNode: widget.closeFocusNode,
               tooltip:
                   '\uC0C1\uD488 \uD655\uC778\uC73C\uB85C \uB3CC\uC544\uAC00\uAE30',
               onPressed:
@@ -146,6 +149,7 @@ class _CatalogRow extends StatelessWidget {
 }
 
 String _customerCategoryLabel(String categoryId) => switch (categoryId) {
+  'bread' => '빵',
   'donut' => '\uB3C4\uB11B',
   'filled-bread' => '\uC18C\uAC00 \uB4E0 \uBE75',
   'loaf' => '\uC2DD\uBE75',
@@ -153,5 +157,6 @@ String _customerCategoryLabel(String categoryId) => switch (categoryId) {
   'rustic-bread' => '\uD558\uB4DC\uACC4 \uBE75',
   'sweet' => '\uB2EC\uCF64\uD55C \uBE75',
   'savory' => '\uC2DD\uC0AC\uBE75',
+  'sandwich' => '샌드위치',
   _ => categoryId,
 };
