@@ -18,6 +18,7 @@ from bakery_scanner.classification.contracts import (
     SkuCandidate,
     StageTimings,
 )
+from bakery_scanner.classification.runtime import BatchInferenceResult, BatchStageTimings
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
 from bakery_scanner.prototype.camera_runtime import (
@@ -117,6 +118,13 @@ class FakeClassifier:
         self.fail_analyze = fail_analyze
         self.preflight_calls = 0
         self.infer_calls = 0
+        self.infer_many_calls = 0
+        self.config = SimpleNamespace(
+            runtime=SimpleNamespace(
+                repvit_microbatch_objects="all",
+                dinov3_microbatch_objects="all",
+            )
+        )
 
     def preflight_models(self, image, box: Box) -> None:
         self.preflight_calls += 1
@@ -133,6 +141,86 @@ class FakeClassifier:
             if decision.timings.dinov3_ms > 0:
                 on_stage("dinov3")
         return decision
+
+    def infer_many(
+        self,
+        image,
+        boxes: tuple[Box, ...],
+        *,
+        repvit_max_objects: int,
+        dino_max_objects: int,
+    ) -> BatchInferenceResult:
+        if self.fail_analyze:
+            raise RuntimeError("analysis failed")
+        self.infer_many_calls += 1
+        decisions = tuple(
+            self.decisions[index % len(self.decisions)]
+            for index, _ in enumerate(boxes)
+        )
+        return BatchInferenceResult(
+            decisions,
+            BatchStageTimings(
+                crop_ms=0.0,
+                repvit_ms=sum(decision.timings.repvit_ms for decision in decisions),
+                dinov3_ms=sum(decision.timings.dinov3_ms for decision in decisions),
+                fusion_ms=0.0,
+                total_ms=sum(decision.timings.total_ms for decision in decisions),
+            ),
+            sum(decision.timings.dinov3_ms > 0.0 for decision in decisions),
+        )
+
+
+class FakeBatchClassifier(FakeClassifier):
+    def __init__(
+        self,
+        decisions: tuple[ClassificationDecision, ...],
+        *,
+        dino_object_count: int | None = None,
+    ) -> None:
+        super().__init__(decisions)
+        self.config = SimpleNamespace(
+            runtime=SimpleNamespace(
+                repvit_microbatch_objects="all",
+                dinov3_microbatch_objects="all",
+            )
+        )
+        self.dino_object_count = (
+            sum(decision.timings.dinov3_ms > 0.0 for decision in decisions)
+            if dino_object_count is None
+            else dino_object_count
+        )
+        self.infer_many_calls: list[tuple[Box, ...]] = []
+        self.infer_many_limits: list[tuple[int, int]] = []
+
+    def infer_many(
+        self,
+        image,
+        boxes: tuple[Box, ...],
+        *,
+        repvit_max_objects: int,
+        dino_max_objects: int,
+    ) -> BatchInferenceResult:
+        self.infer_many_calls.append(tuple(boxes))
+        self.infer_many_limits.append((repvit_max_objects, dino_max_objects))
+        return BatchInferenceResult(
+            self.decisions,
+            BatchStageTimings(
+                crop_ms=1.0,
+                repvit_ms=7.0,
+                dinov3_ms=5.0,
+                fusion_ms=1.0,
+                total_ms=14.0,
+            ),
+            self.dino_object_count,
+        )
+
+
+class FailIfCalledClassifier(FakeBatchClassifier):
+    def __init__(self) -> None:
+        super().__init__(())
+
+    def infer_many(self, *args, **kwargs) -> BatchInferenceResult:
+        pytest.fail("classifier called for empty scene")
 
 
 class FakeBackend:
@@ -183,6 +271,25 @@ class ManualClock:
 
     def advance(self, seconds: float) -> None:
         self.value += seconds
+
+
+def _runtime(
+    tmp_path: Path,
+    *,
+    classifier: FakeClassifier,
+    proposals: tuple[BreadProposal, ...],
+) -> CameraInferenceRuntime:
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    backend = FakeBackend("cpu", proposals=proposals)
+    backend.classifier = classifier
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="cpu",
+        backend_loader=lambda device: backend,
+    )
+    backend.detector.proposals = proposals
+    return runtime
 
 
 @pytest.fixture(autouse=True)
@@ -700,6 +807,75 @@ def test_analyze_returns_deterministic_fail_closed_result_contract(tmp_path: Pat
     ]
 
 
+def test_camera_runtime_batches_all_ordered_objects_once(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    top = Box(40, 4, 20, 15)
+    middle = Box(5, 25, 20, 15)
+    bottom = Box(42, 25, 20, 15)
+    classifier = FakeBatchClassifier(
+        (
+            _confirmed(6, top),
+            _confirmed(10, middle),
+            _unknown(bottom),
+        )
+    )
+    classifier.infer = lambda *args, **kwargs: pytest.fail("serial infer used")
+    runtime = _runtime(
+        tmp_path,
+        classifier=classifier,
+        proposals=(
+            _proposal(bottom, score=0.88),
+            _proposal(middle, score=0.91),
+            _proposal(top, score=0.93),
+        ),
+    )
+
+    result = runtime.analyze(image_path, "batch-objects")
+
+    assert classifier.infer_many_calls == [(top, middle, bottom)]
+    assert classifier.infer_many_limits == [(3, 3)]
+    assert [row["object_id"] for row in result["objects"]] == [
+        "object-1",
+        "object-2",
+        "object-3",
+    ]
+    assert [row["decision_path"] for row in result["objects"]] == [
+        DecisionPath.REPVIT_DIRECT.value,
+        DecisionPath.REPVIT_DIRECT.value,
+        DecisionPath.UNKNOWN_TOP3.value,
+    ]
+    assert result["timings_ms"]["repvit"] == 7.0
+    assert result["timings_ms"]["dinov3"] == 5.0
+
+
+def test_camera_runtime_rejects_misaligned_batch_decisions(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    first = Box(5, 5, 20, 20)
+    second = Box(35, 5, 20, 20)
+    runtime = _runtime(
+        tmp_path,
+        classifier=FakeBatchClassifier((_confirmed(6, first),)),
+        proposals=(_proposal(first), _proposal(second)),
+    )
+
+    with pytest.raises(ValueError, match="align"):
+        runtime.analyze(image_path, "misaligned")
+
+
+def test_empty_scene_never_calls_classifier(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    runtime = _runtime(
+        tmp_path,
+        classifier=FailIfCalledClassifier(),
+        proposals=(),
+    )
+
+    result = runtime.analyze(image_path, "empty")
+
+    assert result["objects"] == []
+    assert result["presentation"]["instruction_code"] == "no_bread_detected"
+
+
 def test_analyze_routes_weak_unknown_to_top3_without_changing_counts(
     tmp_path: Path,
 ):
@@ -857,7 +1033,8 @@ def test_runtime_warms_once_reuses_models_and_closes_idempotently(tmp_path: Path
     assert loader_calls == 1
     assert backend.detector.predict_calls == 3
     assert backend.classifier.preflight_calls == 1
-    assert backend.classifier.infer_calls == 2
+    assert backend.classifier.infer_calls == 0
+    assert backend.classifier.infer_many_calls == 2
     with pytest.raises(RuntimeError, match="runtime is already warmed"):
         runtime.warmup(warmup_image)
 

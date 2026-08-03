@@ -21,6 +21,9 @@ preprocess:
 runtime:
   device: CUDA:0
   precision: FP32
+  mode: batch_pytorch
+  repvit_microbatch_objects: all
+  dinov3_microbatch_objects: all
 calibration:
   artifact: ../policies/classification/policy_v2_manifest_rebound_cpu_smoke.json
   artifact_sha256: 213b08c536d4a344ab115f1acf8e7fc7d6b7da87646c5ae5b39e0e2688f29221
