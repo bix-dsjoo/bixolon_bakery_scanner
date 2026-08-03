@@ -16,9 +16,17 @@ from bakery_scanner.benchmarking.gpu_worker_receipt import (
     build_receipt as build_gpu_worker_receipt,
     summarize_ms as summarize_gpu_ms,
 )
+from bakery_scanner.benchmarking.decision_parity import (
+    DecisionMismatch,
+    DecisionParityReceipt,
+    compare_decisions,
+)
 
 __all__ = [
     "build_cpu_benchmark_report",
+    "DecisionMismatch",
+    "DecisionParityReceipt",
+    "compare_decisions",
     "GPU_RECEIPT_GROUPS",
     "GPU_RECEIPT_STAGES",
     "MINIMUM_GROUP_OBSERVATIONS",
