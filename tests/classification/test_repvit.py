@@ -112,6 +112,17 @@ def test_score_many_matches_serial_evidence_and_preserves_object_order():
     assert runner.model.batch_sizes[-2:] == [6, 3]
 
 
+def test_static_tight_context_runner_executes_one_padded_14_row_batch():
+    runner = _recording_evidence_runner()
+    rows = tuple(Image.new("RGB", (8, 8), "red") for _ in range(14))
+
+    evidence = runner.score_tight_context_chunk(rows, valid_mask=(True, True) + (False,) * 12)
+
+    assert len(evidence) == 1
+    assert runner.model.batch_sizes == [14]
+    assert evidence[0].tight_scores.sku_ids == evidence[0].context_scores.sku_ids
+
+
 @pytest.mark.parametrize(
     ("crop_groups", "max_objects", "message"),
     [

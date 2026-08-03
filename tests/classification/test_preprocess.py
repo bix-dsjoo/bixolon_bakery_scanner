@@ -11,6 +11,7 @@ from bakery_scanner.classification.preprocess import (
 )
 from bakery_scanner.contracts import Box
 from bakery_scanner.data.preprocess import canonicalize_image
+from bakery_scanner.data.preprocess import CanonicalImage
 
 
 def test_three_padded_crops_are_ordered_and_clipped():
@@ -93,3 +94,16 @@ def test_crop_pair_rejects_noncanonical_or_out_of_bounds_input():
 
     with pytest.raises(ValueError, match="canonical visual"):
         build_crop_pair(canonicalize_image(Image.new("RGB", (10, 10))), Box(8, 8, 5, 5))
+
+
+@pytest.mark.parametrize(
+    "frame",
+    (
+        CanonicalImage(Image.new("L", (10, 10)), (10, 10), (10, 10), 1),
+        CanonicalImage(Image.new("RGB", (10, 10)), (9, 10), (10, 10), 1),
+        CanonicalImage(Image.new("RGB", (0, 10)), (0, 10), (0, 10), 1),
+    ),
+)
+def test_crop_pair_rejects_manually_bypassed_canonical_frame(frame):
+    with pytest.raises(ValueError, match="canonical frame"):
+        build_crop_pair(frame, Box(0, 0, 5, 5))

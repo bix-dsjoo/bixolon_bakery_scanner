@@ -30,10 +30,14 @@ class ClassifierPreprocessDescriptor:
     def __post_init__(self) -> None:
         if self.schema_version != 1 or self.canonical_frame_version != "exif_visual_rgb_v1":
             raise ValueError("unsupported classifier preprocessing descriptor")
+        if self.crop_rule != "total_padding_split_floor_ceil_clip_rgb":
+            raise ValueError("classifier crop rule is not canonical")
         if self.input_size != 224 or self.context_padding != 0.10:
             raise ValueError("classifier preprocessing must use 224 and context padding 0.10")
         if self.interpolation != "bilinear_antialias_true":
             raise ValueError("classifier interpolation must be bilinear with antialiasing")
+        if self.normalization_mean != (0.485, 0.456, 0.406) or self.normalization_std != (0.229, 0.224, 0.225):
+            raise ValueError("classifier normalization is not canonical")
 
     def to_payload(self) -> dict[str, object]:
         payload = asdict(self)
@@ -64,6 +68,7 @@ def build_crop_pair(
     """Build ordered tight/context crops in the verified canonical frame."""
     if not isinstance(frame, CanonicalImage):
         raise ValueError("frame must be a CanonicalImage")
+    _require_canonical_frame(frame)
     try:
         frame.require_box(box)
     except ValueError as exc:
@@ -80,6 +85,20 @@ def build_crop_pair(
         box=box,
         context_product_box=Box(box.x - left, box.y - top, box.width, box.height),
     )
+
+
+def _require_canonical_frame(frame: CanonicalImage) -> None:
+    width, height = frame.visual_size
+    if (
+        frame.frame_version != "exif_visual_rgb_v1"
+        or frame.image.mode != "RGB"
+        or type(width) is not int
+        or type(height) is not int
+        or width <= 0
+        or height <= 0
+        or frame.image.size != frame.visual_size
+    ):
+        raise ValueError("canonical frame invariants are invalid")
 
 
 def make_padded_crops(

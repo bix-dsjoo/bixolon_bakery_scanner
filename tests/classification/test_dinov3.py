@@ -9,6 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as functional
 from PIL import Image
+from torchvision import transforms
 
 from bakery_scanner.contracts import Box
 from bakery_scanner.classification import DinoInferenceError
@@ -90,6 +91,27 @@ class BatchFeatureEncoder(torch.nn.Module):
                 torch.ones((batch.shape[0], 196, 384)), dim=2
             ),
         }
+
+
+def test_static_context_runner_executes_one_padded_seven_object_batch():
+    encoder = BatchFeatureEncoder()
+    prototypes = functional.normalize(torch.eye(384)[:20] + 1.0, dim=1)
+    runner = DinoV3Rechecker(
+        encoder, prototypes, _SKU_IDS, transforms.ToTensor(),
+        "dinov3_vits16_15plus5_v1", torch.device("cpu"),
+    )
+    rows = tuple(Image.new("RGB", (224, 224), "white") for _ in range(7))
+    boxes = tuple(Box(0, 0, 224, 224) for _ in range(7))
+    repvit = ModelScoreVector("repvit_m1_15plus5_v1", _SKU_IDS, tuple([1.0] + [0.0] * 19), "probability")
+    bank = LocalPatchBank({sku_id: functional.normalize(torch.ones((3, 384)), dim=1) for sku_id in _SKU_IDS}, "a" * 64)
+
+    evidence = runner.score_context_chunk_global_and_local_evidence(
+        rows, boxes, bank, repvit_scores=(repvit,) * 7,
+        valid_mask=(True,) + (False,) * 6,
+    )
+
+    assert len(evidence) == 1
+    assert encoder.batch_sizes == [7]
 
 
 def test_candidate_union_keeps_dino_top_five_then_appends_missing_repvit_top_two():

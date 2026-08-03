@@ -307,6 +307,65 @@ class DinoV3Rechecker:
             raise DinoInferenceError("dino_out_of_memory", "DINOv3 inference exhausted device memory") from exc
         return tuple(results)
 
+    def score_context_chunk_global_and_local_evidence(
+        self,
+        crops: Sequence[Image.Image],
+        product_boxes: Sequence[Box],
+        local_bank: LocalPatchBank,
+        *,
+        repvit_scores: Sequence[ModelScoreVector],
+        valid_mask: Sequence[bool],
+    ) -> tuple[DinoGlobalLocalEvidence, ...]:
+        """Score one padded static chunk with a single context crop per object."""
+        rows = tuple(crops)
+        boxes = tuple(product_boxes)
+        scores = tuple(repvit_scores)
+        mask = tuple(valid_mask)
+        if len(rows) != 7 or len(boxes) != 7 or len(scores) != 7 or len(mask) != 7:
+            raise ValueError("DINO static chunk requires seven aligned rows")
+        if any(type(value) is not bool for value in mask) or mask != tuple(sorted(mask, reverse=True)):
+            raise ValueError("DINO static mask must contain valid rows followed by padding")
+        batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in rows))
+        try:
+            with torch.inference_mode():
+                features = self.encoder.forward_features(batch.to(self.device))
+            if not isinstance(features, Mapping):
+                raise ValueError("DINOv3 forward_features must return a mapping")
+            cls_tokens = features.get("x_norm_clstoken")
+            patch_tokens = features.get("x_norm_patchtokens")
+            if not isinstance(cls_tokens, torch.Tensor) or tuple(cls_tokens.shape) != (7, 384):
+                raise ValueError("DINO static class tokens must have shape (7, 384)")
+            if not isinstance(patch_tokens, torch.Tensor) or patch_tokens.ndim != 3 or patch_tokens.shape[0] != 7 or patch_tokens.shape[2] != 384:
+                raise ValueError("DINO static patch tokens must have shape (7, N, 384)")
+            if not torch.isfinite(cls_tokens).all().item() or not torch.isfinite(patch_tokens).all().item():
+                raise ValueError("DINO static tokens must be finite")
+            results = []
+            for crop, box, repvit, valid, cls_token, patches in zip(
+                rows, boxes, scores, mask, cls_tokens, patch_tokens, strict=True
+            ):
+                if not valid:
+                    continue
+                if cls_token.norm().item() == 0:
+                    raise ValueError("DINO static class token must have non-zero norm")
+                embedding = functional.normalize(cls_token, dim=0)
+                similarities = self.prototypes @ embedding
+                global_scores = ModelScoreVector(
+                    self.model_id, self.sku_ids,
+                    tuple(float(value) for value in similarities.detach().cpu().tolist()), "similarity",
+                )
+                candidates = candidate_union(global_scores, repvit)
+                product_mask = _product_patch_mask(box, crop.size, patches.shape[0], patches.device)
+                if (patches[product_mask].norm(dim=1) == 0).any().item():
+                    raise ValueError("DINO static product patches must have non-zero norms")
+                local_scores = local_bank.score(candidates, patches, product_mask)
+                patch_count = int(product_mask.sum().item())
+                results.append(DinoGlobalLocalEvidence(
+                    global_scores, local_scores, patch_count, patch_count / product_mask.numel(),
+                ))
+            return tuple(results)
+        except torch.OutOfMemoryError as exc:
+            raise DinoInferenceError("dino_out_of_memory", "DINOv3 inference exhausted device memory") from exc
+
 
 def _verify_sha256(path: Path, expected: str, label: str) -> None:
     if not path.is_file():

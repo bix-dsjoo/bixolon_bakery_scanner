@@ -32,7 +32,11 @@ from .full_evidence import FullEvidenceRow
 from .fusion_policy import FusionPolicyArtifact
 from .local_bank import LocalPatchBank
 from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
-from .preprocess import build_crop_pair, make_padded_crops_with_product_boxes
+from .preprocess import (
+    ClassifierPreprocessDescriptor,
+    build_crop_pair,
+    make_padded_crops_with_product_boxes,
+)
 from .repvit import RepVitM1Runner, RepVitPrototypeBank
 
 
@@ -364,6 +368,23 @@ class ClassifierPipeline:
         configure_cpu_process(config.runtime)
         calibration_payload = (calibration_path or config.calibration.artifact).read_bytes()
         calibration = PolicyCalibration.from_json_bytes(calibration_payload)
+        fusion_policy = None
+        fusion_payload = None
+        if config.calibration.fusion_policy is not None:
+            fusion_payload = config.calibration.fusion_policy.read_bytes()
+            if hashlib.sha256(fusion_payload).hexdigest() != config.calibration.fusion_policy_sha256:
+                raise ValueError("fusion policy SHA-256 does not match classifier config")
+            fusion_policy = FusionPolicyArtifact.from_json_bytes(fusion_payload)
+        static_policy = (
+            fusion_policy is not None
+            and fusion_policy.schema_version == 3
+            and fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
+            and fusion_policy.artifact_hashes["preprocess_sha256"] == ClassifierPreprocessDescriptor().sha256()
+        )
+        active_preprocess_sha256 = (
+            ClassifierPreprocessDescriptor().sha256()
+            if static_policy else preprocess_sha256(config.preprocess)
+        )
         provenance = ModelProvenance(
             repvit_artifact_id=config.repvit.artifact_id,
             repvit_sha256=config.repvit.checkpoint_sha256,
@@ -372,18 +393,14 @@ class ClassifierPipeline:
             dinov3_support_sha256=config.dinov3.support_sha256,
             calibration_id=calibration.calibration_id,
             calibration_sha256=hashlib.sha256(calibration.to_json_bytes()).hexdigest(),
-            preprocess_sha256=preprocess_sha256(config.preprocess),
+            preprocess_sha256=active_preprocess_sha256,
             repvit_manifest_sha256=config.repvit.manifest_sha256,
             repvit_prototype_sha256=config.repvit.prototype_bank_sha256 or "0" * 64,
         )
         policy = DecisionPolicy(calibration, provenance=provenance)
-        fusion_policy = None
         fusion_provenance = None
-        if config.calibration.fusion_policy is not None:
-            fusion_payload = config.calibration.fusion_policy.read_bytes()
-            if hashlib.sha256(fusion_payload).hexdigest() != config.calibration.fusion_policy_sha256:
-                raise ValueError("fusion policy SHA-256 does not match classifier config")
-            fusion_policy = FusionPolicyArtifact.from_json_bytes(fusion_payload)
+        if fusion_policy is not None:
+            assert fusion_payload is not None
             expected_hashes = {
                 "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
                 "repvit_manifest_sha256": config.repvit.manifest_sha256,
@@ -391,7 +408,7 @@ class ClassifierPipeline:
                 "dinov3_weights_sha256": config.dinov3.weights_sha256,
                 "dinov3_support_sha256": config.dinov3.support_sha256,
                 "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256 or "0" * 64,
-                "preprocess_sha256": preprocess_sha256(config.preprocess),
+                "preprocess_sha256": active_preprocess_sha256,
             }
             if fusion_policy.artifact_hashes != expected_hashes:
                 raise ValueError("fusion policy artifacts do not match classifier config")
@@ -408,7 +425,7 @@ class ClassifierPipeline:
         prototype_bank = RepVitPrototypeBank.load(
             config.repvit.prototype_bank,
             checkpoint_sha256=config.repvit.checkpoint_sha256,
-            expected_preprocess_sha256=preprocess_sha256(config.preprocess),
+            expected_preprocess_sha256=active_preprocess_sha256,
             expected_sha256=config.repvit.prototype_bank_sha256,
         )
         return cls(
@@ -419,7 +436,7 @@ class ClassifierPipeline:
             prototype_bank=prototype_bank,
             fusion_policy=fusion_policy,
             fusion_provenance=fusion_provenance,
-            local_bank_loader=lambda: _load_local_bank(config),
+            local_bank_loader=lambda: _load_local_bank(config, preprocess_identity=active_preprocess_sha256),
             stage_timing_sink=stage_timing_sink,
         )
 
@@ -431,6 +448,8 @@ class ClassifierPipeline:
         on_stage: Callable[[str], None] | None = None,
         on_timing: _StageTimingSink | None = None,
     ) -> ClassificationDecision:
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires tight/context batch inference")
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         total_started = self._timestamp()
@@ -610,6 +629,8 @@ class ClassifierPipeline:
                 dino_objects_per_invocation=dino_objects_per_invocation,
                 cuda_timing=cuda_timing,
             )
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires tight/context batch inference")
         total_started = self._host_now()
         owns_cuda_timing = False
         frame = _canonical_frame(image)
@@ -788,6 +809,7 @@ class ClassifierPipeline:
             raise ValueError("repvit_rows_per_invocation must be the static value 14")
         if dino_objects_per_invocation != 7:
             raise ValueError("dino_objects_per_invocation must be the static value 7")
+        self._require_static_admission()
         total_started = self._host_now()
         owns_cuda_timing = False
         frame = _canonical_frame(image)
@@ -878,24 +900,16 @@ class ClassifierPipeline:
                 dino_evidence = cuda_timing.measure("dinov3", action) if cuda_timing is not None else action()
                 fusion_started = self._host_now()
                 for index, evidence in zip(valid_indexes, dino_evidence, strict=True):
-                    if self.fusion_policy is not None:
-                        decisions[index] = self._fusion_decision(
-                            repvit_scores=repvit_evidence[index].scores,
-                            dino_scores=evidence.global_scores,
-                            local_scores=evidence.local_scores,
-                            crop_disagreement=repvit_evidence[index].crop_disagreement,
-                            nearest_prototype_distance=nearest_distances[index],
-                            patch_count=evidence.product_patch_count,
-                            patch_ratio=evidence.product_patch_ratio,
-                            box=ordered_boxes[index],
-                        )
-                    else:
-                        decisions[index] = self.policy.after_local_recheck(
-                            repvit_evidence[index].scores,
-                            evidence.global_scores,
-                            evidence.local_scores,
-                            box=ordered_boxes[index],
-                        )
+                    decisions[index] = self._fusion_decision(
+                        repvit_scores=repvit_evidence[index].scores,
+                        dino_scores=evidence.global_scores,
+                        local_scores=evidence.local_scores,
+                        crop_disagreement=repvit_evidence[index].crop_disagreement,
+                        nearest_prototype_distance=nearest_distances[index],
+                        patch_count=evidence.product_patch_count,
+                        patch_ratio=evidence.product_patch_ratio,
+                        box=ordered_boxes[index],
+                    )
                 fusion_finished = self._host_now()
                 fusion_ms += _milliseconds(fusion_started, fusion_finished)
         dino_finished = self._host_now()
@@ -933,6 +947,45 @@ class ClassifierPipeline:
                 total_ms=total_ms,
             ),
             len(recheck_indexes),
+        )
+
+    def _require_static_admission(self) -> None:
+        if self.fusion_policy is None or self.fusion_provenance is None:
+            raise ValueError("static inference requires an admitted immutable fusion policy")
+        if (
+            self.fusion_policy.schema_version != 3
+            or self.fusion_policy.decision_rule != "fusion_local_or_global_consensus_margin_v1"
+            or self.fusion_policy.consensus_margin_floor != 0.85
+        ):
+            raise ValueError("static inference requires the immutable consensus fusion policy")
+        descriptor_sha256 = ClassifierPreprocessDescriptor().sha256()
+        hashes = self.fusion_policy.artifact_hashes
+        if hashes["preprocess_sha256"] != descriptor_sha256:
+            raise ValueError("static preprocessing SHA-256 does not match fusion policy")
+        for label, provenance in (
+            ("direct policy", self.policy.provenance),
+            ("fusion policy", self.fusion_provenance),
+        ):
+            expected = {
+                "repvit_checkpoint_sha256": provenance.repvit_sha256,
+                "repvit_manifest_sha256": provenance.repvit_manifest_sha256,
+                "repvit_prototype_sha256": provenance.repvit_prototype_sha256,
+                "dinov3_weights_sha256": provenance.dinov3_sha256,
+                "dinov3_support_sha256": provenance.dinov3_support_sha256,
+                "preprocess_sha256": provenance.preprocess_sha256,
+            }
+            if any(hashes[name] != value for name, value in expected.items()):
+                raise ValueError(f"static {label} artifact identity does not match fusion policy")
+        local_sha256 = getattr(self._local_bank, "sha256", None)
+        if local_sha256 is not None and local_sha256 != hashes["dinov3_local_bank_sha256"]:
+            raise ValueError("static local support identity does not match fusion policy")
+
+    def _uses_static_policy(self) -> bool:
+        return (
+            self.fusion_policy is not None
+            and self.fusion_policy.schema_version == 3
+            and self.fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
+            and self.fusion_policy.artifact_hashes["preprocess_sha256"] == ClassifierPreprocessDescriptor().sha256()
         )
 
     def _score_tight_context_chunk(
@@ -999,6 +1052,8 @@ class ClassifierPipeline:
         dino_max_objects: int,
     ) -> BenchmarkPreflightEvidence:
         """Execute benchmark warm-up work without producing an evaluated decision."""
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires a tight/context benchmark preflight")
         frame = _canonical_frame(image)
         ordered_boxes = tuple(boxes)
         if not ordered_boxes:
@@ -1073,6 +1128,8 @@ class ClassifierPipeline:
 
     def preflight_models(self, image: Image.Image | CanonicalImage, box: Box) -> None:
         """Load and execute all configured model evidence before measured inference."""
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires a tight/context model preflight")
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         crops, product_boxes = make_padded_crops_with_product_boxes(
@@ -1204,7 +1261,7 @@ class ClassifierPipeline:
             dinov3_weights_sha256=self.config.dinov3.weights_sha256,
             dinov3_support_sha256=self.config.dinov3.support_sha256,
             dinov3_local_bank_sha256=self.config.dinov3.local_bank_sha256 or "0" * 64,
-            preprocess_sha256=preprocess_sha256(self.config.preprocess),
+            preprocess_sha256=self.fusion_policy.artifact_hashes["preprocess_sha256"],
         )
         ranked = self.fusion_policy.ranker.rank(row)
         decision, _ = self.fusion_policy.decide(row)
@@ -1315,13 +1372,13 @@ def _validate_visual_box(frame: CanonicalImage, box: Box) -> None:
     frame.require_box(box)
 
 
-def _load_local_bank(config: ClassifierConfig) -> LocalPatchBank:
+def _load_local_bank(config: ClassifierConfig, *, preprocess_identity: str | None = None) -> LocalPatchBank:
     if config.dinov3.local_bank is None or config.dinov3.local_bank_sha256 is None:
         raise ValueError("DINO local patch bank is required for local recheck")
     bank = LocalPatchBank.load(
         config.dinov3.local_bank,
         dino_weights_sha256=config.dinov3.weights_sha256,
-        preprocess_sha256=preprocess_sha256(config.preprocess),
+        preprocess_sha256=preprocess_identity or preprocess_sha256(config.preprocess),
     )
     if bank.sha256 != config.dinov3.local_bank_sha256:
         raise ValueError("DINO local patch bank SHA-256 mismatch")

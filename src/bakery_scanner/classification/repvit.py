@@ -28,6 +28,15 @@ class RepVitEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class TightContextRepVitEvidence:
+    scores: ModelScoreVector
+    tight_scores: ModelScoreVector
+    context_scores: ModelScoreVector
+    feature: torch.Tensor
+    crop_disagreement: float
+
+
+@dataclass(frozen=True, slots=True)
 class RepVitPrototypeBank:
     prototypes: torch.Tensor
 
@@ -116,6 +125,47 @@ class RepVitM1Runner:
         for start in range(0, len(groups), max_objects):
             crops = tuple(crop for group in groups[start : start + max_objects] for crop in group)
             results.extend(self._score_evidence_batch(crops))
+        return tuple(results)
+
+    def score_tight_context_chunk(
+        self,
+        crops: Sequence[Image.Image],
+        *,
+        valid_mask: Sequence[bool],
+    ) -> tuple[TightContextRepVitEvidence, ...]:
+        """Score one padded static chunk of seven ordered tight/context pairs."""
+        rows = tuple(crops)
+        mask = tuple(valid_mask)
+        if len(rows) != 14 or len(mask) != 14 or any(type(value) is not bool for value in mask):
+            raise ValueError("RepViT static chunk requires 14 crops and a 14-row boolean mask")
+        pair_mask = tuple(mask[index] and mask[index + 1] for index in range(0, 14, 2))
+        if any(mask[index] != mask[index + 1] for index in range(0, 14, 2)) or pair_mask != tuple(sorted(pair_mask, reverse=True)):
+            raise ValueError("RepViT static mask must contain complete valid pairs followed by padding")
+        batch = torch.stack(tuple(self.transform(crop.convert("RGB")) for crop in rows))
+        with torch.inference_mode():
+            features = self.model.forward_features(batch.to(self.device))
+            if not isinstance(features, torch.Tensor) or features.ndim != 4 or features.shape[:2] != (14, 384):
+                raise ValueError("RepViT static features must have shape (14, 384, H, W)")
+            logits = self.model.forward_head(features, pre_logits=False)
+            if tuple(logits.shape) != (14, 20) or not torch.isfinite(logits).all().item():
+                raise ValueError("RepViT static logits must be finite with shape (14, 20)")
+            crop_probabilities = logits.softmax(dim=1).reshape(7, 2, 20)
+            pooled = torch.nn.functional.normalize(features.mean(dim=(2, 3)), dim=1).reshape(7, 2, 384)
+            probabilities = crop_probabilities.mean(dim=1)
+            object_features = pooled.mean(dim=1)
+            disagreements = (probabilities[:, None, :] - crop_probabilities).abs().mean(dim=(1, 2))
+        results = []
+        for index, valid in enumerate(pair_mask):
+            if not valid:
+                continue
+            vectors = tuple(
+                ModelScoreVector(self.model_id, self.sku_ids, tuple(float(value) for value in values.tolist()), "probability")
+                for values in (probabilities[index], crop_probabilities[index, 0], crop_probabilities[index, 1])
+            )
+            results.append(TightContextRepVitEvidence(
+                vectors[0], vectors[1], vectors[2], object_features[index].detach().cpu(),
+                float(disagreements[index].detach().cpu()),
+            ))
         return tuple(results)
 
     def _score_evidence_batch(self, crops: Sequence[Image.Image]) -> tuple[RepVitEvidence, ...]:
