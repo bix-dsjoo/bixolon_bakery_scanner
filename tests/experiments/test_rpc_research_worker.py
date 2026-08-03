@@ -361,6 +361,30 @@ def test_support_bank_consumes_verified_task1_dino_global_artifact(
         )
 
 
+def test_support_bank_can_select_train_rows_from_mixed_feature_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Development query rows must not be silently treated as train supports."""
+    monkeypatch.setattr(worker, "_RESEARCH_RUNS_ROOT", tmp_path)
+    manifest_path = _task1_feature_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rows"][-1]["source_identity"] = "val2019:4:checkout.jpg"
+    manifest["rows"][-1]["identity"] = "val2019:4:checkout.jpg:103"
+    manifest["images"][-1]["source_identity"] = "val2019:4:checkout.jpg"
+    manifest["images"][-1]["source_sha256"] = hashlib.sha256(b"val2019:4:checkout.jpg").hexdigest()
+    manifest_path.write_bytes(worker.canonical_json_bytes(manifest))
+
+    bank = worker.materialize_support_bank_from_feature_manifest(
+        manifest_path,
+        selector="rnd",
+        seed=101,
+        maximum_shots=2,
+        source_split="train2019",
+    )
+
+    assert all(example.source_identity.startswith("train2019:") for example in bank.prefix(2))
+
+
 def test_support_prefixes_are_globally_nested_for_multiple_classes():
     """A class-grouped flattening would make one-shot output differ from a larger prefix."""
     rows = (

@@ -716,9 +716,18 @@ def materialize_support_banks(
 
 
 def materialize_support_bank_from_feature_manifest(
-    feature_manifest_path: Path, *, selector: str, seed: int, maximum_shots: int
+    feature_manifest_path: Path,
+    *,
+    selector: str,
+    seed: int,
+    maximum_shots: int,
+    source_split: str | None = None,
 ) -> SupportBank:
-    """Build a bank only from a canonical, hash-verified Task 1 feature cache."""
+    """Build a bank only from canonical, hash-verified train feature rows.
+
+    A mixed support/query cache requires an explicit ``train2019`` selector;
+    default behavior remains strict and accepts only all-train manifests.
+    """
     manifest_path = Path(feature_manifest_path).resolve()
     root = _RESEARCH_RUNS_ROOT.resolve()
     if not manifest_path.is_relative_to(root):
@@ -742,6 +751,7 @@ def materialize_support_bank_from_feature_manifest(
     arrays = manifest.get("arrays")
     if not isinstance(raw_rows, list) or not raw_rows or not isinstance(raw_images, list) or not isinstance(arrays, dict):
         raise ValueError("invalid Task 1 feature manifest")
+    selected_indices = _support_feature_row_indices(raw_rows, source_split)
     dino_entry = arrays.get("dinov3_global")
     if not isinstance(dino_entry, dict) or set(dino_entry) != {"file", "byte_size", "sha256", "shape"}:
         raise ValueError("invalid Task 1 DINO global array manifest")
@@ -767,22 +777,63 @@ def materialize_support_bank_from_feature_manifest(
     if array_path.stat().st_size != byte_size:
         raise ValueError("Task 1 DINO global feature array byte size mismatch")
     try:
-        dino_globals = np.load(array_path, allow_pickle=False)
+        dino_globals = np.load(array_path, allow_pickle=False, mmap_mode="r")
     except (OSError, ValueError) as exc:
         raise ValueError("cannot load Task 1 DINO global feature array") from exc
     if (
         not isinstance(dino_globals, np.ndarray)
         or dino_globals.dtype != np.float16
         or dino_globals.shape != (len(raw_rows), _FEATURE_DIMENSION)
-        or not np.isfinite(dino_globals).all()
+        or not np.isfinite(dino_globals[list(selected_indices)]).all()
     ):
         raise ValueError("invalid Task 1 DINO global feature array")
     images = _task1_images_by_identity(raw_images)
     rows = tuple(
         _support_row_from_task1_manifest(raw, images, dino_globals[index], array_digest)
-        for index, raw in enumerate(raw_rows)
+        for index in selected_indices
+        for raw in (raw_rows[index],)
     )
     return materialize_support_bank(rows, selector=selector, seed=seed, maximum_shots=maximum_shots)
+
+
+def _support_feature_row_indices(raw_rows: list[object], source_split: str | None) -> tuple[int, ...]:
+    if source_split not in {None, "train2019"}:
+        raise ValueError("support feature source split must be train2019")
+    selected: list[int] = []
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict) or set(raw) != {
+            "identity", "source_identity", "annotation_id", "category_id", "bbox_xywh", "difficulty"
+        }:
+            raise ValueError("invalid Task 1 feature row")
+        identity, annotation_id, category_id, bbox, difficulty = (
+            raw.get("source_identity"), raw.get("annotation_id"), raw.get("category_id"),
+            raw.get("bbox_xywh"), raw.get("difficulty"),
+        )
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or raw.get("identity") != f"{identity}:{annotation_id}"
+            or type(annotation_id) is not int
+            or annotation_id < 0
+            or type(category_id) is not int
+            or category_id <= 0
+            or not isinstance(bbox, list)
+            or len(bbox) != 4
+            or not isinstance(difficulty, str)
+            or len(difficulty) != 1
+        ):
+            raise ValueError("invalid Task 1 feature row")
+        is_train = identity.startswith("train2019:")
+        if source_split == "train2019":
+            if is_train:
+                selected.append(index)
+        elif not is_train:
+            raise ValueError("Task 1 support rows must be train2019 capture sources")
+        else:
+            selected.append(index)
+    if not selected:
+        raise ValueError("Task 1 feature manifest has no selected support rows")
+    return tuple(selected)
 
 
 def _task1_images_by_identity(raw_images: list[object]) -> dict[str, tuple[int, str]]:
