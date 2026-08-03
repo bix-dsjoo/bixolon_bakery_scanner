@@ -435,6 +435,9 @@ void main() {
       ),
       'customer_retake_1280x820.png',
     );
+    expect(find.byKey(const Key('checkout-review-scene-pane')), findsOneWidget);
+    expect(find.byKey(const Key('retake-capture-notice')), findsOneWidget);
+    expect(find.text('다시 촬영'), findsOneWidget);
   });
 
   testWidgets('customer review state matches the approved 1280 kiosk layout', (

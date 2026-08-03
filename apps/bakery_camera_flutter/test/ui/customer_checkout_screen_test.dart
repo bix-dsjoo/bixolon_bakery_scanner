@@ -620,6 +620,19 @@ void main() {
 
       expect(find.text('빵을 떨어뜨려 다시 놓아주세요'), findsOneWidget);
       expect(find.text('다시 촬영'), findsOneWidget);
+      expect(
+        find.byKey(const Key('checkout-review-scene-pane')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('retake-capture-notice')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('retake-capture-notice')),
+          matching: find.text('다시 촬영'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('customer-action-rail')), findsNothing);
       expect(find.text('직접 담기'), findsNothing);
       expect(find.textContaining('GPU'), findsNothing);
       expect(find.textContaining('%'), findsNothing);
@@ -634,6 +647,13 @@ void main() {
         ),
       );
       expect(find.text('직접 담기'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('retake-capture-notice')),
+          matching: find.text('직접 담기'),
+        ),
+        findsOneWidget,
+      );
     },
   );
 }

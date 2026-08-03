@@ -22,6 +22,7 @@ class CheckoutReviewWorkspace extends StatelessWidget {
     required this.primaryActionLabel,
     required this.onPrimaryAction,
     this.footerActions,
+    this.overlay,
     this.imageProviderFactory = customerReviewFileImageProvider,
     this.legacySceneKey,
     this.legacyTaskKey,
@@ -35,9 +36,10 @@ class CheckoutReviewWorkspace extends StatelessWidget {
   final ValueChanged<String> onSelectObject;
   final String taskTitle;
   final Widget taskContent;
-  final String primaryActionLabel;
+  final String? primaryActionLabel;
   final VoidCallback? onPrimaryAction;
   final Widget? footerActions;
+  final Widget? overlay;
   final CustomerReviewImageProviderFactory imageProviderFactory;
   final Key? legacySceneKey;
   final Key? legacyTaskKey;
@@ -50,78 +52,97 @@ class CheckoutReviewWorkspace extends StatelessWidget {
       title: '주문 확인',
       maxWidth: 1240,
       scrollable: false,
-      primaryAction: BakeryPrimaryButton(
-        label: primaryActionLabel,
-        onPressed: onPrimaryAction,
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 4, bottom: 16),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final scene = KeyedSubtree(
-              key: const Key('checkout-review-scene-pane'),
-              child: KeyedSubtree(
-                key: legacySceneKey,
-                child: _CheckoutReviewScene(
-                  state: state,
-                  presentation: presentation,
-                  selectedObjectId: selectedObjectId,
-                  onSelectObject: onSelectObject,
-                  imageProviderFactory: imageProviderFactory,
-                ),
-              ),
-            );
-            final task = KeyedSubtree(
-              key: const Key('checkout-review-task-pane'),
-              child: KeyedSubtree(
-                key: legacyTaskKey,
-                child: _CheckoutReviewTask(
-                  title: taskTitle,
-                  content: taskContent,
-                  total: total,
-                  footerActions: footerActions,
-                ),
-              ),
-            );
-            if (constraints.maxWidth < 700) {
-              return Column(
-                children: [
-                  Expanded(flex: 3, child: scene),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    key: legacyDividerKey,
-                    height: 1,
-                    child: const Divider(
-                      key: Key('checkout-review-workspace-divider'),
-                      height: 1,
-                      thickness: 1,
+      primaryAction: primaryActionLabel == null
+          ? null
+          : BakeryPrimaryButton(
+              label: primaryActionLabel!,
+              onPressed: onPrimaryAction,
+            ),
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 16),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final scene = KeyedSubtree(
+                  key: const Key('checkout-review-scene-pane'),
+                  child: KeyedSubtree(
+                    key: legacySceneKey,
+                    child: _CheckoutReviewScene(
+                      state: state,
+                      presentation: presentation,
+                      selectedObjectId: selectedObjectId,
+                      onSelectObject: onSelectObject,
+                      imageProviderFactory: imageProviderFactory,
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Expanded(flex: 4, child: task),
-                ],
-              );
-            }
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(flex: 3, child: scene),
-                const SizedBox(width: 12),
-                SizedBox(
-                  key: legacyDividerKey,
-                  width: 1,
-                  child: const VerticalDivider(
-                    key: Key('checkout-review-workspace-divider'),
-                    width: 1,
-                    thickness: 1,
+                );
+                final task = KeyedSubtree(
+                  key: const Key('checkout-review-task-pane'),
+                  child: KeyedSubtree(
+                    key: legacyTaskKey,
+                    child: _CheckoutReviewTask(
+                      title: taskTitle,
+                      content: taskContent,
+                      total: total,
+                      footerActions: footerActions,
+                    ),
+                  ),
+                );
+                if (constraints.maxWidth < 700) {
+                  return Column(
+                    children: [
+                      Expanded(flex: 3, child: scene),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        key: legacyDividerKey,
+                        height: 1,
+                        child: const Divider(
+                          key: Key('checkout-review-workspace-divider'),
+                          height: 1,
+                          thickness: 1,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(flex: 4, child: task),
+                    ],
+                  );
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(flex: 3, child: scene),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      key: legacyDividerKey,
+                      width: 1,
+                      child: const VerticalDivider(
+                        key: Key('checkout-review-workspace-divider'),
+                        width: 1,
+                        thickness: 1,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(flex: 2, child: task),
+                  ],
+                );
+              },
+            ),
+          ),
+          if (overlay case final notice?)
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 24),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 440),
+                    child: notice,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(flex: 2, child: task),
-              ],
-            );
-          },
-        ),
+              ),
+            ),
+        ],
       ),
     );
   }
