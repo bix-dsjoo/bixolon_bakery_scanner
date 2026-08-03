@@ -25,8 +25,10 @@ from bakery_scanner.classification.runtime import (
 )
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
+from bakery_scanner.prototype.presentation_policy import PresentationPolicy
 from bakery_scanner.prototype.camera_runtime import (
     CameraInferenceRuntime,
+    _applied_artifact_hashes,
     _load_detector_manifest,
 )
 
@@ -775,6 +777,86 @@ def test_load_detector_manifest_accepts_canonical_source_uri(detector_repo):
 
     assert loaded.checkpoint == detector_repo.detector_checkpoint
     assert loaded.calibration == detector_repo.detector_calibration
+
+
+def _verified_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        runtime=SimpleNamespace(mode="serial_reference"),
+        repvit=SimpleNamespace(
+            artifact_id="repvit_m1_15plus5_v1", checkpoint_sha256="1" * 64,
+            manifest_sha256="2" * 64, prototype_bank_sha256="3" * 64,
+        ),
+        dinov3=SimpleNamespace(
+            artifact_id="dinov3_vits16_15plus5_v1", weights_sha256="4" * 64,
+            support_sha256="5" * 64, local_bank_sha256="6" * 64,
+        ),
+        calibration=SimpleNamespace(
+            artifact_sha256="7" * 64, fusion_policy_sha256="8" * 64,
+        ),
+        preprocess=SimpleNamespace(),
+    )
+
+
+def test_default_initialization_derives_applied_hashes_after_verified_boundaries(
+    detector_repo, monkeypatch: pytest.MonkeyPatch
+):
+    manifest = _load_detector_manifest(detector_repo.root)
+    config = _verified_config()
+    policy = PresentationPolicy.load(
+        detector_repo.root / "policies" / "presentation" / "camera_action_state_v2.json"
+    )
+    backend = FakeBackend("cpu")
+    backend.classifier.config = config
+    monkeypatch.setattr(
+        "bakery_scanner.prototype.camera_runtime._validate_classifier_artifacts",
+        lambda _root, _device: config,
+    )
+    monkeypatch.setattr(
+        "bakery_scanner.prototype.camera_runtime._load_default_backend",
+        lambda **_kwargs: backend,
+    )
+    monkeypatch.setattr(
+        "bakery_scanner.prototype.camera_runtime._warm_backend",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "bakery_scanner.prototype.camera_runtime.preprocess_sha256",
+        lambda _preprocess: "9" * 64,
+    )
+
+    runtime = CameraInferenceRuntime.initialize(
+        detector_repo.root, detector_repo.warmup_image, preference="cpu"
+    )
+
+    assert runtime.startup_metrics.applied_artifact_hashes == _applied_artifact_hashes(
+        manifest, config, policy
+    )
+
+
+def test_applied_hashes_require_every_lowercase_verified_hash(detector_repo, monkeypatch):
+    manifest = _load_detector_manifest(detector_repo.root)
+    config = _verified_config()
+    policy = PresentationPolicy.load(
+        detector_repo.root / "policies" / "presentation" / "camera_action_state_v2.json"
+    )
+    monkeypatch.setattr(
+        "bakery_scanner.prototype.camera_runtime.preprocess_sha256",
+        lambda _preprocess: "9" * 64,
+    )
+
+    hashes = _applied_artifact_hashes(manifest, config, policy)
+
+    assert set(hashes) == {
+        "detector_checkpoint_sha256", "detector_calibration_sha256",
+        "detector_manifest_sha256", "repvit_checkpoint_sha256",
+        "repvit_manifest_sha256", "repvit_prototype_sha256",
+        "dinov3_weights_sha256", "dinov3_support_sha256",
+        "dinov3_local_bank_sha256", "classifier_calibration_sha256",
+        "preprocess_sha256", "fusion_policy_sha256", "presentation_policy_sha256",
+    }
+    config.repvit.checkpoint_sha256 = "A" * 64
+    with pytest.raises(ValueError, match="provenance"):
+        _applied_artifact_hashes(manifest, config, policy)
 
 
 @pytest.mark.parametrize(

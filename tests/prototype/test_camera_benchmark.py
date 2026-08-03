@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from scripts.benchmark_camera_worker import (
+    _require_stable_code_identity,
     load_benchmark_protocol,
     load_external_manifest,
     build_benchmark_report,
+    resolve_code_identity,
     summarize_ms,
     validate_run_count,
 )
@@ -237,3 +239,119 @@ def test_cli_help_imports_the_checked_out_source_tree():
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_code_identity_rejects_a_repository_other_than_the_import_checkout(tmp_path):
+    with pytest.raises(ValueError, match="source checkout"):
+        resolve_code_identity(tmp_path)
+
+
+def test_code_identity_stability_rejects_a_change_after_measurement(monkeypatch):
+    expected = {"code_commit": "a" * 40, "code_identity_sha256": "b" * 64}
+    changed = {"code_commit": "a" * 40, "code_identity_sha256": "c" * 64}
+    monkeypatch.setattr(
+        "scripts.benchmark_camera_worker.resolve_code_identity",
+        lambda _root: changed,
+    )
+
+    with pytest.raises(ValueError, match="changed during the benchmark"):
+        _require_stable_code_identity(Path.cwd(), expected)
+
+
+def test_grouped_runner_rechecks_identity_after_worker_shutdown(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    root = Path(__file__).resolve().parents[2]
+    images = []
+    for group in ("E", "M", "H"):
+        image = tmp_path / f"{group}.jpg"
+        image.write_bytes(group.encode("utf-8"))
+        images.append(
+            {
+                "image_id": group.lower(),
+                "group": group,
+                "image_path": str(image.resolve()),
+                "image_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+            }
+        )
+    manifest = tmp_path / "external.json"
+    manifest.write_text(json.dumps({"samples": images}), encoding="utf-8")
+    protocol = tmp_path / "protocol.json"
+    protocol.write_text(
+        json.dumps(
+            {
+                "device": "cuda:0", "groups": ["E", "M", "H"],
+                "minimum_group_observations": 100, "minimum_warmups": 20,
+                "overall_p95_limit_ms": 100.0, "per_group_p95_limit_ms": 100.0,
+                "schema_version": 1,
+                "worker_boundary": "file_read_to_in_memory_result_payload",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeWorker:
+        def __init__(self, *_args):
+            self._startup = iter(
+                (
+                    {"type": "loading"}, {"type": "warming"},
+                    {
+                        "type": "ready", "device": "cuda:0",
+                        "startup_metrics": {"device": "cuda:0", "fallback_reason": None},
+                    },
+                )
+            )
+            self._events = None
+
+        def send(self, event):
+            if event["type"] == "analyze":
+                request_id = event["request_id"]
+                self._events = iter(
+                    [
+                        {"type": "progress", "request_id": request_id, "phase": phase}
+                        for phase in ("detecting", "classifying", "aggregating")
+                    ]
+                    + [{"type": "result", "request_id": request_id, "device": "cuda:0"}]
+                )
+            elif event["type"] == "shutdown":
+                self._events = iter(
+                    [{"type": "stopped", "request_id": event["request_id"]}]
+                )
+
+        def receive(self, _timeout):
+            if self._events is not None:
+                try:
+                    return next(self._events)
+                except StopIteration:
+                    self._events = None
+            return next(self._startup)
+
+        def wait(self, _timeout):
+            return 0
+
+        def abort(self):
+            pass
+
+    initial = {"code_commit": "a" * 40, "code_identity_sha256": "b" * 64}
+    changed = {"code_commit": "a" * 40, "code_identity_sha256": "c" * 64}
+    calls = 0
+
+    def changing_identity(_root):
+        nonlocal calls
+        calls += 1
+        return initial if calls == 1 else changed
+
+    monkeypatch.setattr("scripts.benchmark_camera_worker._WorkerProcess", FakeWorker)
+    monkeypatch.setattr(
+        "scripts.benchmark_camera_worker.resolve_code_identity", changing_identity
+    )
+
+    from scripts.benchmark_camera_worker import run_grouped_benchmark
+
+    with pytest.raises(ValueError, match="changed during the benchmark"):
+        run_grouped_benchmark(
+            python_executable=Path(sys.executable), repo_root=root,
+            manifest_path=manifest, protocol_path=protocol,
+        )
+    assert calls == 2

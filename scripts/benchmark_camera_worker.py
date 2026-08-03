@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import TextIO
 
 # Keep direct CLI execution bound to this checkout, not an ambient editable install.
-_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
+_SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = _SCRIPT_ROOT / "src"
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
@@ -125,7 +126,7 @@ def load_benchmark_protocol(path: Path) -> tuple[dict[str, object], str]:
 
 def resolve_code_identity(root: Path) -> dict[str, str]:
     """Bind evidence to one clean checkout and its runtime-defining files."""
-    repository = Path(root).resolve()
+    repository = _bound_repository_root(root)
     try:
         status = subprocess.run(
             ("git", "-C", str(repository), "status", "--porcelain"),
@@ -164,6 +165,26 @@ def resolve_code_identity(root: Path) -> dict[str, str]:
             f"{commit}\n{bound}\n".encode("utf-8")
         ).hexdigest(),
     }
+
+
+def _bound_repository_root(root: Path) -> Path:
+    """Reject a repo root that differs from the source tree imported above."""
+    repository = Path(root).resolve()
+    if repository != _SCRIPT_ROOT:
+        raise ValueError(
+            "benchmark repo_root must match the source checkout used for imports"
+        )
+    return repository
+
+
+def _require_stable_code_identity(
+    root: Path,
+    expected: Mapping[str, str],
+) -> None:
+    """Fail closed if the clean code identity changes while the worker runs."""
+    observed = resolve_code_identity(root)
+    if observed != dict(expected):
+        raise ValueError("benchmark code identity changed during the benchmark")
 
 
 def summarize_ms(values: Iterable[float]) -> dict[str, int | float]:
@@ -392,7 +413,7 @@ def run_grouped_benchmark(
     samples, manifest_sha256 = load_external_manifest(manifest_path)
     protocol, protocol_sha256 = load_benchmark_protocol(protocol_path)
     python_path = Path(python_executable).resolve()
-    root = Path(repo_root).resolve()
+    root = _bound_repository_root(repo_root)
     if not python_path.is_file():
         raise ValueError(f"Python executable is missing: {python_path}")
     if not root.is_dir():
@@ -440,6 +461,7 @@ def run_grouped_benchmark(
                 raise RuntimeError("worker did not acknowledge shutdown")
             if worker.wait(30.0) != 0:
                 raise RuntimeError("worker exited with a non-zero status")
+            _require_stable_code_identity(root, code_identity)
             return build_benchmark_report(
                 ready,
                 measured,
@@ -489,7 +511,7 @@ def run_benchmark(
     """Start, warm, benchmark, and cleanly stop one persistent worker."""
     validate_run_count(run_count)
     python_path = Path(python_executable).resolve()
-    root = Path(repo_root).resolve()
+    root = _bound_repository_root(repo_root)
     image = Path(image_path).resolve()
     if not python_path.is_file():
         raise ValueError(f"Python executable is missing: {python_path}")

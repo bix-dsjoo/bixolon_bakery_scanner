@@ -664,6 +664,41 @@ def _load_default_backend(
     )
 
 
+def _applied_artifact_hashes(
+    manifest: _DetectorManifest,
+    config: ClassifierConfig,
+    presentation_policy: PresentationPolicy,
+) -> dict[str, str]:
+    """Return the exact verified artifact set attached to a default runtime.
+
+    This is deliberately derived only after detector, classifier, fusion, and
+    presentation-policy validation have completed.  A receipt therefore cannot
+    substitute an identifier or an unchecked path for an artifact digest.
+    """
+    hashes = {
+        "detector_checkpoint_sha256": manifest.checkpoint_sha256,
+        "detector_calibration_sha256": manifest.calibration_sha256,
+        "detector_manifest_sha256": manifest.manifest_sha256,
+        "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+        "repvit_manifest_sha256": config.repvit.manifest_sha256,
+        "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+        "dinov3_weights_sha256": config.dinov3.weights_sha256,
+        "dinov3_support_sha256": config.dinov3.support_sha256,
+        "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+        "classifier_calibration_sha256": config.calibration.artifact_sha256,
+        "preprocess_sha256": preprocess_sha256(config.preprocess),
+        "fusion_policy_sha256": config.calibration.fusion_policy_sha256,
+        "presentation_policy_sha256": presentation_policy.policy_sha256,
+    }
+    invalid = sorted(name for name, value in hashes.items() if not _is_sha256(value))
+    if invalid:
+        raise ValueError(
+            "runtime artifact provenance contains invalid SHA-256 values: "
+            + ", ".join(invalid)
+        )
+    return hashes
+
+
 def _validate_backend(backend: RuntimeBackend, device: str) -> None:
     if backend is None:
         raise TypeError("backend loader must return a RuntimeBackend")
