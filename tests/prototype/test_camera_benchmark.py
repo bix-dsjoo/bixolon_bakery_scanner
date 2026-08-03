@@ -348,6 +348,10 @@ def test_grouped_runner_rechecks_identity_after_worker_shutdown(tmp_path, monkey
 
     monkeypatch.setattr("scripts.benchmark_camera_worker._WorkerProcess", FakeWorker)
     monkeypatch.setattr(
+        "scripts.benchmark_camera_worker._compute_code_identity",
+        lambda _root, *, commit: initial,
+    )
+    monkeypatch.setattr(
         "scripts.benchmark_camera_worker.resolve_code_identity", changing_identity
     )
 

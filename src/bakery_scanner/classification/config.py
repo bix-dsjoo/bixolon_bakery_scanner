@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Literal
@@ -204,6 +205,7 @@ class ClassifierConfig(_StrictModel):
                         values.get(name),
                         content_root=content_root,
                         artifact_root=resolved_artifact_root,
+                        require_artifact_containment=section in {"repvit", "dinov3"},
                     )
             payload[section] = values
         result = cls.model_validate(payload)
@@ -220,6 +222,7 @@ def _resolve_path(
     *,
     content_root: Path | None = None,
     artifact_root: Path | None = None,
+    require_artifact_containment: bool = False,
 ) -> Path:
     if not isinstance(raw, (str, Path)) or not str(raw):
         raise ValueError("configured path must be a non-empty string")
@@ -229,6 +232,12 @@ def _resolve_path(
     )
     if content_root is None or artifact_root is None:
         return resolved
+    if candidate.is_absolute() and require_artifact_containment:
+        if not _is_within(resolved, artifact_root):
+            raise ValueError(
+                "configured model/artifact path must remain under artifact_root"
+            )
+        return resolved
     try:
         relative = resolved.relative_to(content_root)
     except ValueError:
@@ -236,3 +245,13 @@ def _resolve_path(
     if relative.parts and relative.parts[0] in {"models", "artifacts"}:
         return (artifact_root / relative).resolve()
     return resolved
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Containment comparison with Windows case-insensitive drive semantics."""
+    try:
+        normalized_path = os.path.normcase(str(path.resolve()))
+        normalized_root = os.path.normcase(str(root.resolve()))
+        return os.path.commonpath((normalized_path, normalized_root)) == normalized_root
+    except ValueError:
+        return False

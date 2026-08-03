@@ -151,6 +151,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--warmup-image", required=True, type=Path)
     parser.add_argument("--allow-external-warmup", action="store_true")
+    parser.add_argument("--staged-root", type=Path)
+    parser.add_argument("--code-commit")
+    parser.add_argument("--code-identity-sha256")
     args = parser.parse_args(argv)
     try:
         root, warmup_image = resolve_paths(
@@ -161,11 +164,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    has_staged_root = args.staged_root is not None
+    has_complete_identity = (
+        args.code_commit is not None and args.code_identity_sha256 is not None
+    )
+    if has_staged_root != has_complete_identity:
+        parser.error(
+            "--staged-root requires --code-commit and --code-identity-sha256"
+        )
     with tempfile.TemporaryDirectory(prefix="bakery-camera-worker-") as temporary:
         try:
-            snapshot, code_identity = _capture_child_snapshot(
-                root, Path(temporary) / "checkout"
-            )
+            if args.staged_root is None:
+                snapshot, code_identity = _capture_child_snapshot(
+                    root, Path(temporary) / "checkout"
+                )
+            else:
+                snapshot = Path(args.staged_root).resolve()
+                expected = {
+                    "code_commit": args.code_commit,
+                    "code_identity_sha256": args.code_identity_sha256,
+                }
+                code_identity = compute_worker_code_identity(
+                    snapshot, commit=args.code_commit
+                )
+                if code_identity != expected:
+                    raise ValueError("staged worker code identity does not match parent")
             source_root, dino_root = resolve_import_roots(snapshot)
         except ValueError as exc:
             parser.error(str(exc))

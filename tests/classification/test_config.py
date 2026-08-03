@@ -68,6 +68,25 @@ def test_classifier_config_uses_staged_policies_and_explicit_external_artifacts(
     ).resolve()
 
 
+def test_classifier_config_rejects_absolute_model_paths_outside_artifact_root(
+    tmp_path,
+):
+    config_path = tmp_path / "classifier_policy.yaml"
+    outside = (tmp_path / "outside" / "repvit.pt").resolve()
+    config_path.write_text(
+        Path("configs/classifier_policy.yaml")
+            .read_text(encoding="utf-8")
+            .replace(
+                "../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt",
+                str(outside),
+            ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="artifact_root"):
+        ClassifierConfig.load(config_path, artifact_root=tmp_path / "artifacts")
+
+
 def test_cpu_runtime_accepts_batch_compile_options():
     runtime = ClassifierRuntimeConfig(
         device="CPU",

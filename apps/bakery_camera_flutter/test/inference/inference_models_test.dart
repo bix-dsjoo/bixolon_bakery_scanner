@@ -565,6 +565,37 @@ void main() {
     expect((result as ResultWorkerEvent).result.requestId, 'analysis-1');
   });
 
+  test('parses optional lifecycle code identity and rejects malformed values', () {
+    final identity = {
+      'code_commit': 'a' * 40,
+      'code_identity_sha256': 'b' * 64,
+    };
+    final ready = WorkerEvent.fromJson({
+      'type': 'ready',
+      'device': 'cuda:0',
+      'code_identity': identity,
+    }) as ReadyWorkerEvent;
+    final stopped = WorkerEvent.fromJson({
+      'type': 'stopped',
+      'request_id': 'shutdown-1',
+      'code_identity': identity,
+    }) as StoppedWorkerEvent;
+
+    expect(ready.codeIdentity!.codeCommit, 'a' * 40);
+    expect(stopped.codeIdentity!.codeIdentitySha256, 'b' * 64);
+    expect(
+      () => WorkerEvent.fromJson({
+        'type': 'ready',
+        'device': 'cuda:0',
+        'code_identity': {
+          'code_commit': 'A' * 40,
+          'code_identity_sha256': 'b' * 64,
+        },
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('startup metrics reject malformed real-contract metadata', () {
     for (final mutation in <void Function(Map<String, Object?>)>[
       (metrics) => metrics.remove('detector_id'),

@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,15 @@ _ATTESTED_FILES = (
     "pyproject.toml",
     "models/rfdetr_large_bakery_v1/manifest.json",
     "scripts/run_camera_inference_worker.py",
+)
+_STAGED_ENTRYPOINT = "scripts/run_camera_inference_worker.py"
+_STAGED_BOOTSTRAP = (
+    "import hashlib,pathlib,sys;"
+    "entry=pathlib.Path(sys.argv[1]);expected=sys.argv[2];payload=entry.read_bytes();"
+    "(hashlib.sha256(payload).hexdigest()==expected) or (_ for _ in ()).throw(SystemExit('staged entrypoint hash mismatch'));"
+    "sys.argv=[str(entry),*sys.argv[3:]];"
+    "globals={'__name__':'__main__','__file__':str(entry),'__package__':None};"
+    "exec(compile(payload,str(entry),'exec'),globals,globals)"
 )
 
 from bakery_scanner.benchmarking.gpu_worker_receipt import (
@@ -193,6 +203,37 @@ def _identity_record(root: Path, path: Path) -> str:
         f"{path.relative_to(root).as_posix()}:"
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}"
     )
+
+
+def _stage_parent_snapshot(root: Path, destination: Path) -> Path:
+    """Create the immutable-input bundle that the evidence child will execute."""
+    snapshot = Path(destination).resolve()
+    if snapshot.exists():
+        raise ValueError("benchmark staged snapshot destination already exists")
+    try:
+        for relative in _ATTESTED_TREES:
+            source = root / relative
+            if not source.is_dir():
+                raise ValueError(f"benchmark attested tree is missing: {source}")
+            shutil.copytree(source, snapshot / relative, ignore=_ignore_transient)
+        for relative in _ATTESTED_FILES:
+            source = root / relative
+            if not source.is_file():
+                raise ValueError(f"benchmark attested file is missing: {source}")
+            target = snapshot / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    except OSError as exc:
+        raise ValueError("benchmark staged snapshot could not be created") from exc
+    return snapshot
+
+
+def _ignore_transient(_directory: str, names: list[str]) -> set[str]:
+    return {
+        name
+        for name in names
+        if name == "__pycache__" or name.endswith((".pyc", ".pyo"))
+    }
 
 
 def _bound_repository_root(root: Path) -> Path:
@@ -458,70 +499,95 @@ def run_grouped_benchmark(
     if not root.is_dir():
         raise ValueError(f"repository root is missing: {root}")
     code_identity = resolve_code_identity(root)
-    worker_script = root / "scripts" / "run_camera_inference_worker.py"
-    if not worker_script.is_file():
-        raise ValueError(f"camera worker script is missing: {worker_script}")
-    command = (
-        str(python_path), "-u", str(worker_script), "--repo-root", str(root),
-        "--device", "cuda", "--warmup-image", samples[0]["image_path"],
-        "--allow-external-warmup",
-    )
-    samples_by_group = {
-        group: tuple(sample for sample in samples if sample["group"] == group)
-        for group in ("E", "M", "H")
-    }
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
-        worker = _WorkerProcess(command, diagnostics)
-        try:
-            ready = _wait_for_ready(worker, startup_timeout_seconds)
-            if ready.get("device") != protocol["device"]:
-                raise RuntimeError("worker did not start on protocol CUDA device")
-            _require_child_code_identity(ready, "ready", code_identity)
-            for index in range(int(protocol["minimum_warmups"])):
-                sample = samples[index % len(samples)]
-                _analyze_sample(
-                    worker, sample, f"warmup-{index + 1:04d}", analysis_timeout_seconds
-                )
-            measured: list[Mapping[str, object]] = []
-            for group in ("E", "M", "H"):
-                group_samples = samples_by_group[group]
-                for index in range(int(protocol["minimum_group_observations"])):
-                    sample = group_samples[index % len(group_samples)]
-                    measured.append(
-                        _analyze_sample(
-                            worker,
-                            sample,
-                            f"benchmark-{group}-{index + 1:04d}",
-                            analysis_timeout_seconds,
-                        )
+    staging = tempfile.TemporaryDirectory(prefix="bakery-camera-evidence-")
+    try:
+        snapshot = _stage_parent_snapshot(root, Path(staging.name) / "checkout")
+        if (
+            _compute_code_identity(snapshot, commit=code_identity["code_commit"])
+            != code_identity
+        ):
+            raise ValueError("benchmark source changed while creating staged snapshot")
+        entrypoint = snapshot / _STAGED_ENTRYPOINT
+        entrypoint_sha256 = hashlib.sha256(entrypoint.read_bytes()).hexdigest()
+        command = (
+            str(python_path),
+            "-u",
+            "-c",
+            _STAGED_BOOTSTRAP,
+            str(entrypoint),
+            entrypoint_sha256,
+            "--repo-root",
+            str(root),
+            "--staged-root",
+            str(snapshot),
+            "--code-commit",
+            code_identity["code_commit"],
+            "--code-identity-sha256",
+            code_identity["code_identity_sha256"],
+            "--device",
+            "cuda",
+            "--warmup-image",
+            samples[0]["image_path"],
+            "--allow-external-warmup",
+        )
+        samples_by_group = {
+            group: tuple(sample for sample in samples if sample["group"] == group)
+            for group in ("E", "M", "H")
+        }
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
+            worker = _WorkerProcess(command, diagnostics)
+            try:
+                ready = _wait_for_ready(worker, startup_timeout_seconds)
+                if ready.get("device") != protocol["device"]:
+                    raise RuntimeError("worker did not start on protocol CUDA device")
+                _require_child_code_identity(ready, "ready", code_identity)
+                for index in range(int(protocol["minimum_warmups"])):
+                    sample = samples[index % len(samples)]
+                    _analyze_sample(
+                        worker, sample, f"warmup-{index + 1:04d}", analysis_timeout_seconds
                     )
-            worker.send({"type": "shutdown", "request_id": "benchmark-shutdown"})
-            stopped = worker.receive(analysis_timeout_seconds)
-            if (
-                stopped.get("type") != "stopped"
-                or stopped.get("request_id") != "benchmark-shutdown"
-            ):
-                raise RuntimeError("worker did not acknowledge shutdown")
-            _require_child_code_identity(stopped, "stopped", code_identity)
-            if worker.wait(30.0) != 0:
-                raise RuntimeError("worker exited with a non-zero status")
-            _require_stable_code_identity(root, code_identity)
-            return build_benchmark_report(
-                ready,
-                measured,
-                artifacts={
-                    "benchmark_manifest_sha256": manifest_sha256,
-                    "benchmark_protocol_sha256": protocol_sha256,
-                    **code_identity,
-                },
-            )
-        except Exception as exc:
-            worker.abort()
-            diagnostics.seek(0)
-            detail = diagnostics.read().strip()
-            if detail:
-                exc.add_note(f"worker diagnostics:\n{detail[-8000:]}")
-            raise
+                measured: list[Mapping[str, object]] = []
+                for group in ("E", "M", "H"):
+                    group_samples = samples_by_group[group]
+                    for index in range(int(protocol["minimum_group_observations"])):
+                        sample = group_samples[index % len(group_samples)]
+                        measured.append(
+                            _analyze_sample(
+                                worker,
+                                sample,
+                                f"benchmark-{group}-{index + 1:04d}",
+                                analysis_timeout_seconds,
+                            )
+                        )
+                worker.send({"type": "shutdown", "request_id": "benchmark-shutdown"})
+                stopped = worker.receive(analysis_timeout_seconds)
+                if (
+                    stopped.get("type") != "stopped"
+                    or stopped.get("request_id") != "benchmark-shutdown"
+                ):
+                    raise RuntimeError("worker did not acknowledge shutdown")
+                _require_child_code_identity(stopped, "stopped", code_identity)
+                if worker.wait(30.0) != 0:
+                    raise RuntimeError("worker exited with a non-zero status")
+                _require_stable_code_identity(root, code_identity)
+                return build_benchmark_report(
+                    ready,
+                    measured,
+                    artifacts={
+                        "benchmark_manifest_sha256": manifest_sha256,
+                        "benchmark_protocol_sha256": protocol_sha256,
+                        **code_identity,
+                    },
+                )
+            except Exception as exc:
+                worker.abort()
+                diagnostics.seek(0)
+                detail = diagnostics.read().strip()
+                if detail:
+                    exc.add_note(f"worker diagnostics:\n{detail[-8000:]}")
+                raise
+    finally:
+        staging.cleanup()
 
 
 def _analyze_sample(

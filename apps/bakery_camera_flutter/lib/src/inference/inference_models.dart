@@ -716,13 +716,17 @@ final class StartupWorkerEvent extends WorkerEvent {
 }
 
 final class ReadyWorkerEvent extends WorkerEvent {
-  const ReadyWorkerEvent({required this.device, required this.metrics});
+  const ReadyWorkerEvent({
+    required this.device,
+    required this.metrics,
+    this.codeIdentity,
+  });
 
   factory ReadyWorkerEvent.fromJson(Map<String, Object?> json) {
     _expectFields(
       json,
       const {'type', 'device'},
-      optional: const {'startup_metrics'},
+      optional: const {'startup_metrics', 'code_identity'},
     );
     final metricsValue = json['startup_metrics'];
     final metrics = metricsValue == null
@@ -734,11 +738,49 @@ final class ReadyWorkerEvent extends WorkerEvent {
         'ready device does not match startup metrics',
       );
     }
-    return ReadyWorkerEvent(device: device, metrics: metrics);
+    final identityValue = json['code_identity'];
+    return ReadyWorkerEvent(
+      device: device,
+      metrics: metrics,
+      codeIdentity: identityValue == null
+          ? null
+          : WorkerCodeIdentity.fromJson(_map(identityValue, 'code_identity')),
+    );
   }
 
   final String device;
   final StartupMetrics? metrics;
+  final WorkerCodeIdentity? codeIdentity;
+}
+
+/// Optional for legacy workers; schema-v2 evidence workers require it upstream.
+final class WorkerCodeIdentity {
+  const WorkerCodeIdentity({
+    required this.codeCommit,
+    required this.codeIdentitySha256,
+  });
+
+  factory WorkerCodeIdentity.fromJson(Map<String, Object?> json) {
+    _expectFields(json, const {'code_commit', 'code_identity_sha256'});
+    final commit = _requiredString(json['code_commit'], 'code commit');
+    if (!_lowerHex(commit) || (commit.length != 40 && commit.length != 64)) {
+      throw const FormatException('code commit must be lowercase Git hex');
+    }
+    final identity = _requiredString(
+      json['code_identity_sha256'],
+      'code identity SHA-256',
+    );
+    if (!_sha256(identity)) {
+      throw const FormatException('code identity must be lowercase SHA-256');
+    }
+    return WorkerCodeIdentity(
+      codeCommit: commit,
+      codeIdentitySha256: identity,
+    );
+  }
+
+  final String codeCommit;
+  final String codeIdentitySha256;
 }
 
 final class ProgressWorkerEvent extends WorkerEvent {
@@ -819,19 +861,28 @@ final class PongWorkerEvent extends WorkerEvent {
 }
 
 final class StoppedWorkerEvent extends WorkerEvent {
-  const StoppedWorkerEvent(this.requestId);
+  const StoppedWorkerEvent(this.requestId, {this.codeIdentity});
 
   factory StoppedWorkerEvent.fromJson(Map<String, Object?> json) {
-    _expectFields(json, const {'type'}, optional: const {'request_id'});
+    _expectFields(
+      json,
+      const {'type'},
+      optional: const {'request_id', 'code_identity'},
+    );
     final requestIdValue = json['request_id'];
+    final identityValue = json['code_identity'];
     return StoppedWorkerEvent(
       requestIdValue == null
           ? null
           : _requiredString(requestIdValue, 'stopped request_id'),
+      codeIdentity: identityValue == null
+          ? null
+          : WorkerCodeIdentity.fromJson(_map(identityValue, 'code_identity')),
     );
   }
 
   final String? requestId;
+  final WorkerCodeIdentity? codeIdentity;
 }
 
 Map<String, Object?> _parseProvenance(Map<String, Object?> json) {
@@ -965,6 +1016,11 @@ String _requiredString(Object? value, String name) {
   }
   return value;
 }
+
+bool _lowerHex(String value) =>
+    value.isNotEmpty && RegExp(r'^[0-9a-f]+$').hasMatch(value);
+
+bool _sha256(String value) => value.length == 64 && _lowerHex(value);
 
 int _positiveInt(Object? value, String name) {
   if (value is! int || value <= 0) {

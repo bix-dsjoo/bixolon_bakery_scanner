@@ -149,6 +149,16 @@ def test_worker_binds_child_code_identity_to_ready_and_stopped_events():
     }
 
 
+def test_worker_rejects_noncanonical_optional_code_identity():
+    with pytest.raises(ValueError, match="code identity"):
+        serve(
+            io.StringIO(),
+            io.StringIO(),
+            runtime_factory=lambda emit: FakeRuntime(),
+            code_identity={"code_commit": "A" * 40, "code_identity_sha256": "b" * 64},
+        )
+
+
 def test_worker_recovers_from_malformed_input_and_handles_following_request():
     stdin = io.StringIO('{"type":"ping","request_id":}\n'
                         '{"type":"ping","request_id":"ping-2"}\n'

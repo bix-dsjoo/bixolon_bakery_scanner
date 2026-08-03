@@ -37,6 +37,8 @@ class CameraRuntime(Protocol):
 
 RuntimeFactory = Callable[[Callable[[str, str | None], None]], CameraRuntime]
 _STARTUP_EVENTS = frozenset({"loading", "warming"})
+_CODE_IDENTITY_FIELDS = frozenset({"code_commit", "code_identity_sha256"})
+_LOWER_HEX = frozenset("0123456789abcdef")
 _LEGAL_NEXT_PHASES = {
     None: frozenset({WorkerPhase.DETECTING}),
     WorkerPhase.DETECTING: frozenset({WorkerPhase.CLASSIFYING}),
@@ -58,6 +60,9 @@ def serve(
 ) -> int:
     """Serve requests until shutdown or EOF, keeping stdout protocol-only."""
     diagnostics = stderr or sys.stderr
+    attested_identity = (
+        _validated_code_identity(code_identity) if code_identity is not None else None
+    )
     startup_emitted: set[str] = set()
 
     def emit(event: Mapping[str, object]) -> None:
@@ -81,7 +86,7 @@ def serve(
         with contextlib.redirect_stdout(diagnostics):
             runtime = runtime_factory(emit_startup)
         emit_startup("warming")
-        emit(_ready_event(runtime, code_identity=code_identity))
+        emit(_ready_event(runtime, code_identity=attested_identity))
     except Exception as exc:
         if runtime is not None:
             _close_runtime(runtime, diagnostics)
@@ -126,8 +131,8 @@ def serve(
         stopped: dict[str, object] = {"type": "stopped"}
         if stopped_request_id is not None:
             stopped["request_id"] = stopped_request_id
-        if code_identity is not None:
-            stopped["code_identity"] = dict(code_identity)
+        if attested_identity is not None:
+            stopped["code_identity"] = dict(attested_identity)
         emit(stopped)
     return 0
 
@@ -197,6 +202,23 @@ def _ready_event(
     if code_identity is not None:
         event["code_identity"] = dict(code_identity)
     return event
+
+
+def _validated_code_identity(value: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != _CODE_IDENTITY_FIELDS:
+        raise ValueError("worker code identity schema is invalid")
+    commit = value["code_commit"]
+    identity = value["code_identity_sha256"]
+    if (
+        not isinstance(commit, str)
+        or len(commit) not in (40, 64)
+        or any(character not in _LOWER_HEX for character in commit)
+        or not isinstance(identity, str)
+        or len(identity) != 64
+        or any(character not in _LOWER_HEX for character in identity)
+    ):
+        raise ValueError("worker code identity hashes are invalid")
+    return {"code_commit": commit, "code_identity_sha256": identity}
 
 
 def _close_runtime(runtime: CameraRuntime, diagnostics: TextIO) -> None:
