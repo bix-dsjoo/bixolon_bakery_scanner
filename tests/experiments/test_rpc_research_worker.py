@@ -11,6 +11,7 @@ import pytest
 import torch
 from PIL import Image
 
+import bakery_scanner.experiments.rpc_research_worker as worker
 from bakery_scanner.experiments.rpc_manifest import (
     RpcDatasetContract,
     RpcImage,
@@ -73,17 +74,27 @@ def _one_image_index(tmp_path: Path) -> RpcIndex:
     return RpcIndex(contract, (image,), (RpcObject("val2019", 11, 7, 7, (1.0, 2.0, 3.0, 4.0)),))
 
 
+def _fixture_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ResearchArtifacts:
+    repvit = tmp_path / "repvit.safetensors"
+    dino = tmp_path / "dino.pth"
+    repvit.write_bytes(b"repvit-fixture")
+    dino.write_bytes(b"dino-fixture")
+    monkeypatch.setattr(worker, "_REPVIT_SHA256", hashlib.sha256(repvit.read_bytes()).hexdigest())
+    monkeypatch.setattr(worker, "_DINO_SHA256", hashlib.sha256(dino.read_bytes()).hexdigest())
+    return ResearchArtifacts.from_paths(repvit, dino)
+
+
 def test_extract_oracle_features_records_two_globals_and_196_patches(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """Removing a global branch or any patch row leaves an incomplete research cache."""
-    import bakery_scanner.experiments.rpc_research_worker as worker
-
     monkeypatch.setattr(worker, "_load_feature_models", lambda _artifacts: (_RepVitFeatureFixture(), _DinoFeatureFixture()))
-    artifacts = ResearchArtifacts(Path("repvit.safetensors"), Path("dino.pth"), "r" * 64, "d" * 64)
+    artifacts = _fixture_artifacts(tmp_path, monkeypatch)
     output = tmp_path / "features"
 
-    manifest_path = extract_oracle_features(_one_image_index(tmp_path), artifacts, output)
+    manifest_path = extract_oracle_features(
+        _one_image_index(tmp_path), artifacts, output, allowed_output_root=tmp_path
+    )
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["rows"] == [{
@@ -102,5 +113,63 @@ def test_extract_oracle_features_records_two_globals_and_196_patches(
     assert patches.shape == (1, 196, 384)
     assert np.linalg.norm(repvit.astype(np.float32), axis=1) == pytest.approx([1.0], abs=2e-3)
     assert np.linalg.norm(dino.astype(np.float32), axis=1) == pytest.approx([1.0], abs=2e-3)
+    assert manifest["execution"] == {
+        "determinism": "cpu-float32-inference-mode-model-eval-v1",
+        "device": "cpu",
+    }
+    assert manifest["preprocessing"]["input_size"] == [224, 224]
+    assert len(manifest["code_sha256"]) == 64
+    assert manifest["runtime"]["torch"] == torch.__version__
     with pytest.raises(FileExistsError):
-        extract_oracle_features(_one_image_index(tmp_path), artifacts, output)
+        extract_oracle_features(
+            _one_image_index(tmp_path), artifacts, output, allowed_output_root=tmp_path
+        )
+
+
+def test_extract_revalidates_artifacts_before_loading_models(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A checkpoint replaced after construction must fail before any encoder loads."""
+    artifacts = _fixture_artifacts(tmp_path, monkeypatch)
+    artifacts.repvit_path.write_bytes(b"substituted")
+    monkeypatch.setattr(worker, "_load_feature_models", lambda _artifacts: pytest.fail("loaded stale model"))
+
+    with pytest.raises(ValueError, match="RepViT SHA-256 mismatch"):
+        extract_oracle_features(
+            _one_image_index(tmp_path), artifacts, tmp_path / "features", allowed_output_root=tmp_path
+        )
+
+
+def test_canonical_oracle_crop_transforms_orientation_six_bbox(tmp_path: Path):
+    """A raw top-left COCO box becomes the top-right pixel after EXIF rotation 6."""
+    source = tmp_path / "oriented.png"
+    raw = Image.new("RGB", (3, 2))
+    raw.putdata([
+        (255, 0, 0), (0, 255, 0), (0, 0, 255),
+        (0, 255, 255), (255, 0, 255), (255, 255, 0),
+    ])
+    exif = Image.Exif()
+    exif[274] = 6
+    raw.save(source, exif=exif)
+    content = source.read_bytes()
+    image = RpcImage(
+        split="val2019", image_id=7, source_identity="val2019:7:oriented.png",
+        source_path=source, byte_size=len(content), sha256=hashlib.sha256(content).hexdigest(), level="easy",
+    )
+
+    crop = worker._canonical_oracle_crop(image, (0.0, 0.0, 1.0, 1.0))
+
+    assert crop.size == (1, 1)
+    assert crop.getpixel((0, 0)) == (255, 0, 0)
+
+
+def test_extract_rejects_output_outside_research_runs_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The producer itself prevents a caller from writing generated payloads into Git."""
+    artifacts = _fixture_artifacts(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="output must be under"):
+        extract_oracle_features(
+            _one_image_index(tmp_path), artifacts, tmp_path / "outside", allowed_output_root=tmp_path / "allowed"
+        )

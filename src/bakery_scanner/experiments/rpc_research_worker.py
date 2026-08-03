@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import platform
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ _REPVIT_SHA256 = "217aca2b9a9149ebbab4faac93719036a227fd2fbde623cd51f780f49b7610
 _FEATURE_DIMENSION = 384
 _DINO_PATCH_COUNT = 196
 _CANONICAL_FRAME = "exif_visual_rgb_v1"
+_RESEARCH_RUNS_ROOT = Path(r"C:\workspace\rpc_fewshot_runs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +85,11 @@ class OracleFeatureRow:
 
 
 def extract_oracle_features(
-    index: RpcIndex, artifacts: ResearchArtifacts, output: Path
+    index: RpcIndex,
+    artifacts: ResearchArtifacts,
+    output: Path,
+    *,
+    allowed_output_root: Path | None = None,
 ) -> Path:
     """Materialize no-replace float16 oracle features and their canonical manifest.
 
@@ -95,7 +101,11 @@ def extract_oracle_features(
         raise ValueError("index must be an RpcIndex")
     if not isinstance(artifacts, ResearchArtifacts):
         raise ValueError("artifacts must be ResearchArtifacts")
-    destination = Path(output)
+    root = Path(allowed_output_root or _RESEARCH_RUNS_ROOT).resolve()
+    destination = Path(output).resolve()
+    if not destination.is_relative_to(root):
+        raise ValueError(f"output must be under {root}")
+    artifacts = _revalidate_artifacts(artifacts)
     if destination.exists():
         raise FileExistsError(f"output already exists: {destination}")
     rows = _oracle_rows(index)
@@ -167,15 +177,52 @@ def _canonical_oracle_crop(
     _verify_indexed_source(image)
     try:
         with Image.open(image.source_path) as source:
+            orientation = source.getexif().get(274, 1)
+            if type(orientation) is not int or orientation not in range(1, 9):
+                raise ValueError("RPC source image has an invalid EXIF orientation")
+            _validate_bbox_bounds(bbox_xywh, source.width, source.height)
+            canonical_bbox = _transpose_bbox_for_exif(
+                bbox_xywh, orientation, source.width, source.height
+            )
             canonical = ImageOps.exif_transpose(source).convert("RGB")
     except OSError as exc:
         raise ValueError(f"cannot decode RPC source image: {image.source_identity}") from exc
-    x, y, width, height = bbox_xywh
+    x, y, width, height = canonical_bbox
     left, top = math.floor(x), math.floor(y)
     right, bottom = math.ceil(x + width), math.ceil(y + height)
     if left < 0 or top < 0 or right > canonical.width or bottom > canonical.height or right <= left or bottom <= top:
         raise ValueError("oracle bbox lies outside canonical RGB image")
     return canonical.crop((left, top, right, bottom))
+
+
+def _transpose_bbox_for_exif(
+    bbox_xywh: tuple[float, float, float, float], orientation: int, width: int, height: int
+) -> tuple[float, float, float, float]:
+    """Map raw-file COCO coordinates into Pillow's EXIF-transposed frame."""
+    x, y, box_width, box_height = bbox_xywh
+    if orientation == 1:
+        return bbox_xywh
+    if orientation == 2:
+        return (width - x - box_width, y, box_width, box_height)
+    if orientation == 3:
+        return (width - x - box_width, height - y - box_height, box_width, box_height)
+    if orientation == 4:
+        return (x, height - y - box_height, box_width, box_height)
+    if orientation == 5:
+        return (y, x, box_height, box_width)
+    if orientation == 6:
+        return (height - y - box_height, x, box_height, box_width)
+    if orientation == 7:
+        return (height - y - box_height, width - x - box_width, box_height, box_width)
+    return (y, width - x - box_width, box_height, box_width)
+
+
+def _validate_bbox_bounds(
+    bbox_xywh: tuple[float, float, float, float], width: int, height: int
+) -> None:
+    x, y, box_width, box_height = bbox_xywh
+    if x < 0 or y < 0 or x + box_width > width or y + box_height > height:
+        raise ValueError("oracle bbox lies outside raw EXIF image")
 
 
 def _feature_vectors(
@@ -219,7 +266,9 @@ def _load_feature_models(artifacts: ResearchArtifacts) -> tuple[torch.nn.Module,
     from dinov3.models.vision_transformer import vit_small
     from safetensors.torch import load_file
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # CPU/float32 is the explicitly documented reproducibility contract for
+    # this research cache.  Do not silently alter its bytes by choosing CUDA.
+    device = torch.device("cpu")
     repvit = timm.create_model("repvit_m1", pretrained=False)
     repvit.load_state_dict(load_file(str(artifacts.repvit_path), device="cpu"), strict=True)
     dino = vit_small(patch_size=16, n_storage_tokens=4, mask_k_bias=True, layerscale_init=1e-5)
@@ -228,6 +277,19 @@ def _load_feature_models(artifacts: ResearchArtifacts) -> tuple[torch.nn.Module,
         raise ValueError("DINOv3 weights must be a state dictionary")
     dino.load_state_dict(weights, strict=True)
     return repvit.to(device).eval(), dino.to(device).eval()
+
+
+def _revalidate_artifacts(artifacts: ResearchArtifacts) -> ResearchArtifacts:
+    """Reject forged or stale dataclass values immediately before model loading."""
+    verified = ResearchArtifacts.from_paths(artifacts.repvit_path, artifacts.dino_path)
+    if (
+        artifacts.repvit_path.resolve() != verified.repvit_path
+        or artifacts.dino_path.resolve() != verified.dino_path
+        or artifacts.repvit_sha256 != verified.repvit_sha256
+        or artifacts.dino_sha256 != verified.dino_sha256
+    ):
+        raise ValueError("research artifact provenance mismatch")
+    return verified
 
 
 def _model_device(model: torch.nn.Module) -> torch.device:
@@ -253,6 +315,28 @@ def _feature_manifest(
         "kind": "rpc-research-oracle-features",
         "canonical_frame": _CANONICAL_FRAME,
         "feature_dtype": "float16",
+        "execution": {
+            "device": "cpu",
+            "determinism": "cpu-float32-inference-mode-model-eval-v1",
+        },
+        "preprocessing": {
+            "canonical_frame": _CANONICAL_FRAME,
+            "bbox_coordinate_frame": "raw-exif-source-v1",
+            "exif_bbox_transform": "raw-to-visual-v1",
+            "image_mode": "RGB",
+            "input_size": [224, 224],
+            "resize_interpolation": "bilinear",
+            "antialias": True,
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+        },
+        "code_sha256": _sha256_file(Path(__file__)),
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "pillow": Image.__version__,
+            "torch": torch.__version__,
+        },
         "artifacts": {
             "repvit": {"path": str(artifacts.repvit_path), "sha256": artifacts.repvit_sha256},
             "dinov3": {"path": str(artifacts.dino_path), "sha256": artifacts.dino_sha256},
