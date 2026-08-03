@@ -40,10 +40,14 @@ class CustomerCheckoutScreen extends StatefulWidget {
 
 class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
   _CatalogRequest? _catalogRequest;
+  String? _selectedObjectId;
+  CheckoutState? _previousState;
 
   @override
   void initState() {
     super.initState();
+    _synchronizeSelection(widget.controller.state, previousState: null);
+    _previousState = widget.controller.state;
     widget.controller.addListener(_changed);
   }
 
@@ -53,6 +57,9 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_changed);
       widget.controller.addListener(_changed);
+      _selectedObjectId = null;
+      _synchronizeSelection(widget.controller.state, previousState: null);
+      _previousState = widget.controller.state;
     }
   }
 
@@ -63,7 +70,60 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final state = widget.controller.state;
+    _synchronizeSelection(state, previousState: _previousState);
+    _previousState = state;
+    setState(() {});
+  }
+
+  void _synchronizeSelection(
+    CheckoutState state, {
+    required CheckoutState? previousState,
+  }) {
+    final isReview =
+        state.phase == CheckoutPhase.customerReview ||
+        state.phase == CheckoutPhase.orderReview;
+    if (!isReview) {
+      _selectedObjectId = null;
+      return;
+    }
+
+    final selectedObjectId = _selectedObjectId;
+    final currentDraft = selectedObjectId == null
+        ? null
+        : _draftFor(state, selectedObjectId);
+    if (currentDraft == null) {
+      _selectedObjectId = _initialSelection(state);
+      return;
+    }
+
+    if (state.phase == CheckoutPhase.customerReview &&
+        previousState?.phase == CheckoutPhase.customerReview) {
+      final previousDraft = _draftFor(previousState!, selectedObjectId!);
+      if (previousDraft?.isResolved == false && currentDraft.isResolved) {
+        _selectedObjectId = _initialSelection(state);
+      }
+    }
+  }
+
+  ObjectDraft? _draftFor(CheckoutState state, String objectId) => state
+      .objectDrafts
+      .where((draft) => draft.inferenceObject.objectId == objectId)
+      .firstOrNull;
+
+  String? _initialSelection(CheckoutState state) =>
+      state.activeObject?.inferenceObject.objectId ??
+      state.objectDrafts
+          .where((draft) => !draft.isResolved)
+          .firstOrNull
+          ?.inferenceObject
+          .objectId ??
+      state.objectDrafts.firstOrNull?.inferenceObject.objectId;
+
+  void _selectObject(String objectId) {
+    if (_selectedObjectId == objectId) return;
+    setState(() => _selectedObjectId = objectId);
   }
 
   void _showCatalogForObject(String objectId) => _showCatalog(objectId);
@@ -128,6 +188,8 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
       ),
       CheckoutPhase.customerReview => CustomerReviewView(
         state: state,
+        selectedObjectId: _selectedObjectId,
+        onSelectObject: _selectObject,
         productForCandidate: widget.controller.productForCandidate,
         onChooseTop3: (objectId, skuId) =>
             widget.controller.chooseTop3(objectId, skuId),
@@ -137,6 +199,8 @@ class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {
       ),
       CheckoutPhase.orderReview => OrderReviewView(
         state: state,
+        selectedObjectId: _selectedObjectId,
+        onSelectObject: _selectObject,
         onSetQuantity: (productId, quantity) =>
             widget.controller.setQuantity(productId, quantity),
         onAddProduct: _showAddCatalog,

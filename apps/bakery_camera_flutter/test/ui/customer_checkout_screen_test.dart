@@ -140,6 +140,76 @@ void main() {
   );
 
   testWidgets(
+    'final candidate stays selected across the order review handoff',
+    (tester) async {
+      final fixture = (await tester.runAsync(() async {
+        final fixture = await CustomerCheckoutJourneyFixture.create();
+        await fixture.controller.initialize();
+        await fixture.controller.scan();
+        return fixture;
+      }))!;
+      addTearDown(() => tester.runAsync(fixture.dispose));
+
+      await _pump(
+        tester,
+        CustomerCheckoutScreen(controller: fixture.controller),
+      );
+      expect(fixture.controller.state.phase, CheckoutPhase.customerReview);
+      expect(
+        tester
+            .widget<CapturedReviewOverlay>(find.byType(CapturedReviewOverlay))
+            .selectedObjectId,
+        'object-2',
+      );
+
+      await tester.tap(find.text('슈가 도넛'));
+      await tester.pumpAndSettle();
+
+      expect(fixture.controller.state.phase, CheckoutPhase.orderReview);
+      expect(
+        tester
+            .widget<CapturedReviewOverlay>(find.byType(CapturedReviewOverlay))
+            .selectedObjectId,
+        'object-2',
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('order-review-selected-line')),
+          matching: find.text('슈가 도넛'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const Key('customer-review-overlay-object-1')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<CapturedReviewOverlay>(find.byType(CapturedReviewOverlay))
+            .selectedObjectId,
+        'object-1',
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('order-review-selected-line')),
+          matching: find.text('크루아상'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const Key('order-review-line-sugar-donut')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<CapturedReviewOverlay>(find.byType(CapturedReviewOverlay))
+            .selectedObjectId,
+        'object-2',
+      );
+    },
+  );
+
+  testWidgets(
     'order correction keeps the order visible beside the catalog panel',
     (tester) async {
       tester.view.physicalSize = const Size(1280, 820);

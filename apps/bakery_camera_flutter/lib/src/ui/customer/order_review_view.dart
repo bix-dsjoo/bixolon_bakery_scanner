@@ -21,6 +21,8 @@ class OrderReviewView extends StatefulWidget {
     required this.onCountMismatch,
     required this.onPay,
     required this.onRemoveProduct,
+    this.selectedObjectId,
+    this.onSelectObject,
     this.imageProviderFactory = customerReviewFileImageProvider,
     super.key,
   });
@@ -32,6 +34,8 @@ class OrderReviewView extends StatefulWidget {
   final VoidCallback onCountMismatch;
   final VoidCallback onPay;
   final ValueChanged<String> onRemoveProduct;
+  final String? selectedObjectId;
+  final ValueChanged<String>? onSelectObject;
   final CustomerReviewImageProviderFactory imageProviderFactory;
 
   @override
@@ -50,6 +54,11 @@ class _OrderReviewViewState extends State<OrderReviewView> {
   @override
   void didUpdateWidget(OrderReviewView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.onSelectObject != null) return;
+    if (oldWidget.onSelectObject != null) {
+      _selectedObjectId = _firstObjectId(widget.state);
+      return;
+    }
     final selectedObjectId = _selectedObjectId;
     if (selectedObjectId == null ||
         !widget.state.objectDrafts.any(
@@ -63,12 +72,22 @@ class _OrderReviewViewState extends State<OrderReviewView> {
       .map((draft) => draft.inferenceObject.objectId)
       .firstOrNull;
 
-  void _selectObject(String objectId) =>
-      setState(() => _selectedObjectId = objectId);
+  String? get _effectiveSelectedObjectId => widget.onSelectObject == null
+      ? _selectedObjectId
+      : widget.selectedObjectId;
+
+  void _selectObject(String objectId) {
+    final onSelectObject = widget.onSelectObject;
+    if (onSelectObject != null) {
+      onSelectObject(objectId);
+      return;
+    }
+    setState(() => _selectedObjectId = objectId);
+  }
 
   void _selectLine(List<String> objectIds) {
     if (objectIds.isEmpty) return;
-    final current = _selectedObjectId;
+    final current = _effectiveSelectedObjectId;
     if (current != null && objectIds.contains(current)) return;
     _selectObject(objectIds.first);
   }
@@ -80,16 +99,17 @@ class _OrderReviewViewState extends State<OrderReviewView> {
     final presentation = CustomerReviewPresentation.fromDrafts(
       state.objectDrafts,
     );
+    final selectedObjectId = _effectiveSelectedObjectId;
     return CheckoutReviewWorkspace(
       state: state,
       presentation: presentation,
-      selectedObjectId: _selectedObjectId,
+      selectedObjectId: selectedObjectId,
       onSelectObject: _selectObject,
       taskTitle: '주문 내역',
       taskContent: _OrderTaskPane(
         state: state,
         presentation: presentation,
-        selectedObjectId: _selectedObjectId,
+        selectedObjectId: selectedObjectId,
         onSelectLine: _selectLine,
         onSetQuantity: widget.onSetQuantity,
         onOverrideObject: widget.onOverrideObject,

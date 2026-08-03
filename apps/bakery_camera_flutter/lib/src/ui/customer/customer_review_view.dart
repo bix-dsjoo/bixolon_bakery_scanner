@@ -18,6 +18,8 @@ class CustomerReviewView extends StatefulWidget {
     required this.onChooseTop3,
     required this.onOpenCatalog,
     required this.onContinue,
+    this.selectedObjectId,
+    this.onSelectObject,
     this.onRetakeCapture,
     this.catalogDiscovery,
     this.catalogSearch,
@@ -32,6 +34,8 @@ class CustomerReviewView extends StatefulWidget {
   final void Function(String objectId, int skuId) onChooseTop3;
   final ValueChanged<String> onOpenCatalog;
   final VoidCallback onContinue;
+  final String? selectedObjectId;
+  final ValueChanged<String>? onSelectObject;
   final VoidCallback? onRetakeCapture;
   final CustomerCatalogDiscovery? catalogDiscovery;
   final Future<List<Product>> Function(String query)? catalogSearch;
@@ -55,6 +59,11 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
   @override
   void didUpdateWidget(CustomerReviewView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.onSelectObject != null) return;
+    if (oldWidget.onSelectObject != null) {
+      _selectedObjectId = _initialSelection(widget.state);
+      return;
+    }
     final selectedObjectId = _selectedObjectId;
     if (selectedObjectId == null) {
       _selectedObjectId = _initialSelection(widget.state);
@@ -84,15 +93,23 @@ class _CustomerReviewViewState extends State<CustomerReviewView> {
           .objectId ??
       state.objectDrafts.firstOrNull?.inferenceObject.objectId;
 
-  void _selectObject(String objectId) =>
-      setState(() => _selectedObjectId = objectId);
+  void _selectObject(String objectId) {
+    final onSelectObject = widget.onSelectObject;
+    if (onSelectObject != null) {
+      onSelectObject(objectId);
+      return;
+    }
+    setState(() => _selectedObjectId = objectId);
+  }
 
   @override
   Widget build(BuildContext context) {
     final presentation = CustomerReviewPresentation.fromDrafts(
       widget.state.objectDrafts,
     );
-    final selectedObjectId = _selectedObjectId;
+    final selectedObjectId = widget.onSelectObject == null
+        ? _selectedObjectId
+        : widget.selectedObjectId;
     final selectedDraft = selectedObjectId == null
         ? null
         : _draftFor(widget.state, selectedObjectId);
