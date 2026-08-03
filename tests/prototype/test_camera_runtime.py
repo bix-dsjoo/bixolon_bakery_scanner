@@ -225,6 +225,56 @@ class FailIfCalledClassifier(FakeBatchClassifier):
         pytest.fail("classifier called for empty scene")
 
 
+class PreflightOnlyClassifier:
+    def __init__(self, *, mode: str) -> None:
+        self.config = SimpleNamespace(
+            runtime=SimpleNamespace(
+                mode=mode,
+                repvit_microbatch_objects="all",
+                dinov3_microbatch_objects="all",
+            )
+        )
+        self.preflight_calls = 0
+
+    def preflight_models(self, image, box: Box) -> None:
+        self.preflight_calls += 1
+
+
+class SerialOnlyClassifier(PreflightOnlyClassifier):
+    def __init__(self, decision: ClassificationDecision) -> None:
+        super().__init__(mode="serial_reference")
+        self.decision = decision
+        self.infer_calls = 0
+
+    def infer(self, image, box: Box, *, on_stage=None) -> ClassificationDecision:
+        self.infer_calls += 1
+        if on_stage is not None:
+            on_stage("repvit")
+        return self.decision
+
+
+class BatchOnlyClassifier(PreflightOnlyClassifier):
+    def __init__(self, decision: ClassificationDecision) -> None:
+        super().__init__(mode="batch_pytorch")
+        self.decision = decision
+        self.infer_many_calls = 0
+
+    def infer_many(
+        self,
+        image,
+        boxes: tuple[Box, ...],
+        *,
+        repvit_max_objects: int,
+        dino_max_objects: int,
+    ) -> BatchInferenceResult:
+        self.infer_many_calls += 1
+        return BatchInferenceResult(
+            (self.decision,),
+            BatchStageTimings(0.0, 2.0, 0.0, 0.0, 2.0),
+            0,
+        )
+
+
 class FakeBackend:
     detector_id = "rfdetr_large_bakery_v1"
     repvit_id = "repvit_m1_15plus5_v1"
@@ -871,6 +921,80 @@ def test_camera_runtime_serial_mode_calls_infer_without_batch(tmp_path: Path):
     assert classifier.infer_calls == 2
     assert result["timings_ms"]["repvit"] == 5.0
     assert result["timings_ms"]["dinov3"] == 5.0
+
+
+def test_camera_runtime_accepts_serial_only_classifier(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    box = Box(5, 5, 20, 20)
+    classifier = SerialOnlyClassifier(_confirmed(6, box))
+    runtime = _runtime(
+        tmp_path,
+        classifier=classifier,
+        proposals=(_proposal(box),),
+    )
+
+    runtime.analyze(image_path, "serial-only")
+
+    assert classifier.preflight_calls == 1
+    assert classifier.infer_calls == 1
+
+
+def test_camera_runtime_accepts_batch_only_classifier(tmp_path: Path):
+    image_path = _write_image(tmp_path / "capture.jpg")
+    box = Box(5, 5, 20, 20)
+    classifier = BatchOnlyClassifier(_confirmed(6, box))
+    runtime = _runtime(
+        tmp_path,
+        classifier=classifier,
+        proposals=(_proposal(box),),
+    )
+
+    runtime.analyze(image_path, "batch-only")
+
+    assert classifier.preflight_calls == 1
+    assert classifier.infer_many_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        ("serial_reference", "infer\\(\\) for serial_reference"),
+        ("batch_pytorch", "infer_many\\(\\) for batch mode"),
+    ],
+)
+def test_initialize_rejects_classifier_missing_selected_inference_method(
+    tmp_path: Path,
+    mode: str,
+    message: str,
+):
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    backend = FakeBackend("cpu")
+    backend.classifier = PreflightOnlyClassifier(mode=mode)
+
+    with pytest.raises(TypeError, match=message):
+        CameraInferenceRuntime.initialize(
+            tmp_path,
+            warmup_image,
+            preference="cpu",
+            backend_loader=lambda device: backend,
+        )
+
+
+def test_initialize_requires_classifier_preflight_models(tmp_path: Path):
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    box = Box(5, 5, 20, 20)
+    backend = FakeBackend("cpu")
+    classifier = SerialOnlyClassifier(_confirmed(6, box))
+    classifier.preflight_models = None
+    backend.classifier = classifier
+
+    with pytest.raises(TypeError, match="preflight_models"):
+        CameraInferenceRuntime.initialize(
+            tmp_path,
+            warmup_image,
+            preference="cpu",
+            backend_loader=lambda device: backend,
+        )
 
 
 def test_camera_runtime_rejects_misaligned_batch_decisions(tmp_path: Path):

@@ -625,14 +625,15 @@ def _validate_backend(backend: RuntimeBackend, device: str) -> None:
     if not callable(getattr(backend.detector, "predict", None)):
         raise TypeError("runtime detector must provide predict()")
     classifier = backend.classifier
-    if (
-        not callable(getattr(classifier, "infer", None))
-        or not callable(getattr(classifier, "infer_many", None))
-        or not callable(getattr(classifier, "preflight_models", None))
-    ):
-        raise TypeError(
-            "runtime classifier must provide infer(), infer_many(), and preflight_models()"
-        )
+    if not callable(getattr(classifier, "preflight_models", None)):
+        raise TypeError("runtime classifier must provide preflight_models()")
+    if classifier.config.runtime.mode == "serial_reference":
+        if not callable(getattr(classifier, "infer", None)):
+            raise TypeError(
+                "runtime classifier must provide infer() for serial_reference mode"
+            )
+    elif not callable(getattr(classifier, "infer_many", None)):
+        raise TypeError("runtime classifier must provide infer_many() for batch mode")
     if not callable(getattr(backend, "close", None)):
         raise TypeError("runtime backend must provide close()")
 
