@@ -9,6 +9,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, cast
 
 import torch
@@ -97,7 +98,9 @@ class StartupMetrics:
             or any(not _is_sha256(value) for value in self.applied_artifact_hashes.values())
         ):
             raise ValueError("applied_artifact_hashes must be the exact verified hash set")
-        object.__setattr__(self, "applied_artifact_hashes", dict(self.applied_artifact_hashes))
+        object.__setattr__(
+            self, "applied_artifact_hashes", MappingProxyType(dict(self.applied_artifact_hashes))
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +273,11 @@ class CameraInferenceRuntime:
                     / "presentation"
                     / "camera_action_state_v2.json"
                 )
+                applied_hashes = (
+                    _applied_artifact_hashes(manifest, config, presentation_policy)
+                    if backend_loader is None
+                    else _backend_applied_artifact_hashes(backend)
+                )
                 load_finished = _timestamp(runtime_clock, device)
             except Exception:
                 if backend is not None:
@@ -308,11 +316,6 @@ class CameraInferenceRuntime:
                 raise
 
             metadata = _backend_metadata(backend, manifest)
-            applied_hashes = (
-                _applied_artifact_hashes(manifest, config, presentation_policy)
-                if backend_loader is None
-                else _backend_applied_artifact_hashes(backend)
-            )
             metrics = StartupMetrics(
                 device=device,
                 load_ms=_milliseconds(load_started, load_finished),
@@ -463,11 +466,17 @@ class CameraInferenceRuntime:
                     _finalize_failed_cuda_timing(cuda_timing, inference_error)
                     raise
                 if len(batch.decisions) != len(ordered):
+                    _finalize_failed_cuda_timing(
+                        cuda_timing, ValueError("classifier batch decisions must align with detector proposals")
+                    )
                     raise ValueError("classifier batch decisions must align with detector proposals")
                 if batch.dino_object_count > 0:
                     _emit_progress(on_progress, WorkerPhase.RECHECKING, emitted)
                 for proposal, decision in zip(ordered, batch.decisions, strict=True):
                     if decision.box != proposal.box:
+                        _finalize_failed_cuda_timing(
+                            cuda_timing, ValueError("classifier decision box changed detector coordinates")
+                        )
                         raise ValueError("classifier decision box changed detector coordinates")
                     decisions.append((proposal, decision))
                 repvit_ms = batch.timings.repvit_ms
@@ -478,14 +487,18 @@ class CameraInferenceRuntime:
 
         _emit_progress(on_progress, WorkerPhase.AGGREGATING, emitted)
         postprocess_started = _timestamp(self._clock, self.device)
-        objects, counts, unknown_count = _aggregate_objects(
-            decisions,
-            self._sku_names,
-        )
-        presentation = self._presentation_policy.evaluate(
-            proposals=objects,
-            decisions=objects,
-        ).to_payload()
+        try:
+            objects, counts, unknown_count = _aggregate_objects(
+                decisions,
+                self._sku_names,
+            )
+            presentation = self._presentation_policy.evaluate(
+                proposals=objects,
+                decisions=objects,
+            ).to_payload()
+        except Exception as lifecycle_error:
+            _finalize_failed_cuda_timing(cuda_timing, lifecycle_error)
+            raise
         postprocess_finished = _timestamp(self._clock, self.device)
         # GPU work is deliberately synchronized once, after every measured
         # stage has been enqueued.  Per-stage synchronization serializes the

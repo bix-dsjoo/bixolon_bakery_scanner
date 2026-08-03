@@ -72,12 +72,16 @@ class RFDetrRunner:
         except Exception:
             binding.release(verify=False)
             raise
-        return cls(
-            model,
-            score_threshold=score_threshold,
-            source=source,
-            binding=binding,
-        )
+        try:
+            return cls(
+                model,
+                score_threshold=score_threshold,
+                source=source,
+                binding=binding,
+            )
+        except Exception:
+            binding.release(verify=False)
+            raise
 
     def finalize_artifact_binding(self) -> None:
         binding = self._binding
@@ -194,22 +198,27 @@ class _CheckpointBinding:
     def __enter__(self) -> "_CheckpointBinding":
         if str(self.device).lower().startswith("cuda") and self.expected_sha256 is None:
             raise ValueError("CUDA evidence checkpoint requires SHA-256")
-        if self.expected_sha256 is None:
+        try:
+            if self.expected_sha256 is None:
+                self._active = True
+                return self
+            _validate_checkpoint_sha256(self.expected_sha256)
+            if os.name == "nt":
+                self._handle = _open_windows_read_binding(self.path)
+            elif str(self.device).lower().startswith("cuda"):
+                raise ValueError("CUDA evidence checkpoint binding requires Windows share-deny locking")
+            _require_checkpoint_sha256(self.path, self.expected_sha256)
+            self._active = True
             return self
-        _validate_checkpoint_sha256(self.expected_sha256)
-        if os.name == "nt":
-            self._handle = _open_windows_read_binding(self.path)
-        elif str(self.device).lower().startswith("cuda"):
-            raise ValueError("CUDA evidence checkpoint binding requires Windows share-deny locking")
-        _require_checkpoint_sha256(self.path, self.expected_sha256)
-        self._active = True
-        return self
+        except Exception:
+            self.release(verify=False)
+            raise
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.release(verify=exc_type is None)
 
     def release(self, *, verify: bool) -> None:
-        if not self._active:
+        if not self._active and self._handle is None:
             return
         try:
             if verify and self.expected_sha256 is not None:

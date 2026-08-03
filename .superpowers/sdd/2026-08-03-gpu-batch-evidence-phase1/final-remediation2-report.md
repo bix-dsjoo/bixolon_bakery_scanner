@@ -41,6 +41,9 @@
   the same exact applied-artifact hash map as Dart, including custom backends.
   A shared CUDA timing collector is finalized on classifier failure before the
   error propagates.
+- Startup provenance is now copied into an immutable mapping before warm-up,
+  and invalid custom provenance fails during the guarded load phase. RF-DETR
+  binding acquisition and runner construction release handles on every error.
 
 ## Verification
 
