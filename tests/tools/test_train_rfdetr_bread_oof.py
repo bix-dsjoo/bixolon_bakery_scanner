@@ -10,6 +10,7 @@ from importlib.metadata import distribution, version
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 from tools.train.train_rfdetr_bread_oof import main, run_fold_training
 
@@ -198,6 +199,55 @@ def test_direct_training_requires_runtime_before_model_factory(tmp_path: Path):
     assert invoked is False
 
 
+@pytest.mark.parametrize(
+    "mismatch",
+    ("schema", "python_sha256", "python_bytes", "python_version", "package_version", "package_module_sha256"),
+)
+def test_direct_training_rejects_runtime_mismatch_before_factory_or_output(tmp_path: Path, mismatch: str):
+    """A direct caller with the wrong interpreter or package identity cannot publish a fold."""
+    runtime_identity = _runtime_identity(tmp_path)
+    if mismatch == "schema":
+        runtime_identity["schema_version"] = 2
+    elif mismatch == "python_sha256":
+        runtime_identity["python_sha256"] = "0" * 64
+    elif mismatch == "python_bytes":
+        runtime_identity["python_bytes"] = int(runtime_identity["python_bytes"]) + 1
+    elif mismatch == "python_version":
+        runtime_identity["python_version"] = "0.0.0"
+    elif mismatch == "package_version":
+        runtime_identity["packages"]["rfdetr"]["version"] = "0.0.0"
+    else:
+        runtime_identity["packages"]["rfdetr"]["sha256"] = "0" * 64
+    factory_calls = 0
+    train_calls = 0
+
+    class ObservedModel:
+        def train(self, **_kwargs: object) -> None:
+            nonlocal train_calls
+            train_calls += 1
+
+    def factory() -> ObservedModel:
+        nonlocal factory_calls
+        factory_calls += 1
+        return ObservedModel()
+
+    output = tmp_path / "runs"
+    with pytest.raises(ValueError, match="runtime identity"):
+        run_fold_training(
+            _split_manifest(),
+            fold_index=2,
+            model_factory=factory,
+            staged_root=tmp_path / "unused-staged-data",
+            output_root=output,
+            runtime_identity=runtime_identity,
+        )
+
+    assert not output.exists()
+    assert not list(tmp_path.rglob("receipt.json"))
+    assert factory_calls == 0
+    assert train_calls == 0
+
+
 def test_missing_declared_checkpoint_never_writes_success_receipt(tmp_path: Path):
     """A backend returning without best_model.pth is not a completed fold."""
     class NoCheckpoint:
@@ -325,3 +375,116 @@ def test_cli_runtime_identity_mismatch_is_unverified_before_training(tmp_path: P
 
     assert main() == 2
     assert json.loads((output / "fold-2" / "receipt.json").read_text(encoding="utf-8"))["status"] == "unverified_runtime_identity_mismatch"
+
+
+def _write_all_fold_manifests(root: Path) -> Path:
+    root.mkdir()
+    for fold_index in range(5):
+        payload = _split_manifest()
+        payload["fold_index"] = fold_index
+        payload.pop("manifest_sha256")
+        payload["manifest_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        (root / f"fold-{fold_index}.json").write_text(json.dumps(payload), encoding="utf-8")
+    return root
+
+
+def _all_fold_cli_arguments(tmp_path: Path) -> tuple[list[str], Path]:
+    staged = _write_staged_dataset(tmp_path / "staged")
+    splits = _write_all_fold_manifests(tmp_path / "splits")
+    checkpoint = tmp_path / "pretrain.pth"
+    checkpoint.write_bytes(b"pretrained checkpoint")
+    runtime_identity = _write_runtime_identity(tmp_path / "runtime.json")
+    output = tmp_path / "runs"
+    return (
+        [
+            "train_rfdetr_bread_oof.py",
+            "--splits",
+            str(splits),
+            "--fold",
+            "all",
+            "--output",
+            str(output),
+            "--staged-root",
+            str(staged),
+            "--pretrain-weights",
+            str(checkpoint),
+            "--pretrain-sha256",
+            hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+            "--runtime-identity",
+            str(runtime_identity),
+        ],
+        output,
+    )
+
+
+def test_all_fold_transaction_retains_failure_evidence_without_publishing_partial_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An unexpected later-fold failure must retain pending evidence and expose no final run."""
+    constructed = 0
+
+    class FailOnFoldOne:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal constructed
+            self.fold_position = constructed
+            constructed += 1
+
+        def train(self, **kwargs: object) -> None:
+            if self.fold_position == 1:
+                raise RuntimeError("deterministic fold-1 failure")
+            checkpoint = Path(str(kwargs["output_dir"])) / "best_model.pth"
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_bytes(f"fold-{self.fold_position}".encode("utf-8"))
+
+    arguments, output = _all_fold_cli_arguments(tmp_path)
+    monkeypatch.setitem(sys.modules, "rfdetr", types.SimpleNamespace(RFDETRLarge=FailOnFoldOne))
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    status = main()
+
+    pending = list(tmp_path.glob(".runs.pending-*"))
+    assert status == 1
+    assert not output.exists()
+    assert len(pending) == 1
+    assert json.loads((pending[0] / "fold-0" / "receipt.json").read_text(encoding="utf-8"))["status"] == "verified_success"
+    assert json.loads((pending[0] / "transaction_receipt.json").read_text(encoding="utf-8")) == {
+        "status": "failed_unexpected",
+        "failed_fold": 1,
+        "detail": "deterministic fold-1 failure",
+    }
+
+
+def test_all_fold_transaction_publishes_every_terminal_fold_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A successful all-fold run must appear only as one complete final publication."""
+    constructed = 0
+
+    class SuccessfulFold:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal constructed
+            self.fold_position = constructed
+            constructed += 1
+
+        def train(self, **kwargs: object) -> None:
+            checkpoint = Path(str(kwargs["output_dir"])) / "best_model.pth"
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_bytes(f"fold-{self.fold_position}".encode("utf-8"))
+
+    arguments, output = _all_fold_cli_arguments(tmp_path)
+    monkeypatch.setitem(sys.modules, "rfdetr", types.SimpleNamespace(RFDETRLarge=SuccessfulFold))
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    status = main()
+
+    assert status == 0
+    assert output.is_dir()
+    assert constructed == 5
+    assert sorted(path.name for path in output.iterdir()) == [f"fold-{index}" for index in range(5)]
+    assert [
+        json.loads((output / f"fold-{index}" / "receipt.json").read_text(encoding="utf-8"))["status"]
+        for index in range(5)
+    ] == ["verified_success"] * 5
+    assert not list(tmp_path.glob(".runs.pending-*"))
