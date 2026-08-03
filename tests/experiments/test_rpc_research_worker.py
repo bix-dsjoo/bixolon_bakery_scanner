@@ -313,6 +313,21 @@ def test_diverse_one_shot_uses_dino_global_centroid_medoid():
     assert bank.prefix(1)[0].source_identity == "centroid-medoid.jpg"
 
 
+@pytest.mark.parametrize("selector", ("rnd", "div"))
+def test_support_bank_materializes_only_the_declared_maximum_prefix(selector: str):
+    """Candidates beyond the largest declared shot must not inflate the frozen bank."""
+    rows = tuple(
+        _support_row(f"class-{category}-sample-{index}.jpg", category, vector, f"camera-{index}")
+        for category in (7, 8)
+        for index, vector in enumerate(((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)))
+    )
+
+    bank = worker.materialize_support_bank(rows, selector=selector, seed=101, maximum_shots=2)
+
+    assert all(len(order) == 2 for order in bank.class_orders)
+    assert len(bank.prefix(2)) == 4
+
+
 def test_support_bank_rejects_duplicate_sources_and_classes_without_full_prefixes():
     """A duplicate source or undersupplied class must not yield a nominal support bank."""
     duplicate = _support_row("same.jpg", 7, (1.0, 0.0), "camera-a")

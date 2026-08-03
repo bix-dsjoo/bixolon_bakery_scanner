@@ -749,9 +749,14 @@ def materialize_support_bank(
         if len(candidates) < maximum_shots:
             raise ValueError(f"insufficient support candidates for category {category_id}")
         if selector == "rnd":
-            order = tuple(sorted(candidates, key=lambda item: (_seeded_digest(seed, item.source_identity), item.source_identity)))
+            order = tuple(
+                sorted(
+                    candidates,
+                    key=lambda item: (_seeded_digest(seed, item.source_identity), item.source_identity),
+                )[:maximum_shots]
+            )
         else:
-            order = _diverse_support_order(tuple(candidates), seed)
+            order = _diverse_support_order(tuple(candidates), seed, maximum_shots)
         orders.append(order)
     feature_digest = next(iter(feature_digests))
     frozen_orders = tuple(orders)
@@ -991,52 +996,61 @@ def _support_example(row: OracleFeatureRow) -> SupportExample:
 
 
 def _diverse_support_order(
-    candidates: tuple[SupportExample, ...], seed: int
+    candidates: tuple[SupportExample, ...], seed: int, maximum_shots: int
 ) -> tuple[SupportExample, ...]:
-    normalized = {candidate.source_identity: _normalized_vector(candidate.dino_global) for candidate in candidates}
-    dimensions = len(candidates[0].dino_global)
-    centroid = tuple(
-        sum(normalized[candidate.source_identity][index] for candidate in candidates) / len(candidates)
-        for index in range(dimensions)
-    )
+    vectors = np.asarray([candidate.dino_global for candidate in candidates], dtype=np.float64)
+    norms = np.linalg.norm(vectors, axis=1)
+    if not np.isfinite(norms).all() or (norms == 0.0).any():
+        raise ValueError("DINO global feature must have non-zero length")
+    normalized = vectors / norms[:, np.newaxis]
+    digests = tuple(_seeded_digest(seed, candidate.source_identity) for candidate in candidates)
+    centroid_distances = np.linalg.norm(normalized - normalized.mean(axis=0), axis=1)
     first = min(
-        candidates,
+        range(len(candidates)),
         key=lambda item: (
-            _vector_distance(normalized[item.source_identity], centroid),
-            _seeded_digest(seed, item.source_identity),
-            item.source_sha256,
-            item.source_identity,
+            float(centroid_distances[item]),
+            digests[item],
+            candidates[item].source_sha256,
+            candidates[item].source_identity,
         ),
     )
     selected = [first]
-    remaining = {candidate.source_identity: candidate for candidate in candidates if candidate != first}
-    stratum_counts = {first.capture_stratum: 1}
+    remaining = set(range(len(candidates)))
+    remaining.remove(first)
+    stratum_counts = {candidates[first].capture_stratum: 1}
     all_strata = {candidate.capture_stratum for candidate in candidates}
-    while remaining:
-        pool = tuple(remaining.values())
+    nearest_distances = np.linalg.norm(normalized - normalized[first], axis=1)
+    while remaining and len(selected) < maximum_shots:
+        pool = tuple(sorted(remaining))
         unrepresented = all_strata - set(stratum_counts)
         if unrepresented:
             next_stratum = min(unrepresented, key=lambda item: (_seeded_digest(seed, item), item))
-            pool = tuple(candidate for candidate in pool if candidate.capture_stratum == next_stratum)
+            pool = tuple(index for index in pool if candidates[index].capture_stratum == next_stratum)
         else:
-            fewest = min(stratum_counts.get(candidate.capture_stratum, 0) for candidate in pool)
-            pool = tuple(candidate for candidate in pool if stratum_counts.get(candidate.capture_stratum, 0) == fewest)
-        next_candidate = min(
+            fewest = min(stratum_counts.get(candidates[index].capture_stratum, 0) for index in pool)
+            pool = tuple(
+                index
+                for index in pool
+                if stratum_counts.get(candidates[index].capture_stratum, 0) == fewest
+            )
+        next_index = min(
             pool,
             key=lambda item: (
-                -min(
-                    _vector_distance(normalized[item.source_identity], normalized[chosen.source_identity])
-                    for chosen in selected
-                ),
-                _seeded_digest(seed, item.source_identity),
-                item.source_sha256,
-                item.source_identity,
+                -float(nearest_distances[item]),
+                digests[item],
+                candidates[item].source_sha256,
+                candidates[item].source_identity,
             ),
         )
-        selected.append(next_candidate)
-        del remaining[next_candidate.source_identity]
-        stratum_counts[next_candidate.capture_stratum] = stratum_counts.get(next_candidate.capture_stratum, 0) + 1
-    return tuple(selected)
+        selected.append(next_index)
+        remaining.remove(next_index)
+        stratum = candidates[next_index].capture_stratum
+        stratum_counts[stratum] = stratum_counts.get(stratum, 0) + 1
+        nearest_distances = np.minimum(
+            nearest_distances,
+            np.linalg.norm(normalized - normalized[next_index], axis=1),
+        )
+    return tuple(candidates[index] for index in selected)
 
 
 def _normalized_vector(values: tuple[float, ...]) -> tuple[float, ...]:
