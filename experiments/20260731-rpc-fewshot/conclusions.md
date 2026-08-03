@@ -13,23 +13,24 @@ prototype** 범위의 개발 결과다. 실사용 파이프라인의 최종 최�
 
 ## 학습 이미지 수 비교
 
-동일한 200개 RPC SKU, development query 36,717개, 지원세트 5개 seed의 평균이다.
+동일한 200개 RPC SKU, development query 36,717개, 지원세트 10개 seed의 평균이다.
 `wrong registered SKU`는 강제 Top-1 오분류이며, 이 단계에는 `Unknown`이 없다.
 
 | SKU당 원본 학습 이미지 | DINOv3 전역 macro Top-1 | wrong registered SKU | 150장 대비 Top-1 | 150장 대비 wrong-SKU |
 | ---: | ---: | ---: | ---: | ---: |
 | 1 | 42.72% | 57.22% | -23.21%p | +23.24%p |
-| 3 | 46.08% | 54.14% | -19.86%p | +20.16%p |
-| 5 | 49.99% | 50.24% | -15.95%p | +16.26%p |
-| 10 | 54.98% | 45.08% | -10.96%p | +11.00%p |
-| 20 | 59.81% | 40.16% | -6.13%p | +6.18%p |
-| 40 | 63.09% | 36.93% | -2.85%p | +2.95%p |
-| 80 | 65.09% | 34.82% | -0.85%p | +0.84%p |
+| 3 | 46.57% | 53.62% | -19.37%p | +19.64%p |
+| 5 | 50.05% | 50.13% | -15.88%p | +16.15%p |
+| 10 | 54.90% | 45.13% | -11.03%p | +11.15%p |
+| 20 | 59.73% | 40.25% | -6.21%p | +6.27%p |
+| 40 | 63.01% | 36.97% | -2.93%p | +2.99%p |
+| 80 | 65.06% | 34.86% | -0.88%p | +0.88%p |
 | 150 (balanced reference) | 65.94% | 33.98% | 0.00%p | 0.00%p |
 
 선택 규칙은 DIV(서로 다른 capture stratum을 우선하도록 하는 DINOv3
-다양성 선택)이다. 80장의 seed별 wrong-SKU 차이는 +0.10%p부터 +1.59%p까지여서
-평균 +0.84%p이고, 사전 등록한 +0.5%p guardrail을 통과하지 못했다.
+다양성 선택)이다. 80장의 seed별 wrong-SKU 차이는 +0.04%p부터 +1.89%p까지여서
+평균 +0.88%p이다. paired support-seed bootstrap 95% 구간도 +0.55~+1.22%p라
+사전 등록한 +0.5%p guardrail을 통과하지 못했다.
 
 ## 저샷 방법 비교
 
@@ -46,27 +47,33 @@ prototype** 범위의 개발 결과다. 실사용 파이프라인의 최종 최�
 | RepViT 전역 / RND | M1 | 18.99% / 81.01% | 27.07% / 72.93% | 30.29% / 69.71% |
 | RepViT 전역 / DIV | M1 | 18.65% / 81.35% | 26.50% / 73.50% | 30.68% / 69.32% |
 
-현재 범위에서의 선택은 **M1 + DINOv3 + DIV**다.
+현재 범위에서 유지할 방법 후보는 **M1 + DINOv3**다. DIV는 1장 조건에서
+뚜렷한 이점이 있었지만, 선택 규칙 자체는 아직 full-system에서 확정하지 않는다.
 
 - 1장에서 DIV는 RND보다 M1 DINOv3 Top-1이 **+8.80%p** 높다.
 - 3장과 5장에서도 M1은 같은 선택 규칙의 M2보다 각각 **+3.99%p**, **+5.11%p**
   높다.
 - RepViT 전역 단독 점수는 저샷에서 DINOv3 전역보다 크게 낮다. 이것은 RepViT를
   제거한다는 뜻이 아니라, 이후 gate/fusion을 포함해 별도로 검증해야 한다는 뜻이다.
+- 10-seed 전체 development 곡선에서는 5장 RND가 DIV보다 0.51%p 높았고,
+  80장에서는 둘의 차이가 0.03%p다. 따라서 `DIV가 모든 수량에서 우월`하다고
+  주장하지 않는다.
 
 ## 실무 적용 판단
 
 | 질문 | 현재 답 |
 | --- | --- |
 | “SKU당 5장이면 충분한가?” | 아니다. 이 proxy에서는 49.99% Top-1, 50.24% 강제 오분류다. |
-| “1~3장에서 무엇을 해야 하나?” | M1 mean prototype과 DIV 선택을 사용하되, 실운영 승인이나 자동 등록에는 사용하지 않는다. |
-| “80장으로 줄일 수 있나?” | 현재 기준으로는 아니다. 150장과의 wrong-SKU 차이가 +0.84%p다. |
+| “1~3장에서 무엇을 해야 하나?” | M1 mean prototype을 사용하고, 1장에서는 DIV를 우선한다. 다만 실운영 승인이나 자동 등록에는 사용하지 않는다. |
+| “80장으로 줄일 수 있나?” | 현재 기준으로는 아니다. 150장과의 wrong-SKU 차이가 +0.88%p다. |
 | “150장이면 충분한가?” | 상대 기준의 balanced reference일 뿐이다. 여전히 33.98% 강제 오분류이므로 최종 품질 기준을 만족한다는 뜻이 아니다. |
 
 ## 증거와 범위
 
 - 전체 development curve: `C:\workspace\rpc_fewshot_runs\20260803-stage1-prep\full-development-m1-div-curve-150.json`
   - SHA-256: `42b91940037840fc26c9398622af40dcefebc388acfbd75fdbb65c8798a7eda`
+- 추가 support seed curve: `C:\workspace\rpc_fewshot_runs\20260803-stage1-prep\full-development-m1-global-curve-seeds-106-110.json`
+  - SHA-256: `f2c52791c9e4a405e0e1714a67a39545e4bfe70116ceef102dff44b9870102f0`
 - 저샷 방법 비교: `C:\workspace\rpc_fewshot_runs\20260803-stage1-prep\pilot-global-method-comparison.json`
   - SHA-256: `c9516baff144f1d1d5365153ef8accbf1edb2d088a8d33a1564a721f89a1561a`
 - 상세한 입력·모델·캐시 provenance는

@@ -335,6 +335,9 @@ results:
   - receipt: receipts/20260803-full-development-m1-dinov3-global-curve.md
     status: preliminary
     scope: oracle-crop, forced-top1, M1, DINOv3-global
+  - receipt: receipts/20260803-full-development-m1-dinov3-global-curve-ten-seed.md
+    status: preliminary
+    scope: oracle-crop, forced-top1, M1, DINOv3-global, ten-support-seeds
   - receipt: conclusions.md
     status: preliminary
     scope: data-quantity-and-method-comparison
