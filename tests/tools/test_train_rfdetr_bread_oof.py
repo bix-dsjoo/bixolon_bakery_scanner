@@ -12,6 +12,7 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
+from tools.train import train_rfdetr_bread_oof as training_tool
 from tools.train.train_rfdetr_bread_oof import main, run_fold_training
 
 
@@ -456,30 +457,65 @@ def test_all_fold_transaction_retains_failure_evidence_without_publishing_partia
     }
 
 
-def test_all_fold_transaction_publishes_every_terminal_fold_once(
+def test_cli_transaction_publishes_complete_all_fold_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A successful all-fold run must appear only as one complete final publication."""
+    """Incremental fold publication must fail this single atomic-boundary contract."""
     constructed = 0
+    directory_publications: list[tuple[Path, Path]] = []
 
     class SuccessfulFold:
         def __init__(self, **_kwargs: object) -> None:
             nonlocal constructed
+            assert not output.exists()
+            assert not any((output / f"fold-{index}").exists() for index in range(5))
             self.fold_position = constructed
             constructed += 1
 
         def train(self, **kwargs: object) -> None:
+            assert not output.exists()
             checkpoint = Path(str(kwargs["output_dir"])) / "best_model.pth"
             checkpoint.parent.mkdir(parents=True, exist_ok=True)
             checkpoint.write_bytes(f"fold-{self.fold_position}".encode("utf-8"))
 
     arguments, output = _all_fold_cli_arguments(tmp_path)
+    real_replace = training_tool.os.replace
+
+    def observe_replace(source: Path, destination: Path) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        publishes_directory = source_path.is_dir()
+        assert not output.exists()
+        assert not any((output / f"fold-{index}").exists() for index in range(5))
+        if publishes_directory:
+            assert destination_path == output
+            assert source_path.parent == output.parent
+            assert source_path.name.startswith(f".{output.name}.pending-")
+            assert sorted(path.name for path in source_path.iterdir()) == [
+                f"fold-{index}" for index in range(5)
+            ]
+            assert [
+                json.loads((source_path / f"fold-{index}" / "receipt.json").read_text(encoding="utf-8"))["status"]
+                for index in range(5)
+            ] == ["verified_success"] * 5
+            directory_publications.append((source_path, destination_path))
+        real_replace(source, destination)
+        if publishes_directory:
+            assert not source_path.exists()
+            assert output.is_dir()
+            assert sorted(path.name for path in output.iterdir()) == [
+                f"fold-{index}" for index in range(5)
+            ]
+            assert all((output / f"fold-{index}" / "receipt.json").is_file() for index in range(5))
+
     monkeypatch.setitem(sys.modules, "rfdetr", types.SimpleNamespace(RFDETRLarge=SuccessfulFold))
     monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(training_tool.os, "replace", observe_replace)
 
     status = main()
 
     assert status == 0
+    assert len(directory_publications) == 1
     assert output.is_dir()
     assert constructed == 5
     assert sorted(path.name for path in output.iterdir()) == [f"fold-{index}" for index in range(5)]
