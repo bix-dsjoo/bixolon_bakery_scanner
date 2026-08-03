@@ -417,6 +417,53 @@ def score_m2(
     )
 
 
+def fit_m0_base_rows(base_features: Sequence[FeatureExample]) -> torch.Tensor:
+    """Train one deterministic frozen RepViT head for a 160-SKU base fold.
+
+    The caller persists this tensor before any novel support is selected.  It
+    deliberately has no seed or novel input: all base classes use their fixed,
+    balanced 150-shot training set and subsequent ``fit_m0_head`` calls cannot
+    update these rows.
+    """
+    grouped: dict[int, list[FeatureExample]] = {}
+    seen: set[tuple[str, int]] = set()
+    for feature in base_features:
+        if not isinstance(feature, FeatureExample):
+            raise ValueError("M0 base features must be FeatureExample values")
+        if feature.category_id not in _RPC_CATEGORY_IDS:
+            raise ValueError("M0 base features use an unregistered category")
+        identity = (feature.provenance.source_identity, feature.provenance.annotation_id)
+        if identity in seen:
+            raise ValueError("M0 base support provenance contains duplicate examples")
+        seen.add(identity)
+        grouped.setdefault(feature.category_id, []).append(feature)
+    if len(grouped) != 160 or any(not values for values in grouped.values()):
+        raise ValueError("M0 base features must contain exactly 160 non-empty classes")
+    categories = tuple(sorted(grouped))
+    if len({len(values) for values in grouped.values()}) != 1:
+        raise ValueError("M0 base features must be class-balanced")
+    frozen = {category_id: tuple(values) for category_id, values in grouped.items()}
+    rows = _mean_prototypes(frozen, "repvit_global", categories).detach().clone()
+    rows.requires_grad_(True)
+    vectors, targets, weights = [], [], []
+    for target, category_id in enumerate(categories):
+        examples = frozen[category_id]
+        for example in examples:
+            vectors.append(_unit_tensor(example.repvit_global, "M0 base feature"))
+            targets.append(target)
+            weights.append(1.0 / len(examples))
+    training_vectors = torch.stack(vectors)
+    training_targets = torch.tensor(targets, dtype=torch.long)
+    training_weights = torch.tensor(weights, dtype=torch.float32)
+    optimizer = torch.optim.SGD((rows,), lr=_M0_LEARNING_RATE)
+    for _ in range(_M0_TRAINING_STEPS):
+        optimizer.zero_grad(set_to_none=True)
+        losses = functional.cross_entropy(training_vectors @ rows.T, training_targets, reduction="none")
+        (losses * training_weights).sum().div(training_weights.sum()).backward()
+        optimizer.step()
+    return rows.detach().clone().contiguous()
+
+
 def fit_m0_head(
     base_features: Sequence[FeatureExample],
     novel_features: Sequence[FeatureExample],

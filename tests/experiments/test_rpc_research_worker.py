@@ -25,6 +25,7 @@ from bakery_scanner.experiments.rpc_research_worker import (
     OracleFeatureRow,
     ResearchArtifacts,
     extract_oracle_features,
+    fit_m0_base_rows,
     fit_m0_head,
     score_m1,
     score_m2,
@@ -525,6 +526,28 @@ def test_m0_keeps_frozen_base_rows_unchanged():
 
     assert torch.equal(head.base_rows, snapshot)
     assert torch.equal(base_rows_before_fit, snapshot)
+
+
+def test_m0_base_training_emits_deterministic_frozen_rows(monkeypatch: pytest.MonkeyPatch):
+    """Each fold's base classifier is trained once before novel-SKU adaptation."""
+    monkeypatch.setattr(worker, "_M0_TRAINING_STEPS", 1)
+    base_features = tuple(
+        _scoring_example(
+            category_id,
+            f"base-{category_id}",
+            repvit=(float(category_id), 1.0),
+            dino=(float(category_id), 1.0),
+        )
+        for category_id in range(1, 161)
+    )
+
+    first = fit_m0_base_rows(base_features)
+    second = fit_m0_base_rows(base_features)
+
+    assert first.shape == (160, 384)
+    assert first.requires_grad is False
+    assert torch.isfinite(first).all()
+    assert torch.equal(first, second)
 
 
 def test_branch_predictions_have_sorted_catalog_scores_and_provenance():
