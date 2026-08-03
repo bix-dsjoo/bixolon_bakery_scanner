@@ -6,11 +6,13 @@ import hashlib
 import math
 import os
 import platform
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from numbers import Real
+from typing import Mapping, Sequence
 
 import numpy as np
 import torch
@@ -18,7 +20,12 @@ import torch.nn.functional as functional
 from PIL import Image, ImageOps
 
 from bakery_scanner.classification.preprocess import build_transform
-from bakery_scanner.experiments.rpc_manifest import RpcImage, RpcIndex, write_new_json
+from bakery_scanner.experiments.rpc_manifest import (
+    RpcImage,
+    RpcIndex,
+    canonical_json_bytes,
+    write_new_json,
+)
 
 
 _DINO_SHA256 = "08c60483bc63c04f533611e34bf70b120eedb7240f469bc16e9e20bf344b941d"
@@ -27,6 +34,7 @@ _FEATURE_DIMENSION = 384
 _DINO_PATCH_COUNT = 196
 _CANONICAL_FRAME = "exif_visual_rgb_v1"
 _RESEARCH_RUNS_ROOT = Path(r"C:\workspace\rpc_fewshot_runs")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +70,11 @@ class OracleFeatureRow:
     category_id: int
     bbox_xywh: tuple[float, float, float, float]
     difficulty: str
+    source_byte_size: int | None = None
+    source_sha256: str | None = None
+    dino_global: tuple[float, ...] | None = None
+    capture_stratum: str | None = None
+    feature_array_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_identity, str) or not self.source_identity:
@@ -78,10 +91,318 @@ class OracleFeatureRow:
         if values[2] <= 0.0 or values[3] <= 0.0:
             raise ValueError("oracle bbox must have positive width and height")
         object.__setattr__(self, "bbox_xywh", values)
+        if self.source_byte_size is not None and (
+            type(self.source_byte_size) is not int or self.source_byte_size <= 0
+        ):
+            raise ValueError("source byte size must be positive")
+        if self.source_sha256 is not None and (
+            not isinstance(self.source_sha256, str) or _SHA256.fullmatch(self.source_sha256) is None
+        ):
+            raise ValueError("source SHA-256 must be lowercase SHA-256")
+        if self.capture_stratum is not None and (
+            not isinstance(self.capture_stratum, str) or not self.capture_stratum
+        ):
+            raise ValueError("capture stratum must be non-empty")
+        if self.feature_array_sha256 is not None and (
+            not isinstance(self.feature_array_sha256, str)
+            or _SHA256.fullmatch(self.feature_array_sha256) is None
+        ):
+            raise ValueError("feature-array SHA-256 must be lowercase SHA-256")
+        if self.dino_global is not None:
+            if isinstance(self.dino_global, (str, bytes)):
+                raise ValueError("DINO global feature must be a finite numeric vector")
+            values = tuple(self.dino_global)
+            if (
+                not values
+                or any(isinstance(value, bool) or not isinstance(value, Real) for value in values)
+                or not all(math.isfinite(float(value)) for value in values)
+            ):
+                raise ValueError("DINO global feature must be a finite numeric vector")
+            object.__setattr__(self, "dino_global", tuple(float(value) for value in values))
 
     @property
     def identity(self) -> str:
         return f"{self.source_identity}:{self.annotation_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class SupportExample:
+    """One selected, source- and feature-array-bound oracle support example."""
+
+    source_identity: str
+    annotation_id: int
+    category_id: int
+    source_byte_size: int
+    source_sha256: str
+    dino_global: tuple[float, ...]
+    capture_stratum: str
+    feature_array_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class SupportBank:
+    """A class-complete immutable support order with only prefix access."""
+
+    selector: str
+    seed: int
+    maximum_shots: int
+    class_orders: tuple[tuple[SupportExample, ...], ...]
+    feature_array_sha256: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.selector not in {"rnd", "div"}:
+            raise ValueError("unsupported support selector")
+        if type(self.seed) is not int:
+            raise ValueError("support seed must be an integer")
+        if type(self.maximum_shots) is not int or self.maximum_shots <= 0:
+            raise ValueError("maximum shots must be positive")
+        if not self.class_orders:
+            raise ValueError("support bank requires complete class orders")
+        categories: list[int] = []
+        for order in self.class_orders:
+            if len(order) < self.maximum_shots:
+                raise ValueError("insufficient support candidates")
+            category_ids = {example.category_id for example in order}
+            if len(category_ids) != 1:
+                raise ValueError("support order must contain one class")
+            categories.append(next(iter(category_ids)))
+        if categories != sorted(categories) or len(categories) != len(set(categories)):
+            raise ValueError("support bank classes must be unique and sorted")
+        identities = [example.source_identity for order in self.class_orders for example in order]
+        if len(identities) != len(set(identities)):
+            raise ValueError("duplicate source identity")
+        if not isinstance(self.feature_array_sha256, str) or _SHA256.fullmatch(self.feature_array_sha256) is None:
+            raise ValueError("feature-array SHA-256 must be lowercase SHA-256")
+        if self.sha256 != _support_bank_digest(
+            self.selector, self.seed, self.maximum_shots, self.class_orders, self.feature_array_sha256
+        ):
+            raise ValueError("support bank SHA-256 mismatch")
+
+    @property
+    def ordered_support_identities(self) -> tuple[tuple[int, tuple[str, ...]], ...]:
+        """Record every materialized candidate identity, not a resampled draw."""
+        return tuple(
+            (order[0].category_id, tuple(example.source_identity for example in order))
+            for order in self.class_orders
+        )
+
+    @property
+    def feature_array_digest(self) -> str:
+        """Compatibility-neutral name for the bound DINO-global array SHA-256."""
+        return self.feature_array_sha256
+
+    def prefix(self, shot_count: int) -> tuple[SupportExample, ...]:
+        """Return the class-complete prefix without extending or resampling the bank."""
+        if type(shot_count) is not int or shot_count <= 0:
+            raise ValueError("shot count must be positive")
+        if shot_count > self.maximum_shots:
+            raise ValueError("non-prefix support extension is not allowed")
+        return tuple(example for order in self.class_orders for example in order[:shot_count])
+
+
+def materialize_support_bank(
+    rows: Sequence[OracleFeatureRow], *, selector: str, seed: int, maximum_shots: int
+) -> SupportBank:
+    """Create source/hash-bound, nested RND or DINO-global DIV support prefixes."""
+    if selector not in {"rnd", "div"}:
+        raise ValueError("unsupported support selector")
+    if type(seed) is not int:
+        raise ValueError("support seed must be an integer")
+    if type(maximum_shots) is not int or maximum_shots <= 0:
+        raise ValueError("maximum shots must be positive")
+    if not isinstance(rows, Sequence) or not rows:
+        raise ValueError("support rows must be a non-empty sequence")
+    if not all(isinstance(row, OracleFeatureRow) for row in rows):
+        raise ValueError("support rows must be OracleFeatureRow instances")
+    source_identities = [row.source_identity for row in rows]
+    if len(source_identities) != len(set(source_identities)):
+        raise ValueError("duplicate source identity")
+    examples = tuple(_support_example(row) for row in rows)
+    feature_digests = {example.feature_array_sha256 for example in examples}
+    if len(feature_digests) != 1:
+        raise ValueError("support rows must bind one feature-array SHA-256")
+    dimensions = {len(example.dino_global) for example in examples}
+    if len(dimensions) != 1:
+        raise ValueError("DINO global feature dimensions must agree")
+    by_category: dict[int, list[SupportExample]] = {}
+    for example in examples:
+        by_category.setdefault(example.category_id, []).append(example)
+    orders: list[tuple[SupportExample, ...]] = []
+    for category_id, candidates in sorted(by_category.items()):
+        if len(candidates) < maximum_shots:
+            raise ValueError(f"insufficient support candidates for category {category_id}")
+        if selector == "rnd":
+            order = tuple(sorted(candidates, key=lambda item: (_seeded_digest(seed, item.source_identity), item.source_identity)))
+        else:
+            order = _diverse_support_order(tuple(candidates), seed)
+        orders.append(order)
+    feature_digest = next(iter(feature_digests))
+    frozen_orders = tuple(orders)
+    return SupportBank(
+        selector,
+        seed,
+        maximum_shots,
+        frozen_orders,
+        feature_digest,
+        _support_bank_digest(selector, seed, maximum_shots, frozen_orders, feature_digest),
+    )
+
+
+def _support_example(row: OracleFeatureRow) -> SupportExample:
+    if (
+        row.source_byte_size is None
+        or row.source_sha256 is None
+        or row.dino_global is None
+        or row.capture_stratum is None
+        or row.feature_array_sha256 is None
+    ):
+        raise ValueError("support row lacks source/hash-bound DINO feature provenance")
+    return SupportExample(
+        row.source_identity,
+        row.annotation_id,
+        row.category_id,
+        row.source_byte_size,
+        row.source_sha256,
+        row.dino_global,
+        row.capture_stratum,
+        row.feature_array_sha256,
+    )
+
+
+def _diverse_support_order(
+    candidates: tuple[SupportExample, ...], seed: int
+) -> tuple[SupportExample, ...]:
+    normalized = {candidate.source_identity: _normalized_vector(candidate.dino_global) for candidate in candidates}
+    dimensions = len(candidates[0].dino_global)
+    centroid = tuple(
+        sum(normalized[candidate.source_identity][index] for candidate in candidates) / len(candidates)
+        for index in range(dimensions)
+    )
+    first = min(
+        candidates,
+        key=lambda item: (_vector_distance(normalized[item.source_identity], centroid), item.source_sha256, item.source_identity),
+    )
+    selected = [first]
+    remaining = {candidate.source_identity: candidate for candidate in candidates if candidate != first}
+    stratum_counts = {first.capture_stratum: 1}
+    all_strata = {candidate.capture_stratum for candidate in candidates}
+    while remaining:
+        pool = tuple(remaining.values())
+        unrepresented = all_strata - set(stratum_counts)
+        if unrepresented:
+            next_stratum = min(unrepresented, key=lambda item: (_seeded_digest(seed, item), item))
+            pool = tuple(candidate for candidate in pool if candidate.capture_stratum == next_stratum)
+        else:
+            fewest = min(stratum_counts.get(candidate.capture_stratum, 0) for candidate in pool)
+            pool = tuple(candidate for candidate in pool if stratum_counts.get(candidate.capture_stratum, 0) == fewest)
+        next_candidate = min(
+            pool,
+            key=lambda item: (
+                -min(
+                    _vector_distance(normalized[item.source_identity], normalized[chosen.source_identity])
+                    for chosen in selected
+                ),
+                item.source_sha256,
+                item.source_identity,
+            ),
+        )
+        selected.append(next_candidate)
+        del remaining[next_candidate.source_identity]
+        stratum_counts[next_candidate.capture_stratum] = stratum_counts.get(next_candidate.capture_stratum, 0) + 1
+    return tuple(selected)
+
+
+def _normalized_vector(values: tuple[float, ...]) -> tuple[float, ...]:
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm == 0.0:
+        raise ValueError("DINO global feature must have non-zero length")
+    return tuple(value / norm for value in values)
+
+
+def _vector_distance(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    return math.sqrt(sum((first - second) ** 2 for first, second in zip(left, right, strict=True)))
+
+
+def _seeded_digest(seed: int, value: str) -> str:
+    return hashlib.sha256(f"{seed}:{value}".encode("utf-8")).hexdigest()
+
+
+def _support_bank_digest(
+    selector: str,
+    seed: int,
+    maximum_shots: int,
+    class_orders: tuple[tuple[SupportExample, ...], ...],
+    feature_array_sha256: str,
+) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "selector": selector,
+                "seed": seed,
+                "maximum_shots": maximum_shots,
+                "feature_array_sha256": feature_array_sha256,
+                "class_orders": [
+                    [
+                        {
+                            "source_identity": example.source_identity,
+                            "annotation_id": example.annotation_id,
+                            "category_id": example.category_id,
+                            "source_byte_size": example.source_byte_size,
+                            "source_sha256": example.source_sha256,
+                            "capture_stratum": example.capture_stratum,
+                        }
+                        for example in order
+                    ]
+                    for order in class_orders
+                ],
+            }
+        )
+    ).hexdigest()
+
+
+def support_bank_manifest(bank: SupportBank) -> dict[str, object]:
+    """Return the compact, canonical receipt for an immutable support bank."""
+    if not isinstance(bank, SupportBank):
+        raise ValueError("support bank must be a SupportBank")
+    return {
+        "schema_version": 1,
+        "kind": "rpc-research-support-bank",
+        "selector": bank.selector,
+        "seed": bank.seed,
+        "maximum_shots": bank.maximum_shots,
+        "feature_array_sha256": bank.feature_array_sha256,
+        "classes": [
+            {
+                "category_id": order[0].category_id,
+                "ordered_support_identities": [example.source_identity for example in order],
+                "examples": [
+                    {
+                        "identity": f"{example.source_identity}:{example.annotation_id}",
+                        "source_identity": example.source_identity,
+                        "annotation_id": example.annotation_id,
+                        "source_byte_size": example.source_byte_size,
+                        "source_sha256": example.source_sha256,
+                        "capture_stratum": example.capture_stratum,
+                    }
+                    for example in order
+                ],
+            }
+            for order in bank.class_orders
+        ],
+        "sha256": bank.sha256,
+    }
+
+
+def write_support_bank(path: Path, bank: SupportBank) -> Path:
+    """Write a no-replace compact support receipt outside the repository."""
+    destination = Path(path).resolve()
+    root = _RESEARCH_RUNS_ROOT.resolve()
+    if not destination.is_relative_to(root):
+        raise ValueError(f"output must be under {root}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    write_new_json(destination, support_bank_manifest(bank))
+    return destination
 
 
 def extract_oracle_features(

@@ -181,3 +181,73 @@ def test_extract_has_no_caller_controlled_output_root(
         extract_oracle_features(
             _one_image_index(tmp_path), artifacts, tmp_path / "features", allowed_output_root=tmp_path
         )
+
+
+def _support_row(
+    source_identity: str,
+    category_id: int,
+    dino_global: tuple[float, ...],
+    capture_stratum: str,
+) -> OracleFeatureRow:
+    return OracleFeatureRow(
+        source_identity,
+        annotation_id=category_id * 100 + len(source_identity),
+        category_id=category_id,
+        bbox_xywh=(1.0, 2.0, 3.0, 4.0),
+        difficulty="E",
+        source_byte_size=123,
+        source_sha256=hashlib.sha256(source_identity.encode("utf-8")).hexdigest(),
+        dino_global=dino_global,
+        capture_stratum=capture_stratum,
+        feature_array_sha256="f" * 64,
+    )
+
+
+def test_random_support_prefixes_are_seeded_and_nested():
+    """Resampling a larger shot condition would break the frozen-prefix contract."""
+    rows = (
+        _support_row("rnd-a.jpg", 7, (1.0, 0.0), "camera-a"),
+        _support_row("rnd-b.jpg", 7, (0.0, 1.0), "camera-b"),
+        _support_row("rnd-c.jpg", 7, (-1.0, 0.0), "camera-c"),
+        _support_row("rnd-d.jpg", 7, (0.0, -1.0), "camera-d"),
+        _support_row("rnd-e.jpg", 7, (0.5, 0.5), "camera-e"),
+    )
+
+    bank = worker.materialize_support_bank(rows, selector="rnd", seed=101, maximum_shots=5)
+
+    assert bank.prefix(1) == bank.prefix(5)[:1]
+    assert bank.prefix(3) == bank.prefix(5)[:3]
+    assert bank.feature_array_sha256 == "f" * 64
+    assert bank == worker.materialize_support_bank(rows, selector="rnd", seed=101, maximum_shots=5)
+
+
+def test_diverse_one_shot_uses_dino_global_centroid_medoid():
+    """Replacing DINO globals with another feature branch selects the wrong first support."""
+    rows = (
+        _support_row("left.jpg", 7, (1.0, 0.0), "camera-a"),
+        _support_row("top.jpg", 7, (0.0, 1.0), "camera-b"),
+        _support_row("centroid-medoid.jpg", 7, (0.8, 0.2), "camera-c"),
+    )
+
+    bank = worker.materialize_support_bank(rows, selector="div", seed=101, maximum_shots=1)
+
+    assert bank.prefix(1)[0].source_identity == "centroid-medoid.jpg"
+
+
+def test_support_bank_rejects_duplicate_sources_and_classes_without_full_prefixes():
+    """A duplicate source or undersupplied class must not yield a nominal support bank."""
+    duplicate = _support_row("same.jpg", 7, (1.0, 0.0), "camera-a")
+    with pytest.raises(ValueError, match="duplicate source identity"):
+        worker.materialize_support_bank((duplicate, duplicate), selector="rnd", seed=101, maximum_shots=1)
+
+    with pytest.raises(ValueError, match="insufficient support candidates"):
+        worker.materialize_support_bank(
+            (
+                _support_row("class-seven-a.jpg", 7, (1.0, 0.0), "camera-a"),
+                _support_row("class-seven-b.jpg", 7, (0.0, 1.0), "camera-b"),
+                _support_row("class-eight-a.jpg", 8, (1.0, 0.0), "camera-a"),
+            ),
+            selector="rnd",
+            seed=101,
+            maximum_shots=2,
+        )
