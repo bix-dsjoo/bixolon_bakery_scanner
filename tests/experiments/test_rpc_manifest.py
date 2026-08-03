@@ -180,3 +180,18 @@ def test_load_rpc_index_indexes_source_file_identity_and_digest(tmp_path: Path):
     assert image.byte_size == len(b"pixels:train2019")
     assert image.sha256 == hashlib.sha256(b"pixels:train2019").hexdigest()
     assert next(item for item in index.images if item.split == "val2019").level == "easy"
+
+
+def test_load_rpc_index_resolves_source_files_from_split_directories(tmp_path: Path):
+    contract = _synthetic_contract(tmp_path)
+    for split in ("train2019", "val2019", "test2019"):
+        source = tmp_path / f"{split}.jpg"
+        split_directory = tmp_path / split
+        split_directory.mkdir()
+        source.replace(split_directory / source.name)
+
+    index = load_rpc_index(contract, tmp_path)
+
+    assert next(item for item in index.images if item.split == "train2019").source_path == (
+        tmp_path / "train2019" / "train2019.jpg"
+    )

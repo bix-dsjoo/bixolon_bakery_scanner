@@ -311,6 +311,7 @@ def _assign_val_roles(bursts: tuple[_Burst, ...], category_ids: tuple[int, ...],
     if any(set(role_categories[role]) != set(category_ids) for role in _ROLE_NAMES):
         raise ValueError("impossible validation category coverage")
     _refine_val_roles(assigned, bursts, category_ids, split_version)
+    _refine_val_difficulty_balance(assigned, bursts, category_ids, split_version)
     final_sizes = {
         role: sum(burst.image_count for burst in bursts if assigned[burst.burst_id] == role)
         for role in _ROLE_NAMES
@@ -347,6 +348,146 @@ def _refine_val_roles(
             return
         _, burst, target = candidates[0]
         assigned[burst.burst_id] = target
+
+
+def _refine_val_difficulty_balance(
+    assigned: dict[str, str], bursts: tuple[_Burst, ...], category_ids: tuple[int, ...], split_version: str
+) -> None:
+    """Swap equally sized, coverage-safe bursts to reduce difficulty imbalance."""
+    by_id = {burst.burst_id: burst for burst in bursts}
+    while True:
+        category_counts = {
+            role: {
+                category_id: sum(
+                    category_id in by_id[burst_id].category_ids
+                    for burst_id, value in assigned.items()
+                    if value == role
+                )
+                for category_id in category_ids
+            }
+            for role in _ROLE_NAMES
+        }
+        difficulty_counts = _difficulty_role_counts(assigned, bursts)
+        maximums = {
+            difficulty: max(burst.image_count for burst in bursts if burst.difficulty == difficulty)
+            for difficulty in ("easy", "medium", "hard")
+            if any(burst.difficulty == difficulty for burst in bursts)
+        }
+        current = _difficulty_balance_score(difficulty_counts, maximums)
+        best: tuple[tuple[int, int, int], _Burst, _Burst] | None = None
+        by_role_difficulty_size: dict[tuple[str, str, int], list[_Burst]] = {}
+        for burst in bursts:
+            by_role_difficulty_size.setdefault(
+                (assigned[burst.burst_id], burst.difficulty, burst.image_count), []
+            ).append(burst)
+        deltas = {
+            difficulty: difficulty_counts[_ROLE_NAMES[0]][difficulty]
+            - difficulty_counts[_ROLE_NAMES[1]][difficulty]
+            for difficulty in maximums
+        }
+        positive = tuple(difficulty for difficulty, delta in deltas.items() if delta > 0)
+        negative = tuple(difficulty for difficulty, delta in deltas.items() if delta < 0)
+        for first_difficulty in positive:
+            for second_difficulty in negative:
+                sizes = sorted(
+                    {
+                        key[2]
+                        for key in by_role_difficulty_size
+                        if key[:2] == (_ROLE_NAMES[0], first_difficulty)
+                    }
+                    & {
+                        key[2]
+                        for key in by_role_difficulty_size
+                        if key[:2] == (_ROLE_NAMES[1], second_difficulty)
+                    }
+                )
+                for size in sizes:
+                    candidate_counts = {role: dict(values) for role, values in difficulty_counts.items()}
+                    candidate_counts[_ROLE_NAMES[0]][first_difficulty] -= size
+                    candidate_counts[_ROLE_NAMES[1]][first_difficulty] += size
+                    candidate_counts[_ROLE_NAMES[0]][second_difficulty] += size
+                    candidate_counts[_ROLE_NAMES[1]][second_difficulty] -= size
+                    score = _difficulty_balance_score(candidate_counts, maximums)
+                    if score >= current:
+                        continue
+                    firsts = sorted(
+                        by_role_difficulty_size[(_ROLE_NAMES[0], first_difficulty, size)],
+                        key=lambda item: _digest((split_version, item.burst_id)),
+                    )
+                    seconds = sorted(
+                        by_role_difficulty_size[(_ROLE_NAMES[1], second_difficulty, size)],
+                        key=lambda item: _digest((split_version, item.burst_id)),
+                    )
+                    pair = next(
+                        (
+                            (first, second)
+                            for first in firsts
+                            for second in seconds
+                            if _swap_preserves_coverage(first, second, category_counts)
+                        ),
+                        None,
+                    )
+                    if pair is None:
+                        continue
+                    candidate = (score, *pair)
+                    if best is None or (
+                        candidate[0], _digest((split_version, candidate[1].burst_id, candidate[2].burst_id))
+                    ) < (
+                        best[0], _digest((split_version, best[1].burst_id, best[2].burst_id))
+                    ):
+                        best = candidate
+        if best is None:
+            return
+        _, first, second = best
+        assigned[first.burst_id], assigned[second.burst_id] = _ROLE_NAMES[1], _ROLE_NAMES[0]
+
+
+def _swap_preserves_coverage(
+    first: _Burst,
+    second: _Burst,
+    category_counts: dict[str, dict[int, int]],
+) -> bool:
+    for category_id in first.category_ids | second.category_ids:
+        if (
+            category_counts[_ROLE_NAMES[0]].get(category_id, 0)
+            - (category_id in first.category_ids)
+            + (category_id in second.category_ids)
+            < 1
+            or category_counts[_ROLE_NAMES[1]].get(category_id, 0)
+            - (category_id in second.category_ids)
+            + (category_id in first.category_ids)
+            < 1
+        ):
+            return False
+    return True
+
+
+def _difficulty_role_counts(
+    assigned: dict[str, str], bursts: tuple[_Burst, ...]
+) -> dict[str, dict[str, int]]:
+    return {
+        role: {
+            difficulty: sum(
+                burst.image_count
+                for burst in bursts
+                if burst.difficulty == difficulty and assigned[burst.burst_id] == role
+            )
+            for difficulty in ("easy", "medium", "hard")
+        }
+        for role in _ROLE_NAMES
+    }
+
+
+def _difficulty_balance_score(
+    counts: dict[str, dict[str, int]], maximums: dict[str, int]
+) -> tuple[int, int, int]:
+    deltas: list[int] = []
+    excesses: list[int] = []
+    for difficulty, maximum in maximums.items():
+        delta = abs(counts[_ROLE_NAMES[0]][difficulty] - counts[_ROLE_NAMES[1]][difficulty])
+        deltas.append(delta)
+        excesses.append(max(0, delta - maximum))
+    return (sum(excesses), sum(deltas), max(deltas, default=0))
 
 
 def _digest(value: tuple[object, ...]) -> str:

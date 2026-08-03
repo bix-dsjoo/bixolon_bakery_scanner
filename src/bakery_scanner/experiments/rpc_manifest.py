@@ -241,11 +241,17 @@ def _index_split(
     for image_id, record in image_records.items():
         if image_id not in annotation_counts:
             raise ValueError(f"{split} image is missing checkout annotation")
-        source_path = (source_root / record["file_name"]).resolve()
+        source_path = (source_root / split / record["file_name"]).resolve()
         try:
-            source_path.relative_to(source_root)
+            source_path.relative_to(source_root / split)
         except ValueError as exc:
             raise ValueError(f"{split} image path escapes source root") from exc
+        if not source_path.is_file():
+            source_path = (source_root / record["file_name"]).resolve()
+            try:
+                source_path.relative_to(source_root)
+            except ValueError as exc:
+                raise ValueError(f"{split} image path escapes source root") from exc
         if not source_path.is_file():
             raise ValueError(f"{split} source image is missing")
         source_bytes = source_path.read_bytes()

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+import bakery_scanner.experiments.rpc_splits as rpc_splits
+
 from bakery_scanner.experiments.rpc_manifest import (
     RpcCategory,
     RpcDatasetContract,
@@ -152,6 +154,53 @@ def test_scene_roles_reject_difficulty_imbalanced_validation_roles():
 
     with pytest.raises(ValueError, match="difficulty balance"):
         validate_val_difficulty_balance(rows)
+
+
+def test_scene_role_refinement_swaps_safe_bursts_to_balance_difficulty():
+    stamp = datetime(2019, 1, 1, 9, 0, 0)
+
+    def burst(identifier: str, difficulty: str, image_id: int):
+        image = _image("val2019", image_id, stamp, identifier, difficulty)
+        name = rpc_splits._CheckoutName(stamp, "20190101", identifier)
+        return rpc_splits._Burst(
+            identifier,
+            "val2019",
+            "20190101",
+            identifier,
+            difficulty,
+            ((image, name, frozenset({1})),),
+        )
+
+    bursts = (
+        burst("easy-calibration-a", "easy", 1),
+        burst("easy-calibration-b", "easy", 2),
+        burst("hard-development-a", "hard", 3),
+        burst("hard-development-b", "hard", 4),
+    )
+    assigned = {
+        "easy-calibration-a": "calibration",
+        "easy-calibration-b": "calibration",
+        "hard-development-a": "development_selection",
+        "hard-development-b": "development_selection",
+    }
+
+    rpc_splits._refine_val_difficulty_balance(assigned, bursts, (1,), "rpc-v1")
+
+    counts = {
+        difficulty: {
+            role: sum(
+                burst.image_count
+                for burst in bursts
+                if burst.difficulty == difficulty and assigned[burst.burst_id] == role
+            )
+            for role in ("calibration", "development_selection")
+        }
+        for difficulty in ("easy", "hard")
+    }
+    assert counts == {
+        "easy": {"calibration": 1, "development_selection": 1},
+        "hard": {"calibration": 1, "development_selection": 1},
+    }
 
 
 def test_scene_role_materializer_writes_canonical_lineage_artifact(
