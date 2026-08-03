@@ -299,6 +299,7 @@ def test_grouped_runner_rechecks_identity_after_worker_shutdown(tmp_path, monkey
                     {
                         "type": "ready", "device": "cuda:0",
                         "startup_metrics": {"device": "cuda:0", "fallback_reason": None},
+                        "code_identity": changed,
                     },
                 )
             )
@@ -316,7 +317,10 @@ def test_grouped_runner_rechecks_identity_after_worker_shutdown(tmp_path, monkey
                 )
             elif event["type"] == "shutdown":
                 self._events = iter(
-                    [{"type": "stopped", "request_id": event["request_id"]}]
+                    [{
+                        "type": "stopped", "request_id": event["request_id"],
+                        "code_identity": changed,
+                    }]
                 )
 
         def receive(self, _timeout):
@@ -349,9 +353,9 @@ def test_grouped_runner_rechecks_identity_after_worker_shutdown(tmp_path, monkey
 
     from scripts.benchmark_camera_worker import run_grouped_benchmark
 
-    with pytest.raises(ValueError, match="changed during the benchmark"):
+    with pytest.raises(ValueError, match="worker ready code identity"):
         run_grouped_benchmark(
             python_executable=Path(sys.executable), repo_root=root,
             manifest_path=manifest, protocol_path=protocol,
         )
-    assert calls == 2
+    assert calls == 1

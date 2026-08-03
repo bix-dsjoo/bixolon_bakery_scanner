@@ -264,9 +264,14 @@ class ClassifierPipeline:
         calibration_path: Path | None = None,
         runtime_override: ClassifierRuntimeConfig | None = None,
         stage_timing_sink: _StageTimingSink | None = None,
+        artifact_root: Path | None = None,
     ) -> "ClassifierPipeline":
         """Load strict configuration, calibration, and the primary runner."""
-        config = ClassifierConfig.load(config_path)
+        config = (
+            ClassifierConfig.load(config_path)
+            if artifact_root is None
+            else ClassifierConfig.load(config_path, artifact_root=artifact_root)
+        )
         if runtime_override is not None:
             config = config.model_copy(update={"runtime": runtime_override})
         configure_cpu_process(config.runtime)

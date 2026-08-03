@@ -129,6 +129,26 @@ def test_ready_includes_final_runtime_device_and_startup_metrics():
     }
 
 
+def test_worker_binds_child_code_identity_to_ready_and_stopped_events():
+    stdout = io.StringIO()
+    identity = {"code_commit": "a" * 40, "code_identity_sha256": "b" * 64}
+
+    serve(
+        io.StringIO('{"type":"shutdown","request_id":"stop-attested"}\n'),
+        stdout,
+        runtime_factory=lambda emit: FakeRuntime(device="cuda:0"),
+        code_identity=identity,
+    )
+
+    events = _events(stdout)
+    assert events[2]["code_identity"] == identity
+    assert events[-1] == {
+        "type": "stopped",
+        "request_id": "stop-attested",
+        "code_identity": identity,
+    }
+
+
 def test_worker_recovers_from_malformed_input_and_handles_following_request():
     stdin = io.StringIO('{"type":"ping","request_id":}\n'
                         '{"type":"ping","request_id":"ping-2"}\n'

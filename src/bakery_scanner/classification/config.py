@@ -174,13 +174,22 @@ class ClassifierConfig(_StrictModel):
     calibration: CalibrationConfig
 
     @classmethod
-    def load(cls, path: Path) -> "ClassifierConfig":
+    def load(
+        cls,
+        path: Path,
+        *,
+        artifact_root: Path | None = None,
+    ) -> "ClassifierConfig":
         config_path = path.resolve()
         with config_path.open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle)
         if not isinstance(payload, dict):
             raise ValueError("configuration root must be a mapping")
         base = config_path.parent
+        content_root = base.parent
+        resolved_artifact_root = (
+            Path(artifact_root).resolve() if artifact_root is not None else None
+        )
         payload = dict(payload)
         for section, names in {
             "repvit": ("checkpoint", "manifest", "prototype_bank"),
@@ -190,7 +199,12 @@ class ClassifierConfig(_StrictModel):
             values = dict(payload.get(section) or {})
             for name in names:
                 if values.get(name) is not None:
-                    values[name] = _resolve_path(base, values.get(name))
+                    values[name] = _resolve_path(
+                        base,
+                        values.get(name),
+                        content_root=content_root,
+                        artifact_root=resolved_artifact_root,
+                    )
             payload[section] = values
         result = cls.model_validate(payload)
         if "locked_acceptance" in result.calibration.artifact.parts:
@@ -200,10 +214,25 @@ class ClassifierConfig(_StrictModel):
         return result
 
 
-def _resolve_path(base: Path, raw: object) -> Path:
+def _resolve_path(
+    base: Path,
+    raw: object,
+    *,
+    content_root: Path | None = None,
+    artifact_root: Path | None = None,
+) -> Path:
     if not isinstance(raw, (str, Path)) or not str(raw):
         raise ValueError("configured path must be a non-empty string")
     candidate = Path(raw)
-    return (
+    resolved = (
         candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
     )
+    if content_root is None or artifact_root is None:
+        return resolved
+    try:
+        relative = resolved.relative_to(content_root)
+    except ValueError:
+        return resolved
+    if relative.parts and relative.parts[0] in {"models", "artifacts"}:
+        return (artifact_root / relative).resolve()
+    return resolved

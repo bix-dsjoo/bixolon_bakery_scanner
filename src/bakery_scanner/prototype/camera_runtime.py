@@ -167,11 +167,17 @@ class CameraInferenceRuntime:
         cuda_probe: Callable[[], bool] | None = None,
         backend_loader: Callable[[str], RuntimeBackend] | None = None,
         clock: Callable[[], float] | None = None,
+        artifact_root: Path | None = None,
     ) -> "CameraInferenceRuntime":
         root_path = Path(root).resolve()
+        artifact_root_path = (
+            Path(artifact_root).resolve() if artifact_root is not None else root_path
+        )
         warmup_path = Path(warmup_image).resolve()
         if not root_path.is_dir():
             raise ValueError(f"repository root is missing: {root_path}")
+        if not artifact_root_path.is_dir():
+            raise ValueError(f"artifact root is missing: {artifact_root_path}")
         if not warmup_path.is_file():
             raise ValueError(f"warm-up image is missing: {warmup_path}")
         normalized_preference = _normalize_preference(preference)
@@ -187,7 +193,9 @@ class CameraInferenceRuntime:
         fallback_reason = None if cuda_available or normalized_preference == "cpu" else "cuda_unavailable"
 
         manifest = (
-            _load_detector_manifest(root_path) if backend_loader is None else None
+            _load_detector_manifest(root_path, artifact_root=artifact_root_path)
+            if backend_loader is None
+            else None
         )
         for device in attempts:
             backend: RuntimeBackend | None = None
@@ -197,12 +205,17 @@ class CameraInferenceRuntime:
                     on_startup("loading", device)
                 if backend_loader is None:
                     assert manifest is not None
-                    config = _validate_classifier_artifacts(root_path, device)
+                    config = _validate_classifier_artifacts(
+                        root_path,
+                        device,
+                        artifact_root=artifact_root_path,
+                    )
                     backend = _load_default_backend(
                         manifest=manifest,
                         config=config,
                         config_path=_classifier_config_path(root_path, device),
                         device=device,
+                        artifact_root=artifact_root_path,
                     )
                 else:
                     backend = backend_loader(device)
@@ -474,9 +487,14 @@ def _probe_cuda() -> bool:
         return False
 
 
-def _load_detector_manifest(root: Path) -> _DetectorManifest:
-    model_dir = root / "models" / _DETECTOR_ID
-    manifest_path = model_dir / "manifest.json"
+def _load_detector_manifest(
+    root: Path,
+    *,
+    artifact_root: Path | None = None,
+) -> _DetectorManifest:
+    manifest_dir = root / "models" / _DETECTOR_ID
+    model_dir = (artifact_root or root) / "models" / _DETECTOR_ID
+    manifest_path = manifest_dir / "manifest.json"
     try:
         payload = json.loads(
             manifest_path.read_text("utf-8"),
@@ -560,8 +578,15 @@ def _classifier_config_path(root: Path, device: str) -> Path:
     return root / "configs" / filename
 
 
-def _validate_classifier_artifacts(root: Path, device: str) -> ClassifierConfig:
-    config = ClassifierConfig.load(_classifier_config_path(root, device))
+def _validate_classifier_artifacts(
+    root: Path,
+    device: str,
+    *,
+    artifact_root: Path | None = None,
+) -> ClassifierConfig:
+    config = ClassifierConfig.load(
+        _classifier_config_path(root, device), artifact_root=artifact_root
+    )
     expected_runtime = "CUDA:0" if device == "cuda:0" else "CPU"
     if config.runtime.device != expected_runtime or config.runtime.precision != "FP32":
         raise ValueError("classifier runtime must match selected device in FP32")
@@ -640,6 +665,7 @@ def _load_default_backend(
     config: ClassifierConfig,
     config_path: Path,
     device: str,
+    artifact_root: Path | None = None,
 ) -> RuntimeBackend:
     detector = RFDetrRunner.load(
         manifest.checkpoint,
@@ -648,7 +674,7 @@ def _load_default_backend(
         device="cuda" if device == "cuda:0" else "cpu",
     )
     try:
-        classifier = ClassifierPipeline.load(config_path)
+        classifier = ClassifierPipeline.load(config_path, artifact_root=artifact_root)
     except Exception:
         closer = getattr(detector, "close", None)
         if callable(closer):

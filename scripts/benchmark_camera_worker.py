@@ -21,6 +21,13 @@ _SOURCE_ROOT = _SCRIPT_ROOT / "src"
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
+_ATTESTED_TREES = ("src", "dino", "data", "configs", "policies")
+_ATTESTED_FILES = (
+    "pyproject.toml",
+    "models/rfdetr_large_bakery_v1/manifest.json",
+    "scripts/run_camera_inference_worker.py",
+)
+
 from bakery_scanner.benchmarking.gpu_worker_receipt import (
     STAGES as GPU_RECEIPT_STAGES,
     build_receipt,
@@ -146,25 +153,46 @@ def resolve_code_identity(root: Path) -> dict[str, str]:
         raise ValueError("benchmark evidence requires a resolvable git checkout") from exc
     if len(commit) not in (40, 64) or any(character not in "0123456789abcdef" for character in commit):
         raise ValueError("benchmark checkout commit is invalid")
-    files = (
-        repository / "pyproject.toml",
-        repository / "configs" / "gpu_rfdetr_classifier_policy.yaml",
-        repository / "models" / "rfdetr_large_bakery_v1" / "manifest.json",
-        repository / "policies" / "presentation" / "camera_action_state_v2.json",
-    )
+    return _compute_code_identity(repository, commit=commit)
+
+
+def _compute_code_identity(root: Path, *, commit: str) -> dict[str, str]:
+    """Hash the exact source/config/policy set staged by the child worker."""
+    base = Path(root).resolve()
+    records: list[str] = []
     try:
-        bound = "\n".join(
-            f"{path.relative_to(repository).as_posix()}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
-            for path in files
-        )
+        for relative in _ATTESTED_TREES:
+            tree = base / relative
+            if not tree.is_dir():
+                raise ValueError(f"benchmark attested tree is missing: {tree}")
+            for path in sorted(
+                (candidate for candidate in tree.rglob("*") if candidate.is_file()),
+                key=lambda candidate: candidate.relative_to(base).as_posix(),
+            ):
+                if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                    continue
+                records.append(_identity_record(base, path))
+        for relative in _ATTESTED_FILES:
+            path = base / relative
+            if not path.is_file():
+                raise ValueError(f"benchmark attested file is missing: {path}")
+            records.append(_identity_record(base, path))
     except OSError as exc:
         raise ValueError("benchmark code identity files are unavailable") from exc
+    bound = "\n".join(records)
     return {
         "code_commit": commit,
         "code_identity_sha256": hashlib.sha256(
             f"{commit}\n{bound}\n".encode("utf-8")
         ).hexdigest(),
     }
+
+
+def _identity_record(root: Path, path: Path) -> str:
+    return (
+        f"{path.relative_to(root).as_posix()}:"
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}"
+    )
 
 
 def _bound_repository_root(root: Path) -> Path:
@@ -185,6 +213,17 @@ def _require_stable_code_identity(
     observed = resolve_code_identity(root)
     if observed != dict(expected):
         raise ValueError("benchmark code identity changed during the benchmark")
+
+
+def _require_child_code_identity(
+    event: Mapping[str, object],
+    event_name: str,
+    expected: Mapping[str, str],
+) -> None:
+    """Require lifecycle evidence from the same exact checkout identity."""
+    identity = event.get("code_identity")
+    if not isinstance(identity, Mapping) or dict(identity) != dict(expected):
+        raise ValueError(f"worker {event_name} code identity does not match parent")
 
 
 def summarize_ms(values: Iterable[float]) -> dict[str, int | float]:
@@ -437,6 +476,7 @@ def run_grouped_benchmark(
             ready = _wait_for_ready(worker, startup_timeout_seconds)
             if ready.get("device") != protocol["device"]:
                 raise RuntimeError("worker did not start on protocol CUDA device")
+            _require_child_code_identity(ready, "ready", code_identity)
             for index in range(int(protocol["minimum_warmups"])):
                 sample = samples[index % len(samples)]
                 _analyze_sample(
@@ -457,8 +497,12 @@ def run_grouped_benchmark(
                     )
             worker.send({"type": "shutdown", "request_id": "benchmark-shutdown"})
             stopped = worker.receive(analysis_timeout_seconds)
-            if stopped != {"type": "stopped", "request_id": "benchmark-shutdown"}:
+            if (
+                stopped.get("type") != "stopped"
+                or stopped.get("request_id") != "benchmark-shutdown"
+            ):
                 raise RuntimeError("worker did not acknowledge shutdown")
+            _require_child_code_identity(stopped, "stopped", code_identity)
             if worker.wait(30.0) != 0:
                 raise RuntimeError("worker exited with a non-zero status")
             _require_stable_code_identity(root, code_identity)

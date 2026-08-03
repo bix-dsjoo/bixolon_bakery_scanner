@@ -33,6 +33,41 @@ def test_classifier_config_allows_explicit_cpu_smoke_runtime(tmp_path):
     assert config.runtime.device == "CPU"
 
 
+def test_classifier_config_uses_staged_policies_and_explicit_external_artifacts(
+    tmp_path,
+):
+    snapshot = tmp_path / "snapshot"
+    artifact_root = tmp_path / "external-artifacts"
+    (snapshot / "configs").mkdir(parents=True)
+    (snapshot / "policies" / "classification").mkdir(parents=True)
+    (snapshot / "configs" / "classifier_policy.yaml").write_text(
+        Path("configs/classifier_policy.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    for name in (
+        "policy_v2_manifest_rebound_cpu_smoke.json",
+        "fusion_local_or_global_consensus_margin_v1.json",
+    ):
+        (snapshot / "policies" / "classification" / name).write_bytes(
+            (Path("policies") / "classification" / name).read_bytes()
+        )
+
+    config = ClassifierConfig.load(
+        snapshot / "configs" / "classifier_policy.yaml",
+        artifact_root=artifact_root,
+    )
+
+    assert config.repvit.checkpoint == (
+        artifact_root / "models" / "repvit_m1_15plus5_v1" / "repvit_m1_15plus5_v1.pt"
+    ).resolve()
+    assert config.dinov3.support == (
+        artifact_root / "artifacts" / "e2e_current_source" / "classification" / "dinov3_vits16_support.pt"
+    ).resolve()
+    assert config.calibration.fusion_policy == (
+        snapshot / "policies" / "classification" / "fusion_local_or_global_consensus_margin_v1.json"
+    ).resolve()
+
+
 def test_cpu_runtime_accepts_batch_compile_options():
     runtime = ClassifierRuntimeConfig(
         device="CPU",

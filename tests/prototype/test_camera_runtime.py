@@ -809,7 +809,7 @@ def test_default_initialization_derives_applied_hashes_after_verified_boundaries
     backend.classifier.config = config
     monkeypatch.setattr(
         "bakery_scanner.prototype.camera_runtime._validate_classifier_artifacts",
-        lambda _root, _device: config,
+        lambda _root, _device, **_kwargs: config,
     )
     monkeypatch.setattr(
         "bakery_scanner.prototype.camera_runtime._load_default_backend",

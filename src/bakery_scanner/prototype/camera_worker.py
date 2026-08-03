@@ -54,6 +54,7 @@ def serve(
     *,
     runtime_factory: RuntimeFactory,
     stderr: TextIO | None = None,
+    code_identity: Mapping[str, str] | None = None,
 ) -> int:
     """Serve requests until shutdown or EOF, keeping stdout protocol-only."""
     diagnostics = stderr or sys.stderr
@@ -80,7 +81,7 @@ def serve(
         with contextlib.redirect_stdout(diagnostics):
             runtime = runtime_factory(emit_startup)
         emit_startup("warming")
-        emit(_ready_event(runtime))
+        emit(_ready_event(runtime, code_identity=code_identity))
     except Exception as exc:
         if runtime is not None:
             _close_runtime(runtime, diagnostics)
@@ -125,6 +126,8 @@ def serve(
         stopped: dict[str, object] = {"type": "stopped"}
         if stopped_request_id is not None:
             stopped["request_id"] = stopped_request_id
+        if code_identity is not None:
+            stopped["code_identity"] = dict(code_identity)
         emit(stopped)
     return 0
 
@@ -172,19 +175,27 @@ def _serve_analysis(
         )
 
 
-def _ready_event(runtime: CameraRuntime) -> dict[str, object]:
+def _ready_event(
+    runtime: CameraRuntime,
+    *,
+    code_identity: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     device = getattr(runtime, "device", None)
     if not isinstance(device, str) or not device:
         raise ValueError("runtime device must be a non-empty string")
     event: dict[str, object] = {"type": "ready", "device": device}
     startup_metrics = getattr(runtime, "startup_metrics", None)
     if startup_metrics is None:
+        if code_identity is not None:
+            event["code_identity"] = dict(code_identity)
         return event
     if is_dataclass(startup_metrics):
         startup_metrics = asdict(startup_metrics)
     if not isinstance(startup_metrics, Mapping):
         raise ValueError("runtime startup_metrics must be a mapping or dataclass")
     event["startup_metrics"] = dict(startup_metrics)
+    if code_identity is not None:
+        event["code_identity"] = dict(code_identity)
     return event
 
 
