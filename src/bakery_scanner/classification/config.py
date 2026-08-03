@@ -232,18 +232,24 @@ def _resolve_path(
     )
     if content_root is None or artifact_root is None:
         return resolved
-    if candidate.is_absolute() and require_artifact_containment:
-        if not _is_within(resolved, artifact_root):
+    if require_artifact_containment:
+        if candidate.is_absolute() and not _is_within(resolved, artifact_root):
             raise ValueError(
                 "configured model/artifact path must remain under artifact_root"
             )
-        return resolved
-    try:
-        relative = resolved.relative_to(content_root)
-    except ValueError:
-        return resolved
-    if relative.parts and relative.parts[0] in {"models", "artifacts"}:
+        if candidate.is_absolute():
+            return resolved
+        try:
+            relative = resolved.relative_to(content_root)
+        except ValueError as exc:
+            raise ValueError(
+                "configured model/artifact path must not escape staged content_root"
+            ) from exc
+        if not relative.parts or relative.parts[0] not in {"models", "artifacts"}:
+            raise ValueError("configured model/artifact path is outside staged artifact namespaces")
         return (artifact_root / relative).resolve()
+    if not _is_within(resolved, content_root):
+        raise ValueError("configured calibration/policy path must remain under content_root")
     return resolved
 
 

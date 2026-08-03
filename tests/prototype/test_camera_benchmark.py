@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts.benchmark_camera_worker import (
+    _StagedTreeLocks,
     _require_stable_code_identity,
     load_benchmark_protocol,
     load_external_manifest,
@@ -363,3 +364,25 @@ def test_grouped_runner_rechecks_identity_after_worker_shutdown(tmp_path, monkey
             manifest_path=manifest, protocol_path=protocol,
         )
     assert calls == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows mandatory sharing")
+def test_staged_tree_locks_reject_mutation_and_release_on_cleanup(tmp_path):
+    root = tmp_path / "staged"
+    root.mkdir()
+    locked = root / "locked.py"
+    locked.write_text("value = 1\n", encoding="utf-8")
+    locks = _StagedTreeLocks.acquire(root)
+    try:
+        with pytest.raises(PermissionError):
+            locked.write_text("value = 2\n", encoding="utf-8")
+        with pytest.raises(PermissionError):
+            locked.unlink()
+        (root / "new.py").write_text("new\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="staged tree changed"):
+            locks.require_unchanged_files()
+    finally:
+        locks.close()
+
+    locked.write_text("value = released\n", encoding="utf-8")
+    assert locked.read_text(encoding="utf-8") == "value = released\n"

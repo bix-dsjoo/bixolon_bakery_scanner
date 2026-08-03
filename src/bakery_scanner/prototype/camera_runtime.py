@@ -145,6 +145,7 @@ class CameraInferenceRuntime:
         backend: RuntimeBackend,
         startup_metrics: StartupMetrics,
         presentation_policy: PresentationPolicy,
+        sku_names: Mapping[int, str],
         clock: Callable[[], float],
     ) -> None:
         self._root = root
@@ -155,6 +156,7 @@ class CameraInferenceRuntime:
         self.device = startup_metrics.device
         self.startup_metrics = startup_metrics
         self._presentation_policy = presentation_policy
+        self._sku_names = dict(sku_names)
 
     @classmethod
     def initialize(
@@ -173,6 +175,7 @@ class CameraInferenceRuntime:
         artifact_root_path = (
             Path(artifact_root).resolve() if artifact_root is not None else root_path
         )
+        external_artifact_root = artifact_root_path if artifact_root is not None else None
         warmup_path = Path(warmup_image).resolve()
         if not root_path.is_dir():
             raise ValueError(f"repository root is missing: {root_path}")
@@ -193,7 +196,7 @@ class CameraInferenceRuntime:
         fallback_reason = None if cuda_available or normalized_preference == "cpu" else "cuda_unavailable"
 
         manifest = (
-            _load_detector_manifest(root_path, artifact_root=artifact_root_path)
+            _load_detector_manifest(root_path, artifact_root=external_artifact_root)
             if backend_loader is None
             else None
         )
@@ -208,14 +211,14 @@ class CameraInferenceRuntime:
                     config = _validate_classifier_artifacts(
                         root_path,
                         device,
-                        artifact_root=artifact_root_path,
+                        artifact_root=external_artifact_root,
                     )
                     backend = _load_default_backend(
                         manifest=manifest,
                         config=config,
                         config_path=_classifier_config_path(root_path, device),
                         device=device,
-                        artifact_root=artifact_root_path,
+                        artifact_root=external_artifact_root,
                     )
                 else:
                     backend = backend_loader(device)
@@ -283,6 +286,7 @@ class CameraInferenceRuntime:
                 backend=backend,
                 startup_metrics=metrics,
                 presentation_policy=presentation_policy,
+                sku_names=_load_sku_names(root_path),
                 clock=runtime_clock,
             )
         raise RuntimeError("runtime initialization exhausted device attempts")
@@ -411,7 +415,7 @@ class CameraInferenceRuntime:
         postprocess_started = _timestamp(self._clock, self.device)
         objects, counts, unknown_count = _aggregate_objects(
             decisions,
-            _load_sku_names(self._root),
+            self._sku_names,
         )
         presentation = self._presentation_policy.evaluate(
             proposals=objects,

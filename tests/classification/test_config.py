@@ -87,6 +87,31 @@ def test_classifier_config_rejects_absolute_model_paths_outside_artifact_root(
         ClassifierConfig.load(config_path, artifact_root=tmp_path / "artifacts")
 
 
+@pytest.mark.parametrize(
+    ("configured", "replacement", "message"),
+    [
+        ("../models/repvit_m1_15plus5_v1/repvit_m1_15plus5_v1.pt", "../../escape.pt", "content_root"),
+        ("../models/dinov3_vits16_15plus5_v1/dinov3_vits16_pretrain_lvd1689m-08c60483.pth", "../../escape.pth", "content_root"),
+        ("../policies/classification/policy_fail_closed_v2.json", "../../escape-policy.json", "content_root"),
+        ("../policies/classification/fusion_local_or_global_consensus_margin_v1.json", "../../escape-fusion.json", "content_root"),
+    ],
+)
+def test_staged_config_rejects_relative_escapes_for_every_path_class(
+    tmp_path, configured, replacement, message
+):
+    config_path = tmp_path / "content" / "configs" / "classifier_policy.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        Path("configs/classifier_policy.yaml")
+            .read_text(encoding="utf-8")
+            .replace(configured, replacement),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ClassifierConfig.load(config_path, artifact_root=tmp_path / "artifact-root")
+
+
 def test_cpu_runtime_accepts_batch_compile_options():
     runtime = ClassifierRuntimeConfig(
         device="CPU",

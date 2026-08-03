@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import queue
 import shutil
 import subprocess
@@ -48,6 +49,93 @@ MINIMUM_MEASURED_RUNS = 20
 STARTUP_EVENT_TYPES = frozenset({"loading", "warming", "ready"})
 EXPECTED_TIMING_STAGES = GPU_RECEIPT_STAGES
 _EOF = object()
+
+
+class _StagedTreeLocks:
+    """Windows share-deny handles held through the complete worker lifecycle."""
+
+    def __init__(
+        self,
+        root: Path,
+        handles: list[int],
+        records: Mapping[str, str] | None = None,
+    ) -> None:
+        self._root = root
+        self._handles = handles
+        self._records = dict(records or {})
+
+    @classmethod
+    def acquire(cls, root: Path) -> "_StagedTreeLocks":
+        if os.name != "nt":
+            raise ValueError("GPU evidence staging requires Windows mandatory locks")
+        import ctypes
+        from ctypes import wintypes
+
+        create_file = ctypes.windll.kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        invalid = wintypes.HANDLE(-1).value
+        generic_read = 0x80000000
+        file_share_read = 0x00000001
+        open_existing = 3
+        file_attribute_normal = 0x80
+        file_flag_backup_semantics = 0x02000000
+        paths = sorted(
+            (root, *(path for path in root.rglob("*") if path.is_file() or path.is_dir())),
+            key=lambda path: (len(path.parts), str(path).lower()),
+        )
+        handles: list[int] = []
+        try:
+            for path in paths:
+                flags = file_attribute_normal
+                if path.is_dir():
+                    flags |= file_flag_backup_semantics
+                handle = create_file(
+                    str(path), generic_read, file_share_read, None, open_existing, flags, None
+                )
+                if handle == invalid:
+                    raise OSError(ctypes.get_last_error(), f"could not lock staged path: {path}")
+                handles.append(handle)
+            records = {
+                path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in paths
+                if path.is_file()
+            }
+            return cls(root, handles, records)
+        except Exception:
+            cls(root, handles).close()
+            raise ValueError("could not acquire mandatory staged-tree locks")
+
+    def require_unchanged_files(self) -> None:
+        records = {
+            path.relative_to(self._root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in self._root.rglob("*")
+            if path.is_file()
+        }
+        if records != self._records:
+            raise ValueError("benchmark staged tree changed while worker was running")
+
+    def require_identity(self, expected: Mapping[str, str]) -> None:
+        self.require_unchanged_files()
+        if _compute_code_identity(self._root, commit=expected["code_commit"]) != dict(expected):
+            raise ValueError("benchmark staged tree changed while worker was running")
+
+    def close(self) -> None:
+        if not self._handles:
+            return
+        import ctypes
+
+        for handle in reversed(self._handles):
+            ctypes.windll.kernel32.CloseHandle(handle)
+        self._handles.clear()
 
 
 def validate_run_count(run_count: int) -> int:
@@ -507,10 +595,17 @@ def run_grouped_benchmark(
             != code_identity
         ):
             raise ValueError("benchmark source changed while creating staged snapshot")
+        locks = _StagedTreeLocks.acquire(snapshot)
+        try:
+            locks.require_identity(code_identity)
+        except Exception:
+            locks.close()
+            raise ValueError("benchmark staged tree changed before locking completed")
         entrypoint = snapshot / _STAGED_ENTRYPOINT
         entrypoint_sha256 = hashlib.sha256(entrypoint.read_bytes()).hexdigest()
         command = (
             str(python_path),
+            "-B",
             "-u",
             "-c",
             _STAGED_BOOTSTRAP,
@@ -569,6 +664,7 @@ def run_grouped_benchmark(
                 _require_child_code_identity(stopped, "stopped", code_identity)
                 if worker.wait(30.0) != 0:
                     raise RuntimeError("worker exited with a non-zero status")
+                locks.require_identity(code_identity)
                 _require_stable_code_identity(root, code_identity)
                 return build_benchmark_report(
                     ready,
@@ -587,6 +683,8 @@ def run_grouped_benchmark(
                     exc.add_note(f"worker diagnostics:\n{detail[-8000:]}")
                 raise
     finally:
+        if "locks" in locals():
+            locks.close()
         staging.cleanup()
 
 
