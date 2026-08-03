@@ -38,7 +38,15 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
         "request_id": "request-1",
         "objects": [
             {"object_id": "object-1", "sku_id": 6},
-            {"object_id": "object-2", "sku_id": None},
+            {
+                "object_id": "object-2",
+                "sku_id": None,
+                "top3": [
+                    {"rank": 1, "sku_id": 4, "score": 0.41},
+                    {"rank": 2, "sku_id": 2, "score": 0.32},
+                    {"rank": 3, "sku_id": 7, "score": 0.27},
+                ],
+            },
         ],
         "presentation": presentation,
     }
@@ -168,6 +176,63 @@ def test_validate_result_event_accepts_each_consistent_presentation_state(
     presentation,
 ):
     camera_protocol.validate_result_event(_result(presentation))
+
+
+def test_validate_result_event_accepts_v2_unknown_with_exact_top3():
+    camera_protocol.validate_result_event(
+        _result(
+            _presentation(
+                state="unknown",
+                candidate_object_ids=["object-2"],
+                policy_id="camera_action_state_v2",
+            )
+        )
+    )
+
+
+def test_validate_result_event_rejects_v2_candidate_evidence_retake():
+    with pytest.raises(ValueError, match="inconsistent"):
+        camera_protocol.validate_result_event(
+            _result(
+                _presentation(
+                    state="needs_retake",
+                    final_count_usable=False,
+                    retake_scope="object",
+                    retake_object_ids=["object-2"],
+                    instruction_code="candidate_evidence_weak",
+                    policy_id="camera_action_state_v2",
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "top3",
+    [
+        [],
+        [
+            {"rank": 1, "sku_id": 4, "score": 0.41},
+            {"rank": 2, "sku_id": 2, "score": 0.32},
+        ],
+        [
+            {"rank": 1, "sku_id": 4, "score": 0.41},
+            {"rank": 1, "sku_id": 2, "score": 0.32},
+            {"rank": 3, "sku_id": 7, "score": 0.27},
+        ],
+    ],
+)
+def test_validate_result_event_requires_exact_ranked_top3_for_v2_candidate(top3):
+    result = _result(
+        _presentation(
+            state="unknown",
+            candidate_object_ids=["object-2"],
+            policy_id="camera_action_state_v2",
+        )
+    )
+    result["objects"][1]["top3"] = top3
+
+    with pytest.raises(ValueError, match="Top3"):
+        camera_protocol.validate_result_event(result)
 
 
 @pytest.mark.parametrize(

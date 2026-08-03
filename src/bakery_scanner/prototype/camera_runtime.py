@@ -201,7 +201,10 @@ class CameraInferenceRuntime:
                     backend = backend_loader(device)
                 _validate_backend(backend, device)
                 presentation_policy = PresentationPolicy.load(
-                    root_path / "configs" / "camera_presentation_policy.json"
+                    root_path
+                    / "policies"
+                    / "presentation"
+                    / "camera_action_state_v2.json"
                 )
                 load_finished = _timestamp(runtime_clock, device)
             except Exception:

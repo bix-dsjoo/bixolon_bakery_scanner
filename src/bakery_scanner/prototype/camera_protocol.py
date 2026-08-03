@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -19,7 +20,9 @@ _PRESENTATION_FIELDS = {
     "policy_id",
     "policy_sha256",
 }
-_POLICY_ID = "camera_action_state_v1"
+_V1_POLICY_ID = "camera_action_state_v1"
+_V2_POLICY_ID = "camera_action_state_v2"
+_POLICY_IDS = frozenset({_V1_POLICY_ID, _V2_POLICY_ID})
 _LOWER_HEX = frozenset("0123456789abcdef")
 
 
@@ -145,7 +148,8 @@ def validate_result_event(result: Mapping[str, object]) -> None:
         raise ValueError("runtime result final_count_usable is invalid")
     if retake_scope is not None and retake_scope not in ("scan", "object"):
         raise ValueError("runtime result retake_scope is invalid")
-    if presentation["policy_id"] != _POLICY_ID:
+    policy_id = presentation["policy_id"]
+    if policy_id not in _POLICY_IDS:
         raise ValueError("runtime result presentation policy ID is invalid")
     policy_sha256 = presentation["policy_sha256"]
     if (
@@ -181,6 +185,7 @@ def validate_result_event(result: Mapping[str, object]) -> None:
             or not set(candidate_ids).issubset(unknown_ids)
         ):
             raise ValueError("unknown presentation state is inconsistent")
+        _require_exact_ranked_top3(result.get("objects"), candidate_ids)
         return
     if final_count_usable is not False or candidate_ids or retake_scope not in (
         "scan",
@@ -194,10 +199,60 @@ def validate_result_event(result: Mapping[str, object]) -> None:
     if (
         not retake_ids
         or not set(retake_ids).issubset(object_ids)
-        or instruction_code
-        not in {"separate_breads", "candidate_evidence_weak"}
+        or (
+            policy_id == _V2_POLICY_ID
+            and instruction_code != "separate_breads"
+        )
+        or (
+            policy_id == _V1_POLICY_ID
+            and instruction_code
+            not in {"separate_breads", "candidate_evidence_weak"}
+        )
     ):
         raise ValueError("object retake presentation state is inconsistent")
+
+
+def _require_exact_ranked_top3(
+    value: object, candidate_ids: tuple[str, ...]
+) -> None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("runtime result objects must be a sequence")
+    objects = {
+        item.get("object_id"): item
+        for item in value
+        if isinstance(item, Mapping)
+    }
+    for object_id in candidate_ids:
+        raw_top3 = objects[object_id].get("top3")
+        if (
+            not isinstance(raw_top3, list)
+            or len(raw_top3) != 3
+            or any(not isinstance(item, Mapping) for item in raw_top3)
+        ):
+            raise ValueError("runtime result candidate Top3 is invalid")
+        ranks = tuple(item.get("rank") for item in raw_top3)
+        sku_ids = tuple(item.get("sku_id") for item in raw_top3)
+        scores = tuple(item.get("score") for item in raw_top3)
+        if ranks != (1, 2, 3):
+            raise ValueError("runtime result candidate Top3 ranks are invalid")
+        if (
+            any(
+                isinstance(sku_id, bool)
+                or not isinstance(sku_id, int)
+                or not 1 <= sku_id <= 20
+                for sku_id in sku_ids
+            )
+            or len(set(sku_ids)) != 3
+        ):
+            raise ValueError("runtime result candidate Top3 SKUs are invalid")
+        if any(
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not math.isfinite(float(score))
+            or not 0.0 <= float(score) <= 1.0
+            for score in scores
+        ):
+            raise ValueError("runtime result candidate Top3 scores are invalid")
 
 
 def _result_object_ids(value: object) -> tuple[set[str], set[str]]:

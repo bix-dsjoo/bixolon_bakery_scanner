@@ -690,6 +690,91 @@ END
   );
 
   test(
+    'Top3 and catalog resolutions retain separate immutable Unknown evidence',
+    () async {
+      final top3Product = Product(
+        productId: 'product-cream-donut',
+        displayName: 'Cream Donut',
+        unitPrice: 3200,
+        recognitionSkuId: 11,
+        categoryId: 'donut',
+        photoAssetPath: null,
+        active: true,
+        sortOrder: 2,
+      );
+      await _seedProduct(db, revision, top3Product);
+      final sessionId = await _beginSession(store, revision);
+      await _completeAttempt(store, sessionId);
+      final unknown = buildUiInferenceResult().objects.singleWhere(
+        (object) => object.isUnknown,
+      );
+
+      await store.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: sessionId,
+          inferenceObject: unknown,
+          product: top3Product,
+          source: CustomerResolutionSource.customerTop3,
+          resolvedAt: DateTime.utc(2026, 7, 30, 7, 45),
+        ),
+      );
+      await store.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: sessionId,
+          inferenceObject: unknown,
+          product: product,
+          source: CustomerResolutionSource.customerCatalog,
+          resolvedAt: DateTime.utc(2026, 7, 30, 7, 46),
+        ),
+      );
+
+      final persistedUnknown = await (db.select(db.inferenceObjects)..where(
+            (row) => row.objectId.equals(unknown.objectId),
+          ))
+          .getSingle();
+      final persistedCandidates = await (db.select(db.inferenceCandidates)
+            ..where(
+              (row) =>
+                  row.inferenceObjectId.equals(
+                    persistedUnknown.inferenceObjectId,
+                  ),
+            )
+            ..orderBy([(row) => OrderingTerm.asc(row.rank)]))
+          .get();
+      final resolutions = await (db.select(db.objectResolutions)
+            ..where(
+              (row) =>
+                  row.inferenceObjectId.equals(
+                    persistedUnknown.inferenceObjectId,
+                  ),
+            )
+            ..orderBy([(row) => OrderingTerm.asc(row.resolvedAtUs)]))
+          .get();
+
+      expect(resolutions, hasLength(2));
+      expect(
+        resolutions.map((row) => row.source),
+        [
+          CustomerResolutionSource.customerTop3.storageValue,
+          CustomerResolutionSource.customerCatalog.storageValue,
+        ],
+      );
+      expect(resolutions.map((row) => row.candidateRank), [2, null]);
+      expect(
+        resolutions.map((row) => row.inferenceObjectId),
+        everyElement(persistedUnknown.inferenceObjectId),
+      );
+      expect(persistedUnknown.skuId, isNull);
+      expect(persistedUnknown.provenanceJson, jsonEncode(unknown.provenance));
+      expect(
+        persistedCandidates.map((row) => (row.rank, row.skuId, row.score)),
+        unknown.candidates
+            .map((candidate) => (candidate.rank, candidate.skuId, candidate.score)),
+      );
+    },
+  );
+
+  test(
     'registered resolution source exactly follows AI product identity',
     () async {
       final otherProduct = Product(

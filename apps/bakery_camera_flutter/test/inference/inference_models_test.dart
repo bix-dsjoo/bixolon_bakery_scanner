@@ -25,6 +25,47 @@ void main() {
     expect(result.timings.totalMs, 42.0);
   });
 
+  test('accepts camera action state v2 while preserving exact Top3', () {
+    final presentation = _presentationJson(
+      state: 'unknown',
+      candidateObjectIds: const ['object-1'],
+      policyId: 'camera_action_state_v2',
+    );
+    final result = InferenceResult.fromJson(
+      _resultJson(
+        objects: [_unknownObject('object-1')],
+        counts: const {},
+        unknownCount: 1,
+        presentation: presentation,
+      ),
+    );
+
+    expect(result.presentation.policyId, 'camera_action_state_v2');
+    expect(result.objects.single.candidates, hasLength(3));
+    expect(result.objects.single.candidates.map((row) => row.rank), [1, 2, 3]);
+  });
+
+  test('camera action state v2 rejects candidate evidence weak retake', () {
+    expect(
+      () => InferenceResult.fromJson(
+        _resultJson(
+          objects: [_unknownObject('object-1')],
+          counts: const {},
+          unknownCount: 1,
+          presentation: _presentationJson(
+            state: 'needs_retake',
+            finalCountUsable: false,
+            retakeScope: 'object',
+            retakeObjectIds: const ['object-1'],
+            instructionCode: 'candidate_evidence_weak',
+            policyId: 'camera_action_state_v2',
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test('parses object retake without changing canonical counts', () {
     final result = InferenceResult.fromJson(
       _resultJson(
@@ -569,6 +610,7 @@ Map<String, Object?> _presentationJson({
   List<String> retakeObjectIds = const [],
   String? instructionCode,
   List<String> candidateObjectIds = const [],
+  String policyId = 'camera_action_state_v1',
 }) {
   return {
     'state': state,
@@ -577,7 +619,7 @@ Map<String, Object?> _presentationJson({
     'retake_object_ids': retakeObjectIds,
     'instruction_code': instructionCode,
     'candidate_object_ids': candidateObjectIds,
-    'policy_id': 'camera_action_state_v1',
+    'policy_id': policyId,
     'policy_sha256': '1' * 64,
   };
 }

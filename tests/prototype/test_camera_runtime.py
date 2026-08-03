@@ -232,6 +232,12 @@ def class_map(tmp_path: Path) -> None:
         b'"candidate_top1_min_score":0.3,"policy_id":"camera_action_state_v1",'
         b'"schema_version":1}'
     )
+    presentation_dir = tmp_path / "policies" / "presentation"
+    presentation_dir.mkdir(parents=True, exist_ok=True)
+    (presentation_dir / "camera_action_state_v2.json").write_bytes(
+        b'{"box_overlap_iou":0.7,"policy_id":"camera_action_state_v2",'
+        b'"schema_version":2}'
+    )
 
 
 @pytest.fixture
@@ -694,7 +700,7 @@ def test_analyze_returns_deterministic_fail_closed_result_contract(tmp_path: Pat
     ]
 
 
-def test_analyze_marks_weak_unknown_for_object_retake_without_changing_counts(
+def test_analyze_routes_weak_unknown_to_top3_without_changing_counts(
     tmp_path: Path,
 ):
     warmup_image = _write_image(tmp_path / "warm.jpg")
@@ -728,15 +734,15 @@ def test_analyze_marks_weak_unknown_for_object_retake_without_changing_counts(
     assert result["counts"] == {"6": 1}
     assert result["unknown_count"] == 1
     assert result["presentation"] == {
-        "state": "needs_retake",
-        "final_count_usable": False,
-        "retake_scope": "object",
-        "retake_object_ids": ["object-2"],
-        "instruction_code": "candidate_evidence_weak",
-        "candidate_object_ids": [],
-        "policy_id": "camera_action_state_v1",
+        "state": "unknown",
+        "final_count_usable": True,
+        "retake_scope": None,
+        "retake_object_ids": [],
+        "instruction_code": None,
+        "candidate_object_ids": ["object-2"],
+        "policy_id": "camera_action_state_v2",
         "policy_sha256": (
-            "0a15a5c208d8a86e8b1d94e34c0acaf9232e48cc72abdb1c928fb47986404a89"
+            "d668324f7743096e83d59b64040335aa8f6bb974ba95d768915f4b39b2178b7c"
         ),
     }
 

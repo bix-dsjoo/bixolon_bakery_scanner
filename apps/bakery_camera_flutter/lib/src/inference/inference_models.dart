@@ -398,7 +398,8 @@ final class InferencePresentation {
       json['policy_id'],
       'presentation policy_id',
     );
-    if (policyId != 'camera_action_state_v1') {
+    if (policyId != 'camera_action_state_v1' &&
+        policyId != 'camera_action_state_v2') {
       throw const FormatException('presentation policy_id is invalid');
     }
     final policySha256 = _requiredString(
@@ -466,8 +467,11 @@ final class InferencePresentation {
             }
           case RetakeScope.object:
             if (retakeObjectIds.isEmpty ||
-                (instruction != RetakeInstruction.separateBreads &&
-                    instruction != RetakeInstruction.candidateEvidenceWeak)) {
+                (policyId == 'camera_action_state_v2'
+                    ? instruction != RetakeInstruction.separateBreads
+                    : instruction != RetakeInstruction.separateBreads &&
+                          instruction !=
+                              RetakeInstruction.candidateEvidenceWeak)) {
               throw const FormatException(
                 'object retake presentation state is inconsistent',
               );

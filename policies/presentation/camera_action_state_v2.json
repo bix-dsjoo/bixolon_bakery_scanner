@@ -1,0 +1,5 @@
+{
+  "box_overlap_iou": 0.7,
+  "policy_id": "camera_action_state_v2",
+  "schema_version": 2
+}
