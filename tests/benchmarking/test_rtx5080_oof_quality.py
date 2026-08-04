@@ -10,10 +10,11 @@ from bakery_scanner.benchmarking.oof15plus5 import GroundTruthObject, OofEvaluat
 PROVENANCE = {"split_sha256":"1" * 64,"source_evidence_sha256":"2" * 64,"detector_sha256":"3" * 64,"repvit_checkpoint_sha256":"4" * 64,"repvit_prototype_sha256":"5" * 64,"dinov3_weights_sha256":"6" * 64,"dinov3_support_sha256":"7" * 64,"dinov3_local_bank_sha256":"8" * 64,"preprocess_sha256":"9" * 64,"fold_policy_sha256":"a" * 64,"code_sha256":"b" * 64,"runtime_sha256":"c" * 64,"dino_global_fold_index":0,"dino_local_fold_index":0,"dino_global_split_sha256":"1" * 64,"dino_local_split_sha256":"1" * 64,"dino_global_source_evidence_sha256":"2" * 64,"dino_local_source_evidence_sha256":"2" * 64,"dino_global_runtime_sha256":"c" * 64,"dino_local_runtime_sha256":"c" * 64,"dino_local_model_sha256":"6" * 64,"dino_global_preprocess_sha256":"9" * 64,"dino_local_preprocess_sha256":"9" * 64}
 
 
-def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan") -> OofEvaluationRow:
+def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan", evidence_kind: str = "observed", source_scene_id: str | None = None, variant_id: str | None = None) -> OofEvaluationRow:
     truth = tuple(GroundTruthObject(f"g{i}", i + 1, (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1) for i in range(count))
     predictions = tuple(PredictionObject(f"p{i}", (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1, "unknown" if unknown else "auto_approved", None if unknown else (20 if wrong and i == 0 else i + 1), (1, 2, 3) if unknown else ()) for i in range(count))
-    return OofEvaluationRow(scene_id=scene_id or f"scene-{fold_index}-{count}", fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind="observed", ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, **{**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index})
+    resolved_scene_id = scene_id or f"scene-{fold_index}-{count}"
+    return OofEvaluationRow(scene_id=resolved_scene_id, fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(resolved_scene_id,) if evidence_kind == "observed" else (source_scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind=evidence_kind, ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, source_scene_id=source_scene_id or resolved_scene_id, variant_id=variant_id, **{**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index})
 
 
 @pytest.mark.parametrize(("fusion", "local", "repvit", "dino", "margin", "accepted"), [(4, 4, 1, 2, 0.0, True), (4, 2, 4, 4, 0.85, True), (4, 2, 4, 4, 0.849999, False), (4, 2, 4, 3, 0.99, False)])
@@ -30,7 +31,7 @@ def test_one_wrong_auto_approval_quality_rejects():
 def test_all_unknown_cannot_pass_utility_and_is_not_a_wrong_sku():
     receipt = evaluate_oof((_scene(unknown=True),), {0: "a" * 64})
     assert receipt.quality.wrong_auto_approval_count == 0
-    assert receipt.status == "utility-rejected"
+    assert receipt.status == "unverified"
     assert receipt.unknown_count == 1
 
 
@@ -100,7 +101,7 @@ def test_global_and_local_dino_evidence_cannot_mix_fold_or_source_identity():
         replace(_scene(scene_id="different-scene"), dino_local_preprocess_sha256="d" * 64)
 
 
-def test_mostly_unknown_predictions_are_utility_rejected_not_quality_accepted():
+def test_missing_required_evidence_precedes_a_known_utility_floor_violation():
     base = _scene(count=10)
     predictions = tuple(
         PredictionObject(
@@ -116,7 +117,8 @@ def test_mostly_unknown_predictions_are_utility_rejected_not_quality_accepted():
 
     receipt = evaluate_oof((replace(base, predictions=predictions),), {0: "a" * 64})
 
-    assert receipt.status == "utility-rejected"
+    assert receipt.status == "unverified"
+    assert "counterfactual_completeness_block_rate" in receipt.utility.missing_required_slices
 
 
 def test_freeze_rejects_a_quality_rejected_five_fold_receipt():
@@ -135,8 +137,37 @@ def test_partial_self_declared_fold_receipt_is_unverified():
     receipt = evaluate_oof((_scene(),), {0: "a" * 64})
 
     assert receipt.status == "unverified"
+    assert "missing_policy_fold:1" in receipt.unverified_reasons
+    assert any(reason.startswith("missing_observed_scene:0:") for reason in receipt.unverified_reasons)
 
 
 def test_needs_retake_cannot_carry_partial_final_predictions():
     with pytest.raises(ValueError, match="needs_retake"):
         replace(_scene(), state="needs_retake")
+
+
+def test_counterfactual_requires_a_distinct_deterministic_variant_of_an_observed_scene():
+    observed = _scene(scene_id="source-0")
+    with pytest.raises(ValueError, match="counterfactual"):
+        _scene(
+        scene_id="source-0",
+        count=0,
+            evidence_kind="counterfactual",
+            source_scene_id="source-0",
+            variant_id="missing",
+            state="needs_retake",
+            expected_state="needs_retake",
+        )
+    counterfactual = _scene(
+        scene_id="source-0::counterfactual::split-v1",
+        count=0,
+        evidence_kind="counterfactual",
+        source_scene_id="source-0",
+        variant_id="split-v1",
+        state="needs_retake",
+        expected_state="needs_retake",
+    )
+    receipt = evaluate_oof((observed, counterfactual), {0: "a" * 64})
+
+    assert receipt.report_slices["evidence_kind"] == {"counterfactual": 1, "observed": 1}
+    assert receipt.status == "unverified"

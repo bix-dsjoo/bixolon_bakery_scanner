@@ -134,9 +134,14 @@ class OofEvaluationRow:
     final_policy_sha256: str | None = None
     expected_state: Literal["accepted_scan", "needs_retake", "no_target_detected"] | None = None
     evidence_status: Literal["verified"] = "verified"
+    source_scene_id: str | None = None
+    variant_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.scene_id or self.scene_id not in self.declared_evaluation_scene_ids:
+        if self.evidence_kind not in {"observed", "counterfactual"}:
+            raise ValueError("evaluation evidence kind is invalid")
+        declared_identity = self.scene_id if self.evidence_kind == "observed" else self.source_scene_id
+        if not self.scene_id or declared_identity not in self.declared_evaluation_scene_ids:
             raise ValueError("scene must be declared for evaluation")
         if type(self.fold_index) is not int or self.fold_index not in range(5):
             raise ValueError("evaluation fold is invalid")
@@ -184,6 +189,18 @@ class OofEvaluationRow:
             raise ValueError("expected scan state is invalid")
         if self.evidence_status != "verified":
             raise ValueError("OOF evidence must have verified input status")
+        if self.evidence_kind == "observed":
+            if self.source_scene_id != self.scene_id or self.variant_id is not None:
+                raise ValueError("observed evidence must bind its own source scene without a variant")
+        elif self.evidence_kind == "counterfactual":
+            if (
+                not isinstance(self.source_scene_id, str)
+                or not self.source_scene_id
+                or not isinstance(self.variant_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", self.variant_id)
+                or self.scene_id != f"{self.source_scene_id}::counterfactual::{self.variant_id}"
+            ):
+                raise ValueError("counterfactual evidence requires a distinct deterministic variant identity")
         if self.final_policy_sha256 is not None:
             raise ValueError("final policy/OOF receipt circularity is forbidden")
 
@@ -233,8 +250,9 @@ class OofAcceptanceReceipt:
     report_slices: Mapping[str, Mapping[str, int]]
     quality_claims_by_count: Mapping[str, str | None]
     policy_by_fold: Mapping[int, str]
-    provenance_by_fold: Mapping[int, Mapping[str, str]]
+    provenance_by_fold: Mapping[int, Mapping[str, Mapping[str, str]]]
     seed_by_fold: Mapping[int, int]
+    unverified_reasons: tuple[str, ...] = ()
     sample_size_limit: str = "Exact one-sided 95% bounds describe only the observed OOF sample; they do not establish a 0.1% production-risk claim."
     schema_version: int = 1
 
@@ -344,8 +362,9 @@ def _load_utility_floors() -> Mapping[str, Mapping[str, float]]:
     return result
 
 
-def _manifest_is_complete(rows: tuple[OofEvaluationRow, ...]) -> bool:
+def _manifest_missing_identities(rows: tuple[OofEvaluationRow, ...]) -> tuple[str, ...]:
     """Require the exact checked-in evaluation scene identity, not row claims."""
+    missing: list[str] = []
     try:
         expected: dict[int, tuple[tuple[str, ...], str, str, int]] = {}
         for fold in range(5):
@@ -353,22 +372,27 @@ def _manifest_is_complete(rows: tuple[OofEvaluationRow, ...]) -> bool:
             scenes = value["scene_ids"]["evaluation"]
             expected[fold] = (tuple(scenes), value["manifest_sha256"], value["source_sha256"], value["seed"])
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
-        return False
-    observed_by_fold = {fold: tuple(sorted(row.scene_id for row in rows if row.fold_index == fold)) for fold in range(5)}
+        return ("canonical_split_manifest_unavailable",)
+    observed_by_fold = {
+        fold: tuple(sorted(row.scene_id for row in rows if row.fold_index == fold and row.evidence_kind == "observed"))
+        for fold in range(5)
+    }
     for fold, (scene_ids, manifest_sha, source_sha, seed) in expected.items():
-        fold_rows = tuple(row for row in rows if row.fold_index == fold)
-        if (
-            observed_by_fold[fold] != tuple(sorted(scene_ids))
-            or any(
-                row.declared_evaluation_scene_ids != tuple(scene_ids)
-                or row.split_sha256 != manifest_sha
-                or row.source_evidence_sha256 != source_sha
-                or row.seed != seed
-                for row in fold_rows
-            )
-        ):
-            return False
-    return True
+        fold_rows = tuple(row for row in rows if row.fold_index == fold and row.evidence_kind == "observed")
+        expected_set = set(scene_ids)
+        observed_set = set(observed_by_fold[fold])
+        missing.extend(f"missing_observed_scene:{fold}:{scene_id}" for scene_id in sorted(expected_set - observed_set))
+        missing.extend(f"unexpected_observed_scene:{fold}:{scene_id}" for scene_id in sorted(observed_set - expected_set))
+        for row in fold_rows:
+            if row.declared_evaluation_scene_ids != tuple(scene_ids):
+                missing.append(f"declared_evaluation_identity_mismatch:{fold}:{row.scene_id}")
+            if row.split_sha256 != manifest_sha:
+                missing.append(f"split_identity_mismatch:{fold}:{row.scene_id}")
+            if row.source_evidence_sha256 != source_sha:
+                missing.append(f"source_identity_mismatch:{fold}:{row.scene_id}")
+            if row.seed != seed:
+                missing.append(f"seed_identity_mismatch:{fold}:{row.scene_id}")
+    return tuple(sorted(set(missing)))
 
 
 def _utility_metrics(
@@ -458,6 +482,17 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         raise ValueError("OOF evaluation rows must not be empty")
     if len({row.scene_id for row in checked}) != len(checked):
         raise ValueError("duplicate evaluation scene/object rows")
+    observed_sources = {
+        (row.fold_index, row.scene_id)
+        for row in checked
+        if row.evidence_kind == "observed"
+    }
+    if any(
+        row.evidence_kind == "counterfactual"
+        and (row.fold_index, row.source_scene_id) not in observed_sources
+        for row in checked
+    ):
+        raise ValueError("counterfactual source must reference an observed evaluation scene in the same fold")
     for fold, digest in policy_by_fold.items():
         if type(fold) is not int or fold not in range(5) or not _SHA256.fullmatch(digest):
             raise ValueError("fold policy mapping is invalid")
@@ -465,7 +500,7 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         raise ValueError("OOF evaluation accepts only evaluation role")
     if any(policy_by_fold.get(row.fold_index) != row.fold_policy_sha256 for row in checked):
         raise ValueError("fold policy identity mismatch")
-    provenance_by_fold: dict[int, dict[str, str]] = {}
+    provenance_by_fold: dict[int, dict[str, dict[str, str]]] = {}
     seed_by_fold: dict[int, int] = {}
     for row in checked:
         identity = {
@@ -473,11 +508,12 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
             for field in (*_HASH_FIELDS, *_DINO_BINDING_HASH_FIELDS)
             if field != "fold_policy_sha256"
         }
-        if row.fold_index in provenance_by_fold and provenance_by_fold[row.fold_index] != identity:
+        by_kind = provenance_by_fold.setdefault(row.fold_index, {})
+        if row.evidence_kind in by_kind and by_kind[row.evidence_kind] != identity:
             raise ValueError("evaluation evidence identity mismatch")
         if row.fold_index in seed_by_fold and seed_by_fold[row.fold_index] != row.seed:
             raise ValueError("evaluation seed mismatch")
-        provenance_by_fold[row.fold_index] = identity
+        by_kind[row.evidence_kind] = identity
         seed_by_fold[row.fold_index] = row.seed
 
     counts = {name: 0 for name in ("miss", "duplicate", "non_target", "split", "merge", "count", "order", "wrong")}
@@ -547,14 +583,14 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         scan_sample_size=len(checked), object_sample_size=sum(len(row.ground_truth) for row in checked),
     )
     utility = _utility_metrics(checked, matched_by_scene)
-    manifest_complete = _manifest_is_complete(checked)
+    manifest_missing = _manifest_missing_identities(checked)
     complete_policy_set = set(policy_by_fold) == _EXPECTED_FOLDS
     if critical_scenes or counts["wrong"]:
         status = "quality-rejected"
+    elif manifest_missing or not complete_policy_set or utility.missing_required_slices:
+        status = "unverified"
     elif utility.has_violation:
         status = "utility-rejected"
-    elif not manifest_complete or not complete_policy_set or utility.missing_required_slices:
-        status = "unverified"
     else:
         status = "quality-accepted"
     return OofAcceptanceReceipt(
@@ -564,6 +600,11 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         top3_rank_hits=top3, object_count_slices=object_slices, report_slices=report,
         quality_claims_by_count={"count_1_2": None, "count_3_7": "current_oof_evidence", "count_8_plus": None},
         policy_by_fold=dict(policy_by_fold), provenance_by_fold=provenance_by_fold, seed_by_fold=seed_by_fold,
+        unverified_reasons=tuple(sorted(
+            (*manifest_missing, *utility.missing_required_slices,
+             *(f"missing_policy_fold:{fold}" for fold in sorted(_EXPECTED_FOLDS - set(policy_by_fold))),
+             *(f"unexpected_policy_fold:{fold}" for fold in sorted(set(policy_by_fold) - _EXPECTED_FOLDS)))
+        )),
     )
 
 
