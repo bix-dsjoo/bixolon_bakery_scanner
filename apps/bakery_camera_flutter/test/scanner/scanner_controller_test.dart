@@ -701,9 +701,10 @@ final class FakeMonotonicClock {
 StartupMetrics _startupMetrics() {
   return StartupMetrics(
     device: 'cpu',
+    runtimeMode: RuntimeMode.cpuReference,
     loadMs: 120,
     warmupMs: 30,
-    fallbackReason: null,
+    fallbackReason: 'CPU reference runtime selected',
     detectorId: 'rfdetr_large_bakery_v1',
     repvitId: 'repvit_m1_15plus5_v1',
     dinov3Id: 'dinov3_vits16_15plus5_v1',

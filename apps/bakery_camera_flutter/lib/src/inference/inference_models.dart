@@ -326,7 +326,7 @@ final class InferenceDiagnostics {
 final class StartupMetrics {
   StartupMetrics({
     required this.device,
-    RuntimeMode? runtimeMode,
+    required this.runtimeMode,
     required this.loadMs,
     required this.warmupMs,
     required this.fallbackReason,
@@ -336,14 +336,16 @@ final class StartupMetrics {
     required this.fusionPolicyId,
     required this.detectorThreshold,
     Map<String, String> appliedArtifactHashes = const {},
-  }) : runtimeMode =
-           runtimeMode ??
-               (device == 'cpu'
-                   ? RuntimeMode.cpuReference
-                   : RuntimeMode.gpuFastVerified),
-       appliedArtifactHashes = UnmodifiableMapView(
+  }) : appliedArtifactHashes = UnmodifiableMapView(
          Map<String, String>.from(appliedArtifactHashes),
-       );
+       ) {
+    _validateRuntimeAdmission(
+      device: device,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      context: 'startup',
+    );
+  }
 
   factory StartupMetrics.fromJson(Map<String, Object?> json) {
     _expectFields(json, const {
@@ -368,12 +370,6 @@ final class StartupMetrics {
     final String? fallbackReason = fallbackValue == null
         ? null
         : _requiredString(fallbackValue, 'startup fallback_reason');
-    _validateRuntimeAdmission(
-      device: device,
-      runtimeMode: runtimeMode,
-      fallbackReason: fallbackReason,
-      context: 'startup',
-    );
     final rawHashes = _map(
       json['applied_artifact_hashes'],
       'startup applied_artifact_hashes',
@@ -1235,7 +1231,7 @@ void _validateRuntimeAdmission({
         '$context verified GPU runtime must not include a fallback reason',
       );
     }
-  } else if (fallbackReason == null) {
+  } else if (fallbackReason == null || fallbackReason.trim().isEmpty) {
     throw FormatException(
       '$context reference runtime must include a fallback reason',
     );

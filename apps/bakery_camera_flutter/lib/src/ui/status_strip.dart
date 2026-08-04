@@ -198,7 +198,7 @@ String _deviceLabel(String device) =>
     device.toLowerCase().startsWith('cuda') ? 'GPU' : 'CPU';
 
 String _runtimeModeLabel(RuntimeMode mode) => switch (mode) {
-  RuntimeMode.gpuFastVerified => 'GPU 寃利?媛??',
-  RuntimeMode.gpuReference => 'GPU 李몄“ 紐⑤뱶',
-  RuntimeMode.cpuReference => 'CPU ?뺥솗???곗꽑',
+  RuntimeMode.gpuFastVerified => 'GPU \uac80\uc99d \uac00\uc18d',
+  RuntimeMode.gpuReference => 'GPU \ucc38\uc870 \ubaa8\ub4dc',
+  RuntimeMode.cpuReference => 'CPU \uc815\ud655\uc131 \uc6b0\uc120',
 };

@@ -607,6 +607,7 @@ final class FakeWorker implements InferenceSession {
         device: 'cuda:0',
         metrics: StartupMetrics(
           device: 'cuda:0',
+          runtimeMode: RuntimeMode.gpuFastVerified,
           loadMs: 120,
           warmupMs: 30,
           fallbackReason: null,

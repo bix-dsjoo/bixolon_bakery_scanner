@@ -50,6 +50,12 @@ void main() {
         result['runtime_mode'] = 'gpu_fast_verified';
         result['fallback_reason'] = 'unexpected_fallback';
       },
+      (result) {
+        result['execution_device'] = 'cuda:0';
+        result['runtime_mode'] = 'gpu_reference';
+        result['fallback_reason'] = 'rfdetr_engine_parity_missing';
+      },
+      (result) => result['fallback_reason'] = '',
       (result) => result['inference_ms'] = 43.0,
     ]) {
       final result = _resultJson();
@@ -659,7 +665,33 @@ void main() {
       expect(() => StartupMetrics.fromJson(metrics), throwsFormatException);
     }
   });
+
+  test('startup metrics constructor rejects impossible runtime admission', () {
+    for (final build in <StartupMetrics Function()>[
+      () => _startupMetrics(runtimeMode: RuntimeMode.gpuReference),
+      () => _startupMetrics(fallbackReason: null),
+      () => _startupMetrics(fallbackReason: ''),
+    ]) {
+      expect(build, throwsFormatException);
+    }
+  });
 }
+
+StartupMetrics _startupMetrics({
+  RuntimeMode runtimeMode = RuntimeMode.cpuReference,
+  String? fallbackReason = 'CPU reference runtime selected',
+}) => StartupMetrics(
+  device: 'cpu',
+  runtimeMode: runtimeMode,
+  loadMs: 12.5,
+  warmupMs: 7,
+  fallbackReason: fallbackReason,
+  detectorId: 'rfdetr_large_bakery_v1',
+  repvitId: 'repvit_m1_15plus5_v1',
+  dinov3Id: 'dinov3_vits16_15plus5_v1',
+  fusionPolicyId: 'fusion_local_or_global_v1',
+  detectorThreshold: .42,
+);
 
 Map<String, Object?> _startupMetricsJson() {
   return {
