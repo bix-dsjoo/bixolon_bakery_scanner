@@ -47,6 +47,7 @@ class EngineBuildError(RuntimeError):
 RunCommand = Callable[..., object]
 BindingInspector = Callable[[Path, str], Sequence[Mapping[str, object]]]
 OnnxInspector = Callable[[Path, str], Mapping[str, object]]
+RuntimeVerifier = Callable[[EngineRuntimeManifest], Mapping[str, str]]
 
 
 def build_engines(
@@ -57,6 +58,7 @@ def build_engines(
     run: RunCommand = subprocess.run,
     inspect_engine: BindingInspector | None = None,
     inspect_onnx: OnnxInspector | None = None,
+    verify_runtime: RuntimeVerifier | None = None,
 ) -> dict[str, object]:
     """Build all three engines with no profiles and publish only after admission."""
     try:
@@ -73,6 +75,24 @@ def build_engines(
         bundle = _load_onnx_bundle(bundle_root, graph_inspector)
     except (EngineBuildError, OSError) as exc:
         raise EngineBuildError(str(exc)) from exc
+    runtime_verifier = verify_runtime or verify_active_tensorrt_python
+    try:
+        active_tensorrt = dict(runtime_verifier(runtime))
+    except EngineAdmissionError as exc:
+        raise EngineBuildError(str(exc)) from exc
+    except Exception as exc:
+        raise EngineBuildError("active TensorRT Python verification failed") from exc
+    expected_active_tensorrt = {
+        "distribution": runtime.tensorrt_distribution.name,
+        "version": runtime.tensorrt_distribution.version,
+        "module_path": str(runtime.tensorrt_distribution.module.path),
+        "module_sha256": runtime.tensorrt_distribution.module.sha256,
+        "metadata_path": str(runtime.tensorrt_distribution.metadata.path),
+        "metadata_sha256": runtime.tensorrt_distribution.metadata.sha256,
+        "wheel_sha256": runtime.tensorrt_python_wheel.sha256,
+    }
+    if active_tensorrt != expected_active_tensorrt:
+        raise EngineBuildError("active TensorRT Python verification receipt mismatch")
     destination = Path(output).resolve()
     _require_external(destination, "engine output")
     if destination.exists():
@@ -136,6 +156,7 @@ def build_engines(
             "dynamic_profiles": False,
             "chunk_capacities_are_scan_limits": False,
             "runtime": runtime.receipt_payload(),
+            "active_tensorrt_python": active_tensorrt,
             "onnx_bundle_manifest": _file_identity(bundle_root / "onnx-bundle-manifest.json"),
             "builds": builds,
         }

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bakery_scanner.pipelines.rtx5080_15plus5.engine_manifest import verify_active_tensorrt_python
 from tools.package.build_rtx5080_15plus5_engines import EngineBuildError, build_engines
 
 
@@ -84,6 +85,23 @@ def _inspect_onnx(path: Path, role: str) -> dict[str, object]:
     return {"input": record["input"], "outputs": record["outputs"]}
 
 
+def _verify_runtime(runtime):
+    identity = runtime.tensorrt_distribution
+    root = identity.module.path.parents[2]
+    module = SimpleNamespace(
+        __name__="tensorrt", __package__="tensorrt",
+        __file__=str(identity.module.path), __path__=[str(identity.module.path.parent)],
+        __spec__=SimpleNamespace(origin=str(identity.module.path)),
+        __version__=identity.version,
+    )
+    distribution = SimpleNamespace(
+        version=identity.version, metadata={"Name": identity.name},
+        files=(identity.module.path.relative_to(root), identity.metadata.path.relative_to(root)),
+        locate_file=lambda item: root / item,
+    )
+    return verify_active_tensorrt_python(runtime, module=module, distribution=distribution)
+
+
 def test_engine_build_refuses_unprovisioned_runtime(tmp_path: Path) -> None:
     with pytest.raises(EngineBuildError, match="runtime manifest"):
         build_engines(runtime_manifest=tmp_path / "missing.json", onnx_root=tmp_path / "onnx", output=tmp_path / "engines")
@@ -119,7 +137,7 @@ def test_build_uses_deterministic_static_command_and_receipt(tmp_path: Path) -> 
             ],
         }[role]
 
-    result = build_engines(runtime_manifest=runtime, onnx_root=onnx, output=output, run=run, inspect_engine=inspect, inspect_onnx=_inspect_onnx)
+    result = build_engines(runtime_manifest=runtime, onnx_root=onnx, output=output, run=run, inspect_engine=inspect, inspect_onnx=_inspect_onnx, verify_runtime=_verify_runtime)
     assert result["status"] == "built_static_fp16_engines"
     assert len(commands) == 3
     forbidden = ("--minShapes", "--optShapes", "--maxShapes", "--shapes")
@@ -145,7 +163,7 @@ def test_build_rejects_binding_mismatch_without_publishing(tmp_path: Path) -> No
         return [{"name": "dynamic", "mode": "input", "dtype": "float16", "shape": [-1, 3, 224, 224], "semantic": "bad"}]
 
     with pytest.raises(EngineBuildError, match="binding"):
-        build_engines(runtime_manifest=runtime, onnx_root=onnx, output=output, run=run, inspect_engine=inspect, inspect_onnx=_inspect_onnx)
+        build_engines(runtime_manifest=runtime, onnx_root=onnx, output=output, run=run, inspect_engine=inspect, inspect_onnx=_inspect_onnx, verify_runtime=_verify_runtime)
     assert not output.exists()
 
 
@@ -162,4 +180,18 @@ def test_build_rejects_dynamic_shape_observed_in_onnx_graph(tmp_path: Path) -> N
         build_engines(
             runtime_manifest=runtime, onnx_root=onnx, output=tmp_path / "engines",
             inspect_onnx=dynamic_graph,
+        )
+
+
+def test_injected_engine_inspector_cannot_skip_active_tensorrt_verification(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    onnx = _onnx_bundle(tmp_path)
+
+    def inspector_must_not_run(engine, role):
+        raise AssertionError("engine inspector ran before active TensorRT verification")
+
+    with pytest.raises(EngineBuildError, match="TensorRT Python package is unavailable"):
+        build_engines(
+            runtime_manifest=runtime, onnx_root=onnx, output=tmp_path / "engines",
+            inspect_engine=inspector_must_not_run, inspect_onnx=_inspect_onnx,
         )
