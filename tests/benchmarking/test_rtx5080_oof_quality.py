@@ -10,10 +10,10 @@ from bakery_scanner.benchmarking.oof15plus5 import GroundTruthObject, OofEvaluat
 PROVENANCE = {"split_sha256":"1" * 64,"source_evidence_sha256":"2" * 64,"detector_sha256":"3" * 64,"repvit_checkpoint_sha256":"4" * 64,"repvit_prototype_sha256":"5" * 64,"dinov3_weights_sha256":"6" * 64,"dinov3_support_sha256":"7" * 64,"dinov3_local_bank_sha256":"8" * 64,"preprocess_sha256":"9" * 64,"fold_policy_sha256":"a" * 64,"code_sha256":"b" * 64,"runtime_sha256":"c" * 64,"dino_global_fold_index":0,"dino_local_fold_index":0,"dino_global_split_sha256":"1" * 64,"dino_local_split_sha256":"1" * 64,"dino_global_source_evidence_sha256":"2" * 64,"dino_local_source_evidence_sha256":"2" * 64,"dino_global_runtime_sha256":"c" * 64,"dino_local_runtime_sha256":"c" * 64,"dino_local_model_sha256":"6" * 64,"dino_global_preprocess_sha256":"9" * 64,"dino_local_preprocess_sha256":"9" * 64}
 
 
-def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan") -> OofEvaluationRow:
+def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan") -> OofEvaluationRow:
     truth = tuple(GroundTruthObject(f"g{i}", i + 1, (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1) for i in range(count))
     predictions = tuple(PredictionObject(f"p{i}", (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1, "unknown" if unknown else "auto_approved", None if unknown else (20 if wrong and i == 0 else i + 1), (1, 2, 3) if unknown else ()) for i in range(count))
-    return OofEvaluationRow(scene_id=scene_id or f"scene-{fold_index}-{count}", fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind="observed", ground_truth=truth, predictions=predictions, seed=20260803, **{**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index})
+    return OofEvaluationRow(scene_id=scene_id or f"scene-{fold_index}-{count}", fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind="observed", ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, **{**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index})
 
 
 @pytest.mark.parametrize(("fusion", "local", "repvit", "dino", "margin", "accepted"), [(4, 4, 1, 2, 0.0, True), (4, 2, 4, 4, 0.85, True), (4, 2, 4, 4, 0.849999, False), (4, 2, 4, 3, 0.99, False)])
@@ -62,14 +62,12 @@ def test_invalid_top3_nonfinite_box_and_evidence_mismatch_fail_closed():
 def test_receipt_freeze_is_canonical_and_required_before_final_policy():
     rows = tuple(_scene(count=count, fold_index=fold, scene_id=f"scene-{fold}") for fold, count in enumerate((3, 1, 3, 1, 8)))
     policy_by_fold = {fold: "a" * 64 for fold in range(5)}
-    frozen_a = freeze_oof_receipt(evaluate_oof(rows, policy_by_fold))
-    frozen_b = freeze_oof_receipt(evaluate_oof(tuple(reversed(rows)), policy_by_fold))
-    assert frozen_a.sha256 == frozen_b.sha256
-    assert b"C:\\\\" not in frozen_a.payload
+    receipt = evaluate_oof(rows, policy_by_fold)
+    assert receipt.status == "unverified"
+    with pytest.raises(ValueError, match="quality-accepted"):
+        freeze_oof_receipt(receipt)
     with pytest.raises(ValueError, match="frozen"):
         build_final_development_policy(None, b"{}")
-    policy = build_final_development_policy(frozen_a, b'{"consensus_margin_floor":0.85,"decision_rule":"fusion_local_or_global_consensus_margin_v1","schema_version":3}')
-    assert frozen_a.sha256.encode() in policy
 
 
 def test_evaluation_role_fold_duplicate_and_policy_circularity_are_rejected():
@@ -100,3 +98,45 @@ def test_oof_receipt_requires_all_five_fold_policies_before_freezing():
 def test_global_and_local_dino_evidence_cannot_mix_fold_or_source_identity():
     with pytest.raises(ValueError, match="DINO evidence identity"):
         replace(_scene(scene_id="different-scene"), dino_local_preprocess_sha256="d" * 64)
+
+
+def test_mostly_unknown_predictions_are_utility_rejected_not_quality_accepted():
+    base = _scene(count=10)
+    predictions = tuple(
+        PredictionObject(
+            f"p{index}",
+            (index * 20.0, 0.0, index * 20.0 + 10.0, 10.0),
+            index + 1,
+            "auto_approved" if index == 0 else "unknown",
+            index + 1 if index == 0 else None,
+            () if index == 0 else (1, 2, 3),
+        )
+        for index in range(10)
+    )
+
+    receipt = evaluate_oof((replace(base, predictions=predictions),), {0: "a" * 64})
+
+    assert receipt.status == "utility-rejected"
+
+
+def test_freeze_rejects_a_quality_rejected_five_fold_receipt():
+    rows = tuple(
+        _scene(wrong=fold == 0, fold_index=fold, scene_id=f"quality-{fold}")
+        for fold in range(5)
+    )
+    receipt = evaluate_oof(rows, {fold: "a" * 64 for fold in range(5)})
+
+    assert receipt.status == "quality-rejected"
+    with pytest.raises(ValueError, match="quality-accepted"):
+        freeze_oof_receipt(receipt)
+
+
+def test_partial_self_declared_fold_receipt_is_unverified():
+    receipt = evaluate_oof((_scene(),), {0: "a" * 64})
+
+    assert receipt.status == "unverified"
+
+
+def test_needs_retake_cannot_carry_partial_final_predictions():
+    with pytest.raises(ValueError, match="needs_retake"):
+        replace(_scene(), state="needs_retake")

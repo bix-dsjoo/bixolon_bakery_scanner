@@ -7,8 +7,10 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Literal, Mapping, Sequence
 
+import yaml
 from scipy.stats import beta
 
 
@@ -31,6 +33,8 @@ _DINO_BINDING_HASH_FIELDS = (
     "dino_global_preprocess_sha256",
     "dino_local_preprocess_sha256",
 )
+_EXPECTED_FOLDS = frozenset(range(5))
+_UTILITY_CONFIG = Path("configs/evaluation/rtx5080_15plus5_oof_v1.yaml")
 
 
 def _finite(value: object, field_name: str) -> float:
@@ -128,6 +132,8 @@ class OofEvaluationRow:
     dino_global_preprocess_sha256: str
     dino_local_preprocess_sha256: str
     final_policy_sha256: str | None = None
+    expected_state: Literal["accepted_scan", "needs_retake", "no_target_detected"] | None = None
+    evidence_status: Literal["verified"] = "verified"
 
     def __post_init__(self) -> None:
         if not self.scene_id or self.scene_id not in self.declared_evaluation_scene_ids:
@@ -168,6 +174,16 @@ class OofEvaluationRow:
             raise ValueError("accepted_scan requires at least one target; zero targets are no_target_detected")
         if self.state == "no_target_detected" and (self.ground_truth or self.predictions):
             raise ValueError("no_target_detected requires zero targets and predictions")
+        if self.state == "needs_retake" and self.predictions:
+            raise ValueError("needs_retake must not carry final predictions or objects")
+        if self.expected_state is not None and self.expected_state not in {
+            "accepted_scan",
+            "needs_retake",
+            "no_target_detected",
+        }:
+            raise ValueError("expected scan state is invalid")
+        if self.evidence_status != "verified":
+            raise ValueError("OOF evidence must have verified input status")
         if self.final_policy_sha256 is not None:
             raise ValueError("final policy/OOF receipt circularity is forbidden")
 
@@ -190,9 +206,24 @@ class OofQuality:
 
 
 @dataclass(frozen=True, slots=True)
+class OofUtility:
+    normal_scan_acceptance: Mapping[str, float | None]
+    unnecessary_retake: Mapping[str, float | None]
+    auto_sku_approval_coverage: Mapping[str, float | None]
+    unknown_rate: Mapping[str, float | None]
+    unknown_top3_recall: Mapping[str, float | None]
+    incremental_auto_sku_approval_coverage: float | None
+    counterfactual_completeness_block_rate: float | None
+    missing_required_slices: tuple[str, ...]
+    has_violation: bool
+    passes: bool
+
+
+@dataclass(frozen=True, slots=True)
 class OofAcceptanceReceipt:
-    status: Literal["quality-accepted", "quality-rejected", "utility-rejected"]
+    status: Literal["quality-accepted", "quality-rejected", "utility-rejected", "unverified"]
     quality: OofQuality
+    utility: OofUtility
     scene_count: int
     object_count: int
     registered_object_total: int
@@ -279,6 +310,148 @@ def _count_slice(count: int) -> str:
     return "count_8_plus"
 
 
+def _rate(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def _load_utility_floors() -> Mapping[str, Mapping[str, float]]:
+    try:
+        value = yaml.safe_load(_UTILITY_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError("OOF utility configuration is unavailable") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise ValueError("OOF utility configuration is invalid")
+    floors = value.get("utility_floors")
+    required = {
+        "normal_scan_acceptance",
+        "unnecessary_retake",
+        "auto_sku_approval_coverage",
+        "unknown_rate",
+        "unknown_top3_recall",
+    }
+    if not isinstance(floors, dict) or set(floors) != required:
+        raise ValueError("OOF utility floors are invalid")
+    result: dict[str, Mapping[str, float]] = {}
+    for name in required:
+        row = floors[name]
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"overall", "each"}
+            or any(not isinstance(item, (int, float)) or isinstance(item, bool) or not 0.0 <= float(item) <= 1.0 for item in row.values())
+        ):
+            raise ValueError("OOF utility floor values are invalid")
+        result[name] = {key: float(item) for key, item in row.items()}
+    return result
+
+
+def _manifest_is_complete(rows: tuple[OofEvaluationRow, ...]) -> bool:
+    """Require the exact checked-in evaluation scene identity, not row claims."""
+    try:
+        expected: dict[int, tuple[tuple[str, ...], str, str, int]] = {}
+        for fold in range(5):
+            value = json.loads((Path.cwd() / "data" / "splits" / "rtx5080_15plus5_oof_v1" / f"fold-{fold}.json").read_text(encoding="utf-8"))
+            scenes = value["scene_ids"]["evaluation"]
+            expected[fold] = (tuple(scenes), value["manifest_sha256"], value["source_sha256"], value["seed"])
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    observed_by_fold = {fold: tuple(sorted(row.scene_id for row in rows if row.fold_index == fold)) for fold in range(5)}
+    for fold, (scene_ids, manifest_sha, source_sha, seed) in expected.items():
+        fold_rows = tuple(row for row in rows if row.fold_index == fold)
+        if (
+            observed_by_fold[fold] != tuple(sorted(scene_ids))
+            or any(
+                row.declared_evaluation_scene_ids != tuple(scene_ids)
+                or row.split_sha256 != manifest_sha
+                or row.source_evidence_sha256 != source_sha
+                or row.seed != seed
+                for row in fold_rows
+            )
+        ):
+            return False
+    return True
+
+
+def _utility_metrics(
+    rows: tuple[OofEvaluationRow, ...],
+    matched_by_scene: Mapping[str, tuple[tuple[int, int], ...]],
+) -> OofUtility:
+    floors = _load_utility_floors()
+    slices = ("overall", "E", "M", "H")
+    measurements: dict[str, dict[str, float | None]] = {
+        name: {} for name in floors
+    }
+    missing: list[str] = []
+    for slice_name in slices:
+        subset = tuple(
+            row for row in rows
+            if row.evidence_kind == "observed" and (slice_name == "overall" or row.difficulty == slice_name)
+        )
+        expected_normal = tuple(row for row in subset if row.expected_state == "accepted_scan")
+        expected_retake = tuple(row for row in subset if row.expected_state in {"needs_retake", "no_target_detected"})
+        final_predictions = tuple(pred for row in expected_normal for pred in row.predictions)
+        unknown_matches = tuple(
+            (row, gi, pi)
+            for row in expected_normal
+            for gi, pi in matched_by_scene[row.scene_id]
+            if row.predictions[pi].state == "unknown"
+        )
+        normal_acceptance = _rate(sum(row.state == "accepted_scan" for row in expected_normal), len(expected_normal))
+        unnecessary_retake = _rate(sum(row.state == "needs_retake" for row in expected_normal), len(expected_normal))
+        auto_coverage = _rate(sum(pred.state == "auto_approved" for pred in final_predictions), sum(len(row.ground_truth) for row in expected_normal))
+        unknown_rate = _rate(sum(pred.state == "unknown" for pred in final_predictions), len(final_predictions))
+        top3_recall = _rate(sum(row.ground_truth[gi].sku_id in row.predictions[pi].top3 for row, gi, pi in unknown_matches), len(unknown_matches))
+        values = {
+            "normal_scan_acceptance": normal_acceptance,
+            "unnecessary_retake": unnecessary_retake,
+            "auto_sku_approval_coverage": auto_coverage,
+            "unknown_rate": unknown_rate,
+            "unknown_top3_recall": top3_recall,
+        }
+        for name, value in values.items():
+            measurements[name][slice_name] = value
+            if value is None:
+                missing.append(f"{name}:{slice_name}")
+        if not expected_retake:
+            missing.append(f"retake:{slice_name}")
+
+    incremental = tuple(row for row in rows if row.evidence_kind == "observed" and row.expected_state == "accepted_scan" and row.catalog_segment == "incremental")
+    incremental_auto = _rate(
+        sum(pred.state == "auto_approved" for row in incremental for pred in row.predictions),
+        sum(len(row.ground_truth) for row in incremental),
+    )
+    if incremental_auto is None:
+        missing.append("incremental_auto_sku_approval_coverage")
+    counterfactual = tuple(row for row in rows if row.evidence_kind == "counterfactual")
+    counterfactual_block = _rate(sum(row.state in {"needs_retake", "no_target_detected"} for row in counterfactual), len(counterfactual))
+    if counterfactual_block is None:
+        missing.append("counterfactual_completeness_block_rate")
+
+    has_violation = False
+    for name, values in measurements.items():
+        for slice_name, value in values.items():
+            if value is None:
+                continue
+            floor = floors[name]["overall" if slice_name == "overall" else "each"]
+            passed = value >= floor if name in {"normal_scan_acceptance", "auto_sku_approval_coverage", "unknown_top3_recall"} else value <= floor
+            has_violation = has_violation or not passed
+    if incremental_auto is not None:
+        has_violation = has_violation or incremental_auto < 0.50
+    if counterfactual_block is not None:
+        has_violation = has_violation or counterfactual_block < 1.0
+    return OofUtility(
+        normal_scan_acceptance=measurements["normal_scan_acceptance"],
+        unnecessary_retake=measurements["unnecessary_retake"],
+        auto_sku_approval_coverage=measurements["auto_sku_approval_coverage"],
+        unknown_rate=measurements["unknown_rate"],
+        unknown_top3_recall=measurements["unknown_top3_recall"],
+        incremental_auto_sku_approval_coverage=incremental_auto,
+        counterfactual_completeness_block_rate=counterfactual_block,
+        missing_required_slices=tuple(sorted(set(missing))),
+        has_violation=has_violation,
+        passes=not missing and not has_violation,
+    )
+
+
 def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, str]) -> OofAcceptanceReceipt:
     checked = tuple(rows)
     if not checked:
@@ -295,7 +468,11 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
     provenance_by_fold: dict[int, dict[str, str]] = {}
     seed_by_fold: dict[int, int] = {}
     for row in checked:
-        identity = {field: getattr(row, field) for field in _HASH_FIELDS if field != "fold_policy_sha256"}
+        identity = {
+            field: getattr(row, field)
+            for field in (*_HASH_FIELDS, *_DINO_BINDING_HASH_FIELDS)
+            if field != "fold_policy_sha256"
+        }
         if row.fold_index in provenance_by_fold and provenance_by_fold[row.fold_index] != identity:
             raise ValueError("evaluation evidence identity mismatch")
         if row.fold_index in seed_by_fold and seed_by_fold[row.fold_index] != row.seed:
@@ -308,8 +485,10 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
     top3 = {"rank_1": 0, "rank_2": 0, "rank_3": 0, "miss": 0}
     object_slices = {"count_1_2": 0, "count_3_7": 0, "count_8_plus": 0}
     report: dict[str, dict[str, int]] = {name: {} for name in ("difficulty", "sku", "object_count", "image_shape", "catalog_segment", "evidence_kind")}
+    matched_by_scene: dict[str, tuple[tuple[int, int], ...]] = {}
     for row in sorted(checked, key=lambda item: (item.fold_index, item.scene_id)):
         matches = _matches(row)
+        matched_by_scene[row.scene_id] = matches
         matched_gt, matched_pred = {a for a, _ in matches}, {b for _, b in matches}
         miss = len(row.ground_truth) - len(matched_gt)
         extras = [pi for pi in range(len(row.predictions)) if pi not in matched_pred]
@@ -367,15 +546,19 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         object_error_upper_95=_upper_bound(counts["wrong"], sum(len(row.ground_truth) for row in checked)),
         scan_sample_size=len(checked), object_sample_size=sum(len(row.ground_truth) for row in checked),
     )
-    total_predictions = sum(len(row.predictions) for row in checked)
+    utility = _utility_metrics(checked, matched_by_scene)
+    manifest_complete = _manifest_is_complete(checked)
+    complete_policy_set = set(policy_by_fold) == _EXPECTED_FOLDS
     if critical_scenes or counts["wrong"]:
         status = "quality-rejected"
-    elif total_predictions == 0 or unknown == total_predictions:
+    elif utility.has_violation:
         status = "utility-rejected"
+    elif not manifest_complete or not complete_policy_set or utility.missing_required_slices:
+        status = "unverified"
     else:
         status = "quality-accepted"
     return OofAcceptanceReceipt(
-        status=status, quality=quality, scene_count=len(checked),
+        status=status, quality=quality, utility=utility, scene_count=len(checked),
         object_count=sum(len(row.ground_truth) for row in checked),
         registered_object_total=registered, unknown_count=unknown,
         top3_rank_hits=top3, object_count_slices=object_slices, report_slices=report,
@@ -389,6 +572,8 @@ def freeze_oof_receipt(receipt: OofAcceptanceReceipt) -> FrozenOofReceipt:
         raise ValueError("only a validated OOF receipt can be frozen")
     if set(receipt.policy_by_fold) != set(range(5)) or set(receipt.provenance_by_fold) != set(range(5)):
         raise ValueError("OOF receipt must contain exactly five folds before freezing")
+    if receipt.status != "quality-accepted" or not receipt.utility.passes:
+        raise ValueError("only a quality-accepted utility-passing OOF receipt may be frozen")
     payload = receipt.to_json_bytes()
     _reject_private_paths(json.loads(payload.decode("utf-8")))
     return FrozenOofReceipt(payload, hashlib.sha256(payload).hexdigest())
@@ -406,6 +591,11 @@ def build_final_development_policy(frozen_receipt: FrozenOofReceipt | None, fusi
         not isinstance(frozen_payload, dict)
         or frozen_payload.get("schema_version") != 1
         or set(frozen_payload.get("policy_by_fold", {})) != {str(index) for index in range(5)}
+        or set(frozen_payload.get("provenance_by_fold", {})) != {str(index) for index in range(5)}
+        or frozen_payload.get("status") != "quality-accepted"
+        or not isinstance(frozen_payload.get("utility"), dict)
+        or frozen_payload.get("utility", {}).get("passes") is not True
+        or frozen_payload.get("utility", {}).get("missing_required_slices") != []
         or json.dumps(frozen_payload, allow_nan=False, sort_keys=True, separators=(",", ":")).encode() != frozen_receipt.payload
     ):
         raise ValueError("frozen OOF receipt must be a canonical five-fold receipt")

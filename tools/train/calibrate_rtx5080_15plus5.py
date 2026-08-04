@@ -89,6 +89,7 @@ class CalibrationRow:
     dino_local_model_sha256: str
     dino_global_preprocess_sha256: str
     dino_local_preprocess_sha256: str
+    evidence_status: Literal["verified"] = "verified"
 
     def __post_init__(self) -> None:
         for field in ("identity", "scene_id", "object_id"):
@@ -145,6 +146,8 @@ class CalibrationRow:
             or self.dino_local_preprocess_sha256 != self.preprocess_sha256
         ):
             raise ValueError("DINO evidence identity mismatch")
+        if self.evidence_status != "verified":
+            raise ValueError("calibration evidence must have verified input status")
 
 
 @dataclass(frozen=True, slots=True)
