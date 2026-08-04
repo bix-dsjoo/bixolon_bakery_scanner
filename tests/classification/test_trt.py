@@ -35,6 +35,17 @@ class Output(Tensor):
         super().__init__(shape)
         self.reads = []
 
+    def select_rows(self, rows, *, stream):
+        self.reads.append(tuple(rows))
+        return ReadOnlyTensor((len(rows), *self.shape[1:]))
+
+
+@dataclass(frozen=True)
+class ReadOnlyTensor:
+    shape: tuple[int, ...]
+    dtype: str = "float16"
+    readonly: bool = True
+
 
 class Session:
     def __init__(self, outputs):
@@ -57,22 +68,35 @@ def pair(order):
     return GpuCropPair(crop(order), crop(order), object_order=order)
 
 
-def repvit_decoder(outputs, valid_rows):
-    outputs["logits"].reads.append(valid_rows)
+def repvit_decoder(outputs, object_orders):
+    assert outputs["logits"].readonly is True
+    row_count = outputs["logits"].shape[0]
+    assert row_count == len(object_orders) * 2
     return tuple(
-        RepVitBatchEvidence((0.9,) + (0.1 / 19,) * 19, (0.9,) + (0.1 / 19,) * 19)
-        for _ in range(len(valid_rows) // 2)
+        RepVitBatchEvidence(
+            (0.9,) + (0.1 / 19,) * 19,
+            (0.9,) + (0.1 / 19,) * 19,
+            object_order,
+        )
+        for object_order in object_orders
     )
 
 
-def dino_decoder(outputs, valid_rows):
-    outputs["global_embeddings"].reads.append(valid_rows)
-    outputs["local_patch_tokens"].reads.append(valid_rows)
+def dino_decoder(outputs, object_orders):
+    assert outputs["global_embeddings"].readonly is True
+    assert outputs["local_patch_tokens"].readonly is True
+    row_count = outputs["global_embeddings"].shape[0]
+    assert row_count == len(object_orders)
     return tuple(
         DinoBatchEvidence(
-            (0.9,) + (0.1 / 19,) * 19, (1, 2, 3), (0.9, 0.08, 0.02), 12, 0.6
+            (0.9,) + (0.1 / 19,) * 19,
+            (1, 2, 3),
+            (0.9, 0.08, 0.02),
+            12,
+            0.6,
+            object_order,
         )
-        for _ in valid_rows
+        for object_order in object_orders
     )
 
 
@@ -124,3 +148,48 @@ def test_chunk_failure_is_raised_without_returning_partial_evidence():
     )
     with pytest.raises(TensorRtInferenceError, match="RepViT.*chunk 2"):
         runner.score_pairs(tuple(pair(i) for i in range(1, 9)))
+
+
+def test_decoder_cannot_access_a_padded_output_row():
+    output = Output((14, 20))
+
+    def adversarial_decoder(outputs, object_orders):
+        outputs["logits"].select_rows((13,), stream=object())
+        return (
+            RepVitBatchEvidence(
+                (0.9,) + (0.1 / 19,) * 19,
+                (0.9,) + (0.1 / 19,) * 19,
+                object_orders[0],
+            ),
+        )
+
+    runner = RepVitTensorRtRunner(
+        Session({"logits": output}),
+        object(),
+        InputBuffer((14, 3, 224, 224)),
+        adversarial_decoder,
+    )
+
+    with pytest.raises(TensorRtInferenceError, match="RepViT.*chunk 1"):
+        runner.score_pairs((pair(1),))
+
+
+def test_decoder_evidence_must_preserve_exact_valid_object_order():
+    def reversed_decoder(outputs, object_orders):
+        return tuple(
+            RepVitBatchEvidence(
+                (0.9,) + (0.1 / 19,) * 19,
+                (0.9,) + (0.1 / 19,) * 19,
+                object_order,
+            )
+            for object_order in reversed(object_orders)
+        )
+
+    runner = RepVitTensorRtRunner(
+        Session({"logits": Output((14, 20))}),
+        object(),
+        InputBuffer((14, 3, 224, 224)),
+        reversed_decoder,
+    )
+    with pytest.raises(TensorRtInferenceError, match="RepViT.*chunk 1"):
+        runner.score_pairs((pair(1), pair(2)))

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, Sequence
 
 
@@ -21,6 +22,16 @@ class TensorRtInferenceError(RuntimeError):
 class DeviceTensor(Protocol):
     shape: tuple[int, ...]
     dtype: str
+
+
+class EngineOutputTensor(DeviceTensor, Protocol):
+    def select_rows(
+        self, rows: tuple[int, ...], *, stream: "CudaStream"
+    ) -> "ReadOnlyDeviceTensor": ...
+
+
+class ReadOnlyDeviceTensor(DeviceTensor, Protocol):
+    readonly: bool
 
 
 class CudaStream(Protocol):
@@ -74,10 +85,12 @@ class GpuCropPair:
 class RepVitBatchEvidence:
     tight_scores: tuple[float, ...]
     context_scores: tuple[float, ...]
+    object_order: int
 
     def __post_init__(self) -> None:
         _scores(self.tight_scores, "RepViT tight scores", probabilities=True)
         _scores(self.context_scores, "RepViT context scores", probabilities=True)
+        _object_order(self.object_order, "RepViT evidence")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +100,7 @@ class DinoBatchEvidence:
     local_scores: tuple[float, ...]
     product_patch_count: int
     product_patch_ratio: float
+    object_order: int
 
     def __post_init__(self) -> None:
         _scores(self.global_scores, "DINO global scores", probabilities=False)
@@ -113,13 +127,16 @@ class DinoBatchEvidence:
             or not 0 <= self.product_patch_ratio <= 1
         ):
             raise ValueError("DINO product patch ratio must be within [0, 1]")
+        _object_order(self.object_order, "DINO evidence")
 
 
 RepVitDecoder = Callable[
-    [Mapping[str, DeviceTensor], tuple[int, ...]], tuple[RepVitBatchEvidence, ...]
+    [Mapping[str, ReadOnlyDeviceTensor], tuple[int, ...]],
+    tuple[RepVitBatchEvidence, ...],
 ]
 DinoDecoder = Callable[
-    [Mapping[str, DeviceTensor], tuple[int, ...]], tuple[DinoBatchEvidence, ...]
+    [Mapping[str, ReadOnlyDeviceTensor], tuple[int, ...]],
+    tuple[DinoBatchEvidence, ...],
 ]
 
 
@@ -157,13 +174,23 @@ class RepVitTensorRtRunner:
                 self._input.stage_rows(rows, valid_mask=mask, stream=self._stream)
                 outputs = self._session.execute({"crops": self._input}, self._stream)
                 _exact_outputs(outputs, {"logits": ((14, 20), "float16")}, "RepViT")
-                decoded = self._decoder(outputs, tuple(range(valid_rows)))
+                valid_outputs = _valid_output_views(
+                    outputs,
+                    tuple(range(valid_rows)),
+                    {"logits": ((valid_rows, 20), "float16")},
+                    self._stream,
+                    "RepViT",
+                )
+                object_orders = tuple(pair.object_order for pair in valid)
+                decoded = self._decoder(valid_outputs, object_orders)
                 if not isinstance(decoded, tuple) or len(decoded) != len(valid):
                     raise ValueError(
                         "RepViT decoder output does not align with valid objects"
                     )
                 if any(not isinstance(item, RepVitBatchEvidence) for item in decoded):
                     raise ValueError("RepViT decoder returned malformed evidence")
+                if tuple(item.object_order for item in decoded) != object_orders:
+                    raise ValueError("RepViT decoder changed valid object order")
             except Exception as exc:
                 raise TensorRtInferenceError(
                     f"RepViT static chunk {chunk_index} failed"
@@ -212,13 +239,26 @@ class DinoTensorRtRunner:
                     "DINO",
                 )
                 valid_rows = tuple(range(len(valid)))
-                decoded = self._decoder(outputs, valid_rows)
+                valid_outputs = _valid_output_views(
+                    outputs,
+                    valid_rows,
+                    {
+                        "global_embeddings": ((len(valid), 384), "float16"),
+                        "local_patch_tokens": ((len(valid), 196, 384), "float16"),
+                    },
+                    self._stream,
+                    "DINO",
+                )
+                object_orders = tuple(crop.object_order for crop in valid)
+                decoded = self._decoder(valid_outputs, object_orders)
                 if not isinstance(decoded, tuple) or len(decoded) != len(valid):
                     raise ValueError(
                         "DINO decoder output does not align with valid objects"
                     )
                 if any(not isinstance(item, DinoBatchEvidence) for item in decoded):
                     raise ValueError("DINO decoder returned malformed evidence")
+                if tuple(item.object_order for item in decoded) != object_orders:
+                    raise ValueError("DINO decoder changed valid object order")
             except Exception as exc:
                 raise TensorRtInferenceError(
                     f"DINO static chunk {chunk_index} failed"
@@ -234,6 +274,31 @@ def _exact_outputs(
         raise ValueError(f"{label} engine returned wrong output bindings")
     for name, (shape, dtype) in expected.items():
         _tensor(outputs[name], shape, dtype, f"{label} {name}")
+
+
+def _valid_output_views(
+    outputs: Mapping[str, DeviceTensor],
+    rows: tuple[int, ...],
+    expected: Mapping[str, tuple[tuple[int, ...], str]],
+    stream: CudaStream,
+    label: str,
+) -> Mapping[str, ReadOnlyDeviceTensor]:
+    """Extract only valid rows before the decoder can observe any output."""
+    selected: dict[str, ReadOnlyDeviceTensor] = {}
+    for name, (shape, dtype) in expected.items():
+        selector = getattr(outputs[name], "select_rows", None)
+        if not callable(selector):
+            raise ValueError(f"{label} {name} cannot create a valid-row device view")
+        view = selector(rows, stream=stream)
+        _tensor(view, shape, dtype, f"{label} valid {name}")
+        if getattr(view, "readonly", None) is not True:
+            raise ValueError(f"{label} valid {name} must be read-only")
+        if callable(getattr(view, "select_rows", None)):
+            raise ValueError(
+                f"{label} valid {name} must not expose further row selection"
+            )
+        selected[name] = view
+    return MappingProxyType(selected)
 
 
 def _tensor(value: object, shape: tuple[int, ...], dtype: str, label: str) -> None:
@@ -264,3 +329,8 @@ def _finite(value: object) -> bool:
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
+
+
+def _object_order(value: object, label: str) -> None:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{label} object_order must be a positive integer")

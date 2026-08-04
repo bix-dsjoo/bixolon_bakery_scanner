@@ -299,6 +299,10 @@ class Rtx5080Pipeline:
                 raise ValueError(
                     "RepViT evidence does not align with accepted proposals"
                 )
+            if tuple(item.object_order for item in repvit) != tuple(
+                range(1, len(pairs) + 1)
+            ):
+                raise ValueError("RepViT evidence changed deterministic object order")
 
             direct = self.timer.measure(
                 "direct_gate",
@@ -326,6 +330,11 @@ class Rtx5080Pipeline:
                     raise ValueError(
                         "DINO evidence does not align with direct rejections"
                     )
+                expected_dino_order = tuple(
+                    pairs[index].object_order for index in rejected
+                )
+                if tuple(item.object_order for item in dino) != expected_dino_order:
+                    raise ValueError("DINO evidence changed rejected object order")
                 dino_by_index.update(zip(rejected, dino, strict=True))
 
             decisions = self.timer.measure(

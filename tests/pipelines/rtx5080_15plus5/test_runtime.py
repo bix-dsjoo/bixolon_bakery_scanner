@@ -121,17 +121,20 @@ class Cropper:
         )
 
 
-E = RepVitBatchEvidence((0.9,) + (0.1 / 19,) * 19, (0.9,) + (0.1 / 19,) * 19)
-D = DinoBatchEvidence((0.9,) + (0.1 / 19,) * 19, (2, 1, 3), (0.9, 0.08, 0.02), 10, 0.5)
-
-
 class Repvit:
     def __init__(self):
         self.counts = []
 
     def score_pairs(self, pairs):
         self.counts.append(len(pairs))
-        return (E,) * len(pairs)
+        return tuple(
+            RepVitBatchEvidence(
+                (0.9,) + (0.1 / 19,) * 19,
+                (0.9,) + (0.1 / 19,) * 19,
+                pair.object_order,
+            )
+            for pair in pairs
+        )
 
 
 class Dino:
@@ -143,7 +146,17 @@ class Dino:
         self.orders.append(tuple(c.object_order for c in crops))
         if self.fail:
             raise RuntimeError("chunk failed")
-        return (D,) * len(crops)
+        return tuple(
+            DinoBatchEvidence(
+                (0.9,) + (0.1 / 19,) * 19,
+                (2, 1, 3),
+                (0.9, 0.08, 0.02),
+                10,
+                0.5,
+                crop.object_order,
+            )
+            for crop in crops
+        )
 
 
 class Direct:
