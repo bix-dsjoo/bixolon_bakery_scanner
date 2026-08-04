@@ -60,6 +60,42 @@ _APPLIED_ARTIFACT_HASH_FIELDS = frozenset({
 })
 
 
+class CandidateAdmissionFailed(RuntimeError):
+    """The requested candidate was not admitted; no other runtime was used."""
+
+    code = "admission_failed"
+
+
+def select_candidate_runtime(
+    profile_id: str,
+    *,
+    admit: Callable[[], object],
+    load: Callable[[object], object],
+    legacy_fallback: Callable[[], object] | None = None,
+) -> object:
+    """Select the RTX candidate only after admission, without fallback.
+
+    ``legacy_fallback`` remains an explicit compatibility parameter so callers
+    cannot accidentally assume it was considered.  It is intentionally never
+    invoked for the candidate profile.
+    """
+    del legacy_fallback
+    if profile_id != "rtx5080_15plus5_single_frame_v1":
+        raise ValueError("unsupported candidate runtime profile")
+    try:
+        receipt = admit()
+        runtime = load(receipt)
+    except Exception as exc:
+        raise CandidateAdmissionFailed(
+            "admission_failed: RTX 5080 candidate unavailable; no fallback"
+        ) from exc
+    if runtime is None:
+        raise CandidateAdmissionFailed(
+            "admission_failed: RTX 5080 candidate loader returned no runtime; no fallback"
+        )
+    return runtime
+
+
 class RuntimeBackend(Protocol):
     device: str
     detector: RFDetrRunner

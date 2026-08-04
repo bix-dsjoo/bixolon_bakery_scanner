@@ -17,6 +17,45 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/inference_fixtures.dart';
 
 void main() {
+  testWidgets('candidate rearrangement preserves chain and increments attempt', (
+    tester,
+  ) async {
+    CandidateRetakeRequest? request;
+    await _pump(
+      tester,
+      CandidateRearrangementPanel(
+        result: CandidateScanResult.fromJson(_candidateRetakeFixture()),
+        onRetake: (value) => request = value,
+        onManualCatalog: () => fail('manual catalog is not available yet'),
+      ),
+    );
+
+    expect(find.byKey(const Key('candidate-problem-region-overlay')), findsOneWidget);
+    expect(find.textContaining('겹친 빵'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('candidate-linked-retake')));
+    expect(request?.retakeChainId, 'chain-1');
+    expect(request?.attempt, 2);
+  });
+
+  testWidgets('third candidate retake opens catalog without partial inference', (
+    tester,
+  ) async {
+    var opened = false;
+    await _pump(
+      tester,
+      CandidateRearrangementPanel(
+        result: CandidateScanResult.fromJson(
+          _candidateRetakeFixture(attempt: 3),
+        ),
+        onRetake: (_) => fail('third attempt must not recapture'),
+        onManualCatalog: () => opened = true,
+      ),
+    );
+
+    expect(find.byKey(const Key('candidate-linked-retake')), findsNothing);
+    await tester.tap(find.byKey(const Key('candidate-manual-catalog')));
+    expect(opened, isTrue);
+  });
   for (final scenario in ['candidate', 'automatic']) {
     testWidgets('$scenario review uses one retained-scene checkout workspace', (
       tester,
@@ -741,6 +780,49 @@ void main() {
     }
   });
 }
+
+Map<String, Object?> _candidateRetakeFixture({int attempt = 1}) => {
+  'type': 'result',
+  'request_id': 'scan-1',
+  'scan_id': 'scan-1',
+  'retake_chain_id': 'chain-1',
+  'state': 'needs_retake',
+  'object_total': 0,
+  'registered_object_total': 0,
+  'unknown_total': 0,
+  'sku_totals': <String, Object?>{},
+  'objects': <Object?>[],
+  'reasons': <Object?>['overlap_or_occlusion'],
+  'problem_regions': <Object?>[
+    {
+      'box_xyxy': <Object?>[10.0, 10.0, 30.0, 30.0],
+      'center_normalized': <Object?>[0.2, 0.2],
+      'object_order': 1,
+    },
+  ],
+  'attempt': attempt,
+  'canonical_frame': <String, Object?>{'width': 100, 'height': 100},
+  'timings_ms': <String, Object?>{
+    'decode_canonical': 1.0,
+    'detector': 2.0,
+    'completeness': 3.0,
+    'crop': 0.0,
+    'repvit': 0.0,
+    'direct_gate': 0.0,
+    'dinov3': 0.0,
+    'fusion_payload': 0.0,
+    'total': 6.0,
+  },
+  'provenance': <String, Object?>{
+    'pipeline_id': 'rtx5080_15plus5_single_frame_v1',
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+    'admission_receipt_sha256': 'a' * 64,
+    'artifact_hashes': <String, Object?>{'detector': 'b' * 64},
+  },
+  'manual_catalog_required': attempt >= 3,
+  'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  'receipt_id': 'a' * 64,
+};
 
 Future<void> _pump(WidgetTester tester, Widget child) => tester.pumpWidget(
   MaterialApp(
