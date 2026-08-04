@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -9,6 +11,7 @@ import pytest
 
 from scripts.build_camera_installer_payload import (
     assemble_payload,
+    build_worker_identity,
     load_pipeline_allowlist,
 )
 from scripts.camera_runtime_validation import (
@@ -33,20 +36,106 @@ def _load_payload_manifest(payload_root: Path) -> dict:
     )
 
 
+def _write_attested_worker_tree(root: Path) -> None:
+    for relative, content in {
+        "pyproject.toml": "[project]\nname='snapshot'\n",
+        "src/bakery_scanner/module.py": "VALUE = 'source'\n",
+        "dino/dinov3/__init__.py": "VALUE = 'source'\n",
+        "data/catalogs/classes.json": "[]\n",
+        "configs/gpu_rfdetr_classifier_policy.yaml": "gpu: source\n",
+        "configs/cpu_rfdetr_classifier_policy.yaml": "cpu: source\n",
+        "policies/presentation/camera_action_state_v2.json": "{}\n",
+        "policies/classification/policy_v2_manifest_rebound_cpu_smoke.json": "{}\n",
+        "policies/classification/fusion_local_or_global_consensus_margin_v1.json": "{}\n",
+        "models/rfdetr_large_bakery_v1/manifest.json": "{}\n",
+        "scripts/run_camera_inference_worker.py": "print('worker')\n",
+    }.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+def test_worker_identity_rejects_dirty_tracked_inference_source(tmp_path: Path) -> None:
+    """Catch packaging an identity that does not describe committed inference code."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_attested_worker_tree(repo)
+    subprocess.run(("git", "init", str(repo)), check=True, capture_output=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.email", "test@example.com"), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-m", "fixture"), check=True, capture_output=True)
+    pipeline = tmp_path / "pipeline"
+    shutil.copytree(repo, pipeline, ignore=shutil.ignore_patterns(".git"))
+
+    identity = build_worker_identity(repo, pipeline)
+
+    assert identity["schema_version"] == 1
+    assert identity["code_commit"] == subprocess.run(
+        ("git", "-C", str(repo), "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / "src" / "bakery_scanner" / "module.py").write_text(
+        "VALUE = 'dirty'\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="tracked inference source must be clean"):
+        build_worker_identity(repo, pipeline)
+
+
+def test_latest_double_click_builder_creates_both_distribution_routes() -> None:
+    """Catch release tooling that omits the portable or installer launch route."""
+    repo_root = Path(__file__).parents[2]
+    script = repo_root / "tools" / "package" / "Build-Latest-DoubleClick.ps1"
+
+    assert script.is_file()
+    source = script.read_text(encoding="utf-8")
+    for expected in (
+        "RuntimeRoot",
+        "IsccPath",
+        "flutter.bat",
+        "verify_camera_installation.py",
+        "build_camera_installer.ps1",
+        "portable",
+        "installer",
+    ):
+        assert expected in source
+    for readme in (
+        repo_root / "tools" / "package" / "README.md",
+        repo_root / "deployment" / "camera_installer" / "README.txt",
+    ):
+        contents = readme.read_text(encoding="utf-8")
+        assert "bakery_camera_prototype.exe" in contents
+        assert "더블클릭" in contents
+
+
 @pytest.fixture
 def payload_root(tmp_path: Path) -> Path:
-    """Build a minimal payload using the production policy allowlist entry."""
-    repo_root = Path(__file__).parents[2]
+    """Build a self-contained payload from a clean, minimal source checkout."""
+    source_root = Path(__file__).parents[2]
     allowlist = load_pipeline_allowlist(
-        repo_root,
-        repo_root / "deployment" / "camera_installer" / "payload-paths.json",
+        source_root,
+        source_root / "deployment" / "camera_installer" / "payload-paths.json",
     )
     policy_relative = "policies/presentation/camera_action_state_v2.json"
     allowlisted_files = {
         relative for relative, _ in allowlist["pipeline_files"]
     }
     assert policy_relative in allowlisted_files
-    assert "configs/camera_presentation_policy.json" in allowlisted_files
+    assert "scripts/run_camera_inference_worker.py" in allowlisted_files
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _write_attested_worker_tree(repo_root)
+    runtime_lock = repo_root / "deployment" / "camera_installer" / "runtime-lock.json"
+    runtime_lock.parent.mkdir(parents=True)
+    runtime_lock.write_text("{}\n", encoding="utf-8")
+    subprocess.run(("git", "init", str(repo_root)), check=True, capture_output=True)
+    subprocess.run(("git", "-C", str(repo_root), "config", "user.email", "test@example.com"), check=True)
+    subprocess.run(("git", "-C", str(repo_root), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(repo_root), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo_root), "commit", "-m", "fixture"), check=True, capture_output=True)
 
     release_dir = tmp_path / "release"
     release_dir.mkdir()
@@ -64,8 +153,16 @@ def payload_root(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "schema_version": 1,
-                "pipeline_directories": [],
-                "pipeline_files": [policy_relative],
+                "pipeline_directories": ["src/bakery_scanner", "dino/dinov3", "configs"],
+                "pipeline_files": [
+                    "pyproject.toml",
+                    "scripts/run_camera_inference_worker.py",
+                    "data/catalogs/classes.json",
+                    "models/rfdetr_large_bakery_v1/manifest.json",
+                    policy_relative,
+                    "policies/classification/policy_v2_manifest_rebound_cpu_smoke.json",
+                    "policies/classification/fusion_local_or_global_consensus_margin_v1.json",
+                ],
             }
         ),
         encoding="utf-8",

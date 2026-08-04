@@ -10,7 +10,11 @@ from scripts.build_camera_installer_payload import (
     build_package_manifest,
     load_pipeline_allowlist,
 )
-from scripts.verify_camera_installation import verify_package_manifest
+from scripts.run_camera_inference_worker import compute_deployed_worker_code_identity
+from scripts.verify_camera_installation import (
+    verify_deployed_worker_identity,
+    verify_package_manifest,
+)
 
 
 def test_manifest_uses_relative_paths_sizes_and_sha256(tmp_path: Path) -> None:
@@ -26,6 +30,39 @@ def test_manifest_uses_relative_paths_sizes_and_sha256(tmp_path: Path) -> None:
     assert entry["bytes"] == policy.stat().st_size
     assert len(entry["sha256"]) == 64
     assert not any(Path(path).is_absolute() for path in manifest["files"])
+
+
+def test_deployed_identity_verifier_rejects_tampered_worker_source(tmp_path: Path) -> None:
+    """Catch an installation verifier accepting changed package inference code."""
+    pipeline = tmp_path / "pipeline"
+    for relative, content in {
+        "pyproject.toml": "[project]\nname='payload'\n",
+        "src/bakery_scanner/module.py": "VALUE = 'original'\n",
+        "dino/dinov3/__init__.py": "VALUE = 'original'\n",
+        "data/catalogs/classes.json": "[]\n",
+        "configs/gpu_rfdetr_classifier_policy.yaml": "gpu: payload\n",
+        "configs/cpu_rfdetr_classifier_policy.yaml": "cpu: payload\n",
+        "models/rfdetr_large_bakery_v1/manifest.json": "{}\n",
+        "policies/presentation/camera_action_state_v2.json": "{}\n",
+        "policies/classification/policy_v2_manifest_rebound_cpu_smoke.json": "{}\n",
+        "policies/classification/fusion_local_or_global_consensus_margin_v1.json": "{}\n",
+        "scripts/run_camera_inference_worker.py": "print('worker')\n",
+    }.items():
+        path = pipeline / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    identity = compute_deployed_worker_code_identity(pipeline, commit="d" * 40)
+    (pipeline / "worker-identity.json").write_text(
+        json.dumps({"schema_version": 1, **identity}), encoding="utf-8"
+    )
+
+    assert verify_deployed_worker_identity(tmp_path) == identity
+    (pipeline / "src" / "bakery_scanner" / "module.py").write_text(
+        "VALUE = 'tampered'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="deployed worker code identity does not match"):
+        verify_deployed_worker_identity(tmp_path)
 
 
 def test_manifest_verifier_rejects_hash_mismatch_and_extra_file(
