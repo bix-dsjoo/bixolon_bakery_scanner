@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600" role="img" aria-labelledby="title desc">
+  <title id="title">빵 스캐너의 학습과 실제 사용 흐름</title>
+  <desc id="desc">학습 데이터 준비, 촬영 품질 확인, 빵 판별, Unknown 처리, 수량과 위치 기록 과정을 설명하는 도식</desc>
+
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#c2410c"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#475569"/>
+    </marker>
+    <style>
+      text { font-family: "Malgun Gothic", "Noto Sans KR", Arial, sans-serif; fill: #172033; }
+      .title { font-size: 58px; font-weight: 700; }
+      .subtitle { font-size: 27px; fill: #475569; }
+      .section { font-size: 34px; font-weight: 700; }
+      .card-title { font-size: 27px; font-weight: 700; }
+      .body { font-size: 23px; }
+      .small { font-size: 19px; fill: #475569; }
+      .tiny { font-size: 17px; fill: #64748b; }
+      .label { font-size: 21px; font-weight: 700; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2.5; rx: 18; }
+      .blue-card { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2.5; rx: 18; }
+      .green-card { fill: #f0fdf4; stroke: #4ade80; stroke-width: 2.5; rx: 18; }
+      .orange-card { fill: #fff7ed; stroke: #fb923c; stroke-width: 3; rx: 18; }
+      .gray-card { fill: #f8fafc; stroke: #94a3b8; stroke-width: 2.5; rx: 18; }
+      .flow { fill: none; stroke: #2563eb; stroke-width: 4; marker-end: url(#arrow); }
+      .flow-orange { fill: none; stroke: #c2410c; stroke-width: 4; marker-end: url(#arrowOrange); }
+      .flow-gray { fill: none; stroke: #475569; stroke-width: 4; marker-end: url(#arrowGray); }
+      .divider { stroke: #e2e8f0; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect width="2400" height="1600" fill="#ffffff"/>
+
+  <text x="110" y="92" class="title">빵 스캐너는 이렇게 학습하고 판단합니다</text>
+  <text x="112" y="137" class="subtitle">사진이 불완전하거나 판단 근거가 부족하면, 억지로 정답을 고르지 않습니다.</text>
+
+  <!-- Training lane -->
+  <rect x="70" y="185" width="2260" height="385" fill="#f8fafc" stroke="#dbe3ed" stroke-width="2" rx="24"/>
+  <text x="105" y="235" class="section">A. 미리 하는 학습 준비</text>
+  <text x="105" y="270" class="small">실제 촬영 전에 AI가 빵의 모양과 위치를 배우는 단계</text>
+
+  <rect x="105" y="310" width="520" height="210" class="card"/>
+  <text x="135" y="350" class="card-title">① 학습용 사진</text>
+  <text x="135" y="395" class="body">• 기존 15종: 각 84장</text>
+  <text x="135" y="433" class="body">• 추가 5종: 각 5장</text>
+  <text x="135" y="471" class="body">• 혼합 장면: 299장 · 1,406개 위치표시</text>
+  <text x="135" y="503" class="tiny">총 20종 · 쉬움/보통/어려움 장면 포함</text>
+
+  <path d="M625 415 H735" class="flow"/>
+
+  <rect x="735" y="335" width="350" height="160" class="blue-card"/>
+  <text x="910" y="382" text-anchor="middle" class="card-title">② 공정하게 나누어 검증</text>
+  <text x="910" y="425" text-anchor="middle" class="body">장면 묶음 기준</text>
+  <text x="910" y="461" text-anchor="middle" class="body">5-fold OOF</text>
+
+  <path d="M1085 415 H1195" class="flow"/>
+
+  <rect x="1195" y="295" width="1090" height="240" class="card"/>
+  <text x="1230" y="335" class="card-title">③ 역할별 학습 결과</text>
+  <line x1="1555" y1="355" x2="1555" y2="505" class="divider"/>
+  <line x1="1920" y1="355" x2="1920" y2="505" class="divider"/>
+
+  <text x="1375" y="388" text-anchor="middle" class="label">빵 위치 찾기</text>
+  <text x="1375" y="430" text-anchor="middle" class="body">혼합 장면과 위치표시</text>
+  <text x="1375" y="472" text-anchor="middle" class="small">RF-DETR-L</text>
+
+  <text x="1738" y="388" text-anchor="middle" class="label">빵 이름 판별</text>
+  <text x="1738" y="430" text-anchor="middle" class="body">20종 사진 + 빵 영역 조각</text>
+  <text x="1738" y="472" text-anchor="middle" class="small">RepViT-M1</text>
+
+  <text x="2102" y="388" text-anchor="middle" class="label">어려울 때 추가 비교</text>
+  <text x="2102" y="430" text-anchor="middle" class="body">비교용 특징 보관함</text>
+  <text x="2102" y="472" text-anchor="middle" class="small">DINOv3</text>
+
+  <!-- Runtime lane -->
+  <text x="105" y="645" class="section">B. 매번 촬영할 때의 판단 흐름</text>
+  <text x="105" y="680" class="small">한 장의 사진을 확인한 뒤, 안전할 때만 빵 종류와 수량을 확정</text>
+
+  <!-- Step 1 -->
+  <rect x="105" y="725" width="360" height="210" class="card"/>
+  <text x="135" y="768" class="card-title">1. 한 장 촬영</text>
+  <text x="135" y="817" class="body">빵을 트레이에 배치</text>
+  <text x="135" y="855" class="body">→ 단일 프레임 촬영</text>
+  <text x="135" y="902" class="small">사진 방향·색상 표준화</text>
+
+  <path d="M465 830 H555" class="flow"/>
+
+  <!-- Step 2 -->
+  <rect x="555" y="725" width="470" height="210" class="blue-card"/>
+  <text x="585" y="768" class="card-title">2. 촬영 상태 확인</text>
+  <text x="585" y="815" class="body">• AI가 빵 영역을 찾음</text>
+  <text x="585" y="853" class="body">• 트레이의 빵 영역도 함께 확인</text>
+  <text x="585" y="900" class="small">가림·겹침·잘림·미검출을 점검</text>
+
+  <path d="M1025 830 H1090" class="flow"/>
+  <polygon points="1245,710 1400,830 1245,950 1090,830" fill="#eff6ff" stroke="#2563eb" stroke-width="3"/>
+  <text x="1245" y="810" text-anchor="middle" class="card-title">모든 빵이</text>
+  <text x="1245" y="848" text-anchor="middle" class="card-title">온전히 보이나요?</text>
+
+  <!-- Pass to classification -->
+  <text x="1420" y="800" class="label" fill="#166534">예</text>
+  <path d="M1400 830 H1500" class="flow"/>
+
+  <!-- Retake loop -->
+  <text x="1220" y="986" class="label" fill="#c2410c">아니요</text>
+  <path d="M1245 950 V1015" class="flow-orange"/>
+  <rect x="620" y="1035" width="1040" height="165" class="orange-card"/>
+  <text x="655" y="1080" class="card-title" fill="#9a3412">재촬영 필요</text>
+  <text x="655" y="1125" class="body">문제 영역과 이유 안내 → 빵 재배치 → 다시 촬영</text>
+  <text x="655" y="1165" class="small">불완전한 사진의 부분 결과는 확정하지 않음</text>
+  <path d="M620 1120 H525 V965 H285 V935" class="flow-orange"/>
+
+  <!-- Step 3 classification -->
+  <rect x="1500" y="725" width="340" height="210" class="card"/>
+  <text x="1530" y="768" class="card-title">3. 빠른 1차 판별</text>
+  <text x="1530" y="817" class="body">확인된 빵을 하나씩 자름</text>
+  <text x="1530" y="855" class="body">→ 빵 종류 점수 계산</text>
+  <text x="1530" y="902" class="small">RepViT-M1</text>
+
+  <path d="M1840 830 H1900" class="flow"/>
+  <polygon points="2040,720 2180,830 2040,940 1900,830" fill="#eff6ff" stroke="#2563eb" stroke-width="3"/>
+  <text x="2040" y="810" text-anchor="middle" class="card-title">승인 기준을</text>
+  <text x="2040" y="848" text-anchor="middle" class="card-title">통과했나요?</text>
+
+  <!-- Direct approved -->
+  <text x="2210" y="797" class="label" fill="#166534">예</text>
+  <path d="M2180 830 H2260 V1000" class="flow"/>
+  <rect x="2100" y="1000" width="250" height="135" class="green-card"/>
+  <text x="2225" y="1043" text-anchor="middle" class="label">등록 SKU 확정</text>
+  <text x="2225" y="1080" text-anchor="middle" class="small">직접 승인</text>
+  <text x="2225" y="1110" text-anchor="middle" class="tiny">direct_approved</text>
+
+  <!-- DINO fallback -->
+  <text x="1980" y="980" class="label" fill="#475569">아니요</text>
+  <path d="M2040 940 V1025 H1900" class="flow-gray"/>
+  <rect x="1540" y="1000" width="360" height="150" class="gray-card"/>
+  <text x="1570" y="1043" class="card-title">4. 추가 비교</text>
+  <text x="1570" y="1083" class="body">전체 모습 + 세부 모습</text>
+  <text x="1570" y="1120" class="small">DINOv3 global + local</text>
+
+  <path d="M1720 1150 V1230" class="flow-gray"/>
+  <polygon points="1720,1220 1870,1320 1720,1420 1570,1320" fill="#f8fafc" stroke="#64748b" stroke-width="3"/>
+  <text x="1720" y="1302" text-anchor="middle" class="card-title">두 판단이</text>
+  <text x="1720" y="1340" text-anchor="middle" class="card-title">충분히 합의했나요?</text>
+
+  <text x="1885" y="1288" class="label" fill="#166534">예</text>
+  <path d="M1870 1320 H1970" class="flow"/>
+  <rect x="1970" y="1250" width="340" height="145" class="green-card"/>
+  <text x="2140" y="1295" text-anchor="middle" class="label">등록 SKU 확정</text>
+  <text x="2140" y="1333" text-anchor="middle" class="small">추가 비교 합의</text>
+  <text x="2140" y="1368" text-anchor="middle" class="tiny">consensus_approved</text>
+
+  <text x="1500" y="1290" class="label" fill="#475569">아니요</text>
+  <path d="M1570 1320 H1445" class="flow-gray"/>
+  <rect x="1090" y="1240" width="355" height="165" class="gray-card"/>
+  <text x="1125" y="1285" class="card-title">Unknown</text>
+  <text x="1125" y="1325" class="body">억지로 정답을 고르지 않음</text>
+  <text x="1125" y="1363" class="small">가능성이 높은 후보 3개 기록</text>
+
+  <!-- Final result strip -->
+  <rect x="105" y="1250" width="865" height="250" class="blue-card"/>
+  <text x="140" y="1298" class="card-title">5. 모든 판별 결과를 기록</text>
+  <text x="140" y="1345" class="body">등록 SKU 또는 Unknown · 위치 · 신뢰도 · 판단 경로</text>
+  <text x="140" y="1388" class="body">등록 SKU는 종류별 수량 집계</text>
+  <text x="140" y="1431" class="body">Unknown은 별도 수량으로 분리</text>
+  <text x="140" y="1472" class="small">사진 속 위치와 판단 근거를 바꿀 수 없는 기록표로 저장</text>
+
+  <!-- Footer status -->
+  <line x1="105" y1="1540" x2="2295" y2="1540" class="divider"/>
+  <text x="105" y="1580" class="small">현재 상태: 개발 완료 · 실제 운영 환경 검증은 아직</text>
+  <text x="2295" y="1580" text-anchor="end" class="small">안전 원칙: 잘못된 확정보다 Unknown이 낫습니다.</text>
+</svg>

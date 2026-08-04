@@ -16,6 +16,8 @@ acceptance_data/
 /artifacts/
 /data/local/
 /datasets/detection/
+/datasets/classification/
+/archive/
 /samples/
 /benchmarks/runs/
 /experiments/*/outputs/
