@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
 import math
+from pathlib import Path
 import random
 from types import MappingProxyType
 from typing import Literal
@@ -289,31 +290,51 @@ class PerformanceSample:
 
 
 @dataclass(frozen=True, slots=True)
-class ActualPathEvidence:
-    """One canonical actual execution record eligible for path scheduling."""
+class ExecutionRecordIndexArtifact:
+    """Hash-admitted immutable external execution-record index artifact."""
 
-    schema_version: Literal[3]
+    artifact_id: Literal["rtx5080_actual_path_execution_index_v1"]
+    path: Path
+    bytes: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.artifact_id != "rtx5080_actual_path_execution_index_v1":
+            raise ValueError("execution index artifact identity is invalid")
+        if not isinstance(self.path, Path) or self.path == Path("."):
+            raise ValueError("execution index artifact path is invalid")
+        if type(self.bytes) is not int or self.bytes < 1:
+            raise ValueError("execution index artifact bytes must be positive")
+        _sha256(self.sha256, "execution index artifact SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class _ActualExecutionRecord:
     scene_id: str
     input_sha256: str
-    execution_receipt_sha256: str
-    quality_receipt_sha256: str
+    execution_receipt_content_sha256: str
+    quality_receipt_content_sha256: str
     state: Literal["accepted_scan", "needs_retake"]
     dino_executed: bool
     dino_object_count: int
     needs_retake: bool
     unknown: bool
     unknown_total: int
-    record_sha256: str
+    record_payload_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != 3:
-            raise ValueError("actual path evidence schema_version must be 3")
         _text(self.scene_id, "actual path scene_id")
         for value, label in (
             (self.input_sha256, "actual path input_sha256"),
-            (self.execution_receipt_sha256, "actual path execution receipt identity"),
-            (self.quality_receipt_sha256, "actual path quality receipt identity"),
-            (self.record_sha256, "actual path record hash"),
+            (
+                self.execution_receipt_content_sha256,
+                "actual path execution receipt content identity",
+            ),
+            (
+                self.quality_receipt_content_sha256,
+                "actual path quality receipt content identity",
+            ),
+            (self.record_payload_sha256, "actual path record hash"),
         ):
             _sha256(value, label)
         if self.state not in {"accepted_scan", "needs_retake"}:
@@ -339,41 +360,11 @@ class ActualPathEvidence:
             raise ValueError("actual Unknown evidence requires accepted DINO execution")
         if self.dino_executed and self.state != "accepted_scan":
             raise ValueError("actual DINO evidence requires accepted_scan state")
-        if self.record_sha256 != canonical_sha256(self._identity_payload()):
+        if self.record_payload_sha256 != canonical_sha256(self._identity_payload()):
             raise ValueError("actual path record hash does not match canonical evidence")
 
     @classmethod
-    def build(
-        cls,
-        *,
-        scene_id: str,
-        input_sha256: str,
-        execution_receipt_sha256: str,
-        quality_receipt_sha256: str,
-        state: Literal["accepted_scan", "needs_retake"],
-        dino_executed: bool,
-        dino_object_count: int,
-        needs_retake: bool,
-        unknown: bool,
-        unknown_total: int,
-    ) -> "ActualPathEvidence":
-        values = {
-            "schema_version": 3,
-            "scene_id": scene_id,
-            "input_sha256": input_sha256,
-            "execution_receipt_sha256": execution_receipt_sha256,
-            "quality_receipt_sha256": quality_receipt_sha256,
-            "state": state,
-            "dino_executed": dino_executed,
-            "dino_object_count": dino_object_count,
-            "needs_retake": needs_retake,
-            "unknown": unknown,
-            "unknown_total": unknown_total,
-        }
-        return cls(**values, record_sha256=canonical_sha256(values))  # type: ignore[arg-type]
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "ActualPathEvidence":
+    def from_mapping(cls, value: Mapping[str, object]) -> "_ActualExecutionRecord":
         if not isinstance(value, Mapping) or set(value) != set(cls.__dataclass_fields__):
             raise ValueError("actual execution evidence record schema is invalid")
         return cls(**dict(value))  # type: ignore[arg-type]
@@ -382,11 +373,8 @@ class ActualPathEvidence:
         return {
             name: getattr(self, name)
             for name in self.__dataclass_fields__
-            if name != "record_sha256"
+            if name != "record_payload_sha256"
         }
-
-    def to_payload(self) -> dict[str, object]:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True, slots=True)
@@ -626,19 +614,110 @@ def build_performance_receipt(
     )
 
 
+def _read_execution_index_bytes(artifact: ExecutionRecordIndexArtifact) -> bytes:
+    artifact.__post_init__()
+    path = artifact.path.resolve()
+    if artifact.path.is_symlink() or not path.is_file():
+        raise ValueError("execution index artifact must be a regular immutable file")
+    before = path.stat()
+    raw = path.read_bytes()
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError("execution index artifact changed while reading")
+    return raw
+
+
+def _load_execution_index(
+    artifact: ExecutionRecordIndexArtifact,
+    loader: Callable[[ExecutionRecordIndexArtifact], bytes],
+    *,
+    execution_receipt_sha256: str,
+    quality_receipt_sha256: str,
+) -> tuple[_ActualExecutionRecord, ...]:
+    if not isinstance(artifact, ExecutionRecordIndexArtifact):
+        raise ValueError("hash-admitted execution index artifact is required")
+    artifact.__post_init__()
+    if not callable(loader):
+        raise ValueError("verified execution index loader is required")
+    raw = loader(artifact)
+    if not isinstance(raw, bytes):
+        raise ValueError("execution index loader must return immutable bytes")
+    if len(raw) != artifact.bytes:
+        raise ValueError("execution index artifact byte size mismatch")
+    if hashlib.sha256(raw).hexdigest() != artifact.sha256:
+        raise ValueError("execution index artifact SHA-256 mismatch")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("execution index artifact is invalid JSON") from exc
+    if not isinstance(value, Mapping) or canonical_sha256(value) != artifact.sha256:
+        raise ValueError("execution index artifact payload identity mismatch")
+    if json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") != raw:
+        raise ValueError("execution index artifact bytes must be canonical JSON")
+    expected_keys = {
+        "schema_version",
+        "artifact_id",
+        "execution_receipt_content_sha256",
+        "quality_receipt_content_sha256",
+        "records",
+        "records_payload_sha256",
+        "index_payload_sha256",
+    }
+    if set(value) != expected_keys or value["schema_version"] != 3:
+        raise ValueError("execution index artifact schema is invalid")
+    if value["artifact_id"] != artifact.artifact_id:
+        raise ValueError("execution index artifact ID mismatch")
+    for field in (
+        "execution_receipt_content_sha256",
+        "quality_receipt_content_sha256",
+        "records_payload_sha256",
+        "index_payload_sha256",
+    ):
+        _sha256(value[field], f"execution index {field}")
+    if value["execution_receipt_content_sha256"] != execution_receipt_sha256:
+        raise ValueError("execution receipt identity mismatch")
+    if value["quality_receipt_content_sha256"] != quality_receipt_sha256:
+        raise ValueError("quality receipt identity mismatch")
+    records_value = value["records"]
+    if not isinstance(records_value, list) or not records_value:
+        raise ValueError("execution index requires actual execution evidence records")
+    if value["records_payload_sha256"] != canonical_sha256(records_value):
+        raise ValueError("execution index records payload hash mismatch")
+    index_identity = dict(value)
+    del index_identity["index_payload_sha256"]
+    if value["index_payload_sha256"] != canonical_sha256(index_identity):
+        raise ValueError("execution index payload hash mismatch")
+    records = tuple(_ActualExecutionRecord.from_mapping(item) for item in records_value)
+    if len({record.scene_id for record in records}) != len(records):
+        raise ValueError("execution index scene IDs must be unique")
+    for record in records:
+        if record.execution_receipt_content_sha256 != execution_receipt_sha256:
+            raise ValueError("record execution receipt identity mismatch")
+        if record.quality_receipt_content_sha256 != quality_receipt_sha256:
+            raise ValueError("record quality receipt identity mismatch")
+    return records
+
+
 def build_benchmark_schedule(
     scenes_by_group: Mapping[str, Sequence[str]],
     *,
-    path_evidence: Mapping[
-        str, Sequence[ActualPathEvidence | Mapping[str, object]]
-    ],
+    execution_index_artifact: ExecutionRecordIndexArtifact,
     execution_receipt_sha256: str,
     quality_receipt_sha256: str,
+    index_loader: Callable[[ExecutionRecordIndexArtifact], bytes] = (
+        _read_execution_index_bytes
+    ),
     warmup_count: int = 20,
     observations_per_group: int = 1000,
     observations_per_path: int = 1000,
 ) -> tuple[BenchmarkScheduleItem, ...]:
-    """Cycle sorted group and actual path IDs after an excluded warm-up prefix."""
+    """Schedule only paths proven by a hash-admitted external execution index."""
     if not isinstance(scenes_by_group, Mapping) or set(scenes_by_group) != set(GROUPS):
         raise ValueError("benchmark scenes must contain exactly E, M, and H")
     if type(warmup_count) is not int or warmup_count < 20:
@@ -667,43 +746,30 @@ def build_benchmark_schedule(
         raise ValueError("benchmark schedule must bind the exact E/M/H inventory")
     if len(set(all_ids)) != len(all_ids):
         raise ValueError("benchmark scene IDs cannot appear in multiple groups")
+    records = _load_execution_index(
+        execution_index_artifact,
+        index_loader,
+        execution_receipt_sha256=execution_receipt_sha256,
+        quality_receipt_sha256=quality_receipt_sha256,
+    )
     required_paths = ("dinov3", "needs_retake", "unknown")
-    if not isinstance(path_evidence, Mapping) or set(path_evidence) != set(required_paths):
-        raise ValueError("benchmark actual execution evidence must cover every required path")
     group_by_scene = {
         scene_id: group for group in GROUPS for scene_id in normalized[group]
     }
-    normalized_paths: dict[str, tuple[ActualPathEvidence, ...]] = {}
+    if any(record.scene_id not in group_by_scene for record in records):
+        raise ValueError("actual execution evidence must bind current scenes")
+    normalized_paths: dict[str, tuple[_ActualExecutionRecord, ...]] = {}
     for path_name in required_paths:
-        values = path_evidence[path_name]
-        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-            raise ValueError(f"{path_name} actual execution evidence must be a sequence")
-        try:
-            records = tuple(
-                item
-                if isinstance(item, ActualPathEvidence)
-                else ActualPathEvidence.from_mapping(item)
-                for item in values
+        ordered = tuple(
+            sorted(
+                (record for record in records if _path_predicate(path_name, record)),
+                key=lambda item: item.scene_id,
             )
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{path_name} actual execution evidence invalid: {exc}"
-            ) from exc
-        ordered = tuple(sorted(records, key=lambda item: item.scene_id))
+        )
         if not ordered:
-            raise ValueError(f"{path_name} actual path evidence must not be empty")
-        if len({record.scene_id for record in ordered}) != len(ordered):
-            raise ValueError(f"{path_name} actual path evidence scene IDs must be unique")
-        if any(record.scene_id not in group_by_scene for record in ordered):
-            raise ValueError(f"{path_name} actual path evidence must bind current scenes")
-        for record in ordered:
-            record.__post_init__()
-            if record.execution_receipt_sha256 != execution_receipt_sha256:
-                raise ValueError(f"{path_name} execution receipt identity mismatch")
-            if record.quality_receipt_sha256 != quality_receipt_sha256:
-                raise ValueError(f"{path_name} quality receipt identity mismatch")
-            if not _path_predicate(path_name, record):
-                raise ValueError(f"{path_name} actual path predicate mismatch")
+            raise ValueError(
+                f"{path_name} actual path execution evidence must not be empty"
+            )
         normalized_paths[path_name] = ordered
     flattened = tuple((group, scene_id) for group in GROUPS for scene_id in normalized[group])
     schedule: list[BenchmarkScheduleItem] = []
@@ -733,7 +799,7 @@ def build_benchmark_schedule(
     return tuple(schedule)
 
 
-def _path_predicate(path_name: str, record: ActualPathEvidence) -> bool:
+def _path_predicate(path_name: str, record: _ActualExecutionRecord) -> bool:
     if path_name == "dinov3":
         return record.dino_executed and record.dino_object_count > 0
     if path_name == "needs_retake":
@@ -875,7 +941,7 @@ __all__ = [
     "REQUIRED_SLICES",
     "STAGES",
     "BenchmarkScheduleItem",
-    "ActualPathEvidence",
+    "ExecutionRecordIndexArtifact",
     "PerformanceReceipt",
     "PerformanceSample",
     "build_benchmark_schedule",

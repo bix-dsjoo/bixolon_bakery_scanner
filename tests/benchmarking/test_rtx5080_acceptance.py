@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
 from bakery_scanner.benchmarking.rtx5080_acceptance import (
     REQUIRED_ARTIFACT_ROLES,
-    ActualPathEvidence,
+    ExecutionRecordIndexArtifact,
     PerformanceSample,
     build_benchmark_schedule,
     build_performance_receipt,
@@ -91,28 +93,59 @@ def _sample(
     )
 
 
-def _actual_path(
-    scene_id: str,
-    path_name: str,
-    *,
-    execution_sha256: str = EXECUTION_SHA,
+def _execution_record(
+    scene_id: str, path_name: str, *, execution_sha256: str = EXECUTION_SHA,
     quality_sha256: str = QUALITY_SHA,
-) -> ActualPathEvidence:
+) -> dict[str, object]:
     dino = path_name in {"dinov3", "unknown"}
     retake = path_name == "needs_retake"
     unknown = path_name == "unknown"
-    return ActualPathEvidence.build(
-        scene_id=scene_id,
-        input_sha256=hashlib.sha256(scene_id.encode()).hexdigest(),
-        execution_receipt_sha256=execution_sha256,
-        quality_receipt_sha256=quality_sha256,
-        state="needs_retake" if retake else "accepted_scan",
-        dino_executed=dino,
-        dino_object_count=4 if dino else 0,
-        needs_retake=retake,
-        unknown=unknown,
-        unknown_total=1 if unknown else 0,
+    record: dict[str, object] = {
+        "scene_id": scene_id,
+        "input_sha256": hashlib.sha256(scene_id.encode()).hexdigest(),
+        "execution_receipt_content_sha256": execution_sha256,
+        "quality_receipt_content_sha256": quality_sha256,
+        "state": "needs_retake" if retake else "accepted_scan",
+        "dino_executed": dino,
+        "dino_object_count": 4 if dino else 0,
+        "needs_retake": retake,
+        "unknown": unknown,
+        "unknown_total": 1 if unknown else 0,
+    }
+    record["record_payload_sha256"] = canonical_sha256(record)
+    return record
+
+
+def _index_fixture(
+    records: tuple[dict[str, object], ...] | None = None,
+    *,
+    execution_sha256: str = EXECUTION_SHA,
+    quality_sha256: str = QUALITY_SHA,
+) -> tuple[ExecutionRecordIndexArtifact, object]:
+    rows = records or (
+        _execution_record("e-001", "dinov3", execution_sha256=execution_sha256, quality_sha256=quality_sha256),
+        _execution_record("m-001", "needs_retake", execution_sha256=execution_sha256, quality_sha256=quality_sha256),
+        _execution_record("h-001", "unknown", execution_sha256=execution_sha256, quality_sha256=quality_sha256),
     )
+    index: dict[str, object] = {
+        "schema_version": 3,
+        "artifact_id": "rtx5080_actual_path_execution_index_v1",
+        "execution_receipt_content_sha256": execution_sha256,
+        "quality_receipt_content_sha256": quality_sha256,
+        "records": list(rows),
+        "records_payload_sha256": canonical_sha256(list(rows)),
+    }
+    index["index_payload_sha256"] = canonical_sha256(index)
+    raw = json.dumps(
+        index, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    artifact = ExecutionRecordIndexArtifact(
+        artifact_id="rtx5080_actual_path_execution_index_v1",
+        path=Path("external/actual-path-index.json"),
+        bytes=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    return artifact, lambda _artifact: raw
 
 
 @pytest.fixture(scope="module")
@@ -298,20 +331,24 @@ def test_protocol_thresholds_and_evidence_kinds_are_immutable() -> None:
 
 
 def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None:
+    index, loader = _index_fixture(
+        (
+            _execution_record("e-010", "dinov3"),
+            _execution_record("e-001", "dinov3"),
+            _execution_record("m-010", "needs_retake"),
+            _execution_record("m-001", "needs_retake"),
+            _execution_record("h-010", "unknown"),
+            _execution_record("h-001", "unknown"),
+        )
+    )
     schedule = build_benchmark_schedule(
         {
             "E": tuple(f"e-{index:03d}" for index in range(100, 0, -1)),
             "M": tuple(f"m-{index:03d}" for index in range(99, 0, -1)),
             "H": tuple(f"h-{index:03d}" for index in range(100, 0, -1)),
         },
-        path_evidence={
-            "dinov3": (_actual_path("e-010", "dinov3"), _actual_path("e-001", "dinov3")),
-            "needs_retake": (
-                _actual_path("m-010", "needs_retake"),
-                _actual_path("m-001", "needs_retake"),
-            ),
-            "unknown": (_actual_path("h-010", "unknown"), _actual_path("h-001", "unknown")),
-        },
+        execution_index_artifact=index,
+        index_loader=loader,
         execution_receipt_sha256=EXECUTION_SHA,
         quality_receipt_sha256=QUALITY_SHA,
         warmup_count=20,
@@ -327,7 +364,7 @@ def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None
     )
     assert tuple(item.group for item in measured[:1001])[-1] == "M"
     assert tuple(item.scene_id for item in measured[3000:3004]) == (
-        "e-001", "e-010", "e-001", "e-010"
+        "e-001", "e-010", "h-001", "h-010"
     )
     assert tuple(item.slice_name for item in measured[3000:4000]) == ("dinov3",) * 1000
     assert tuple(item.slice_name for item in measured[4000:5000]) == (
@@ -338,12 +375,16 @@ def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None
 
 @pytest.mark.parametrize("path_name", ("dinov3", "needs_retake", "unknown"))
 def test_schedule_rejects_empty_required_actual_path_ids(path_name: str) -> None:
-    paths = {
-        "dinov3": (_actual_path("e-001", "dinov3"),),
-        "needs_retake": (_actual_path("m-001", "needs_retake"),),
-        "unknown": (_actual_path("h-001", "unknown"),),
-    }
-    paths[path_name] = ()
+    rows = tuple(
+        _execution_record(scene_id, kind)
+        for scene_id, kind in (
+            ("e-001", "dinov3"),
+            ("m-001", "needs_retake"),
+            ("h-001", "unknown"),
+        )
+        if kind != path_name and not (path_name == "dinov3" and kind == "unknown")
+    )
+    index, loader = _index_fixture(rows)
 
     with pytest.raises(ValueError, match=rf"{path_name}.*actual path"):
         build_benchmark_schedule(
@@ -352,65 +393,99 @@ def test_schedule_rejects_empty_required_actual_path_ids(path_name: str) -> None
                 "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
                 "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
             },
-            path_evidence=paths,
+            execution_index_artifact=index,
+            index_loader=loader,
             execution_receipt_sha256=EXECUTION_SHA,
             quality_receipt_sha256=QUALITY_SHA,
         )
 
 
 def test_schedule_rejects_arbitrary_current_id_without_execution_evidence() -> None:
-    with pytest.raises(ValueError, match="actual execution evidence"):
+    index, loader = _index_fixture((_execution_record("e-001", "direct"),))
+    with pytest.raises(ValueError, match="actual path execution evidence"):
         build_benchmark_schedule(
             _schedule_groups(),
-            path_evidence={
-                "dinov3": ("e-001",),
-                "needs_retake": (_actual_path("m-001", "needs_retake"),),
-                "unknown": (_actual_path("h-001", "unknown"),),
-            },
+            execution_index_artifact=index,
+            index_loader=loader,
             execution_receipt_sha256=EXECUTION_SHA,
             quality_receipt_sha256=QUALITY_SHA,
         )
 
 
 def test_schedule_rejects_path_flag_or_canonical_record_hash_mismatch() -> None:
-    wrong_path = _actual_path("e-001", "needs_retake")
-    tampered = _actual_path("e-001", "dinov3").to_payload()
+    malformed = _execution_record("e-001", "dinov3")
+    malformed["dino_object_count"] = 0
+    malformed["record_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in malformed.items() if key != "record_payload_sha256"}
+    )
+    malformed_index, malformed_loader = _index_fixture((malformed,))
+    tampered = _execution_record("e-001", "dinov3")
     tampered["input_sha256"] = "f" * 64
+    tampered_index, tampered_loader = _index_fixture((tampered,))
 
-    with pytest.raises(ValueError, match="dinov3.*predicate"):
+    with pytest.raises(ValueError, match="DINO flag|object count"):
         build_benchmark_schedule(
             _schedule_groups(),
-            path_evidence=_path_evidence(dinov3=(wrong_path,)),
+            execution_index_artifact=malformed_index,
+            index_loader=malformed_loader,
             execution_receipt_sha256=EXECUTION_SHA,
             quality_receipt_sha256=QUALITY_SHA,
         )
     with pytest.raises(ValueError, match="record hash"):
         build_benchmark_schedule(
             _schedule_groups(),
-            path_evidence=_path_evidence(dinov3=(tampered,)),
+            execution_index_artifact=tampered_index,
+            index_loader=tampered_loader,
             execution_receipt_sha256=EXECUTION_SHA,
             quality_receipt_sha256=QUALITY_SHA,
         )
 
 
 def test_schedule_rejects_execution_or_quality_receipt_identity_mismatch() -> None:
+    index, loader = _index_fixture()
     with pytest.raises(ValueError, match="execution receipt identity"):
         build_benchmark_schedule(
             _schedule_groups(),
-            path_evidence=_path_evidence(),
+            execution_index_artifact=index,
+            index_loader=loader,
             execution_receipt_sha256="8" * 64,
             quality_receipt_sha256=QUALITY_SHA,
         )
+    quality_index, quality_loader = _index_fixture(quality_sha256="8" * 64)
     with pytest.raises(ValueError, match="quality receipt identity"):
         build_benchmark_schedule(
             _schedule_groups(),
-            path_evidence=_path_evidence(
-                dinov3=(
-                    _actual_path("e-001", "dinov3", quality_sha256="8" * 64),
-                )
-            ),
+            execution_index_artifact=quality_index,
+            index_loader=quality_loader,
             execution_receipt_sha256=EXECUTION_SHA,
             quality_receipt_sha256=QUALITY_SHA,
+        )
+
+
+def test_schedule_rejects_index_artifact_byte_or_payload_hash_mismatch() -> None:
+    index, loader = _index_fixture()
+    wrong_artifact = replace(index, sha256="f" * 64)
+
+    with pytest.raises(ValueError, match="index artifact SHA-256"):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            execution_index_artifact=wrong_artifact,
+            index_loader=loader,
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
+        )
+
+
+def test_scheduler_forbids_caller_authored_path_records_as_authority() -> None:
+    index, loader = _index_fixture()
+    with pytest.raises(TypeError):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            execution_index_artifact=index,
+            index_loader=loader,
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
+            path_evidence={"dinov3": (_execution_record("e-001", "dinov3"),)},
         )
 
 
@@ -419,12 +494,4 @@ def _schedule_groups() -> dict[str, tuple[str, ...]]:
         "E": tuple(f"e-{index:03d}" for index in range(1, 101)),
         "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
         "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
-    }
-
-
-def _path_evidence(*, dinov3=None):
-    return {
-        "dinov3": dinov3 or (_actual_path("e-001", "dinov3"),),
-        "needs_retake": (_actual_path("m-001", "needs_retake"),),
-        "unknown": (_actual_path("h-001", "unknown"),),
     }
