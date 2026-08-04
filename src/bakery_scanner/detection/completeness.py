@@ -105,6 +105,7 @@ class CounterfactualCase:
     fault: Literal["missing", "merge", "split", "truncation"]
     proposals: tuple[BreadProposal, ...]
     foreground: ForegroundEvidence
+    frame_size: tuple[int, int]
 
     def __post_init__(self) -> None:
         if self.evidence_kind != "counterfactual":
@@ -115,6 +116,8 @@ class CounterfactualCase:
             raise ValueError("counterfactual proposals must be an immutable BreadProposal tuple")
         if not isinstance(self.foreground, ForegroundEvidence):
             raise ValueError("counterfactual foreground must use ForegroundEvidence")
+        width, height = _canonical_frame_size(self.frame_size)
+        _validate_proposals(self.proposals, width, height)
 
 
 class ForegroundAnalyzer(Protocol):
@@ -229,6 +232,7 @@ def build_counterfactuals(gt_boxes: tuple[BreadProposal, ...]) -> tuple[Counterf
         cases.append(CounterfactualCase(
             "counterfactual", "missing", gt_boxes[:index] + gt_boxes[index + 1:],
             replace(clear, uncovered_ratio=1.0, problem_regions=(proposal.box.xyxy,)),
+            (width, height),
         ))
     for left_index, left in enumerate(gt_boxes):
         for right_index in range(left_index + 1, len(gt_boxes)):
@@ -240,16 +244,18 @@ def build_counterfactuals(gt_boxes: tuple[BreadProposal, ...]) -> tuple[Counterf
             cases.append(CounterfactualCase(
                 "counterfactual", "merge", proposals,
                 replace(clear, possible_merge_regions=(_union(left.box, right.box).xyxy,)),
+                (width, height),
             ))
     for index, proposal in enumerate(gt_boxes):
         left, right = _split(proposal)
         cases.append(CounterfactualCase(
             "counterfactual", "split", gt_boxes[:index] + (left, right) + gt_boxes[index + 1:],
             replace(clear, possible_split_regions=(proposal.box.xyxy,)),
+            (width, height),
         ))
     for index, proposal in enumerate(gt_boxes):
         truncated = replace(proposal, box=Box(0.0, proposal.box.y, proposal.box.width, proposal.box.height))
-        cases.append(CounterfactualCase("counterfactual", "truncation", gt_boxes[:index] + (truncated,) + gt_boxes[index + 1:], clear))
+        cases.append(CounterfactualCase("counterfactual", "truncation", gt_boxes[:index] + (truncated,) + gt_boxes[index + 1:], clear, (width, height)))
     return tuple(cases)
 
 

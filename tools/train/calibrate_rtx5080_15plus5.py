@@ -172,16 +172,23 @@ class CalibrationBundle:
     provenance: Mapping[str, str]
 
     def to_json_bytes(self) -> bytes:
+        source_identities = tuple(sorted(_safe_scene_identity(value) for value in self.source_scene_ids))
+        evaluation_identities = tuple(sorted(_safe_scene_identity(value) for value in self.evaluation_scene_ids))
         payload = {
             "schema_version": 1,
             "fold_index": self.fold_index,
-            "source_scene_ids": list(self.source_scene_ids),
-            "evaluation_scene_ids": list(self.evaluation_scene_ids),
+            "source_scene_count": len(source_identities),
+            "source_scene_identities": list(source_identities),
+            "source_scene_identity_set_sha256": _canonical_sha256(source_identities),
+            "evaluation_scene_count": len(evaluation_identities),
+            "evaluation_scene_identities": list(evaluation_identities),
+            "evaluation_scene_identity_set_sha256": _canonical_sha256(evaluation_identities),
             "direct_gates": {str(sku): asdict(self.direct_gates[sku]) for sku in range(1, 21)},
             "fusion_decision_rule": self.fusion_decision_rule,
             "consensus_margin_floor": self.consensus_margin_floor,
             "provenance": dict(self.provenance),
         }
+        _reject_private_paths(payload)
         return json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
     @property
@@ -255,6 +262,28 @@ def _select_direct_gate(rows: tuple[CalibrationRow, ...]) -> DirectGate:
             key = (float(len(accepted)), confidence, margin, -distance, -disagreement)
             candidates.append((key, gate))
     return max(candidates, key=lambda item: item[0])[1] if candidates else DirectGate(False)
+
+
+def _safe_scene_identity(value: str) -> str:
+    return "scene_sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _reject_private_paths(value: object) -> None:
+    if isinstance(value, str):
+        if value.startswith(("/", "\\\\")) or re.match(r"^[A-Za-z]:[\\/]", value):
+            raise ValueError("calibration bundle must not contain private absolute paths")
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_private_paths(key)
+            _reject_private_paths(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_private_paths(item)
 
 
 def _main(argv: Sequence[str] | None = None) -> int:

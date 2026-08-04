@@ -137,3 +137,32 @@ def test_sku_without_any_correct_zero_error_region_disables_direct_gate():
 def test_calibration_rejects_mixed_dino_global_and_local_evidence_identity():
     with pytest.raises(ValueError, match="DINO evidence identity"):
         _row("cal-a#0", dino_local_runtime_sha256="b" * 64)
+
+
+def test_calibration_bundle_serializes_only_digest_role_identities():
+    private_scene = r"C:\private\calibration\scan.jpg"
+    bundle = calibrate_fold(
+        (
+            _row(
+                private_scene + "#0",
+                declared_calibration_scene_ids=(private_scene,),
+                declared_evaluation_scene_ids=(r"D:\private\evaluation\scan.jpg",),
+            ),
+        ),
+        fold_index=0,
+    )
+
+    payload = bundle.to_json_bytes().decode("utf-8")
+
+    assert r"C:\private" not in payload
+    assert r"D:\private" not in payload
+    assert '"source_scene_count":1' in payload
+    assert '"evaluation_scene_count":1' in payload
+    assert "scene_sha256:" in payload
+
+
+def test_calibration_bundle_recursively_rejects_private_path_provenance():
+    bundle = calibrate_fold((_row("cal-a#0", declared_calibration_scene_ids=("cal-a",)),), fold_index=0)
+
+    with pytest.raises(ValueError, match="private absolute paths"):
+        replace(bundle, provenance={**bundle.provenance, "nested": {"path": r"C:\private\weights.bin"}}).to_json_bytes()

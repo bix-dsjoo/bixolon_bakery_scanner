@@ -3,7 +3,7 @@ from __future__ import annotations
 from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.pipelines.rtx5080_15plus5.contracts import RetakeReason
 
-from test_completeness import FRAME, _foreground, _policy, _quality
+from test_completeness import FRAME, _policy, _quality
 
 
 def _proposal(x: float, y: float, width: float = 10.0, height: float = 10.0) -> BreadProposal:
@@ -28,3 +28,12 @@ def test_counterfactual_cases_are_separate_and_rejected_for_their_intended_fault
         }[case.fault]
         assert decision.accepted is False
         assert expected in decision.reasons
+
+
+def test_single_object_missing_case_preserves_canonical_frame_without_proposals() -> None:
+    from bakery_scanner.detection.completeness import build_counterfactuals
+
+    missing = next(case for case in build_counterfactuals((_proposal(10, 10),)) if case.fault == "missing")
+
+    assert missing.proposals == ()
+    assert missing.frame_size == FRAME

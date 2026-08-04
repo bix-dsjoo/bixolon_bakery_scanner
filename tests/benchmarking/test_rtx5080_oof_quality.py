@@ -1,20 +1,74 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
-from bakery_scanner.benchmarking.oof15plus5 import GroundTruthObject, OofEvaluationRow, PredictionObject, build_final_development_policy, evaluate_oof, freeze_oof_receipt, immutable_fusion_accepts
+from bakery_scanner.benchmarking.oof15plus5 import (
+    GroundTruthObject,
+    OofEvaluationRow,
+    PredictionObject,
+    build_counterfactual_evidence,
+    build_final_development_policy,
+    evaluate_oof,
+    freeze_oof_receipt,
+    immutable_fusion_accepts,
+)
+from bakery_scanner.contracts import Box, BreadProposal
+from bakery_scanner.detection.completeness import (
+    CaptureQuality,
+    CompletenessPolicy,
+    build_counterfactuals,
+)
 
 
-PROVENANCE = {"split_sha256":"1" * 64,"source_evidence_sha256":"2" * 64,"detector_sha256":"3" * 64,"repvit_checkpoint_sha256":"4" * 64,"repvit_prototype_sha256":"5" * 64,"dinov3_weights_sha256":"6" * 64,"dinov3_support_sha256":"7" * 64,"dinov3_local_bank_sha256":"8" * 64,"preprocess_sha256":"9" * 64,"fold_policy_sha256":"a" * 64,"code_sha256":"b" * 64,"runtime_sha256":"c" * 64,"dino_global_fold_index":0,"dino_local_fold_index":0,"dino_global_split_sha256":"1" * 64,"dino_local_split_sha256":"1" * 64,"dino_global_source_evidence_sha256":"2" * 64,"dino_local_source_evidence_sha256":"2" * 64,"dino_global_runtime_sha256":"c" * 64,"dino_local_runtime_sha256":"c" * 64,"dino_local_model_sha256":"6" * 64,"dino_global_preprocess_sha256":"9" * 64,"dino_local_preprocess_sha256":"9" * 64}
+PROVENANCE = {"split_sha256":"1" * 64,"source_evidence_sha256":"2" * 64,"source_image_sha256":"d" * 64,"detector_sha256":"3" * 64,"repvit_checkpoint_sha256":"4" * 64,"repvit_prototype_sha256":"5" * 64,"dinov3_weights_sha256":"6" * 64,"dinov3_support_sha256":"7" * 64,"dinov3_local_bank_sha256":"8" * 64,"preprocess_sha256":"9" * 64,"fold_policy_sha256":"a" * 64,"code_sha256":"b" * 64,"runtime_sha256":"c" * 64,"dino_global_fold_index":0,"dino_local_fold_index":0,"dino_global_split_sha256":"1" * 64,"dino_local_split_sha256":"1" * 64,"dino_global_source_evidence_sha256":"2" * 64,"dino_local_source_evidence_sha256":"2" * 64,"dino_global_runtime_sha256":"c" * 64,"dino_local_runtime_sha256":"c" * 64,"dino_local_model_sha256":"6" * 64,"dino_global_preprocess_sha256":"9" * 64,"dino_local_preprocess_sha256":"9" * 64}
 
 
-def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan", evidence_kind: str = "observed", source_scene_id: str | None = None, variant_id: str | None = None, fault_category: str | None = None) -> OofEvaluationRow:
+def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan", evidence_kind: str = "observed", source_scene_id: str | None = None, variant_id: str | None = None, fault_category: str | None = None, counterfactual_evidence: object | None = None, counterfactual_evidence_sha256: str | None = None, provenance_changes: dict[str, object] | None = None) -> OofEvaluationRow:
     truth = tuple(GroundTruthObject(f"g{i}", i + 1, (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1) for i in range(count))
-    predictions = tuple(PredictionObject(f"p{i}", (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1, "unknown" if unknown else "auto_approved", None if unknown else (20 if wrong and i == 0 else i + 1), (1, 2, 3) if unknown else ()) for i in range(count))
+    predictions = () if state == "needs_retake" else tuple(PredictionObject(f"p{i}", (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1, "unknown" if unknown else "auto_approved", None if unknown else (20 if wrong and i == 0 else i + 1), (1, 2, 3) if unknown else ()) for i in range(count))
     resolved_scene_id = scene_id or f"scene-{fold_index}-{count}"
-    return OofEvaluationRow(scene_id=resolved_scene_id, fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(resolved_scene_id,) if evidence_kind == "observed" else (source_scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind=evidence_kind, ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, source_scene_id=source_scene_id or resolved_scene_id, variant_id=variant_id, fault_category=fault_category, **{**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index})
+    provenance = {**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index, **(provenance_changes or {})}
+    return OofEvaluationRow(scene_id=resolved_scene_id, fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(resolved_scene_id,) if evidence_kind == "observed" else (source_scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind=evidence_kind, ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, source_scene_id=source_scene_id or resolved_scene_id, variant_id=variant_id, fault_category=fault_category, counterfactual_evidence=counterfactual_evidence, counterfactual_evidence_sha256=counterfactual_evidence_sha256, **provenance)
+
+
+def _counterfactual_scene(fault: str, *, source_image_sha256: str = "d" * 64) -> OofEvaluationRow:
+    proposals = (
+        BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),
+        BreadProposal(1, "rfdetr_large_bakery_v1", 0.8, Box(20, 10, 20, 20), 100, 80),
+    )
+    case = next(item for item in build_counterfactuals(proposals) if item.fault == fault)
+    variant_id = f"{fault}-v1"
+    evidence = build_counterfactual_evidence(
+        source_scene_id="source-0",
+        source_image_sha256=source_image_sha256,
+        fold_index=0,
+        variant_id=variant_id,
+        case=case,
+        quality=CaptureQuality(100.0, 0.5, 0.0),
+        policy=CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
+    )
+    return _scene(
+        scene_id=f"source-0::counterfactual::{variant_id}",
+        evidence_kind="counterfactual",
+        source_scene_id="source-0",
+        variant_id=variant_id,
+        fault_category=fault,
+        state="needs_retake",
+        expected_state="needs_retake",
+        counterfactual_evidence=evidence,
+        counterfactual_evidence_sha256=evidence.sha256,
+        provenance_changes={
+            "source_image_sha256": source_image_sha256,
+            "source_evidence_sha256": evidence.sha256,
+            "dino_global_source_evidence_sha256": evidence.sha256,
+            "dino_local_source_evidence_sha256": evidence.sha256,
+        },
+    )
 
 
 @pytest.mark.parametrize(("fusion", "local", "repvit", "dino", "margin", "accepted"), [(4, 4, 1, 2, 0.0, True), (4, 2, 4, 4, 0.85, True), (4, 2, 4, 4, 0.849999, False), (4, 2, 4, 3, 0.99, False)])
@@ -159,16 +213,7 @@ def test_counterfactual_requires_a_distinct_deterministic_variant_of_an_observed
             state="needs_retake",
             expected_state="needs_retake",
         )
-    counterfactual = _scene(
-        scene_id="source-0::counterfactual::split-v1",
-        count=0,
-        evidence_kind="counterfactual",
-        source_scene_id="source-0",
-        variant_id="split-v1",
-        fault_category="split",
-        state="needs_retake",
-        expected_state="needs_retake",
-    )
+    counterfactual = _counterfactual_scene("split")
     receipt = evaluate_oof((observed, counterfactual), {0: "a" * 64})
 
     assert receipt.report_slices["evidence_kind"] == {"counterfactual": 1, "observed": 1}
@@ -185,16 +230,7 @@ def test_unverified_reasons_and_receipt_bytes_do_not_expose_absolute_scene_paths
 
 def test_counterfactual_requires_each_fault_category_and_does_not_aggregate_one_category():
     observed = _scene(scene_id="source-0")
-    split = _scene(
-        scene_id="source-0::counterfactual::split-v1",
-        count=0,
-        evidence_kind="counterfactual",
-        source_scene_id="source-0",
-        variant_id="split-v1",
-        fault_category="split",
-        state="needs_retake",
-        expected_state="needs_retake",
-    )
+    split = _counterfactual_scene("split")
     receipt = evaluate_oof((observed, split), {0: "a" * 64})
 
     assert receipt.status == "unverified"
@@ -205,16 +241,165 @@ def test_counterfactual_requires_each_fault_category_and_does_not_aggregate_one_
 
 def test_linked_counterfactual_rejects_mixed_static_pipeline_provenance():
     observed = _scene(scene_id="source-0")
-    counterfactual = _scene(
-        scene_id="source-0::counterfactual::merge-v1",
-        count=0,
-        evidence_kind="counterfactual",
-        source_scene_id="source-0",
-        variant_id="merge-v1",
-        fault_category="merge",
-        state="needs_retake",
-        expected_state="needs_retake",
-    )
+    counterfactual = _counterfactual_scene("merge")
 
     with pytest.raises(ValueError, match="linked counterfactual pipeline provenance"):
         evaluate_oof((observed, replace(counterfactual, repvit_checkpoint_sha256="d" * 64)), {0: "a" * 64})
+
+
+def test_task3_counterfactual_payload_is_hash_bound_end_to_end():
+    proposals = (
+        BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),
+    )
+    case = next(item for item in build_counterfactuals(proposals) if item.fault == "missing")
+    quality = CaptureQuality(100.0, 0.5, 0.0)
+    policy = CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5)
+    evidence = build_counterfactual_evidence(
+        source_scene_id="source-0",
+        source_image_sha256="d" * 64,
+        fold_index=0,
+        variant_id="missing-v1",
+        case=case,
+        quality=quality,
+        policy=policy,
+    )
+    observed = _scene(scene_id="source-0")
+    counterfactual = _scene(
+        scene_id="source-0::counterfactual::missing-v1",
+        evidence_kind="counterfactual",
+        source_scene_id="source-0",
+        variant_id="missing-v1",
+        fault_category="missing",
+        state="needs_retake",
+        expected_state="needs_retake",
+        counterfactual_evidence=evidence,
+        counterfactual_evidence_sha256=evidence.sha256,
+        provenance_changes={
+            "source_image_sha256": "d" * 64,
+            "source_evidence_sha256": evidence.sha256,
+            "dino_global_source_evidence_sha256": evidence.sha256,
+            "dino_local_source_evidence_sha256": evidence.sha256,
+        },
+    )
+
+    receipt = evaluate_oof((observed, counterfactual), {0: "a" * 64})
+
+    assert receipt.utility.counterfactual_completeness_block_rate["missing"] == 1.0
+    assert "counterfactual:missing" not in receipt.utility.missing_required_slices
+    with pytest.raises(ValueError, match="counterfactual evidence hash"):
+        replace(counterfactual, counterfactual_evidence_sha256="e" * 64)
+
+
+def test_counterfactual_cannot_reuse_observed_source_or_source_image_identity():
+    proposals = (BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),)
+    case = next(item for item in build_counterfactuals(proposals) if item.fault == "truncation")
+    evidence = build_counterfactual_evidence(
+        source_scene_id="source-0",
+        source_image_sha256="e" * 64,
+        fold_index=0,
+        variant_id="truncation-v1",
+        case=case,
+        quality=CaptureQuality(100.0, 0.5, 0.0),
+        policy=CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
+    )
+    observed = _scene(scene_id="source-0")
+    counterfactual = _scene(
+        scene_id="source-0::counterfactual::truncation-v1",
+        evidence_kind="counterfactual",
+        source_scene_id="source-0",
+        variant_id="truncation-v1",
+        fault_category="truncation",
+        state="needs_retake",
+        expected_state="needs_retake",
+        counterfactual_evidence=evidence,
+        counterfactual_evidence_sha256=evidence.sha256,
+        provenance_changes={
+            "source_image_sha256": "e" * 64,
+            "source_evidence_sha256": evidence.sha256,
+            "dino_global_source_evidence_sha256": evidence.sha256,
+            "dino_local_source_evidence_sha256": evidence.sha256,
+        },
+    )
+
+    with pytest.raises(ValueError, match="source image identity"):
+        evaluate_oof((observed, counterfactual), {0: "a" * 64})
+    with pytest.raises(ValueError, match="transformed evidence"):
+        replace(
+            counterfactual,
+            source_evidence_sha256=observed.source_evidence_sha256,
+            dino_global_source_evidence_sha256=observed.source_evidence_sha256,
+            dino_local_source_evidence_sha256=observed.source_evidence_sha256,
+        )
+
+
+def test_four_task3_faults_have_four_independent_block_rates():
+    observed = _scene(scene_id="source-0")
+    counterfactuals = tuple(
+        _counterfactual_scene(fault)
+        for fault in ("missing", "merge", "split", "truncation")
+    )
+
+    receipt = evaluate_oof((observed, *counterfactuals), {0: "a" * 64})
+
+    assert receipt.utility.counterfactual_completeness_block_rate == {
+        "merge": 1.0,
+        "missing": 1.0,
+        "split": 1.0,
+        "truncation": 1.0,
+    }
+    assert not any(reason.startswith("counterfactual:") for reason in receipt.utility.missing_required_slices)
+
+
+def test_cwd_shadow_config_and_manifests_cannot_change_acceptance_sources(tmp_path, monkeypatch):
+    baseline = evaluate_oof((_scene(),), {0: "a" * 64})
+    shadow_config = tmp_path / "configs" / "evaluation" / "rtx5080_15plus5_oof_v1.yaml"
+    shadow_config.parent.mkdir(parents=True)
+    shadow_config.write_text("schema_version: 1\nutility_floors: {}\n", encoding="utf-8")
+    shadow_split = tmp_path / "data" / "splits" / "rtx5080_15plus5_oof_v1"
+    shadow_split.mkdir(parents=True)
+    for fold in range(5):
+        (shadow_split / f"fold-{fold}.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    shadowed = evaluate_oof((_scene(),), {0: "a" * 64})
+
+    canonical_config = Path(__file__).resolve().parents[2] / "configs" / "evaluation" / "rtx5080_15plus5_oof_v1.yaml"
+    assert shadowed.acceptance_sources == baseline.acceptance_sources
+    assert shadowed.utility == baseline.utility
+    assert shadowed.acceptance_sources.utility_config_sha256 == hashlib.sha256(canonical_config.read_bytes()).hexdigest()
+
+
+def test_freeze_rejects_receipt_whose_canonical_acceptance_source_hash_was_forged():
+    receipt = evaluate_oof((_scene(),), {0: "a" * 64})
+    source_payload = dict(receipt.acceptance_sources.canonical_payload(include_combined=False))
+    source_payload["utility_config_sha256"] = "f" * 64
+    combined_sha256 = hashlib.sha256(
+        json.dumps(source_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    forged = replace(
+        receipt,
+        acceptance_sources=replace(
+            receipt.acceptance_sources,
+            utility_config_sha256="f" * 64,
+            combined_sha256=combined_sha256,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="canonical acceptance source"):
+        freeze_oof_receipt(forged)
+
+
+def test_evaluation_row_must_cross_bind_canonical_config_and_manifest_file_hashes():
+    baseline = evaluate_oof((_scene(),), {0: "a" * 64})
+    sources = baseline.acceptance_sources
+    bound = replace(
+        _scene(),
+        acceptance_config_sha256=sources.utility_config_sha256,
+        fold_manifest_file_sha256=sources.fold_manifest_file_sha256[0],
+    )
+
+    receipt = evaluate_oof((bound,), {0: "a" * 64})
+
+    assert not any(reason.startswith("acceptance_config_identity_mismatch") for reason in receipt.unverified_reasons)
+    assert not any(reason.startswith("manifest_file_identity_mismatch") for reason in receipt.unverified_reasons)
+    assert any(reason.startswith("split_identity_mismatch") for reason in receipt.unverified_reasons)
