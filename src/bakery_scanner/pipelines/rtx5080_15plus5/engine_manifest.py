@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import importlib
+from importlib import metadata as importlib_metadata
 import json
 import math
 from pathlib import Path
@@ -14,7 +16,8 @@ from typing import Mapping, Sequence
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_KEYS = {
     "schema_version", "runtime_id", "build_host", "gpu", "driver",
-    "cuda_runtime", "tensorrt_python_wheel", "trtexec", "onnx_python_wheel",
+    "driver_compatibility", "cuda_runtime", "tensorrt_python_wheel",
+    "trtexec", "onnx_python_wheel",
 }
 _FILE_KEYS = {"path", "bytes", "sha256"}
 _VERSIONED_FILE_KEYS = _FILE_KEYS | {"version"}
@@ -33,6 +36,14 @@ class VerifiedFile:
 
 
 @dataclass(frozen=True, slots=True)
+class InstalledDistributionIdentity:
+    name: str
+    version: str
+    module: VerifiedFile
+    metadata: VerifiedFile
+
+
+@dataclass(frozen=True, slots=True)
 class EngineRuntimeManifest:
     path: Path
     sha256: str
@@ -42,8 +53,11 @@ class EngineRuntimeManifest:
     compute_capability: str
     gpu_uuid: str
     driver: VerifiedFile
+    driver_minimum_version: str
+    driver_maximum_version: str
     cuda_runtime: VerifiedFile
     tensorrt_python_wheel: VerifiedFile
+    tensorrt_distribution: InstalledDistributionIdentity
     trtexec_identity: VerifiedFile
     onnx_python_wheel: VerifiedFile
 
@@ -58,8 +72,15 @@ class EngineRuntimeManifest:
             "build_host": dict(self.build_host),
             "gpu": {"name": self.gpu_name, "compute_capability": self.compute_capability, "uuid": self.gpu_uuid},
             "driver": _file_payload(self.driver),
+            "driver_compatibility": {
+                "minimum_version": self.driver_minimum_version,
+                "maximum_version": self.driver_maximum_version,
+            },
             "cuda_runtime": _file_payload(self.cuda_runtime),
-            "tensorrt_python_wheel": _file_payload(self.tensorrt_python_wheel),
+            "tensorrt_python_wheel": {
+                **_file_payload(self.tensorrt_python_wheel),
+                "installed_distribution": _distribution_payload(self.tensorrt_distribution),
+            },
             "trtexec": _file_payload(self.trtexec_identity),
             "onnx_python_wheel": _file_payload(self.onnx_python_wheel),
         }
@@ -117,15 +138,112 @@ def load_engine_runtime_manifest(path: Path) -> EngineRuntimeManifest:
         raise EngineAdmissionError("runtime manifest GPU must be NVIDIA GeForce RTX 5080")
     if gpu["compute_capability"] != "12.0":
         raise EngineAdmissionError("runtime manifest GPU compute capability must be 12.0")
+    driver = _verified_file(payload["driver"], "driver", version=True)
+    compatibility = _exact_text_mapping(
+        payload["driver_compatibility"],
+        {"minimum_version", "maximum_version"},
+        "driver_compatibility",
+    )
+    driver_version = _numeric_version(driver.version, "driver.version")
+    minimum_driver = _numeric_version(
+        compatibility["minimum_version"], "driver_compatibility.minimum_version"
+    )
+    maximum_driver = _numeric_version(
+        compatibility["maximum_version"], "driver_compatibility.maximum_version"
+    )
+    width = max(len(driver_version), len(minimum_driver), len(maximum_driver))
+    driver_version += (0,) * (width - len(driver_version))
+    minimum_driver += (0,) * (width - len(minimum_driver))
+    maximum_driver += (0,) * (width - len(maximum_driver))
+    if minimum_driver > maximum_driver or not minimum_driver <= driver_version <= maximum_driver:
+        raise EngineAdmissionError("driver version is outside the declared compatibility range")
+    tensorrt_wheel, tensorrt_distribution = _verified_tensorrt_python(
+        payload["tensorrt_python_wheel"]
+    )
     return EngineRuntimeManifest(
         manifest_path, hashlib.sha256(raw).hexdigest(), runtime_id, build_host,
         gpu["name"], gpu["compute_capability"], gpu["uuid"],
-        _verified_file(payload["driver"], "driver", version=True),
+        driver, compatibility["minimum_version"], compatibility["maximum_version"],
         _verified_file(payload["cuda_runtime"], "cuda_runtime", version=True),
-        _verified_file(payload["tensorrt_python_wheel"], "tensorrt_python_wheel", version=True),
+        tensorrt_wheel, tensorrt_distribution,
         _verified_file(payload["trtexec"], "trtexec", version=True),
         _verified_file(payload["onnx_python_wheel"], "onnx_python_wheel", version=True),
     )
+
+
+def verify_active_tensorrt_python(
+    runtime: EngineRuntimeManifest,
+    *,
+    module: object | None = None,
+    distribution: object | None = None,
+) -> dict[str, str]:
+    """Bind the active import to the approved installed distribution bytes."""
+    if not isinstance(runtime, EngineRuntimeManifest):
+        raise EngineAdmissionError("TensorRT Python runtime identity is invalid")
+    identity = runtime.tensorrt_distribution
+    try:
+        active_module = module if module is not None else importlib.import_module("tensorrt")
+        active_distribution = (
+            distribution
+            if distribution is not None
+            else importlib_metadata.distribution(identity.name)
+        )
+    except (ImportError, importlib_metadata.PackageNotFoundError) as exc:
+        raise EngineAdmissionError("TensorRT Python package is unavailable; no fallback") from exc
+    module_path_value = getattr(active_module, "__file__", None)
+    module_spec = getattr(active_module, "__spec__", None)
+    module_origin = getattr(module_spec, "origin", None)
+    module_paths = getattr(active_module, "__path__", None)
+    if (
+        getattr(active_module, "__name__", None) != "tensorrt"
+        or getattr(active_module, "__package__", None) != "tensorrt"
+        or not isinstance(module_path_value, str)
+        or not isinstance(module_origin, str)
+        or Path(module_path_value).resolve() != identity.module.path
+        or Path(module_origin).resolve() != identity.module.path
+        or not isinstance(module_paths, (list, tuple))
+        or tuple(Path(item).resolve() for item in module_paths)
+        != (identity.module.path.parent,)
+    ):
+        raise EngineAdmissionError("TensorRT Python imported module path mismatch")
+    active_module_version = getattr(active_module, "__version__", None)
+    active_distribution_version = getattr(active_distribution, "version", None)
+    active_metadata = getattr(active_distribution, "metadata", None)
+    try:
+        active_distribution_name = active_metadata["Name"]
+    except (KeyError, TypeError) as exc:
+        raise EngineAdmissionError("TensorRT Python distribution metadata is invalid") from exc
+    if not isinstance(active_distribution_name, str):
+        raise EngineAdmissionError("TensorRT Python distribution metadata is invalid")
+    if (
+        active_module_version != identity.version
+        or active_distribution_version != identity.version
+        or active_distribution_name.casefold() != identity.name.casefold()
+        or runtime.tensorrt_python_wheel.version != identity.version
+    ):
+        raise EngineAdmissionError("TensorRT Python distribution name or version mismatch")
+    files = getattr(active_distribution, "files", None)
+    locate_file = getattr(active_distribution, "locate_file", None)
+    if not files or not callable(locate_file):
+        raise EngineAdmissionError("TensorRT Python distribution ownership is unavailable")
+    try:
+        owned_paths = {Path(locate_file(item)).resolve() for item in files}
+    except (OSError, TypeError, ValueError) as exc:
+        raise EngineAdmissionError("TensorRT Python distribution ownership is invalid") from exc
+    if identity.module.path not in owned_paths or identity.metadata.path not in owned_paths:
+        raise EngineAdmissionError("TensorRT Python module is not owned by the approved distribution")
+    _reverify_file(identity.module, "TensorRT Python module")
+    _reverify_file(identity.metadata, "TensorRT Python distribution metadata")
+    _reverify_file(runtime.tensorrt_python_wheel, "TensorRT Python wheel")
+    return {
+        "distribution": identity.name,
+        "version": identity.version,
+        "module_path": str(identity.module.path),
+        "module_sha256": identity.module.sha256,
+        "metadata_path": str(identity.metadata.path),
+        "metadata_sha256": identity.metadata.sha256,
+        "wheel_sha256": runtime.tensorrt_python_wheel.sha256,
+    }
 
 
 def require_engine_manifest(path: Path, *, model_role: str) -> dict[str, object]:
@@ -275,6 +393,55 @@ def _validate_evidence_object(value: object, label: str) -> None:
         raise EngineAdmissionError(f"{label} auto approval is invalid")
 
 
+def _verified_tensorrt_python(
+    value: object,
+) -> tuple[VerifiedFile, InstalledDistributionIdentity]:
+    required = _VERSIONED_FILE_KEYS | {"installed_distribution"}
+    if not isinstance(value, Mapping) or set(value) != required:
+        raise EngineAdmissionError(
+            "tensorrt_python_wheel file identity has unknown or missing fields"
+        )
+    wheel = _verified_file(
+        {key: value[key] for key in _VERSIONED_FILE_KEYS},
+        "tensorrt_python_wheel",
+        version=True,
+    )
+    installed = value["installed_distribution"]
+    distribution_keys = {"name", "version", "module", "metadata"}
+    if not isinstance(installed, Mapping) or set(installed) != distribution_keys:
+        raise EngineAdmissionError(
+            "TensorRT Python installed distribution has unknown or missing fields"
+        )
+    name = _nonempty(installed["name"], "TensorRT Python distribution name")
+    version = _nonempty(
+        installed["version"], "TensorRT Python distribution version"
+    )
+    if wheel.version != version:
+        raise EngineAdmissionError(
+            "TensorRT Python wheel and installed distribution version mismatch"
+        )
+    return wheel, InstalledDistributionIdentity(
+        name,
+        version,
+        _verified_file(installed["module"], "TensorRT Python module", version=False),
+        _verified_file(
+            installed["metadata"],
+            "TensorRT Python distribution metadata",
+            version=False,
+        ),
+    )
+
+
+def _reverify_file(value: VerifiedFile, name: str) -> None:
+    try:
+        if value.path.is_symlink() or value.path.stat().st_size != value.bytes:
+            raise EngineAdmissionError(f"{name} byte size mismatch")
+        if _sha256_file(value.path) != value.sha256:
+            raise EngineAdmissionError(f"{name} SHA-256 mismatch")
+    except OSError as exc:
+        raise EngineAdmissionError(f"{name} is missing") from exc
+
+
 def _verified_file(value: object, name: str, *, version: bool) -> VerifiedFile:
     required = _VERSIONED_FILE_KEYS if version else _FILE_KEYS
     if not isinstance(value, Mapping) or set(value) != required:
@@ -282,10 +449,12 @@ def _verified_file(value: object, name: str, *, version: bool) -> VerifiedFile:
     path_value = value["path"]
     if not isinstance(path_value, str) or not path_value:
         raise EngineAdmissionError(f"{name} path must be a non-empty absolute path")
-    path = Path(path_value)
-    if not path.is_absolute():
+    declared_path = Path(path_value)
+    if not declared_path.is_absolute():
         raise EngineAdmissionError(f"{name} path must be absolute")
-    path = path.resolve()
+    if declared_path.is_symlink():
+        raise EngineAdmissionError(f"{name} path must not be a symlink")
+    path = declared_path.resolve()
     expected_bytes = value["bytes"]
     if type(expected_bytes) is not int or expected_bytes < 1:
         raise EngineAdmissionError(f"{name} bytes must be a positive integer")
@@ -316,6 +485,24 @@ def _file_payload(value: VerifiedFile) -> dict[str, object]:
     return payload
 
 
+def _distribution_payload(value: InstalledDistributionIdentity) -> dict[str, object]:
+    return {
+        "name": value.name,
+        "version": value.version,
+        "module": _file_payload(value.module),
+        "metadata": _file_payload(value.metadata),
+    }
+
+
+def _numeric_version(value: str | None, name: str) -> tuple[int, ...]:
+    if not isinstance(value, str) or not value:
+        raise EngineAdmissionError(f"{name} must be a dotted numeric version")
+    parts = value.split(".")
+    if not parts or any(not part.isdigit() for part in parts):
+        raise EngineAdmissionError(f"{name} must be a dotted numeric version")
+    return tuple(int(part) for part in parts)
+
+
 def _nonempty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise EngineAdmissionError(f"{name} must be a non-empty string")
@@ -341,8 +528,10 @@ def _sha256_file(path: Path) -> str:
 
 
 __all__ = [
-    "EngineAdmissionError", "EngineRuntimeManifest", "VerifiedFile",
+    "EngineAdmissionError", "EngineRuntimeManifest",
+    "InstalledDistributionIdentity", "VerifiedFile",
     "canonical_engine_bindings", "compare_fp32_fp16_evidence",
     "load_engine_runtime_manifest", "require_canonical_bindings",
     "require_engine_manifest",
+    "verify_active_tensorrt_python",
 ]

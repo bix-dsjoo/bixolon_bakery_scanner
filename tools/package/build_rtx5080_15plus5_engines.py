@@ -20,6 +20,7 @@ from bakery_scanner.pipelines.rtx5080_15plus5.engine_manifest import (
     canonical_engine_bindings,
     load_engine_runtime_manifest,
     require_canonical_bindings,
+    verify_active_tensorrt_python,
 )
 
 
@@ -79,7 +80,11 @@ def build_engines(
     destination.parent.mkdir(parents=True, exist_ok=True)
     pending = destination.with_name(f".{destination.name}.pending-{uuid.uuid4().hex}")
     pending.mkdir()
-    inspector = inspect_engine or _inspect_engine_with_tensorrt
+    inspector = inspect_engine or (
+        lambda engine, role: _inspect_engine_with_tensorrt(
+            engine, role, runtime_manifest=runtime
+        )
+    )
     builds: dict[str, object] = {}
     try:
         for role in _ROLES:
@@ -264,11 +269,22 @@ def clean_runtime_env(runtime: EngineRuntimeManifest) -> dict[str, str]:
     return environment
 
 
-def _inspect_engine_with_tensorrt(engine: Path, role: str) -> Sequence[Mapping[str, object]]:
+def _inspect_engine_with_tensorrt(
+    engine: Path,
+    role: str,
+    *,
+    runtime_manifest: EngineRuntimeManifest,
+) -> Sequence[Mapping[str, object]]:
     try:
-        import tensorrt as trt
+        import importlib
+
+        trt = importlib.import_module("tensorrt")
     except ImportError as exc:
         raise EngineBuildError("TensorRT Python binding is unavailable; no fallback") from exc
+    try:
+        verify_active_tensorrt_python(runtime_manifest, module=trt)
+    except EngineAdmissionError as exc:
+        raise EngineBuildError(str(exc)) from exc
     logger = trt.Logger(trt.Logger.ERROR)
     runtime = trt.Runtime(logger)
     value = runtime.deserialize_cuda_engine(engine.read_bytes())

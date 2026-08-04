@@ -22,13 +22,26 @@ def _runtime(tmp_path: Path) -> Path:
     for name in ("trt.whl", "trtexec.exe", "onnx.whl", "driver.dll", "cuda.dll"):
         paths[name] = tmp_path / name
         paths[name].write_bytes(name.encode())
+    module = tmp_path / "site-packages" / "tensorrt" / "__init__.py"
+    metadata = tmp_path / "site-packages" / "tensorrt_bindings-10.14.dist-info" / "METADATA"
+    module.parent.mkdir(parents=True)
+    metadata.parent.mkdir(parents=True)
+    module.write_bytes(b"__version__ = '10.14'\n")
+    metadata.write_bytes(b"Name: tensorrt-bindings\nVersion: 10.14\n")
     payload = {
         "schema_version": 1, "runtime_id": "trt-v1",
         "build_host": {"hostname": "host", "os": "Windows", "architecture": "AMD64"},
         "gpu": {"name": "NVIDIA GeForce RTX 5080", "compute_capability": "12.0", "uuid": "GPU-X"},
         "driver": {"version": "591", **_identity(paths["driver.dll"])},
+        "driver_compatibility": {"minimum_version": "590", "maximum_version": "599"},
         "cuda_runtime": {"version": "13", **_identity(paths["cuda.dll"])},
-        "tensorrt_python_wheel": {"version": "10.14", **_identity(paths["trt.whl"])},
+        "tensorrt_python_wheel": {
+            "version": "10.14", **_identity(paths["trt.whl"]),
+            "installed_distribution": {
+                "name": "tensorrt-bindings", "version": "10.14",
+                "module": _identity(module), "metadata": _identity(metadata),
+            },
+        },
         "trtexec": {"version": "10.14", **_identity(paths["trtexec.exe"])},
         "onnx_python_wheel": {"version": "1.19", **_identity(paths["onnx.whl"])},
     }
