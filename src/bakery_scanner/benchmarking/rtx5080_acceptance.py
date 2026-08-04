@@ -420,6 +420,7 @@ class CompletionPerformanceAdmission:
 _COMPLETION_PERFORMANCE_REGISTRY: dict[
     int, tuple[CompletionPerformanceAdmission, str]
 ] = {}
+_ADMITTED_PERFORMANCE_REGISTRY: dict[int, tuple[PerformanceReceipt, str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -676,6 +677,13 @@ def admit_completion_performance(
     if not isinstance(performance, PerformanceReceipt):
         raise ValueError("completion requires a PerformanceReceipt object")
     performance.__post_init__()
+    registered_performance = _ADMITTED_PERFORMANCE_REGISTRY.get(id(performance))
+    if (
+        registered_performance is None
+        or registered_performance[0] is not performance
+        or registered_performance[1] != _admission_fingerprint(verified)
+    ):
+        raise ValueError("completion requires canonical admitted performance evidence")
     _sha256(admitted_quality_receipt_sha256, "admitted quality receipt SHA-256")
     if performance.status != "performance-passed":
         raise ValueError("completion requires performance-passed evidence")
@@ -1300,7 +1308,79 @@ def build_benchmark_schedule(
                 )
             )
             ordinal += 1
+    for slice_name, object_count in (("count_1_2", 1), ("count_8_plus", 8)):
+        del object_count
+        for index in range(observations_per_path):
+            group, scene_id = flattened[index % len(flattened)]
+            schedule.append(
+                BenchmarkScheduleItem(ordinal, scene_id, group, slice_name, False)
+            )
+            ordinal += 1
     return tuple(schedule)
+
+
+def build_admitted_performance_receipt(
+    admission: object,
+    samples: Sequence[PerformanceSample | Mapping[str, object]],
+    runtime_identity: Mapping[str, object],
+    artifact_identities: Mapping[str, str],
+    *,
+    quality_receipt_sha256: str,
+    protocol_sha256: str,
+    allowed_current_crop_sha256s: Iterable[str],
+) -> PerformanceReceipt:
+    """Build performance evidence only from the canonical admitted schedule."""
+    verified = _require_verified_admission(admission)
+    if quality_receipt_sha256 != verified.quality_receipt_sha256:
+        raise ValueError("admitted performance quality receipt identity mismatch")
+    schedule = tuple(item for item in build_benchmark_schedule(verified) if not item.warmup)
+    rows = tuple(
+        row if isinstance(row, PerformanceSample) else PerformanceSample.from_mapping(row)
+        for row in samples
+    )
+    if len(rows) != len(schedule):
+        raise ValueError("admitted performance samples must match canonical schedule length")
+    records_by_scene = {record.scene_id: record for record in verified.records}
+    for item, row in zip(schedule, rows, strict=True):
+        row.__post_init__()
+        if (
+            row.image_id != item.scene_id
+            or row.group != item.group
+            or row.input_sha256 != verified.scene_input_sha256[item.scene_id]
+        ):
+            raise ValueError("admitted performance sample does not match canonical schedule")
+        if item.slice_name in GROUPS:
+            if row.evidence_kind != "current_quality" or not row.quality_eligible:
+                raise ValueError("admitted group sample must be current quality evidence")
+        elif item.slice_name in {"dinov3", "needs_retake", "unknown"}:
+            record = records_by_scene.get(item.scene_id)
+            if record is None or not _schedule_path_matches(item.slice_name, record, row):
+                raise ValueError("admitted path sample does not match actual execution evidence")
+        elif item.slice_name == "count_1_2":
+            if not (
+                row.evidence_kind == "forced_path_performance"
+                and not row.quality_eligible
+                and 1 <= row.object_count <= 2
+            ):
+                raise ValueError("admitted count_1_2 sample is invalid")
+        elif item.slice_name == "count_8_plus":
+            if not (
+                row.evidence_kind == "forced_path_performance"
+                and not row.quality_eligible
+                and row.object_count >= 8
+            ):
+                raise ValueError("admitted count_8_plus sample is invalid")
+        else:
+            raise ValueError("canonical schedule contains an unknown slice")
+    receipt = build_performance_receipt(
+        rows, runtime_identity, artifact_identities,
+        quality_receipt_sha256=quality_receipt_sha256,
+        protocol_sha256=protocol_sha256,
+        allowed_current_crop_sha256s=allowed_current_crop_sha256s,
+    )
+    fingerprint = _admission_fingerprint(verified)
+    _ADMITTED_PERFORMANCE_REGISTRY[id(receipt)] = (receipt, fingerprint)
+    return receipt
 
 
 def _path_predicate(path_name: str, record: _ActualExecutionRecord) -> bool:
@@ -1310,6 +1390,20 @@ def _path_predicate(path_name: str, record: _ActualExecutionRecord) -> bool:
         return record.needs_retake and record.state == "needs_retake"
     if path_name == "unknown":
         return record.unknown and record.unknown_total > 0 and record.dino_executed
+    return False
+
+
+def _schedule_path_matches(
+    path_name: str, record: _ActualExecutionRecord, row: PerformanceSample
+) -> bool:
+    if row.evidence_kind != "forced_path_performance" or row.quality_eligible:
+        return False
+    if path_name == "dinov3":
+        return row.dino_executed and record.dino_executed
+    if path_name == "needs_retake":
+        return row.needs_retake and record.needs_retake
+    if path_name == "unknown":
+        return row.unknown and record.unknown and row.dino_executed
     return False
 
 
@@ -1445,13 +1539,17 @@ __all__ = [
     "REQUIRED_SLICES",
     "STAGES",
     "BenchmarkScheduleItem",
+    "CompletionPerformanceAdmission",
     "ExecutionIndexAdmissionError",
     "PerformanceReceipt",
     "PerformanceSample",
     "admit_execution_record_index",
+    "admit_completion_performance",
+    "build_admitted_performance_receipt",
     "build_benchmark_schedule",
     "build_performance_receipt",
     "canonical_sha256",
+    "require_completion_performance_admission",
     "summarize_latency_ms",
     "validate_protocol",
 ]

@@ -15,6 +15,7 @@ from bakery_scanner.benchmarking.rtx5080_acceptance import (
     ExecutionIndexAdmissionError,
     PerformanceSample,
     admit_completion_performance,
+    build_admitted_performance_receipt,
     build_benchmark_schedule,
     build_performance_receipt,
     admit_execution_record_index,
@@ -314,7 +315,7 @@ def test_schedule_uses_only_verified_external_execution_admission(
 
     assert len(tuple(item for item in schedule if item.warmup)) == 20
     measured = tuple(item for item in schedule if not item.warmup)
-    assert len(measured) == 6000
+    assert len(measured) == 8000
     assert tuple(item.scene_id for item in measured[:4]) == (
         "e-001", "e-002", "e-003", "e-004"
     )
@@ -327,6 +328,8 @@ def test_schedule_uses_only_verified_external_execution_admission(
         "needs_retake",
     ) * 1000
     assert tuple(item.slice_name for item in measured[5000:6000]) == ("unknown",) * 1000
+    assert tuple(item.slice_name for item in measured[6000:7000]) == ("count_1_2",) * 1000
+    assert tuple(item.slice_name for item in measured[7000:8000]) == ("count_8_plus",) * 1000
 
 
 def test_completion_capability_requires_admitted_execution_and_passed_receipt(
@@ -338,9 +341,17 @@ def test_completion_capability_requires_admitted_execution_and_passed_receipt(
     samples = tuple(
         replace(row, quality_receipt_sha256=quality_receipt_sha) for row in valid_samples
     )
-    performance = build_performance_receipt(
+    generic = build_performance_receipt(
         samples, RUNTIME, ARTIFACTS, quality_receipt_sha256=quality_receipt_sha,
         protocol_sha256=PROTOCOL_SHA, allowed_current_crop_sha256s=CURRENT_CROPS,
+    )
+
+    with pytest.raises(ValueError, match="canonical admitted performance"):
+        admit_completion_performance(admission, generic, quality_receipt_sha)
+    performance = build_admitted_performance_receipt(
+        admission, _admitted_samples(admission), RUNTIME, ARTIFACTS,
+        quality_receipt_sha256=quality_receipt_sha, protocol_sha256=PROTOCOL_SHA,
+        allowed_current_crop_sha256s=CURRENT_CROPS,
     )
 
     sealed = admit_completion_performance(admission, performance, quality_receipt_sha)
@@ -350,6 +361,24 @@ def test_completion_capability_requires_admitted_execution_and_passed_receipt(
         require_completion_performance_admission(object())
     with pytest.raises(ValueError, match="admitted quality"):
         admit_completion_performance(admission, performance, "f" * 64)
+
+
+def test_admitted_count_slots_are_performance_only_not_normal_scan_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = _admit(monkeypatch, repository, artifacts)
+    schedule = tuple(item for item in build_benchmark_schedule(admission) if not item.warmup)
+    rows = _admitted_samples(admission)
+    count_rows = [
+        (item, row) for item, row in zip(schedule, rows, strict=True)
+        if item.slice_name in {"count_1_2", "count_8_plus"}
+    ]
+
+    assert len(count_rows) == 2000
+    assert all(row.evidence_kind == "forced_path_performance" and not row.quality_eligible for _, row in count_rows)
+    assert all(1 <= row.object_count <= 2 for item, row in count_rows if item.slice_name == "count_1_2")
+    assert all(row.object_count >= 8 for item, row in count_rows if item.slice_name == "count_8_plus")
 
 
 def test_sealed_completion_capability_permits_development_status_only_with_typed_frozen_oof(
@@ -362,15 +391,8 @@ def test_sealed_completion_capability_permits_development_status_only_with_typed
     performance_artifacts = dict(ARTIFACTS)
     performance_artifacts["fusion_policy"] = hashlib.sha256(final_policy).hexdigest()
     performance_artifact_sha = canonical_sha256(performance_artifacts)
-    performance = build_performance_receipt(
-        tuple(
-            replace(
-                row,
-                quality_receipt_sha256=quality_receipt_sha,
-                artifact_identity_sha256=performance_artifact_sha,
-            )
-            for row in valid_samples
-        ),
+    performance = build_admitted_performance_receipt(
+        admission, _admitted_samples(admission, artifact_identity_sha256=performance_artifact_sha),
         RUNTIME, performance_artifacts, quality_receipt_sha256=quality_receipt_sha,
         protocol_sha256=PROTOCOL_SHA, allowed_current_crop_sha256s=CURRENT_CROPS,
     )
@@ -511,6 +533,36 @@ def _admit(
         acceptance_module, "_canonical_repository_root", lambda: repository
     )
     return admit_execution_record_index(artifacts)
+
+
+def _admitted_samples(
+    admission: object, *, artifact_identity_sha256: str = ARTIFACT_SHA
+) -> tuple[PerformanceSample, ...]:
+    schedule = tuple(item for item in build_benchmark_schedule(admission) if not item.warmup)
+    rows: list[PerformanceSample] = []
+    for item in schedule:
+        if item.slice_name in {"E", "M", "H"}:
+            row = _sample(item.ordinal, group=item.group)
+        elif item.slice_name == "dinov3":
+            row = _sample(item.ordinal, group=item.group, dino=True, evidence_kind="forced_path_performance")
+        elif item.slice_name == "needs_retake":
+            row = _sample(item.ordinal, group=item.group, retake=True, evidence_kind="forced_path_performance")
+        elif item.slice_name == "unknown":
+            row = _sample(item.ordinal, group=item.group, dino=True, unknown=True, evidence_kind="forced_path_performance")
+        elif item.slice_name == "count_1_2":
+            row = _sample(item.ordinal, group=item.group, object_count=1, evidence_kind="forced_path_performance")
+        else:
+            assert item.slice_name == "count_8_plus"
+            row = _sample(item.ordinal, group=item.group, object_count=8, evidence_kind="forced_path_performance")
+        rows.append(
+            replace(
+                row, image_id=item.scene_id,
+                input_sha256=admission.scene_input_sha256[item.scene_id],
+                quality_receipt_sha256=admission.quality_receipt_sha256,
+                artifact_identity_sha256=artifact_identity_sha256,
+            )
+        )
+    return tuple(rows)
 
 
 def _admission_files(
