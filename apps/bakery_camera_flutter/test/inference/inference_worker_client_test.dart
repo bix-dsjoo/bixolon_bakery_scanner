@@ -442,9 +442,10 @@ Map<String, Object?> _readyJson() {
     'device': 'cpu',
     'startup_metrics': {
       'device': 'cpu',
+      'runtime_mode': 'cpu_reference',
       'load_ms': 12.5,
       'warmup_ms': 7.0,
-      'fallback_reason': null,
+      'fallback_reason': 'CPU reference runtime selected',
       'detector_id': 'rfdetr_large_bakery_v1',
       'repvit_id': 'repvit_m1_15plus5_v1',
       'dinov3_id': 'dinov3_vits16_15plus5_v1',
@@ -475,6 +476,11 @@ Map<String, Object?> _resultJson(String requestId) {
     'request_id': requestId,
     'image': {'width': 640, 'height': 480},
     'device': 'cpu',
+    'execution_device': 'cpu',
+    'runtime_mode': 'cpu_reference',
+    'fallback_reason': 'CPU reference runtime selected',
+    'scan_to_result_ms': 42.0,
+    'inference_ms': 34.0,
     'objects': [
       {
         'object_id': 'object-1',

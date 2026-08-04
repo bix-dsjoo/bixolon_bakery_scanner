@@ -25,6 +25,39 @@ void main() {
     expect(result.timings.totalMs, 42.0);
   });
 
+  test('parses CUDA reference runtime evidence', () {
+    final result = InferenceResult.fromJson(
+      _resultJson(
+        device: 'cuda:0',
+        executionDevice: 'cuda:0',
+        runtimeMode: 'gpu_reference',
+        fallbackReason: 'rfdetr_engine_parity_missing',
+      ),
+    );
+
+    expect(result.executionDevice, 'cuda:0');
+    expect(result.runtimeMode, RuntimeMode.gpuReference);
+    expect(result.fallbackReason, 'rfdetr_engine_parity_missing');
+  });
+
+  test('rejects mismatched runtime device mode and fallback evidence', () {
+    for (final mutation in <void Function(Map<String, Object?>)>[
+      (result) => result['runtime_mode'] = 'gpu_reference',
+      (result) => result['fallback_reason'] = null,
+      (result) {
+        result['device'] = 'cuda:0';
+        result['execution_device'] = 'cuda:0';
+        result['runtime_mode'] = 'gpu_fast_verified';
+        result['fallback_reason'] = 'unexpected_fallback';
+      },
+      (result) => result['inference_ms'] = 43.0,
+    ]) {
+      final result = _resultJson();
+      mutation(result);
+      expect(() => InferenceResult.fromJson(result), throwsFormatException);
+    }
+  });
+
   test('requires eight timing stages and exact object diagnostics', () {
     final json = _resultJson();
     json['timings_ms'] = {
@@ -618,6 +651,8 @@ void main() {
       (metrics) => metrics['device'] = 'gpu',
       (metrics) => metrics['repvit_id'] = '',
       (metrics) => metrics['detector_threshold'] = 1.1,
+      (metrics) => metrics['runtime_mode'] = 'gpu_reference',
+      (metrics) => metrics['fallback_reason'] = null,
     ]) {
       final metrics = _startupMetricsJson();
       mutation(metrics);
@@ -629,9 +664,10 @@ void main() {
 Map<String, Object?> _startupMetricsJson() {
   return {
     'device': 'cpu',
+    'runtime_mode': 'cpu_reference',
     'load_ms': 12.5,
     'warmup_ms': 7.0,
-    'fallback_reason': null,
+    'fallback_reason': 'CPU reference runtime selected',
     'detector_id': 'rfdetr_large_bakery_v1',
     'repvit_id': 'repvit_m1_15plus5_v1',
     'dinov3_id': 'dinov3_vits16_15plus5_v1',
@@ -657,6 +693,12 @@ Map<String, Object?> _resultJson({
   Map<String, int>? counts,
   int unknownCount = 0,
   Map<String, Object?>? presentation,
+  String device = 'cpu',
+  String executionDevice = 'cpu',
+  String runtimeMode = 'cpu_reference',
+  String? fallbackReason = 'CPU reference runtime selected',
+  double scanToResultMs = 42.0,
+  double inferenceMs = 34.0,
 }) {
   final resultObjects =
       objects ?? <Map<String, Object?>>[_confirmedObject('object-1')];
@@ -668,7 +710,12 @@ Map<String, Object?> _resultJson({
     'type': 'result',
     'request_id': requestId,
     'image': {'width': 640, 'height': 480},
-    'device': 'cpu',
+    'device': device,
+    'execution_device': executionDevice,
+    'runtime_mode': runtimeMode,
+    'fallback_reason': fallbackReason,
+    'scan_to_result_ms': scanToResultMs,
+    'inference_ms': inferenceMs,
     'objects': resultObjects,
     'counts': counts ?? {'6': 1},
     'unknown_count': unknownCount,

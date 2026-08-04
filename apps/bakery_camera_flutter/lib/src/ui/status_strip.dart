@@ -22,6 +22,8 @@ final class StatusStrip extends StatelessWidget {
     final workerReady = state.workerStatus == WorkerStatus.ready;
     final workerFatal = state.workerStatus == WorkerStatus.fatal;
     final cameraFailure = !state.cameraReady && state.cameraError != null;
+    final runtimeMode = state.startupMetrics?.runtimeMode;
+    final fallbackReason = state.startupMetrics?.fallbackReason;
     return DecoratedBox(
       key: const Key('bixolon-header'),
       decoration: const BoxDecoration(
@@ -110,6 +112,13 @@ final class StatusStrip extends StatelessWidget {
                         ),
                       ),
                     ],
+                    if (runtimeMode != null) ...[
+                      SizedBox(width: statusGap),
+                      _RuntimeModeStatus(
+                        mode: runtimeMode,
+                        fallbackReason: fallbackReason,
+                      ),
+                    ],
                     if (cameraFailure) ...[
                       const SizedBox(width: 8),
                       TextButton(
@@ -123,6 +132,46 @@ final class StatusStrip extends StatelessWidget {
             },
           ),
         ),
+      ),
+    );
+  }
+}
+
+final class _RuntimeModeStatus extends StatelessWidget {
+  const _RuntimeModeStatus({required this.mode, required this.fallbackReason});
+
+  final RuntimeMode mode;
+  final String? fallbackReason;
+
+  @override
+  Widget build(BuildContext context) {
+    final isReference = mode != RuntimeMode.gpuFastVerified;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: isReference ? bixolonCanvas : Colors.transparent,
+        border: Border.all(color: bixolonDivider),
+        borderRadius: BorderRadius.circular(bixolonControlRadius),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isReference) ...[
+            const Icon(Icons.info_outline, size: 16, color: bixolonMutedInk),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            _runtimeModeLabel(mode),
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+          if (isReference && fallbackReason != null) ...[
+            const SizedBox(width: 6),
+            Text(
+              fallbackReason!,
+              style: const TextStyle(fontSize: 12, color: bixolonMutedInk),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -147,3 +196,9 @@ final class _StatusDot extends StatelessWidget {
 
 String _deviceLabel(String device) =>
     device.toLowerCase().startsWith('cuda') ? 'GPU' : 'CPU';
+
+String _runtimeModeLabel(RuntimeMode mode) => switch (mode) {
+  RuntimeMode.gpuFastVerified => 'GPU 寃利?媛??',
+  RuntimeMode.gpuReference => 'GPU 李몄“ 紐⑤뱶',
+  RuntimeMode.cpuReference => 'CPU ?뺥솗???곗꽑',
+};

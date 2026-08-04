@@ -10,6 +10,11 @@ InferenceResult buildUiInferenceResult({
   'request_id': 'analysis-1',
   'image': {'width': 1920, 'height': 1080},
   'device': 'cuda:0',
+  'execution_device': 'cuda:0',
+  'runtime_mode': 'gpu_fast_verified',
+  'fallback_reason': null,
+  'scan_to_result_ms': totalMs,
+  'inference_ms': 10.0 + 120.0 + 50.0 + dinov3Ms + 20.0,
   'objects': [
     buildInferenceObjectJson(
       id: 'object-1',
@@ -72,6 +77,11 @@ InferenceResult buildOrderingInferenceResult({double dinov3Ms = 0}) =>
       'request_id': 'analysis-ordering',
       'image': {'width': 1280, 'height': 720},
       'device': 'cpu',
+      'execution_device': 'cpu',
+      'runtime_mode': 'cpu_reference',
+      'fallback_reason': 'CPU reference runtime selected',
+      'scan_to_result_ms': 352.0,
+      'inference_ms': 12.0 + 240.0 + 80.0 + dinov3Ms + 20.0,
       'objects': [
         buildInferenceObjectJson(
           id: 'object-1',

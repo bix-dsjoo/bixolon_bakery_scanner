@@ -2,6 +2,8 @@
 // intentionally contain no policy, threshold, artifact-path, or model-update
 // setters: diagnostics explains the running system but cannot change it.
 
+import '../inference/inference_models.dart';
+
 enum DiagnosticsCustomerImpact { ready, actionRequired }
 
 enum WorkerDiagnosticsStatus {
@@ -18,6 +20,7 @@ final class WorkerDiagnosticsState {
   const WorkerDiagnosticsState._({
     required this.status,
     this.device,
+    this.runtimeMode,
     this.loadMs,
     this.warmupMs,
     this.detectorThreshold,
@@ -32,6 +35,7 @@ final class WorkerDiagnosticsState {
 
   const WorkerDiagnosticsState.ready({
     required String device,
+    RuntimeMode? runtimeMode,
     required double loadMs,
     required double warmupMs,
     required double detectorThreshold,
@@ -44,6 +48,7 @@ final class WorkerDiagnosticsState {
   }) : this._(
          status: WorkerDiagnosticsStatus.ready,
          device: device,
+         runtimeMode: runtimeMode,
          loadMs: loadMs,
          warmupMs: warmupMs,
          detectorThreshold: detectorThreshold,
@@ -69,17 +74,20 @@ final class WorkerDiagnosticsState {
   const WorkerDiagnosticsState.status({
     required WorkerDiagnosticsStatus status,
     String? device,
+    RuntimeMode? runtimeMode,
     String? lastError,
     List<String> diagnostics = const [],
   }) : this._(
          status: status,
          device: device,
+         runtimeMode: runtimeMode,
          lastError: lastError,
          diagnostics: diagnostics,
        );
 
   final WorkerDiagnosticsStatus status;
   final String? device;
+  final RuntimeMode? runtimeMode;
   final double? loadMs;
   final double? warmupMs;
   final double? detectorThreshold;
