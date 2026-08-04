@@ -512,6 +512,57 @@ def test_initialize_retries_cleanly_on_cpu_after_cuda_warmup_failure(tmp_path: P
     assert runtime.startup_metrics.warmup_ms >= 0.0
 
 
+def test_initialize_uses_cuda_reference_when_fast_path_parity_is_missing(
+    tmp_path: Path,
+):
+    """Catch CUDA being labelled fast without a verified parity receipt."""
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="auto",
+        cuda_probe=lambda: True,
+        fast_path_admitter=lambda: "rfdetr_engine_parity_missing",
+        backend_loader=lambda device: FakeBackend(device),
+    )
+
+    assert runtime.device == "cuda:0"
+    assert runtime.runtime_mode == "gpu_reference"
+    assert runtime.startup_metrics.runtime_mode == "gpu_reference"
+    assert runtime.startup_metrics.fallback_reason == "rfdetr_engine_parity_missing"
+
+
+def test_initialize_uses_cpu_reference_when_cuda_is_unavailable(tmp_path: Path):
+    """Catch unavailable CUDA being routed to a GPU-labelled runtime."""
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="auto",
+        cuda_probe=lambda: False,
+        backend_loader=lambda device: FakeBackend(device),
+    )
+
+    assert runtime.device == "cpu"
+    assert runtime.runtime_mode == "cpu_reference"
+    assert runtime.startup_metrics.fallback_reason == "cuda_unavailable"
+
+
+def test_initialize_uses_forced_cpu_reference_reason(tmp_path: Path):
+    """Catch an explicit CPU preference retaining an automatic fallback reason."""
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="cpu",
+        backend_loader=lambda device: FakeBackend(device),
+    )
+
+    assert runtime.device == "cpu"
+    assert runtime.runtime_mode == "cpu_reference"
+    assert runtime.startup_metrics.fallback_reason == "forced_cpu"
+
+
 @pytest.mark.parametrize("cleanup_failure", ["availability", "empty_cache"])
 def test_cuda_cleanup_failure_does_not_suppress_cpu_retry(
     tmp_path: Path,
@@ -974,6 +1025,61 @@ def test_analyze_returns_deterministic_fail_closed_result_contract(tmp_path: Pat
         WorkerPhase.RECHECKING,
         WorkerPhase.AGGREGATING,
     ]
+
+
+def test_analyze_reports_startup_runtime_scope_and_non_decode_inference_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Catch decode time being included in inference or startup scope being omitted."""
+    from bakery_scanner.prototype import camera_runtime
+
+    clock = ManualClock()
+    warmup_image = _write_image(tmp_path / "warm.jpg")
+    image_path = _write_image(tmp_path / "capture.jpg")
+    box = Box(5, 5, 20, 20)
+
+    class TimedDetector(FakeDetector):
+        def predict(
+            self, image_id: int, image: Image.Image
+        ) -> tuple[BreadProposal, ...]:
+            clock.advance(0.010)
+            return super().predict(image_id, image)
+
+    class TimedClassifier(FakeClassifier):
+        def infer(self, *args, **kwargs) -> ClassificationDecision:
+            clock.advance(0.014)
+            return super().infer(*args, **kwargs)
+
+    backend = FakeBackend("cpu", proposals=(_proposal(box),))
+    backend.detector = TimedDetector((_proposal(box),))
+    backend.classifier = TimedClassifier(
+        (_unknown(box),),
+        serial_timings=(SerialStageTimings(2.0, 3.0, 4.0, 5.0, 14.0, True),),
+    )
+    original_load = camera_runtime.load_canonical_image
+
+    def slow_decode(path: Path):
+        clock.advance(1.0)
+        return original_load(path)
+
+    monkeypatch.setattr(camera_runtime, "load_canonical_image", slow_decode)
+    runtime = CameraInferenceRuntime.initialize(
+        tmp_path,
+        warmup_image,
+        preference="cpu",
+        backend_loader=lambda device: backend,
+        clock=clock,
+    )
+
+    result = runtime.analyze(image_path, "runtime-scope")
+
+    assert result["execution_device"] == "cpu"
+    assert result["runtime_mode"] == "cpu_reference"
+    assert result["fallback_reason"] == "forced_cpu"
+    assert result["scan_to_result_ms"] == result["timings_ms"]["total"]
+    assert result["inference_ms"] == pytest.approx(24.0)
+    assert result["scan_to_result_ms"] == pytest.approx(1024.0)
 
 
 def test_camera_runtime_batches_all_ordered_objects_once(tmp_path: Path):

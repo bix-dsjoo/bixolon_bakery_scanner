@@ -177,7 +177,8 @@ def test_ready_serializes_immutable_real_startup_provenance():
         "presentation_policy_sha256",
     )}
     metrics = StartupMetrics(
-        device="cpu", load_ms=1.0, warmup_ms=1.0, fallback_reason=None,
+        device="cpu", runtime_mode="cpu_reference", load_ms=1.0, warmup_ms=1.0,
+        fallback_reason="forced_cpu",
         detector_id="detector", repvit_id="repvit", dinov3_id="dino",
         fusion_policy_id="fusion", detector_threshold=0.5, applied_artifact_hashes=hashes,
     )

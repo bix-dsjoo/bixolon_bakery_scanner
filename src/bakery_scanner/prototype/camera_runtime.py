@@ -51,6 +51,7 @@ _MANIFEST_COMMON_KEYS = {
 _MANIFEST_SOURCE_KEYS = {"source_path", "source_uri"}
 _ARTIFACT_KEYS = {"file", "sha256"}
 _SHA256_LENGTH = 64
+_RUNTIME_MODES = frozenset({"gpu_fast_verified", "gpu_reference", "cpu_reference"})
 _APPLIED_ARTIFACT_HASH_FIELDS = frozenset({
     "detector_checkpoint_sha256", "detector_calibration_sha256", "detector_manifest_sha256",
     "repvit_checkpoint_sha256", "repvit_manifest_sha256", "repvit_prototype_sha256",
@@ -69,8 +70,26 @@ class RuntimeBackend(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeAdmission:
+    """The verified execution route selected before loading a backend."""
+
+    mode: str
+    fallback_reason: str | None
+
+    def __post_init__(self) -> None:
+        if self.mode not in _RUNTIME_MODES:
+            raise ValueError("runtime admission mode is invalid")
+        if self.mode == "gpu_fast_verified":
+            if self.fallback_reason is not None:
+                raise ValueError("verified GPU admission cannot have a fallback reason")
+        elif not isinstance(self.fallback_reason, str) or not self.fallback_reason:
+            raise ValueError("reference admission requires a fallback reason")
+
+
+@dataclass(frozen=True, slots=True)
 class StartupMetrics:
     device: str
+    runtime_mode: str
     load_ms: float
     warmup_ms: float
     fallback_reason: str | None
@@ -84,6 +103,11 @@ class StartupMetrics:
     def __post_init__(self) -> None:
         if self.device not in {"cpu", "cuda:0"}:
             raise ValueError("startup device must be cpu or cuda:0")
+        RuntimeAdmission(self.runtime_mode, self.fallback_reason)
+        if self.runtime_mode == "cpu_reference" and self.device != "cpu":
+            raise ValueError("CPU runtime mode requires cpu device")
+        if self.runtime_mode != "cpu_reference" and self.device != "cuda:0":
+            raise ValueError("GPU runtime mode requires cuda:0 device")
         for field in ("load_ms", "warmup_ms"):
             value = getattr(self, field)
             if not math.isfinite(value) or value < 0.0:
@@ -194,6 +218,7 @@ class CameraInferenceRuntime:
         self._warmed = True
         self._closed = False
         self.device = startup_metrics.device
+        self.runtime_mode = startup_metrics.runtime_mode
         self.startup_metrics = startup_metrics
         self._presentation_policy = presentation_policy
         self._sku_names = dict(sku_names)
@@ -207,6 +232,7 @@ class CameraInferenceRuntime:
         on_startup: Callable[[str, str], None] | None = None,
         *,
         cuda_probe: Callable[[], bool] | None = None,
+        fast_path_admitter: Callable[[], str | None] | None = None,
         backend_loader: Callable[[str], RuntimeBackend] | None = None,
         clock: Callable[[], float] | None = None,
         artifact_root: Path | None = None,
@@ -232,8 +258,13 @@ class CameraInferenceRuntime:
                 cuda_available = bool(probe())
             except Exception:
                 cuda_available = False
-        attempts = ["cuda:0", "cpu"] if cuda_available else ["cpu"]
-        fallback_reason = None if cuda_available or normalized_preference == "cpu" else "cuda_unavailable"
+        if normalized_preference == "cpu":
+            admission = RuntimeAdmission("cpu_reference", "forced_cpu")
+        elif not cuda_available:
+            admission = RuntimeAdmission("cpu_reference", "cuda_unavailable")
+        else:
+            admission = _admit_runtime(fast_path_admitter or _default_fast_path_admitter)
+        attempts = ["cuda:0", "cpu"] if cuda_available and normalized_preference != "cpu" else ["cpu"]
 
         manifest = (
             _load_detector_manifest(root_path, artifact_root=external_artifact_root)
@@ -289,7 +320,7 @@ class CameraInferenceRuntime:
                 gc.collect()
                 _release_device_cache(device)
                 if device == "cuda:0" and "cpu" in attempts:
-                    fallback_reason = "cuda_load_failed"
+                    admission = RuntimeAdmission("cpu_reference", "cuda_load_failed")
                     continue
                 raise
 
@@ -311,16 +342,17 @@ class CameraInferenceRuntime:
                 gc.collect()
                 _release_device_cache(device)
                 if device == "cuda:0" and "cpu" in attempts:
-                    fallback_reason = "cuda_warmup_failed"
+                    admission = RuntimeAdmission("cpu_reference", "cuda_warmup_failed")
                     continue
                 raise
 
             metadata = _backend_metadata(backend, manifest)
             metrics = StartupMetrics(
                 device=device,
+                runtime_mode=admission.mode,
                 load_ms=_milliseconds(load_started, load_finished),
                 warmup_ms=_milliseconds(warmup_started, warmup_finished),
-                fallback_reason=fallback_reason,
+                fallback_reason=admission.fallback_reason,
                 detector_id=metadata["detector_id"],
                 repvit_id=metadata["repvit_id"],
                 dinov3_id=metadata["dinov3_id"],
@@ -537,11 +569,20 @@ class CameraInferenceRuntime:
             "postprocess": _milliseconds(postprocess_started, postprocess_finished),
             "total": _milliseconds(total_started, total_finished),
         }
+        inference_ms = sum(
+            timings[stage]
+            for stage in ("detector", "crop", "repvit", "dinov3", "fusion", "postprocess")
+        )
         return {
             "type": "result",
             "request_id": request_id,
             "image": {"width": frame.visual_size[0], "height": frame.visual_size[1]},
             "device": self.device,
+            "execution_device": self.device,
+            "runtime_mode": self.runtime_mode,
+            "fallback_reason": self.startup_metrics.fallback_reason,
+            "scan_to_result_ms": timings["total"],
+            "inference_ms": inference_ms,
             "objects": objects,
             "counts": counts,
             "unknown_count": unknown_count,
@@ -575,6 +616,20 @@ def _normalize_preference(preference: str) -> str:
     if preference not in {"auto", "cpu", "cuda:0"}:
         raise ValueError("preference must be auto, cpu, or cuda:0")
     return preference
+
+
+def _default_fast_path_admitter() -> str:
+    """Fail closed until a checked-in RF-DETR TensorRT parity receipt exists."""
+    return "rfdetr_engine_parity_missing"
+
+
+def _admit_runtime(admitter: Callable[[], str | None]) -> RuntimeAdmission:
+    reason = admitter()
+    if reason is None:
+        return RuntimeAdmission("gpu_fast_verified", None)
+    if not isinstance(reason, str) or not reason:
+        raise ValueError("fast path admitter must return None or a non-empty reason")
+    return RuntimeAdmission("gpu_reference", reason)
 
 
 def _batch_limit(value: int | str, object_count: int) -> int:
