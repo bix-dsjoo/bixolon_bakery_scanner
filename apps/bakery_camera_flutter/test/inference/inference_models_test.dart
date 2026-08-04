@@ -31,6 +31,37 @@ void main() {
     (nonFinite['timings_ms']! as Map<String, Object?>)['detector'] = double.nan;
     expect(() => CandidateScanResult.fromJson(nonFinite), throwsFormatException);
   });
+
+  test('candidate parser rejects noncanonical object and Top3 SKU names', () {
+    final wrongObject = _candidateObjectJson()
+      ..['sku_name'] = 'not canonical';
+    expect(
+      () => CandidateInferenceObject.fromJson(
+        wrongObject,
+        scanId: 'scan-1',
+        expectedOrder: 1,
+        imageWidth: 100,
+        imageHeight: 100,
+        runtimeProfileId: 'rtx5080_trt_fp16_static7_v1',
+      ),
+      throwsFormatException,
+    );
+
+    final wrongTop3 = _candidateObjectJson();
+    ((wrongTop3['top3']! as List<Object?>).first! as Map<String, Object?>)
+        ['sku_name'] = 'not canonical';
+    expect(
+      () => CandidateInferenceObject.fromJson(
+        wrongTop3,
+        scanId: 'scan-1',
+        expectedOrder: 1,
+        imageWidth: 100,
+        imageHeight: 100,
+        runtimeProfileId: 'rtx5080_trt_fp16_static7_v1',
+      ),
+      throwsFormatException,
+    );
+  });
   test('parses a deterministic fail-closed result contract', () {
     final result = InferenceResult.fromJson(
       _resultJson(
@@ -696,6 +727,39 @@ Map<String, Object?> _candidateRetakeJson({int attempt = 1}) => {
   'manual_catalog_required': attempt >= 3,
   'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
   'receipt_id': 'a' * 64,
+};
+
+Map<String, Object?> _candidateObjectJson() => {
+  'object_id': 'scan-1#0001',
+  'sku_id': 1,
+  'sku_name': 'Walnut Donut',
+  'decision_path': 'direct_approved',
+  'location': <String, Object?>{
+    'box_xyxy': <Object?>[10.0, 10.0, 30.0, 30.0],
+    'center_normalized': <Object?>[0.2, 0.2],
+    'object_order': 1,
+  },
+  'confidence': <String, Object?>{
+    'detector_calibrated': 0.9,
+    'sku_acceptance_calibrated': 0.8,
+    'fusion_margin': null,
+  },
+  'top3': <Object?>[
+    {'rank': 1, 'sku_id': 1, 'sku_name': 'Walnut Donut', 'score': 0.8},
+    {'rank': 2, 'sku_id': 2, 'sku_name': 'Croffle', 'score': 0.15},
+    {'rank': 3, 'sku_id': 3, 'sku_name': 'Waffle', 'score': 0.05},
+  ],
+  'provenance': <String, Object?>{
+    'detector_artifact_id': 'detector',
+    'detector_sha256': 'a' * 64,
+    'repvit_artifact_id': 'repvit',
+    'repvit_sha256': 'b' * 64,
+    'dinov3_artifact_id': 'dinov3',
+    'dinov3_sha256': 'c' * 64,
+    'fusion_policy_id': 'fusion',
+    'fusion_policy_sha256': 'd' * 64,
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  },
 };
 
 Map<String, Object?> _startupMetricsJson() {

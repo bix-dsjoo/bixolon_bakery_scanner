@@ -285,7 +285,9 @@ String canonicalInferenceReceiptJson({
   required AuditRuntimeSnapshot runtimeSnapshot,
 }) {
   final receipt = <String, Object?>{
-    'receipt_version': 'checkout_inference_receipt_v1',
+    'receipt_version': result.candidateResult == null
+        ? 'checkout_inference_receipt_v1'
+        : 'checkout_candidate_inference_receipt_v2',
     'runtime_snapshot': {
       'detector_id': runtimeSnapshot.detectorId,
       'detector_sha256': runtimeSnapshot.detectorSha256,
@@ -367,6 +369,8 @@ String canonicalInferenceReceiptJson({
         'dino_object_count': result.diagnostics.dinoObjectCount,
       },
     },
+    if (result.candidateResult case final candidate?)
+      'candidate_scan_result': candidate.immutablePayload,
   };
   return canonicalJsonEncode(receipt);
 }
@@ -799,7 +803,7 @@ final class DatabaseCheckoutAuditStore
     }
     final width = _canonicalDimension(result.imageWidth, 'imageWidth');
     final height = _canonicalDimension(result.imageHeight, 'imageHeight');
-    _validateInferenceObjects(result.objects);
+    _validateInferenceObjects(result);
 
     return _withRecoveryMarker(
       operation: 'complete_attempt',
@@ -817,8 +821,13 @@ final class DatabaseCheckoutAuditStore
           throw StateError('attempt is not the matching staged attempt');
         }
         final session = await _activeSession(attempt.sessionId);
-        _verifyRuntimeSnapshot(session);
-        _verifyResultProvenance(result.objects, session);
+        if (result.candidateResult == null) {
+          _verifyRuntimeSnapshot(session);
+        } else if (_runtime.startupDevice != 'cuda:0' ||
+            _runtime.startupFallbackReason != null) {
+          throw StateError('candidate result requires admitted CUDA without fallback');
+        }
+        _verifyResultProvenance(result, session);
         for (final object in result.objects) {
           final inferenceObjectId = '${attempt.attemptId}/${object.objectId}';
           await _database
@@ -1427,11 +1436,30 @@ final class DatabaseCheckoutAuditStore
     }
   }
 
-  void _verifyResultProvenance(
-    List<InferenceObject> objects,
-    CheckoutSessionRow session,
-  ) {
-    for (final object in objects) {
+  void _verifyResultProvenance(InferenceResult result, CheckoutSessionRow session) {
+    final candidate = result.candidateResult;
+    if (candidate != null) {
+      if (candidate.objects.length != result.objects.length) {
+        throw StateError('candidate inference object count changed before audit');
+      }
+      final artifactHashes = candidate.immutablePayload['provenance']
+          as Map<String, Object?>;
+      final declared = artifactHashes['artifact_hashes'] as Map<String, Object?>;
+      final declaredDigests = declared.values.toSet();
+      for (var index = 0; index < result.objects.length; index += 1) {
+        final object = result.objects[index];
+        final source = candidate.objects[index];
+        if (object.objectId != source.objectId ||
+            !_sameJsonMap(object.provenance, source.provenance) ||
+            source.provenance.entries
+                .where((entry) => entry.key.endsWith('_sha256'))
+                .any((entry) => !declaredDigests.contains(entry.value))) {
+          throw StateError('candidate inference provenance is not receipt-bound');
+        }
+      }
+      return;
+    }
+    for (final object in result.objects) {
       final provenance = object.provenance;
       if (provenance['detector_id'] != session.detectorId ||
           provenance['repvit_artifact_id'] != session.repvitArtifactId ||
@@ -1696,8 +1724,34 @@ String? _sessionIdFromRecoveryPath(String relativePath) {
   return index >= 0 && segments.length > index + 4 ? segments[index + 4] : null;
 }
 
-void _validateInferenceObjects(List<InferenceObject> objects) {
-  for (final object in objects) {
+void _validateInferenceObjects(InferenceResult result) {
+  final candidate = result.candidateResult;
+  if (candidate != null) {
+    if (candidate.state == 'needs_retake') {
+      if (result.objects.isNotEmpty) {
+        throw StateError('candidate retake must not persist partial inference');
+      }
+      return;
+    }
+    if (candidate.objects.length != result.objects.length) {
+      throw StateError('candidate checkout adaptation changed object count');
+    }
+    for (var index = 0; index < result.objects.length; index += 1) {
+      final object = result.objects[index];
+      final source = candidate.objects[index];
+      if (object.objectId != source.objectId ||
+          object.skuId != source.skuId ||
+          object.skuName != source.skuName ||
+          object.bboxXyxy.toString() != source.location.boxXyxy.toString() ||
+          (source.skuId == null
+              ? object.candidates.length != 3
+              : object.candidates.isNotEmpty)) {
+        throw StateError('candidate checkout adaptation changed immutable inference');
+      }
+    }
+    return;
+  }
+  for (final object in result.objects) {
     if (object.isUnknown) {
       if (object.skuName != 'Unknown' ||
           object.decisionPath != 'unknown_top3' ||
@@ -1736,6 +1790,9 @@ void _validateInferenceObjects(List<InferenceObject> objects) {
     }
   }
 }
+
+bool _sameJsonMap(Map<String, Object?> left, Map<String, Object?> right) =>
+    canonicalJsonEncode(left) == canonicalJsonEncode(right);
 
 int _canonicalDimension(double value, String name) {
   if (!value.isFinite || value <= 0 || value != value.roundToDouble()) {

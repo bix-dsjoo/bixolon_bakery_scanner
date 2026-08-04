@@ -1,5 +1,14 @@
 import 'dart:collection';
 
+const Map<int, String> _candidateCanonicalSkuNames = {
+  1: 'Walnut Donut', 2: 'Croffle', 3: 'Waffle', 4: 'Scon',
+  5: 'Half-moon Croissant', 6: 'Croissant', 7: 'Flower Bread',
+  8: 'Almond Scon', 9: 'Dinner Roll', 10: 'Sugar Donut', 11: 'Bagel',
+  12: 'Egg Tart', 13: 'Muffin', 14: 'Burger', 15: 'Sandwich',
+  16: 'Grain Campagne', 17: 'Almond Campagne', 18: 'Mini Bread',
+  19: 'Pastry Bread', 20: 'Plain Bread',
+};
+
 enum WorkerStatus {
   notStarted,
   starting,
@@ -842,6 +851,94 @@ final class CandidateScanResult {
       attempt: attempt! + 1,
     );
   }
+
+  /// Adapts the admitted candidate into the existing checkout/audit surface.
+  /// The original candidate payload remains attached and is what receipts bind.
+  InferenceResult toCheckoutInferenceResult() {
+    final adaptedObjects = <InferenceObject>[
+      for (final object in objects)
+        InferenceObject._(
+          objectId: object.objectId,
+          skuId: object.skuId,
+          skuName: object.skuName,
+          bboxXyxy: object.location.boxXyxy,
+          confidence:
+              object.skuAcceptanceConfidence ?? object.detectorConfidence,
+          decisionPath: switch (object.decisionPath) {
+            'direct_approved' => 'repvit_direct',
+            'consensus_approved' => 'dinov3_confirmed',
+            'unknown_top3' => 'unknown_top3',
+            _ => throw StateError('unsupported candidate decision path'),
+          },
+          candidates: object.skuId == null ? object.top3 : const [],
+          unknownReason: object.skuId == null
+              ? 'candidate_consensus_rejected'
+              : null,
+          detectorSource:
+              object.provenance['detector_artifact_id']! as String,
+          detectorScore: object.detectorConfidence,
+          provenance: object.provenance,
+        ),
+    ];
+    final rawTimings = immutablePayload['timings_ms']! as Map<String, Object?>;
+    final timings = StageTimings(
+      decodePreprocessMs: (rawTimings['decode_canonical']! as num).toDouble(),
+      detectorMs: (rawTimings['detector']! as num).toDouble(),
+      cropMs: (rawTimings['crop']! as num).toDouble(),
+      repvitMs: (rawTimings['repvit']! as num).toDouble(),
+      dinov3Ms: (rawTimings['dinov3']! as num).toDouble(),
+      fusionMs: (rawTimings['fusion_payload']! as num).toDouble(),
+      postprocessMs:
+          (rawTimings['completeness']! as num).toDouble() +
+          (rawTimings['direct_gate']! as num).toDouble(),
+      totalMs: (rawTimings['total']! as num).toDouble(),
+    );
+    final hasUnknown = adaptedObjects.any((object) => object.isUnknown);
+    final isRetake = state == 'needs_retake';
+    final presentation = InferencePresentation._(
+      state: isRetake
+          ? InferencePresentationState.needsRetake
+          : hasUnknown
+          ? InferencePresentationState.unknown
+          : InferencePresentationState.normal,
+      finalCountUsable: !isRetake,
+      retakeScope: isRetake ? RetakeScope.scan : null,
+      retakeObjectIds: const [],
+      instruction: isRetake
+          ? reasons.contains('no_target_detected')
+                ? RetakeInstruction.noBreadDetected
+                : RetakeInstruction.separateBreads
+          : null,
+      candidateObjectIds: hasUnknown
+          ? [
+              for (final object in adaptedObjects.where(
+                (object) => object.isUnknown,
+              ))
+                object.objectId,
+            ]
+          : const [],
+      policyId: 'camera_action_state_v2',
+      policySha256: receiptId,
+    );
+    return InferenceResult._(
+      requestId: requestId,
+      imageWidth: frameWidth.toDouble(),
+      imageHeight: frameHeight.toDouble(),
+      device: 'cuda:0',
+      objects: adaptedObjects,
+      counts: skuTotals,
+      unknownCount: unknownTotal,
+      presentation: presentation,
+      timings: timings,
+      diagnostics: InferenceDiagnostics(
+        objectCount: objectTotal,
+        dinoObjectCount: adaptedObjects
+            .where((object) => object.decisionPath != 'repvit_direct')
+            .length,
+      ),
+      candidateResult: this,
+    );
+  }
 }
 
 final class CandidateRetakeRequest {
@@ -912,6 +1009,12 @@ final class CandidateInferenceObject {
         InferenceCandidate.fromJson(_map(item, 'candidate top3 row')),
     ];
     _requireExactTop3(candidates);
+    if (candidates.any(
+      (candidate) =>
+          _candidateCanonicalSkuNames[candidate.skuId] != candidate.skuName,
+    )) {
+      throw const FormatException('candidate Top3 SKU name is not canonical');
+    }
     final skuValue = json['sku_id'];
     final skuId = skuValue == null ? null : _skuId(skuValue, 'candidate sku_id');
     final skuName = _requiredString(json['sku_name'], 'candidate sku_name');
@@ -920,7 +1023,7 @@ final class CandidateInferenceObject {
       if (skuName != 'Unknown' || path != 'unknown_top3' || acceptance != null) {
         throw const FormatException('candidate Unknown object is invalid');
       }
-    } else if (skuName == 'Unknown' ||
+    } else if (_candidateCanonicalSkuNames[skuId] != skuName ||
         !{'direct_approved', 'consensus_approved'}.contains(path) ||
         acceptance == null) {
       throw const FormatException('candidate registered object is invalid');
@@ -1065,10 +1168,14 @@ final class InferenceResult {
     required this.presentation,
     required this.timings,
     required this.diagnostics,
+    this.candidateResult,
   }) : objects = List.unmodifiable(objects),
        counts = UnmodifiableMapView(counts);
 
   factory InferenceResult.fromJson(Map<String, Object?> json) {
+    if (json.containsKey('scan_id')) {
+      return CandidateScanResult.fromJson(json).toCheckoutInferenceResult();
+    }
     _expectFields(json, const {
       'type',
       'request_id',
@@ -1157,6 +1264,7 @@ final class InferenceResult {
         _map(json['diagnostics'], 'diagnostics'),
         actualObjectCount: objects.length,
       ),
+      candidateResult: null,
     );
   }
 
@@ -1170,6 +1278,7 @@ final class InferenceResult {
   final InferencePresentation presentation;
   final StageTimings timings;
   final InferenceDiagnostics diagnostics;
+  final CandidateScanResult? candidateResult;
 
   int get registeredCount =>
       counts.values.fold<int>(0, (sum, count) => sum + count);
