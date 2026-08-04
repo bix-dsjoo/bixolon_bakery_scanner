@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bixolon.example/schemas/dinov3_vits16_15plus5_gpu_fp16_v1.json",
+  "title": "DINOv3 ViT-S/16 15+5 RTX 5080 FP16 engine manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model_id", "precision", "onnx", "engine", "runtime_manifest_sha256", "build_receipt", "fp16_calibration", "bindings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "model_id": {"const": "dinov3_vits16_15plus5_gpu_fp16_v1"},
+    "precision": {"const": "fp16"},
+    "onnx": {"$ref": "#/$defs/file"},
+    "engine": {"$ref": "#/$defs/file"},
+    "runtime_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "build_receipt": {"$ref": "#/$defs/file"},
+    "fp16_calibration": {"$ref": "#/$defs/calibration"},
+    "bindings": {"const": [
+      {"name": "crops", "mode": "input", "dtype": "float16", "shape": [7, 3, 224, 224], "semantic": "context_rows"},
+      {"name": "global_embeddings", "mode": "output", "dtype": "float16", "shape": [7, 384], "semantic": "global_cls_embedding"},
+      {"name": "local_patch_tokens", "mode": "output", "dtype": "float16", "shape": [7, 196, 384], "semantic": "local_patch_embedding"}
+    ]}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "calibration_id"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_id": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
