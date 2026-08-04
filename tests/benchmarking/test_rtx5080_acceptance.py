@@ -15,7 +15,7 @@ from bakery_scanner.benchmarking.rtx5080_acceptance import (
     ExecutionIndexAdmissionError,
     PerformanceSample,
     admit_completion_performance,
-    build_admitted_performance_receipt,
+    admit_performance_evidence,
     build_benchmark_schedule,
     build_performance_receipt,
     admit_execution_record_index,
@@ -348,11 +348,8 @@ def test_completion_capability_requires_admitted_execution_and_passed_receipt(
 
     with pytest.raises(ValueError, match="canonical admitted performance"):
         admit_completion_performance(admission, generic, quality_receipt_sha)
-    performance = build_admitted_performance_receipt(
-        admission, _admitted_samples(admission), RUNTIME, ARTIFACTS,
-        quality_receipt_sha256=quality_receipt_sha, protocol_sha256=PROTOCOL_SHA,
-        allowed_current_crop_sha256s=CURRENT_CROPS,
-    )
+    _install_performance_evidence(repository, artifacts, admission)
+    performance = admit_performance_evidence(artifacts)
 
     sealed = admit_completion_performance(admission, performance, quality_receipt_sha)
 
@@ -381,6 +378,25 @@ def test_admitted_count_slots_are_performance_only_not_normal_scan_limits(
     assert all(row.object_count >= 8 for item, row in count_rows if item.slice_name == "count_8_plus")
 
 
+@pytest.mark.parametrize("field", ["sample", "crops"])
+def test_external_performance_evidence_tampering_is_rejected_by_manifest_hash(
+    field: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = _admit(monkeypatch, repository, artifacts)
+    _install_performance_evidence(repository, artifacts, admission)
+    path = artifacts / "performance-samples.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if field == "sample":
+        payload["samples"][0]["input_sha256"] = "f" * 64
+    else:
+        payload["allowed_current_crop_sha256s"] = ["f" * 64]
+    _write_json(path, payload)
+
+    with pytest.raises(ExecutionIndexAdmissionError, match="byte size|SHA-256"):
+        admit_performance_evidence(artifacts)
+
+
 def test_sealed_completion_capability_permits_development_status_only_with_typed_frozen_oof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid_samples
 ) -> None:
@@ -391,11 +407,11 @@ def test_sealed_completion_capability_permits_development_status_only_with_typed
     performance_artifacts = dict(ARTIFACTS)
     performance_artifacts["fusion_policy"] = hashlib.sha256(final_policy).hexdigest()
     performance_artifact_sha = canonical_sha256(performance_artifacts)
-    performance = build_admitted_performance_receipt(
-        admission, _admitted_samples(admission, artifact_identity_sha256=performance_artifact_sha),
-        RUNTIME, performance_artifacts, quality_receipt_sha256=quality_receipt_sha,
-        protocol_sha256=PROTOCOL_SHA, allowed_current_crop_sha256s=CURRENT_CROPS,
+    _install_performance_evidence(
+        repository, artifacts, admission, artifact_identities=performance_artifacts,
+        artifact_identity_sha256=performance_artifact_sha,
     )
+    performance = admit_performance_evidence(artifacts)
     sealed = admit_completion_performance(admission, performance, quality_receipt_sha)
     frozen = object.__new__(FrozenOofReceipt)
     object.__setattr__(frozen, "sha256", "e" * 64)
@@ -565,6 +581,43 @@ def _admitted_samples(
     return tuple(rows)
 
 
+def _install_performance_evidence(
+    repository: Path, artifacts: Path, admission: object, *,
+    artifact_identities: dict[str, str] | None = None,
+    artifact_identity_sha256: str = ARTIFACT_SHA,
+) -> None:
+    artifact_identities = ARTIFACTS if artifact_identities is None else artifact_identities
+    performance_path = artifacts / "performance-samples.json"
+    payload = {
+        "schema_version": 1,
+        "quality_receipt_sha256": admission.quality_receipt_sha256,
+        "protocol_sha256": PROTOCOL_SHA,
+        "runtime_identity": RUNTIME,
+        "artifact_identities": artifact_identities,
+        "allowed_current_crop_sha256s": sorted(CURRENT_CROPS),
+        "samples": [
+            row.to_payload()
+            for row in _admitted_samples(
+                admission, artifact_identity_sha256=artifact_identity_sha256
+            )
+        ],
+    }
+    _write_json(performance_path, payload)
+    manifest_path = repository / "benchmarks/locked-manifests/rtx5080_15plus5_execution_evidence_v1.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["performance_samples"] = _declared("external", performance_path, artifacts)
+    manifest["manifest_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in manifest.items() if key != "manifest_payload_sha256"}
+    )
+    _write_json(manifest_path, manifest)
+    raw = manifest_path.read_bytes()
+    lock_path = repository / "artifacts.lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["artifacts"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+    lock["artifacts"][0]["bytes"] = len(raw)
+    _write_json(lock_path, lock)
+
+
 def _admission_files(
     tmp_path: Path, *, mismatched_scene_input: bool = False
 ) -> tuple[Path, Path, Path]:
@@ -647,6 +700,8 @@ def _admission_files(
     index = {**index_base, "index_payload_sha256": canonical_sha256(index_base)}
     index_path = artifacts / "execution-index.json"
     _write_json(index_path, index)
+    performance_path = artifacts / "performance-samples.json"
+    _write_json(performance_path, {"schema_version": 1})
     manifest_base = {
         "schema_version": 1,
         "manifest_id": "rtx5080_15plus5_execution_evidence_v1",
@@ -654,6 +709,7 @@ def _admission_files(
             "execution_index": _declared("external", index_path, artifacts),
             "execution_receipt": _declared("external", execution_path, artifacts),
             "quality_receipt": _declared("external", quality_path, artifacts),
+            "performance_samples": _declared("external", performance_path, artifacts),
             "scene_input_identities": _declared("external", scene_map_path, artifacts),
             "split_inventory": _declared("repository", inventory_path, repository),
         },

@@ -778,6 +778,7 @@ def _admit_execution_record_index(
         "execution_index",
         "execution_receipt",
         "quality_receipt",
+        "performance_samples",
         "scene_input_identities",
         "split_inventory",
     }
@@ -1378,8 +1379,46 @@ def build_admitted_performance_receipt(
         protocol_sha256=protocol_sha256,
         allowed_current_crop_sha256s=allowed_current_crop_sha256s,
     )
-    fingerprint = _admission_fingerprint(verified)
-    _ADMITTED_PERFORMANCE_REGISTRY[id(receipt)] = (receipt, fingerprint)
+    return receipt
+
+
+def admit_performance_evidence(artifact_root: Path) -> PerformanceReceipt:
+    """Load only lock-declared external samples and seal the resulting receipt."""
+    verified = _require_verified_admission(admit_execution_record_index(artifact_root))
+    repository = _canonical_repository_root()
+    manifest_path = repository / _TRUSTED_EXECUTION_MANIFEST
+    manifest = _parse_canonical_json(
+        _verify_trusted_manifest_lock(repository, manifest_path), "trusted manifest"
+    )
+    declarations = manifest["artifacts"]
+    if not isinstance(declarations, Mapping):
+        raise ExecutionIndexAdmissionError("trusted manifest artifacts are invalid")
+    try:
+        evidence = _read_declared_json(
+            declarations["performance_samples"], repository, Path(artifact_root).resolve(),
+            "performance samples",
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ExecutionIndexAdmissionError("trusted performance evidence is unavailable") from exc
+    expected = {
+        "schema_version", "quality_receipt_sha256", "protocol_sha256", "runtime_identity",
+        "artifact_identities", "allowed_current_crop_sha256s", "samples",
+    }
+    if set(evidence) != expected or evidence["schema_version"] != 1:
+        raise ExecutionIndexAdmissionError("trusted performance evidence schema is invalid")
+    samples = evidence["samples"]
+    if not isinstance(samples, list):
+        raise ExecutionIndexAdmissionError("trusted performance samples are invalid")
+    try:
+        receipt = build_admitted_performance_receipt(
+            verified, samples, evidence["runtime_identity"], evidence["artifact_identities"],
+            quality_receipt_sha256=evidence["quality_receipt_sha256"],
+            protocol_sha256=evidence["protocol_sha256"],
+            allowed_current_crop_sha256s=evidence["allowed_current_crop_sha256s"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise ExecutionIndexAdmissionError("trusted performance evidence is rejected") from exc
+    _ADMITTED_PERFORMANCE_REGISTRY[id(receipt)] = (receipt, _admission_fingerprint(verified))
     return receipt
 
 
@@ -1544,6 +1583,7 @@ __all__ = [
     "PerformanceReceipt",
     "PerformanceSample",
     "admit_execution_record_index",
+    "admit_performance_evidence",
     "admit_completion_performance",
     "build_admitted_performance_receipt",
     "build_benchmark_schedule",
