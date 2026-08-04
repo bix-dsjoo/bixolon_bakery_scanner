@@ -28,6 +28,7 @@ _REQUIRED_ARTIFACT_ROLES = frozenset(
     }
 )
 _LOWER_HEX = frozenset("0123456789abcdef")
+_REGISTRATION_SEALS: dict[int, tuple[object, str, Path]] = {}
 
 
 class RegistrationError(ValueError):
@@ -59,33 +60,18 @@ def build_completion_receipt(
                 "unverified_boundaries": _unverified_boundaries(quality, performance),
             }
         )
-
-    if quality["status"] != "quality-passed-performance-unverified":
-        raise ValueError("quality receipt is not accepted")
-    if performance["status"] != "performance-passed":
-        raise ValueError("performance receipt is not accepted")
-    _require_performance_paths(performance_receipt)
-    artifact_identities = _validated_artifacts(artifacts, allow_empty=False)
-    return _seal(
-        {
-            "schema_version": 1,
-            "status": "development-complete",
-            "production_status": "unverified",
-            "quality": quality,
-            "performance": performance,
-            "artifact_identities": artifact_identities,
-            "unverified_boundaries": ["non_target_rejection", "production_promotion"],
-        }
+    raise ValueError(
+        "development-complete requires a validated FrozenOofReceipt and "
+        "canonical-root admitted Task 11 execution evidence"
     )
 
 
 def register_external_artifacts(
     *,
-    repository_root: Path,
     artifact_specs: Sequence[Mapping[str, object]],
 ) -> list[dict[str, object]]:
     """Resolve exact external artifact identities, refusing repository payloads."""
-    root = Path(repository_root).resolve()
+    root = _canonical_repository_root()
     if not root.is_dir():
         raise RegistrationError("repository root is unavailable")
     records: list[dict[str, object]] = []
@@ -107,17 +93,12 @@ def register_external_artifacts(
         local_path = _repository_relative(spec.get("local_path"), artifact_id)
         uri_env = _text(spec.get("uri_env"), f"{artifact_id} uri_env")
         size, digest = _file_identity(source)
-        records.append(
-            {
-                "id": artifact_id,
-                "kind": kind,
-                "local_path": str(local_path),
-                "sha256": digest,
-                "bytes": size,
-                "storage": "external",
-                "uri_env": uri_env,
-            }
-        )
+        record = {
+            "id": artifact_id, "kind": kind, "local_path": str(local_path),
+            "sha256": digest, "bytes": size, "storage": "external", "uri_env": uri_env,
+        }
+        _REGISTRATION_SEALS[id(record)] = (record, _canonical_sha256(record), source)
+        records.append(record)
     return records
 
 
@@ -135,6 +116,17 @@ def update_lock_with_registered_artifacts(
     existing = {item.get("id") for item in payload["artifacts"] if isinstance(item, Mapping)}
     appended = []
     for record in records:
+        sealed = _REGISTRATION_SEALS.get(id(record))
+        if sealed is None or sealed[0] is not record:
+            raise RegistrationError("lock updates require sealed external registrations")
+        _, fingerprint, source = sealed
+        if _canonical_sha256(record) != fingerprint:
+            raise RegistrationError("sealed external registration was mutated")
+        if source.is_relative_to(_canonical_repository_root()):
+            raise RegistrationError("Git-local model/engine payload is forbidden")
+        size, digest = _file_identity(source)
+        if record.get("bytes") != size or record.get("sha256") != digest:
+            raise RegistrationError("registered external artifact changed before lock update")
         if record.get("storage") != "external":
             raise RegistrationError("registered artifacts must remain external")
         artifact_id = _text(record.get("id"), "artifact id")
@@ -219,6 +211,14 @@ def _seal(payload: dict[str, object]) -> dict[str, object]:
 
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _canonical_repository_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 def _file_identity(path: Path) -> tuple[int, str]:

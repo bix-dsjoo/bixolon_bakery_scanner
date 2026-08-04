@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
+import tools.artifacts.register_rtx5080_15plus5 as registration_module
 from tools.artifacts.register_rtx5080_15plus5 import (
     RegistrationError,
     build_completion_receipt,
     register_external_artifacts,
+    update_lock_with_registered_artifacts,
 )
 
 
@@ -68,7 +70,7 @@ def _performance_passed() -> dict[str, object]:
     return _sealed(payload)
 
 
-def test_completion_requires_quality_and_every_performance_path() -> None:
+def test_public_completion_builder_rejects_incomplete_performance_dict() -> None:
     performance_passed = _performance_passed()
     without_dino = dict(performance_passed)
     summaries = dict(performance_passed["summaries"])
@@ -76,16 +78,13 @@ def test_completion_requires_quality_and_every_performance_path() -> None:
     without_dino["summaries"] = summaries
     without_dino = _sealed({key: value for key, value in without_dino.items() if key != "receipt_sha256"})
 
-    with pytest.raises(ValueError, match="DINO path"):
+    with pytest.raises(ValueError, match="FrozenOofReceipt"):
         build_completion_receipt(QUALITY_PASSED, without_dino, ARTIFACTS)
 
 
-def test_completion_remains_production_unverified() -> None:
-    receipt = build_completion_receipt(QUALITY_PASSED, _performance_passed(), ARTIFACTS)
-
-    assert receipt["status"] == "development-complete"
-    assert receipt["production_status"] == "unverified"
-    assert "non_target_rejection" in receipt["unverified_boundaries"]
+def test_completion_rejects_self_sealed_compact_quality_dict() -> None:
+    with pytest.raises(ValueError, match="FrozenOofReceipt"):
+        build_completion_receipt(QUALITY_PASSED, _performance_passed(), ARTIFACTS)
 
 
 def test_completion_rejects_caller_authored_receipt_hash() -> None:
@@ -113,17 +112,17 @@ def test_unverified_input_never_carries_numeric_quality_or_latency() -> None:
 
 
 def test_registers_verified_external_identity_and_rejects_git_local_payload(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = tmp_path / "repo"
     repository.mkdir()
     external = tmp_path / "external"
     external.mkdir()
+    monkeypatch.setattr(registration_module, "_canonical_repository_root", lambda: repository)
     payload = external / "rfdetr.engine"
     payload.write_bytes(b"rfdetr-engine")
 
     records = register_external_artifacts(
-        repository_root=repository,
         artifact_specs=(
             {
                 "id": "rtx5080_rfdetr_engine_v1",
@@ -149,7 +148,6 @@ def test_registers_verified_external_identity_and_rejects_git_local_payload(
     git_local.write_bytes(b"forbidden")
     with pytest.raises(RegistrationError, match="Git-local"):
         register_external_artifacts(
-            repository_root=repository,
             artifact_specs=(
                 {
                     "id": "forbidden_engine",
@@ -160,3 +158,33 @@ def test_registers_verified_external_identity_and_rejects_git_local_payload(
                 },
             ),
         )
+
+
+def test_lock_update_requires_sealed_external_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    source = external / "engine.plan"
+    source.write_bytes(b"engine")
+    monkeypatch.setattr(registration_module, "_canonical_repository_root", lambda: repository)
+    records = register_external_artifacts(
+        artifact_specs=({
+            "id": "rtx5080_engine", "kind": "engine", "source": source,
+            "local_path": "external/rtx5080/engine.plan", "uri_env": "BAKERY_ARTIFACT_BASE_URI",
+        },),
+    )
+    lock = repository / "artifacts.lock.json"
+    lock.write_text(json.dumps({"schema_version": 1, "canonical_pipeline": "test", "artifacts": []}), encoding="utf-8")
+
+    with pytest.raises(RegistrationError, match="sealed"):
+        update_lock_with_registered_artifacts(lock_path=lock, records=(dict(records[0]),))
+
+    updated = update_lock_with_registered_artifacts(lock_path=lock, records=records)
+    assert updated["artifacts"] == records
+
+    source.write_bytes(b"substituted")
+    with pytest.raises(RegistrationError, match="changed"):
+        update_lock_with_registered_artifacts(lock_path=lock, records=records)
