@@ -65,16 +65,6 @@ def build_engines(
         runtime = load_engine_runtime_manifest(runtime_manifest)
     except EngineAdmissionError as exc:
         raise EngineBuildError(str(exc)) from exc
-    bundle_root = Path(onnx_root).resolve()
-    graph_inspector = inspect_onnx or (
-        lambda path, role: _inspect_onnx_graph(
-            path, role, expected_version=runtime.onnx_python_wheel.version
-        )
-    )
-    try:
-        bundle = _load_onnx_bundle(bundle_root, graph_inspector)
-    except (EngineBuildError, OSError) as exc:
-        raise EngineBuildError(str(exc)) from exc
     try:
         active_tensorrt = dict(verify_active_tensorrt_python(runtime))
     except EngineAdmissionError as exc:
@@ -101,6 +91,16 @@ def build_engines(
     }
     if active_tensorrt != expected_active_tensorrt:
         raise EngineBuildError("active TensorRT Python verification receipt mismatch")
+    bundle_root = Path(onnx_root).resolve()
+    graph_inspector = inspect_onnx or (
+        lambda path, role: _inspect_onnx_graph(
+            path, role, expected_version=runtime.onnx_python_wheel.version
+        )
+    )
+    try:
+        bundle = _load_onnx_bundle(bundle_root, graph_inspector)
+    except (EngineBuildError, OSError) as exc:
+        raise EngineBuildError(str(exc)) from exc
     destination = Path(output).resolve()
     _require_external(destination, "engine output")
     if destination.exists():

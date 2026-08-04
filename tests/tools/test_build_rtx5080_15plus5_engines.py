@@ -192,8 +192,9 @@ def test_build_rejects_binding_mismatch_without_publishing(tmp_path: Path, monke
     assert not output.exists()
 
 
-def test_build_rejects_dynamic_shape_observed_in_onnx_graph(tmp_path: Path) -> None:
+def test_build_rejects_dynamic_shape_observed_in_onnx_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = _runtime(tmp_path)
+    _install_active_runtime(runtime, monkeypatch)
     onnx = _onnx_bundle(tmp_path)
 
     def dynamic_graph(path, role):
@@ -219,6 +220,20 @@ def test_injected_engine_inspector_cannot_skip_active_tensorrt_verification(tmp_
         build_engines(
             runtime_manifest=runtime, onnx_root=onnx, output=tmp_path / "engines",
             inspect_engine=inspector_must_not_run, inspect_onnx=_inspect_onnx,
+        )
+
+
+def test_missing_tensorrt_fails_before_onnx_graph_inspector(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    onnx = _onnx_bundle(tmp_path)
+
+    def onnx_inspector_must_not_run(path, role):
+        raise AssertionError("ONNX inspector ran before active TensorRT verification")
+
+    with pytest.raises(EngineBuildError, match="TensorRT Python package is unavailable"):
+        build_engines(
+            runtime_manifest=runtime, onnx_root=onnx, output=tmp_path / "engines",
+            inspect_onnx=onnx_inspector_must_not_run,
         )
 
 
