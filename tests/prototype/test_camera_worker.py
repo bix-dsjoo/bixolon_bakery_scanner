@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bakery_scanner.prototype.camera_protocol import WorkerPhase
+from bakery_scanner.prototype.camera_protocol import WorkerPhase, validate_result_event
 from bakery_scanner.prototype.camera_runtime import StartupMetrics
 from bakery_scanner.prototype.camera_worker import serve
 
@@ -67,6 +67,11 @@ class FakeRuntime:
             "request_id": request_id,
             "image": {"width": 1, "height": 1},
             "device": self.device,
+            "execution_device": self.device,
+            "runtime_mode": "cpu_reference",
+            "fallback_reason": "CPU reference runtime selected",
+            "scan_to_result_ms": 0.0,
+            "inference_ms": 0.0,
             "objects": [],
             "counts": {},
             "unknown_count": 0,
@@ -87,6 +92,35 @@ class FakeRuntime:
     def close(self) -> None:
         self.close_calls += 1
         self.closed = True
+
+
+def test_strict_result_validation_requires_runtime_mode(tmp_path: Path):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    result = FakeRuntime().analyze(image, "request-1", lambda _phase: None)
+    result.pop("runtime_mode")
+
+    with pytest.raises(ValueError, match="envelope"):
+        validate_result_event(result)
+
+
+def test_strict_result_validation_requires_gpu_mode_to_use_cuda_device(tmp_path: Path):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    result = FakeRuntime().analyze(image, "request-1", lambda _phase: None)
+    result.update(
+        {
+            "device": "cpu",
+            "execution_device": "cpu",
+            "runtime_mode": "gpu_reference",
+            "fallback_reason": "GPU reference result",
+            "scan_to_result_ms": 400.0,
+            "inference_ms": 80.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="GPU.*device"):
+        validate_result_event(result)
 
 
 def _events(stdout: io.StringIO) -> list[dict[str, object]]:
@@ -222,6 +256,11 @@ def test_worker_emits_legal_correlated_progress_before_result(tmp_path: Path):
             "request_id": "analysis-1",
             "image": {"width": 1, "height": 1},
             "device": "cpu",
+            "execution_device": "cpu",
+            "runtime_mode": "cpu_reference",
+            "fallback_reason": "CPU reference runtime selected",
+            "scan_to_result_ms": 0.0,
+            "inference_ms": 0.0,
             "objects": [],
             "counts": {},
             "unknown_count": 0,

@@ -36,6 +36,9 @@ _TIMING_STAGES = frozenset(
         "total",
     }
 )
+_RUNTIME_MODES = frozenset(
+    {"gpu_fast_verified", "gpu_reference", "cpu_reference"}
+)
 _OBJECT_FIELDS = frozenset(
     {
         "object_id", "sku_id", "sku_name", "bbox_xyxy", "confidence",
@@ -45,7 +48,9 @@ _OBJECT_FIELDS = frozenset(
 _RESULT_FIELDS = frozenset(
     {
         "type", "request_id", "image", "device", "objects", "counts",
-        "unknown_count", "presentation", "timings_ms", "diagnostics",
+        "unknown_count", "execution_device", "runtime_mode", "fallback_reason",
+        "scan_to_result_ms", "inference_ms", "presentation", "timings_ms",
+        "diagnostics",
     }
 )
 _REGISTERED_PATHS = frozenset({"repvit_direct", "dinov3_confirmed", "fusion_ranked"})
@@ -168,6 +173,7 @@ def validate_result_event(result: Mapping[str, object]) -> None:
         raise ValueError("runtime result request_id is invalid")
     if result["device"] not in {"cpu", "cuda:0"}:
         raise ValueError("runtime result device is invalid")
+    _validate_runtime_scope(result)
     width, height = _validate_result_image(result["image"])
     object_ids, unknown_ids, registered_counts = _result_object_ids(
         result["objects"], width, height
@@ -258,6 +264,48 @@ def validate_result_event(result: Mapping[str, object]) -> None:
         )
     ):
         raise ValueError("object retake presentation state is inconsistent")
+
+
+def _validate_runtime_scope(result: Mapping[str, object]) -> None:
+    execution_device = result["execution_device"]
+    if execution_device not in {"cpu", "cuda:0"}:
+        raise ValueError("runtime result execution device is invalid")
+    if execution_device != result["device"]:
+        raise ValueError("runtime result execution device must match device")
+
+    runtime_mode = result["runtime_mode"]
+    if runtime_mode not in _RUNTIME_MODES:
+        raise ValueError("runtime result runtime mode is invalid")
+    if runtime_mode == "cpu_reference":
+        if execution_device != "cpu":
+            raise ValueError("runtime result CPU mode requires cpu device")
+    elif execution_device != "cuda:0":
+        raise ValueError("runtime result GPU mode requires cuda:0 device")
+
+    fallback_reason = result["fallback_reason"]
+    if runtime_mode == "gpu_fast_verified":
+        if fallback_reason is not None:
+            raise ValueError("runtime result verified GPU fallback reason is invalid")
+    elif not isinstance(fallback_reason, str) or not fallback_reason:
+        raise ValueError("runtime result reference fallback reason is invalid")
+
+    scan_to_result_ms = _validate_runtime_latency(
+        result["scan_to_result_ms"], "scan_to_result_ms"
+    )
+    inference_ms = _validate_runtime_latency(result["inference_ms"], "inference_ms")
+    if inference_ms > scan_to_result_ms:
+        raise ValueError("runtime result inference_ms exceeds scan_to_result_ms")
+
+
+def _validate_runtime_latency(value: object, field: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value < 0.0
+    ):
+        raise ValueError(f"runtime result {field} is invalid")
+    return float(value)
 
 
 def _require_exact_ranked_top3(
