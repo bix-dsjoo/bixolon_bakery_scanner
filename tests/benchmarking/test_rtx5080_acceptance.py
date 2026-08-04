@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from bakery_scanner.benchmarking import rtx5080_acceptance as acceptance_module
 from bakery_scanner.benchmarking.rtx5080_acceptance import (
     REQUIRED_ARTIFACT_ROLES,
     ExecutionIndexAdmissionError,
@@ -299,9 +300,11 @@ def test_protocol_thresholds_and_evidence_kinds_are_immutable() -> None:
         validate_protocol(protocol)
 
 
-def test_schedule_uses_only_verified_external_execution_admission(tmp_path: Path) -> None:
+def test_schedule_uses_only_verified_external_execution_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repository, artifacts, _ = _admission_files(tmp_path)
-    admission = admit_execution_record_index(repository, artifacts)
+    admission = _admit(monkeypatch, repository, artifacts)
 
     schedule = build_benchmark_schedule(admission)
 
@@ -323,7 +326,7 @@ def test_schedule_uses_only_verified_external_execution_admission(tmp_path: Path
 
 
 def test_self_consistent_forged_index_is_rejected_by_trusted_declaration(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, artifacts, index_path = _admission_files(tmp_path)
     forged = json.loads(index_path.read_text(encoding="utf-8"))
@@ -338,11 +341,11 @@ def test_self_consistent_forged_index_is_rejected_by_trusted_declaration(
     _write_json(index_path, forged)
 
     with pytest.raises(ExecutionIndexAdmissionError, match="SHA-256"):
-        admit_execution_record_index(repository, artifacts)
+        _admit(monkeypatch, repository, artifacts)
 
 
 def test_self_consistent_manifest_rewrite_is_rejected_by_repository_lock(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, artifacts, index_path = _admission_files(tmp_path)
     forged = json.loads(index_path.read_text(encoding="utf-8"))
@@ -369,16 +372,16 @@ def test_self_consistent_manifest_rewrite_is_rejected_by_repository_lock(
     _write_json(manifest_path, manifest)
 
     with pytest.raises(ExecutionIndexAdmissionError, match="trusted manifest.*SHA-256"):
-        admit_execution_record_index(repository, artifacts)
+        _admit(monkeypatch, repository, artifacts)
 
 
 def test_admission_rejects_record_input_hash_not_in_admitted_scene_map(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, artifacts, _ = _admission_files(tmp_path, mismatched_scene_input=True)
 
     with pytest.raises(ExecutionIndexAdmissionError, match="scene input identity"):
-        admit_execution_record_index(repository, artifacts)
+        _admit(monkeypatch, repository, artifacts)
 
 
 def test_scheduler_rejects_non_admission_and_missing_external_evidence(
@@ -387,19 +390,30 @@ def test_scheduler_rejects_non_admission_and_missing_external_evidence(
     with pytest.raises(ValueError, match="verified execution-index admission"):
         build_benchmark_schedule(object())
     with pytest.raises(ExecutionIndexAdmissionError, match="trusted manifest.*missing"):
-        admit_execution_record_index(tmp_path / "repository", tmp_path / "external")
+        admit_execution_record_index(tmp_path / "external")
 
 
-def test_scheduler_rejects_post_admission_record_mutation(tmp_path: Path) -> None:
+def test_caller_cannot_supply_a_forged_repository_trust_root(tmp_path: Path) -> None:
     repository, artifacts, _ = _admission_files(tmp_path)
-    admission = admit_execution_record_index(repository, artifacts)
+
+    with pytest.raises(TypeError):
+        admit_execution_record_index(repository, artifacts)
+
+
+def test_scheduler_rejects_post_admission_record_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = _admit(monkeypatch, repository, artifacts)
     object.__setattr__(admission.records[0], "input_sha256", "f" * 64)
 
     with pytest.raises(ValueError, match="verified execution-index admission"):
         build_benchmark_schedule(admission)
 
 
-def test_admission_rejects_trusted_manifest_parent_symlink(tmp_path: Path) -> None:
+def test_admission_rejects_trusted_manifest_parent_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repository, artifacts, _ = _admission_files(tmp_path)
     locked_root = repository / "benchmarks/locked-manifests"
     actual_root = repository / "benchmarks/actual-locked-manifests"
@@ -410,7 +424,7 @@ def test_admission_rejects_trusted_manifest_parent_symlink(tmp_path: Path) -> No
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
     with pytest.raises(ExecutionIndexAdmissionError, match="symlink|reparse"):
-        admit_execution_record_index(repository, artifacts)
+        _admit(monkeypatch, repository, artifacts)
 
 
 def _schedule_groups() -> dict[str, tuple[str, ...]]:
@@ -419,6 +433,15 @@ def _schedule_groups() -> dict[str, tuple[str, ...]]:
         "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
         "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
     }
+
+
+def _admit(
+    monkeypatch: pytest.MonkeyPatch, repository: Path, artifacts: Path
+) -> object:
+    monkeypatch.setattr(
+        acceptance_module, "_canonical_repository_root", lambda: repository
+    )
+    return admit_execution_record_index(artifacts)
 
 
 def _admission_files(

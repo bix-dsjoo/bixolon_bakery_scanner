@@ -629,16 +629,21 @@ def build_performance_receipt(
     )
 
 
-def admit_execution_record_index(
-    repository_root: Path, artifact_root: Path
-) -> object:
-    """Admit only evidence anchored by the repository's fixed trusted manifest."""
+def admit_execution_record_index(artifact_root: Path) -> object:
+    """Admit external evidence against this installation's private trust root."""
     try:
-        return _admit_execution_record_index(repository_root, artifact_root)
+        return _admit_execution_record_index(
+            _canonical_repository_root(), artifact_root
+        )
     except ExecutionIndexAdmissionError:
         raise
     except (OSError, TypeError, ValueError) as exc:
         raise ExecutionIndexAdmissionError(str(exc)) from exc
+
+
+def _canonical_repository_root() -> Path:
+    package_container = Path(__file__).resolve().parents[2]
+    return package_container.parent if package_container.name == "src" else package_container
 
 
 def _admit_execution_record_index(
