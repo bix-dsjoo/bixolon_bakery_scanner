@@ -339,6 +339,7 @@ DiagnosticsLiveState _diagnosticsLiveState(
       : worker.status == WorkerStatus.ready && metrics != null
       ? WorkerDiagnosticsState.ready(
           device: metrics.device,
+          runtimeMode: metrics.runtimeMode,
           loadMs: metrics.loadMs,
           warmupMs: metrics.warmupMs,
           detectorThreshold: metrics.detectorThreshold,
@@ -352,6 +353,7 @@ DiagnosticsLiveState _diagnosticsLiveState(
       : WorkerDiagnosticsState.status(
           status: WorkerDiagnosticsStatus.values.byName(worker.status.name),
           device: metrics?.device ?? scanner.device,
+          runtimeMode: metrics?.runtimeMode,
           lastError: error,
           diagnostics: worker.diagnostics,
         );

@@ -39,6 +39,24 @@ enum WorkerPhase {
   }
 }
 
+enum RuntimeMode {
+  gpuFastVerified,
+  gpuReference,
+  cpuReference;
+
+  static RuntimeMode parse(Object? value) {
+    if (value is! String) {
+      throw const FormatException('runtime mode must be a string');
+    }
+    return switch (value) {
+      'gpu_fast_verified' => RuntimeMode.gpuFastVerified,
+      'gpu_reference' => RuntimeMode.gpuReference,
+      'cpu_reference' => RuntimeMode.cpuReference,
+      _ => throw FormatException('unsupported runtime mode: $value'),
+    };
+  }
+}
+
 final class InferenceCandidate {
   const InferenceCandidate({
     required this.rank,
@@ -317,6 +335,7 @@ final class InferenceDiagnostics {
 final class StartupMetrics {
   StartupMetrics({
     required this.device,
+    required this.runtimeMode,
     required this.loadMs,
     required this.warmupMs,
     required this.fallbackReason,
@@ -328,11 +347,19 @@ final class StartupMetrics {
     Map<String, String> appliedArtifactHashes = const {},
   }) : appliedArtifactHashes = UnmodifiableMapView(
          Map<String, String>.from(appliedArtifactHashes),
-       );
+       ) {
+    _validateRuntimeAdmission(
+      device: device,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      context: 'startup',
+    );
+  }
 
   factory StartupMetrics.fromJson(Map<String, Object?> json) {
     _expectFields(json, const {
       'device',
+      'runtime_mode',
       'load_ms',
       'warmup_ms',
       'fallback_reason',
@@ -347,7 +374,11 @@ final class StartupMetrics {
     if (device != 'cpu' && device != 'cuda:0') {
       throw const FormatException('startup device must be cpu or cuda:0');
     }
+    final runtimeMode = RuntimeMode.parse(json['runtime_mode']);
     final fallbackValue = json['fallback_reason'];
+    final String? fallbackReason = fallbackValue == null
+        ? null
+        : _requiredString(fallbackValue, 'startup fallback_reason');
     final rawHashes = _map(
       json['applied_artifact_hashes'],
       'startup applied_artifact_hashes',
@@ -379,11 +410,10 @@ final class StartupMetrics {
     }
     return StartupMetrics(
       device: device,
+      runtimeMode: runtimeMode,
       loadMs: _nonNegativeFinite(json['load_ms'], 'startup load_ms'),
       warmupMs: _nonNegativeFinite(json['warmup_ms'], 'startup warmup_ms'),
-      fallbackReason: fallbackValue == null
-          ? null
-          : _requiredString(fallbackValue, 'startup fallback_reason'),
+      fallbackReason: fallbackReason,
       detectorId: _requiredString(json['detector_id'], 'startup detector_id'),
       repvitId: _requiredString(json['repvit_id'], 'startup repvit_id'),
       dinov3Id: _requiredString(json['dinov3_id'], 'startup dinov3_id'),
@@ -400,6 +430,7 @@ final class StartupMetrics {
   }
 
   final String device;
+  final RuntimeMode runtimeMode;
   final double loadMs;
   final double warmupMs;
   final String? fallbackReason;
@@ -1162,6 +1193,11 @@ final class InferenceResult {
     required this.imageWidth,
     required this.imageHeight,
     required this.device,
+    required this.executionDevice,
+    required this.runtimeMode,
+    required this.fallbackReason,
+    required this.scanToResultMs,
+    required this.inferenceMs,
     required List<InferenceObject> objects,
     required Map<int, int> counts,
     required this.unknownCount,
@@ -1181,6 +1217,11 @@ final class InferenceResult {
       'request_id',
       'image',
       'device',
+      'execution_device',
+      'runtime_mode',
+      'fallback_reason',
+      'scan_to_result_ms',
+      'inference_ms',
       'objects',
       'counts',
       'unknown_count',
@@ -1199,6 +1240,42 @@ final class InferenceResult {
     final device = _requiredString(json['device'], 'result device');
     if (device != 'cpu' && device != 'cuda:0') {
       throw const FormatException('result device must be cpu or cuda:0');
+    }
+    final executionDevice = _requiredString(
+      json['execution_device'],
+      'result execution_device',
+    );
+    if (executionDevice != 'cpu' && executionDevice != 'cuda:0') {
+      throw const FormatException(
+        'result execution_device must be cpu or cuda:0',
+      );
+    }
+    if (executionDevice != device) {
+      throw const FormatException('result execution_device must match device');
+    }
+    final runtimeMode = RuntimeMode.parse(json['runtime_mode']);
+    final fallbackValue = json['fallback_reason'];
+    final String? fallbackReason = fallbackValue == null
+        ? null
+        : _requiredString(fallbackValue, 'result fallback_reason');
+    _validateRuntimeAdmission(
+      device: executionDevice,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      context: 'result',
+    );
+    final scanToResultMs = _nonNegativeFinite(
+      json['scan_to_result_ms'],
+      'scan_to_result_ms',
+    );
+    final inferenceMs = _nonNegativeFinite(
+      json['inference_ms'],
+      'inference_ms',
+    );
+    if (inferenceMs > scanToResultMs) {
+      throw const FormatException(
+        'inference_ms must not exceed scan_to_result_ms',
+      );
     }
     final objectValues = _list(json['objects'], 'objects');
     final objects = <InferenceObject>[
@@ -1252,6 +1329,11 @@ final class InferenceResult {
       imageWidth: imageWidth,
       imageHeight: imageHeight,
       device: device,
+      executionDevice: executionDevice,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      scanToResultMs: scanToResultMs,
+      inferenceMs: inferenceMs,
       objects: objects,
       counts: counts,
       unknownCount: unknownCount,
@@ -1272,6 +1354,11 @@ final class InferenceResult {
   final double imageWidth;
   final double imageHeight;
   final String device;
+  final String executionDevice;
+  final RuntimeMode runtimeMode;
+  final String? fallbackReason;
+  final double scanToResultMs;
+  final double inferenceMs;
   final List<InferenceObject> objects;
   final Map<int, int> counts;
   final int unknownCount;
@@ -1707,4 +1794,30 @@ Object? _deepCanonicalImmutableJson(Object? value) {
     return value;
   }
   throw const FormatException('candidate payload is not canonical JSON');
+}
+
+void _validateRuntimeAdmission({
+  required String device,
+  required RuntimeMode runtimeMode,
+  required String? fallbackReason,
+  required String context,
+}) {
+  if (runtimeMode == RuntimeMode.cpuReference) {
+    if (device != 'cpu') {
+      throw FormatException('$context CPU runtime mode requires cpu device');
+    }
+  } else if (device != 'cuda:0') {
+    throw FormatException('$context GPU runtime mode requires cuda:0 device');
+  }
+  if (runtimeMode == RuntimeMode.gpuFastVerified) {
+    if (fallbackReason != null) {
+      throw FormatException(
+        '$context verified GPU runtime must not include a fallback reason',
+      );
+    }
+  } else if (fallbackReason == null || fallbackReason.trim().isEmpty) {
+    throw FormatException(
+      '$context reference runtime must include a fallback reason',
+    );
+  }
 }

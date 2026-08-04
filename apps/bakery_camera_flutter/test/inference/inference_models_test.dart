@@ -85,6 +85,45 @@ void main() {
     expect(result.timings.totalMs, 42.0);
   });
 
+  test('parses CUDA reference runtime evidence', () {
+    final result = InferenceResult.fromJson(
+      _resultJson(
+        device: 'cuda:0',
+        executionDevice: 'cuda:0',
+        runtimeMode: 'gpu_reference',
+        fallbackReason: 'rfdetr_engine_parity_missing',
+      ),
+    );
+
+    expect(result.executionDevice, 'cuda:0');
+    expect(result.runtimeMode, RuntimeMode.gpuReference);
+    expect(result.fallbackReason, 'rfdetr_engine_parity_missing');
+  });
+
+  test('rejects mismatched runtime device mode and fallback evidence', () {
+    for (final mutation in <void Function(Map<String, Object?>)>[
+      (result) => result['runtime_mode'] = 'gpu_reference',
+      (result) => result['fallback_reason'] = null,
+      (result) {
+        result['device'] = 'cuda:0';
+        result['execution_device'] = 'cuda:0';
+        result['runtime_mode'] = 'gpu_fast_verified';
+        result['fallback_reason'] = 'unexpected_fallback';
+      },
+      (result) {
+        result['execution_device'] = 'cuda:0';
+        result['runtime_mode'] = 'gpu_reference';
+        result['fallback_reason'] = 'rfdetr_engine_parity_missing';
+      },
+      (result) => result['fallback_reason'] = '',
+      (result) => result['inference_ms'] = 43.0,
+    ]) {
+      final result = _resultJson();
+      mutation(result);
+      expect(() => InferenceResult.fromJson(result), throwsFormatException);
+    }
+  });
+
   test('requires eight timing stages and exact object diagnostics', () {
     final json = _resultJson();
     json['timings_ms'] = {
@@ -678,10 +717,22 @@ void main() {
       (metrics) => metrics['device'] = 'gpu',
       (metrics) => metrics['repvit_id'] = '',
       (metrics) => metrics['detector_threshold'] = 1.1,
+      (metrics) => metrics['runtime_mode'] = 'gpu_reference',
+      (metrics) => metrics['fallback_reason'] = null,
     ]) {
       final metrics = _startupMetricsJson();
       mutation(metrics);
       expect(() => StartupMetrics.fromJson(metrics), throwsFormatException);
+    }
+  });
+
+  test('startup metrics constructor rejects impossible runtime admission', () {
+    for (final build in <StartupMetrics Function()>[
+      () => _startupMetrics(runtimeMode: RuntimeMode.gpuReference),
+      () => _startupMetrics(fallbackReason: null),
+      () => _startupMetrics(fallbackReason: ''),
+    ]) {
+      expect(build, throwsFormatException);
     }
   });
 }
@@ -762,12 +813,29 @@ Map<String, Object?> _candidateObjectJson() => {
   },
 };
 
+StartupMetrics _startupMetrics({
+  RuntimeMode runtimeMode = RuntimeMode.cpuReference,
+  String? fallbackReason = 'CPU reference runtime selected',
+}) => StartupMetrics(
+  device: 'cpu',
+  runtimeMode: runtimeMode,
+  loadMs: 12.5,
+  warmupMs: 7,
+  fallbackReason: fallbackReason,
+  detectorId: 'rfdetr_large_bakery_v1',
+  repvitId: 'repvit_m1_15plus5_v1',
+  dinov3Id: 'dinov3_vits16_15plus5_v1',
+  fusionPolicyId: 'fusion_local_or_global_v1',
+  detectorThreshold: .42,
+);
+
 Map<String, Object?> _startupMetricsJson() {
   return {
     'device': 'cpu',
+    'runtime_mode': 'cpu_reference',
     'load_ms': 12.5,
     'warmup_ms': 7.0,
-    'fallback_reason': null,
+    'fallback_reason': 'CPU reference runtime selected',
     'detector_id': 'rfdetr_large_bakery_v1',
     'repvit_id': 'repvit_m1_15plus5_v1',
     'dinov3_id': 'dinov3_vits16_15plus5_v1',
@@ -793,6 +861,12 @@ Map<String, Object?> _resultJson({
   Map<String, int>? counts,
   int unknownCount = 0,
   Map<String, Object?>? presentation,
+  String device = 'cpu',
+  String executionDevice = 'cpu',
+  String runtimeMode = 'cpu_reference',
+  String? fallbackReason = 'CPU reference runtime selected',
+  double scanToResultMs = 42.0,
+  double inferenceMs = 34.0,
 }) {
   final resultObjects =
       objects ?? <Map<String, Object?>>[_confirmedObject('object-1')];
@@ -804,7 +878,12 @@ Map<String, Object?> _resultJson({
     'type': 'result',
     'request_id': requestId,
     'image': {'width': 640, 'height': 480},
-    'device': 'cpu',
+    'device': device,
+    'execution_device': executionDevice,
+    'runtime_mode': runtimeMode,
+    'fallback_reason': fallbackReason,
+    'scan_to_result_ms': scanToResultMs,
+    'inference_ms': inferenceMs,
     'objects': resultObjects,
     'counts': counts ?? {'6': 1},
     'unknown_count': unknownCount,

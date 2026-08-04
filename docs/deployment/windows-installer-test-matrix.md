@@ -7,9 +7,34 @@
 - Architecture: Windows x64
 - Distribution: single per-user Inno Setup EXE
 - Runtime: CPython 3.11.9, PyTorch 2.13.0+cu130, CUDA 13.0 runtime,
-  FP32 CPU fallback
+  verified-reference CUDA mode and FP32 CPU-reference fallback
 - Signature: unsigned internal application build; installer SHA-256 is the
   transfer integrity check
+
+## Dual-runtime handoff status (2026-08-04)
+
+The worker reports `execution_device`, `runtime_mode`, `fallback_reason`,
+`scan_to_result_ms`, and `inference_ms` for every result. `runtime_mode` is
+`gpu_fast_verified` only after an artifact-backed RF-DETR TensorRT parity
+receipt is verified. The currently unverified engine is not packaged or
+automatically routed: CUDA selection remains `gpu_reference` with
+`fallback_reason = rfdetr_engine_parity_missing`. No CUDA uses
+`cpu_reference` with its recorded fallback reason; an explicit CPU request is
+`cpu_reference` with `forced_cpu`.
+
+`inference_ms` is the warmed canonical-RGB inference boundary (non-decode
+stages only). `scan_to_result_ms` includes decode and the complete worker
+request. Neither field is an acceptance receipt here, and no 100 ms claim
+applies to JPEG/scan-to-result or any CPU mode.
+
+| Verification item | Status | Evidence / limitation |
+|---|---|---|
+| Production fast-path admission | passed | Hermetic CUDA-available fixture selected `gpu_reference` and `rfdetr_engine_parity_missing` without injecting an admitter. |
+| CPU order/location and Unknown accounting | passed | `tests/prototype/test_camera_runtime.py::test_analyze_returns_deterministic_fail_closed_result_contract` verifies canonical object order/boxes, registered counts `{"6": 1, "10": 1}`, and `unknown_count = 1`. |
+| Python cross-boundary suite | passed | `python -m pytest tests/prototype tests/deployment tests/e2e tests/integration/test_gpu_batch_parity.py -q`: 325 passed, 9 deselected (2026-08-04). |
+| Real RTX 5080 / TensorRT parity | unverified | No artifact-backed parity receipt or accepted GPU run was available; exploratory benchmarks are not acceptance evidence. |
+| Flutter/Dart tests and Windows release build | unavailable | `flutter` and `dart` were not on PATH. |
+| Inno Setup installer build | unavailable | `ISCC.exe`, a verified payload root, and Flutter Windows Release payload were not locally discoverable. No build command was run and no installer was written. |
 
 ## Local isolated-install evidence
 
@@ -60,7 +85,10 @@ Use Windows 10/11 x64 with a CUDA 13-compatible NVIDIA driver and no Python,
 Flutter, Visual Studio, or Git.
 
 1. Repeat the CPU checklist.
-2. Confirm `device = cuda:0` and `fallback_reason = null`.
+2. While no accepted RF-DETR engine parity receipt exists, confirm
+   `device = cuda:0`, `runtime_mode = gpu_reference`, and
+   `fallback_reason = rfdetr_engine_parity_missing`. Do not require or enable
+   `gpu_fast_verified` admission.
 3. Run at least 20 warm analyses and record worker p50/p95.
 4. Record GPU model, driver version, load/warm-up, and two real-camera
    press-to-render timings.

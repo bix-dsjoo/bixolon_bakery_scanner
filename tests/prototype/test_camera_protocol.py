@@ -138,6 +138,11 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
         "request_id": "request-1",
         "image": {"width": 20, "height": 20},
         "device": "cpu",
+        "execution_device": "cpu",
+        "runtime_mode": "cpu_reference",
+        "fallback_reason": "CPU reference runtime selected",
+        "scan_to_result_ms": 8.0,
+        "inference_ms": 7.0,
         "objects": [
             _object("object-1", sku_id=6, sku_name="Croissant", decision_path="repvit_direct"),
             {

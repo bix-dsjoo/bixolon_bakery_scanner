@@ -322,6 +322,7 @@ Future<void> _pumpRail(
     workerStatus: WorkerStatus.ready,
     startupMetrics: StartupMetrics(
       device: 'cpu',
+      runtimeMode: RuntimeMode.cpuReference,
       loadMs: 1500,
       warmupMs: 320,
       fallbackReason: 'cuda_unavailable',

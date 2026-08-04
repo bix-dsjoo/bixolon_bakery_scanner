@@ -22,6 +22,10 @@ def _write(path: Path, value: str) -> None:
 def _write_attested_worker_tree(root: Path) -> None:
     _write(root / "pyproject.toml", "[project]\nname='snapshot'\n")
     _write(root / "src" / "bakery_scanner" / "module.py", "VALUE = 'before'\n")
+    _write(
+        root / "src" / "bakery_scanner" / "prototype" / "camera_runtime.py",
+        "RUNTIME = 'before'\n",
+    )
     _write(root / "dino" / "dinov3" / "__init__.py", "VALUE = 'before'\n")
     _write(root / "data" / "catalogs" / "classes.json", "[]\n")
     _write(root / "configs" / "gpu_rfdetr_classifier_policy.yaml", "gpu: before\n")
@@ -102,3 +106,18 @@ def test_deployed_worker_identity_rejects_tampered_packaged_source(tmp_path):
 
     with pytest.raises(ValueError, match="deployed worker code identity does not match"):
         resolve_worker_execution_root(root, tmp_path / "temporary")
+
+
+def test_deployed_worker_identity_covers_camera_runtime_source(tmp_path):
+    """Catch a portable worker identity that omits runtime admission code."""
+    root = tmp_path / "pipeline"
+    _write_attested_worker_tree(root)
+    before = compute_deployed_worker_code_identity(root, commit="d" * 40)
+
+    _write(
+        root / "src" / "bakery_scanner" / "prototype" / "camera_runtime.py",
+        "RUNTIME = 'changed'\n",
+    )
+
+    after = compute_deployed_worker_code_identity(root, commit="d" * 40)
+    assert after != before
