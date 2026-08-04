@@ -78,3 +78,18 @@ cannot embed its own final hash.
 - `Unknown` remains fail-closed and is excluded from registered SKU totals.
 - No external artifacts, models, engines, datasets, raw benchmarks, or
   installer payloads were added.
+
+## Review round 1 fix
+
+- Corrected the External NVIDIA PC checklist: without an accepted RF-DETR
+  engine parity receipt, it now requires `cuda:0`, `gpu_reference`, and
+  `rfdetr_engine_parity_missing`; it explicitly does not require or enable
+  `gpu_fast_verified`.
+- Wrapped the production-default safety test's initialized runtime in
+  `try`/`finally` and calls `runtime.close()` even though its fake backend is a
+  no-op.
+- Verification: `python -m pytest
+  tests/integration/test_rtx5080_15plus5_gpu.py -q` passed: 1 passed in
+  4.71s.
+- Commit evidence: `fix(review): GPU 참조 모드 점검 보정` (the task handoff
+  provides its immutable commit identifier).

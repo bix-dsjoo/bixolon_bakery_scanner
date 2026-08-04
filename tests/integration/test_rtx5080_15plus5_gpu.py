@@ -58,7 +58,9 @@ def test_production_default_keeps_unverified_rfdetr_engine_out_of_automatic_rout
         cuda_probe=lambda: True,
         backend_loader=_ReferenceBackend,
     )
-
-    assert runtime.device == "cuda:0"
-    assert runtime.runtime_mode == "gpu_reference"
-    assert runtime.startup_metrics.fallback_reason == "rfdetr_engine_parity_missing"
+    try:
+        assert runtime.device == "cuda:0"
+        assert runtime.runtime_mode == "gpu_reference"
+        assert runtime.startup_metrics.fallback_reason == "rfdetr_engine_parity_missing"
+    finally:
+        runtime.close()

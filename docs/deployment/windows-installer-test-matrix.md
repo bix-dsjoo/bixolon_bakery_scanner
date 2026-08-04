@@ -85,7 +85,10 @@ Use Windows 10/11 x64 with a CUDA 13-compatible NVIDIA driver and no Python,
 Flutter, Visual Studio, or Git.
 
 1. Repeat the CPU checklist.
-2. Confirm `device = cuda:0` and `fallback_reason = null`.
+2. While no accepted RF-DETR engine parity receipt exists, confirm
+   `device = cuda:0`, `runtime_mode = gpu_reference`, and
+   `fallback_reason = rfdetr_engine_parity_missing`. Do not require or enable
+   `gpu_fast_verified` admission.
 3. Run at least 20 warm analyses and record worker p50/p95.
 4. Record GPU model, driver version, load/warm-up, and two real-camera
    press-to-render timings.
