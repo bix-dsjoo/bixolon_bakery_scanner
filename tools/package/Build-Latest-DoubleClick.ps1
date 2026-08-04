@@ -26,7 +26,7 @@ function Resolve-RequiredPath {
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][bool]$Directory
     )
-    $resolved = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
+    $resolved = [System.IO.Path]::GetFullPath($Path)
     if ($Directory -and -not (Test-Path -LiteralPath $resolved -PathType Container)) {
         throw "$Label directory is missing: $resolved"
     }
@@ -41,7 +41,7 @@ $runtime = Resolve-RequiredPath -Path $RuntimeRoot -Label 'RuntimeRoot' -Directo
 $compiler = Resolve-RequiredPath -Path $IsccPath -Label 'IsccPath' -Directory $false
 $flutter = Resolve-RequiredPath -Path $FlutterPath -Label 'FlutterPath' -Directory $false
 $buildPython = Resolve-RequiredPath -Path $Python -Label 'Python' -Directory $false
-$output = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputRoot))
+$output = [System.IO.Path]::GetFullPath($OutputRoot)
 $releaseDirectory = Join-Path $repoRoot 'apps\bakery_camera_flutter\build\windows\x64\runner\Release'
 $payload = Join-Path $output 'portable'
 $installer = Join-Path $output 'installer'

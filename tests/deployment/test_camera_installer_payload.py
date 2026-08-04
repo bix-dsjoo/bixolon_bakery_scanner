@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -108,6 +109,69 @@ def test_latest_double_click_builder_creates_both_distribution_routes() -> None:
         contents = readme.read_text(encoding="utf-8")
         assert "bakery_camera_prototype.exe" in contents
         assert "더블클릭" in contents
+
+
+def test_installer_builder_accepts_absolute_command_paths(tmp_path: Path) -> None:
+    """Catch the installer wrapper treating an absolute path as a child path."""
+    repo_root = Path(__file__).parents[2]
+    missing_payload = tmp_path / "missing-payload"
+    completed = subprocess.run(
+        (
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(repo_root / "scripts" / "build_camera_installer.ps1"),
+            "-PayloadRoot",
+            str(missing_payload),
+            "-IsccPath",
+            str(tmp_path / "missing-iscc.exe"),
+            "-Version",
+            "1.1.0",
+            "-OutputDir",
+            str(tmp_path / "output"),
+            "-Python",
+            sys.executable,
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "PayloadRoot is missing" in completed.stderr
+
+
+def test_latest_builder_accepts_absolute_command_paths(tmp_path: Path) -> None:
+    """Catch the latest-build wrapper corrupting an absolute runtime path."""
+    repo_root = Path(__file__).parents[2]
+    completed = subprocess.run(
+        (
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(repo_root / "tools" / "package" / "Build-Latest-DoubleClick.ps1"),
+            "-RuntimeRoot",
+            str(tmp_path / "missing-runtime"),
+            "-IsccPath",
+            str(tmp_path / "missing-iscc.exe"),
+            "-OutputRoot",
+            str(tmp_path / "output"),
+            "-FlutterPath",
+            str(tmp_path / "missing-flutter.bat"),
+            "-Python",
+            sys.executable,
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "RuntimeRoot directory is missing" in completed.stderr
 
 
 @pytest.fixture
