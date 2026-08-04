@@ -45,6 +45,7 @@ class CandidateRuntimeProvider(Protocol):
 
 
 _CANDIDATE_PROFILE = "rtx5080_15plus5_single_frame_v1"
+_LEGACY_PROFILE = "legacy"
 _STARTUP_EVENTS = frozenset({"loading", "warming"})
 _CODE_IDENTITY_FIELDS = frozenset({"code_commit", "code_identity_sha256"})
 _LOWER_HEX = frozenset("0123456789abcdef")
@@ -106,7 +107,7 @@ def serve(
                     load=candidate_runtime_provider.load,
                     legacy_fallback=lambda: runtime_factory(emit_startup),
                 )
-            elif runtime_profile_id is None:
+            elif runtime_profile_id in {None, _LEGACY_PROFILE}:
                 runtime = runtime_factory(emit_startup)
             else:
                 raise ValueError("unsupported worker runtime profile")

@@ -843,6 +843,43 @@ END
     },
   );
 
+  test('candidate receipt is isolated from every nested source mutation', () {
+    final source = _candidateUnknownResultJson();
+    final result = InferenceResult.fromJson(source);
+    final runtime = _runtimeSnapshot(startupDevice: 'cuda:0');
+    final before = canonicalInferenceReceiptJson(
+      result: result,
+      runtimeSnapshot: runtime,
+    );
+
+    source['request_id'] = 'mutated-request';
+    source['retake_chain_id'] = 'mutated-chain';
+    (source['provenance']! as Map<String, Object?>)['pipeline_id'] = 'mutated';
+    final object = (source['objects']! as List<Object?>).single!
+        as Map<String, Object?>;
+    object['sku_name'] = 'mutated-object';
+    (object['provenance']! as Map<String, Object?>)['detector_sha256'] =
+        _hash('f');
+    ((object['top3']! as List<Object?>).first! as Map<String, Object?>)
+        ['sku_name'] = 'mutated-top3';
+
+    expect(
+      canonicalInferenceReceiptJson(result: result, runtimeSnapshot: runtime),
+      before,
+    );
+    expect(
+      () => (result.candidateResult!.immutablePayload['provenance']!
+              as Map<String, Object?>)['pipeline_id'] =
+          'cannot-write',
+      throwsUnsupportedError,
+    );
+    expect(
+      () => (result.candidateResult!.immutablePayload['objects']!
+              as List<Object?>).add(null),
+      throwsUnsupportedError,
+    );
+  });
+
   test(
     'registered resolution source exactly follows AI product identity',
     () async {

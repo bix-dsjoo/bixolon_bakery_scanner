@@ -819,7 +819,7 @@ final class CandidateScanResult {
       manualCatalogRequired: manual,
       runtimeProfileId: runtimeProfileId,
       receiptId: receiptId,
-      immutablePayload: Map<String, Object?>.unmodifiable(json),
+      immutablePayload: _deepCanonicalImmutableMap(json),
     );
   }
 
@@ -1685,4 +1685,26 @@ bool _equalIntMaps(Map<int, int> left, Map<int, int> right) {
     return false;
   }
   return left.entries.every((entry) => right[entry.key] == entry.value);
+}
+
+Map<String, Object?> _deepCanonicalImmutableMap(Map<String, Object?> source) {
+  final keys = source.keys.toList(growable: false)..sort();
+  return Map<String, Object?>.unmodifiable({
+    for (final key in keys) key: _deepCanonicalImmutableJson(source[key]),
+  });
+}
+
+Object? _deepCanonicalImmutableJson(Object? value) {
+  if (value is Map<String, Object?>) {
+    return _deepCanonicalImmutableMap(value);
+  }
+  if (value is List<Object?>) {
+    return List<Object?>.unmodifiable(
+      value.map<Object?>(_deepCanonicalImmutableJson),
+    );
+  }
+  if (value == null || value is String || value is bool || value is num) {
+    return value;
+  }
+  throw const FormatException('candidate payload is not canonical JSON');
 }

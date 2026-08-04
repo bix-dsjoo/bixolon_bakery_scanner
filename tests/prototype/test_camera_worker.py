@@ -437,6 +437,62 @@ def test_live_worker_uses_admitted_candidate_for_analysis_requests(tmp_path: Pat
     assert any(event.get("request_id") == "scan-1" and event["type"] == "result" for event in _events(stdout))
 
 
+def test_cli_forwards_candidate_profile_and_provider_to_serve():
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_profile", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    provider = object()
+    observed = {}
+
+    def fake_serve(stdin, stdout, **kwargs):
+        observed.update(kwargs)
+        return 17
+
+    status = module.serve_selected_runtime(
+        stdin=io.StringIO(),
+        stdout=io.StringIO(),
+        runtime_factory=lambda _emit: None,
+        code_identity={"code_commit": "a" * 40, "code_identity_sha256": "b" * 64},
+        runtime_profile="rtx5080_15plus5_single_frame_v1",
+        candidate_provider_factory=lambda: provider,
+        serve_fn=fake_serve,
+    )
+
+    assert status == 17
+    assert observed["runtime_profile_id"] == "rtx5080_15plus5_single_frame_v1"
+    assert observed["candidate_runtime_provider"] is provider
+
+
+def test_cli_preserves_explicit_legacy_profile():
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_legacy", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = {}
+
+    def fail_provider():
+        raise AssertionError("legacy profile must not construct candidate provider")
+
+    def fake_serve(stdin, stdout, **kwargs):
+        observed.update(kwargs)
+        return 0
+
+    assert module.serve_selected_runtime(
+        stdin=io.StringIO(),
+        stdout=io.StringIO(),
+        runtime_factory=lambda _emit: None,
+        code_identity={"code_commit": "a" * 40, "code_identity_sha256": "b" * 64},
+        runtime_profile="legacy",
+        candidate_provider_factory=fail_provider,
+        serve_fn=fake_serve,
+    ) == 0
+    assert observed["runtime_profile_id"] == "legacy"
+    assert observed["candidate_runtime_provider"] is None
+
+
 def test_worker_closes_initialized_runtime_when_ready_event_cannot_encode():
     stdout = io.StringIO()
     runtime = FakeRuntime(startup_metrics={"unencodable": object()})
