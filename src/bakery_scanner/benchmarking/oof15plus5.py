@@ -22,6 +22,12 @@ from bakery_scanner.detection.completeness import (
     build_counterfactuals,
     evaluate_completeness,
 )
+from bakery_scanner.detection.completeness_evidence import (
+    REQUIRED_COMPLETENESS_INPUT_ARTIFACT_KEYS,
+    CompletenessExecutionRecord,
+    CompletenessProposalEvidence,
+    load_completeness_evidence_bundle,
+)
 from bakery_scanner.pipelines.rtx5080_15plus5.contracts import RetakeReason
 
 
@@ -150,6 +156,9 @@ class CounterfactualSourceEvidence:
     quality: CaptureQuality
     policy: CompletenessPolicy
     decision_reasons: tuple[str, ...]
+    execution_record_sha256: str | None = None
+    completeness_policy_id: str | None = None
+    completeness_policy_artifact_sha256: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("source_scene_sha256", "source_image_sha256"):
@@ -176,9 +185,24 @@ class CounterfactualSourceEvidence:
             raise ValueError("counterfactuals require an accepted observed source without capture-quality faults")
         if self.decision_reasons != ():
             raise ValueError("counterfactual source decision reasons do not match canonical observed evidence")
+        binding = (
+            self.execution_record_sha256,
+            self.completeness_policy_id,
+            self.completeness_policy_artifact_sha256,
+        )
+        if any(value is not None for value in binding):
+            if (
+                not isinstance(self.execution_record_sha256, str)
+                or not _SHA256.fullmatch(self.execution_record_sha256)
+                or not isinstance(self.completeness_policy_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", self.completeness_policy_id)
+                or not isinstance(self.completeness_policy_artifact_sha256, str)
+                or not _SHA256.fullmatch(self.completeness_policy_artifact_sha256)
+            ):
+                raise ValueError("counterfactual source execution binding is invalid")
 
     def canonical_payload(self) -> Mapping[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": 1,
             "source_scene_sha256": self.source_scene_sha256,
             "source_image_sha256": self.source_image_sha256,
@@ -211,6 +235,16 @@ class CounterfactualSourceEvidence:
             "decision_state": "accepted_scan",
             "decision_reasons": [],
         }
+        if self.execution_record_sha256 is not None:
+            payload.update(
+                {
+                    "schema_version": 2,
+                    "execution_record_sha256": self.execution_record_sha256,
+                    "completeness_policy_id": self.completeness_policy_id,
+                    "completeness_policy_artifact_sha256": self.completeness_policy_artifact_sha256,
+                }
+            )
+        return payload
 
     @property
     def sha256(self) -> str:
@@ -229,6 +263,9 @@ def build_counterfactual_source_evidence(
     foreground: ForegroundEvidence,
     quality: CaptureQuality,
     policy: CompletenessPolicy,
+    execution_record_sha256: str | None = None,
+    completeness_policy_id: str | None = None,
+    completeness_policy_artifact_sha256: str | None = None,
 ) -> CounterfactualSourceEvidence:
     if not isinstance(source_scene_id, str) or not source_scene_id:
         raise ValueError("counterfactual source scene identity is required")
@@ -244,6 +281,9 @@ def build_counterfactual_source_evidence(
         quality=quality,
         policy=policy,
         decision_reasons=(),
+        execution_record_sha256=execution_record_sha256,
+        completeness_policy_id=completeness_policy_id,
+        completeness_policy_artifact_sha256=completeness_policy_artifact_sha256,
     )
 
 
@@ -477,6 +517,11 @@ class OofEvaluationRow:
     actual_retake_reasons: tuple[str, ...] | None = None
     acceptance_config_sha256: str | None = None
     fold_manifest_file_sha256: str | None = None
+    completeness_evidence_index_sha256: str | None = None
+    completeness_execution_record_sha256: str | None = None
+    canonical_frame_version: str | None = None
+    canonical_frame_mode: str | None = None
+    canonical_frame_size: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.evidence_kind not in {"observed", "counterfactual"}:
@@ -501,10 +546,28 @@ class OofEvaluationRow:
                 raise ValueError(f"{field_name} must be a lowercase SHA-256")
         if not isinstance(self.source_image_sha256, str) or not _SHA256.fullmatch(self.source_image_sha256):
             raise ValueError("source_image_sha256 must be a lowercase SHA-256")
-        for field_name in ("acceptance_config_sha256", "fold_manifest_file_sha256"):
+        for field_name in (
+            "acceptance_config_sha256",
+            "fold_manifest_file_sha256",
+            "completeness_evidence_index_sha256",
+            "completeness_execution_record_sha256",
+        ):
             value = getattr(self, field_name)
             if value is not None and (not isinstance(value, str) or not _SHA256.fullmatch(value)):
                 raise ValueError(f"{field_name} must be a lowercase SHA-256 when present")
+        frame_binding = (
+            self.canonical_frame_version,
+            self.canonical_frame_mode,
+            self.canonical_frame_size,
+        )
+        if any(value is not None for value in frame_binding) and (
+            self.canonical_frame_version != "exif_transposed_rgb_v1"
+            or self.canonical_frame_mode != "RGB"
+            or not isinstance(self.canonical_frame_size, tuple)
+            or len(self.canonical_frame_size) != 2
+            or any(type(value) is not int or value < 1 for value in self.canonical_frame_size)
+        ):
+            raise ValueError("canonical completeness frame binding is invalid")
         for field_name in _DINO_BINDING_HASH_FIELDS:
             if not isinstance(getattr(self, field_name), str) or not _SHA256.fullmatch(getattr(self, field_name)):
                 raise ValueError(f"{field_name} must be a lowercase SHA-256")
@@ -692,8 +755,10 @@ class OofAcceptanceReceipt:
     acceptance_sources: AcceptanceSourceIdentity
     evaluation_input_sha256: str
     evaluation_row_count: int
+    completeness_evidence_index_sha256: str | None
     _evaluation_rows: tuple[OofEvaluationRow, ...]
     _evaluation_policy_by_fold: tuple[tuple[int, str], ...]
+    _completeness_evidence_root: Path | None
     unverified_reasons: tuple[str, ...] = ()
     sample_size_limit: str = "Exact one-sided 95% bounds describe only the observed OOF sample; they do not establish a 0.1% production-risk claim."
     schema_version: int = 1
@@ -712,11 +777,19 @@ class OofAcceptanceReceipt:
             self._evaluation_policy_by_fold,
         ):
             raise ValueError("evaluation input identity does not match authoritative evaluation bytes")
+        if self.completeness_evidence_index_sha256 is not None and (
+            not isinstance(self.completeness_evidence_index_sha256, str)
+            or not _SHA256.fullmatch(self.completeness_evidence_index_sha256)
+        ):
+            raise ValueError("completeness evidence index identity is invalid")
+        if self._completeness_evidence_root is not None and not self._completeness_evidence_root.is_absolute():
+            raise ValueError("private completeness evidence root must be absolute")
 
     def to_json_bytes(self) -> bytes:
         payload = asdict(self)
         payload.pop("_evaluation_rows")
         payload.pop("_evaluation_policy_by_fold")
+        payload.pop("_completeness_evidence_root")
         payload["policy_by_fold"] = {str(key): value for key, value in sorted(self.policy_by_fold.items())}
         payload["provenance_by_fold"] = {str(key): value for key, value in sorted(self.provenance_by_fold.items())}
         payload["seed_by_fold"] = {str(key): value for key, value in sorted(self.seed_by_fold.items())}
@@ -732,6 +805,7 @@ class FrozenOofReceipt:
     evaluation_input_sha256: str
     _evaluation_rows: tuple[OofEvaluationRow, ...]
     _evaluation_policy_by_fold: tuple[tuple[int, str], ...]
+    _completeness_evidence_root: Path | None
 
     def __post_init__(self) -> None:
         if hashlib.sha256(self.payload).hexdigest() != self.sha256:
@@ -741,6 +815,8 @@ class FrozenOofReceipt:
             self._evaluation_policy_by_fold,
         ):
             raise ValueError("frozen OOF receipt evaluation input identity mismatch")
+        if self._completeness_evidence_root is not None and not self._completeness_evidence_root.is_absolute():
+            raise ValueError("frozen private completeness evidence root must be absolute")
 
 
 def immutable_fusion_accepts(
@@ -1009,7 +1085,193 @@ class _CounterfactualContract:
     missing: tuple[str, ...]
 
 
-def _counterfactual_contract(rows: tuple[OofEvaluationRow, ...]) -> _CounterfactualContract:
+@dataclass(frozen=True, slots=True)
+class _CompletenessEvidenceAdmission:
+    admitted_source_keys: frozenset[tuple[int, str]]
+    index_sha256: str | None
+    missing: tuple[str, ...]
+
+
+def _proposal_matches_execution(
+    proposal: BreadProposal,
+    execution: CompletenessProposalEvidence,
+) -> bool:
+    return (
+        execution.image_id == proposal.image_id
+        and execution.source_sha256 == hashlib.sha256(proposal.source.encode("utf-8")).hexdigest()
+        and execution.score == proposal.score
+        and execution.box_xyxy == proposal.box.xyxy
+        and execution.image_width == proposal.image_width
+        and execution.image_height == proposal.image_height
+        and execution.class_id == proposal.class_id
+        and execution.class_name == proposal.class_name
+    )
+
+
+def _require_observed_execution_match(
+    row: OofEvaluationRow,
+    source: CounterfactualSourceEvidence,
+    record: CompletenessExecutionRecord,
+) -> None:
+    ordered_truth = tuple(sorted(row.ground_truth, key=lambda item: item.object_order))
+    artifacts = tuple(
+        (key, getattr(row, key))
+        for key in REQUIRED_COMPLETENESS_INPUT_ARTIFACT_KEYS
+    )
+    checks = {
+        "accepted_scan state": (
+            row.state == "accepted_scan"
+            and row.expected_state == "accepted_scan"
+            and record.decision_state == "accepted_scan"
+            and not record.decision_reasons
+            and bool(record.final_source_proposal_sha256)
+        ),
+        "scene identity": record.source_scene_sha256
+        == hashlib.sha256(row.scene_id.encode("utf-8")).hexdigest()
+        == source.source_scene_sha256,
+        "source image": record.source_image_sha256
+        == row.source_image_sha256
+        == source.source_image_sha256,
+        "fold": record.fold_index == row.fold_index == source.fold_index,
+        "canonical frame": (
+            record.canonical_frame_version == row.canonical_frame_version
+            and record.canonical_frame_mode == row.canonical_frame_mode
+            and record.frame_size == row.canonical_frame_size == source.frame_size
+        ),
+        "execution record": (
+            row.completeness_execution_record_sha256
+            == source.execution_record_sha256
+            == record.sha256
+        ),
+        "proposal identity": (
+            len(source.proposals) == len(record.proposals) == len(ordered_truth)
+            and all(
+                _proposal_matches_execution(proposal, execution)
+                for proposal, execution in zip(source.proposals, record.proposals, strict=True)
+            )
+            and tuple(item.box_xyxy for item in ordered_truth)
+            == tuple(proposal.box.xyxy for proposal in source.proposals)
+            and tuple(item.object_order for item in ordered_truth)
+            == tuple(range(1, len(ordered_truth) + 1))
+        ),
+        "foreground": source.foreground == record.foreground,
+        "quality": source.quality == record.quality,
+        "policy": (
+            source.policy == record.policy
+            and source.completeness_policy_id == record.completeness_policy_id
+            and source.completeness_policy_artifact_sha256
+            == record.completeness_policy_artifact_sha256
+        ),
+        "decision reasons": source.decision_reasons == record.decision_reasons == (),
+        "code identity": record.code_sha256 == row.code_sha256,
+        "static pipeline": record.input_artifact_sha256 == artifacts,
+    }
+    failed = tuple(name for name, matched in checks.items() if not matched)
+    if failed:
+        raise ValueError(
+            "observed source does not match admitted completeness execution evidence: "
+            + ", ".join(failed)
+        )
+
+
+def _admit_completeness_sources(
+    rows: tuple[OofEvaluationRow, ...],
+    completeness_evidence_root: Path | None,
+) -> _CompletenessEvidenceAdmission:
+    observed = tuple(row for row in rows if row.evidence_kind == "observed")
+    declared = tuple(row for row in observed if row.counterfactual_source_evidence is not None)
+    if completeness_evidence_root is None:
+        return _CompletenessEvidenceAdmission(
+            frozenset(),
+            None,
+            tuple(
+                f"completeness_evidence_unavailable:{row.fold_index}:{_safe_identifier(row.scene_id)}"
+                for row in declared
+            ),
+        )
+    root = Path(completeness_evidence_root)
+    if not root.is_absolute():
+        raise ValueError("completeness evidence root must be absolute")
+    index_identities = {
+        row.completeness_evidence_index_sha256
+        for row in declared
+        if row.completeness_evidence_index_sha256 is not None
+    }
+    missing: list[str] = []
+    for row in declared:
+        if (
+            row.completeness_evidence_index_sha256 is None
+            or row.completeness_execution_record_sha256 is None
+            or row.canonical_frame_version is None
+            or row.canonical_frame_mode is None
+            or row.canonical_frame_size is None
+        ):
+            missing.append(
+                f"completeness_evidence_binding_missing:{row.fold_index}:{_safe_identifier(row.scene_id)}"
+            )
+    if not index_identities:
+        return _CompletenessEvidenceAdmission(frozenset(), None, tuple(sorted(set(missing))))
+    if len(index_identities) != 1:
+        raise ValueError("observed completeness evidence index SHA-256 identities disagree")
+    index_sha256 = next(iter(index_identities))
+    bundle = load_completeness_evidence_bundle(
+        root,
+        expected_index_sha256=index_sha256,
+    )
+    admitted: set[tuple[int, str]] = set()
+    for row in declared:
+        if any(
+            value is None
+            for value in (
+                row.completeness_evidence_index_sha256,
+                row.completeness_execution_record_sha256,
+                row.canonical_frame_version,
+                row.canonical_frame_mode,
+                row.canonical_frame_size,
+            )
+        ):
+            continue
+        if row.completeness_evidence_index_sha256 != index_sha256:
+            raise ValueError("observed completeness evidence index SHA-256 mismatch")
+        source = row.counterfactual_source_evidence
+        if not isinstance(source, CounterfactualSourceEvidence):
+            continue
+        record = bundle.require_record(
+            hashlib.sha256(row.scene_id.encode("utf-8")).hexdigest(),
+            row.completeness_execution_record_sha256,
+        )
+        _require_observed_execution_match(row, source, record)
+        admitted.add((row.fold_index, row.scene_id))
+    for row in (item for item in rows if item.evidence_kind == "counterfactual"):
+        key = (row.fold_index, row.source_scene_id or "")
+        if key not in admitted:
+            continue
+        source_row = next(
+            item
+            for item in observed
+            if (item.fold_index, item.scene_id) == key
+        )
+        if (
+            row.completeness_evidence_index_sha256
+            != source_row.completeness_evidence_index_sha256
+            or row.completeness_execution_record_sha256
+            != source_row.completeness_execution_record_sha256
+            or row.canonical_frame_version != source_row.canonical_frame_version
+            or row.canonical_frame_mode != source_row.canonical_frame_mode
+            or row.canonical_frame_size != source_row.canonical_frame_size
+        ):
+            raise ValueError("counterfactual completeness execution binding does not match observed source")
+    return _CompletenessEvidenceAdmission(
+        frozenset(admitted),
+        bundle.index_sha256,
+        tuple(sorted(set(missing))),
+    )
+
+
+def _counterfactual_contract(
+    rows: tuple[OofEvaluationRow, ...],
+    completeness_admission: _CompletenessEvidenceAdmission,
+) -> _CounterfactualContract:
     observed = {
         (row.fold_index, row.scene_id): row
         for row in rows
@@ -1021,6 +1283,9 @@ def _counterfactual_contract(rows: tuple[OofEvaluationRow, ...]) -> _Counterfact
         source = row.counterfactual_source_evidence
         if source is None:
             missing.append(f"counterfactual_source_unavailable:{key[0]}:{_safe_identifier(key[1])}")
+            continue
+        if key not in completeness_admission.admitted_source_keys:
+            missing.append(f"counterfactual_source_unadmitted:{key[0]}:{_safe_identifier(key[1])}")
             continue
         for case in build_counterfactuals(source.proposals):
             evidence = build_counterfactual_evidence(source=source, case=case)
@@ -1037,6 +1302,12 @@ def _counterfactual_contract(rows: tuple[OofEvaluationRow, ...]) -> _Counterfact
         source_row = observed.get((row.fold_index, row.source_scene_id or ""))
         if source_row is None or source_row.counterfactual_source_evidence is None:
             raise ValueError("counterfactual source descriptor is unavailable")
+        if (row.fold_index, row.source_scene_id or "") not in completeness_admission.admitted_source_keys:
+            missing.append(
+                f"counterfactual_source_unadmitted:{row.fold_index}:"
+                f"{_safe_identifier(row.source_scene_id or '')}"
+            )
+            continue
         canonical = expected.get(key)
         if canonical is None or canonical.to_json_bytes() != row.counterfactual_evidence.to_json_bytes():
             raise ValueError("counterfactual evidence is not the canonical source transform")
@@ -1072,7 +1343,7 @@ def _counterfactual_contract(rows: tuple[OofEvaluationRow, ...]) -> _Counterfact
         block_rate=block_rate,
         expected_count=expected_count,
         submitted_count=submitted_count,
-        missing=tuple(sorted(set(missing))),
+        missing=tuple(sorted(set((*missing, *completeness_admission.missing)))),
     )
 
 
@@ -1159,13 +1430,22 @@ def _utility_metrics(
     )
 
 
-def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, str]) -> OofAcceptanceReceipt:
+def evaluate_oof(
+    rows: Sequence[OofEvaluationRow],
+    policy_by_fold: Mapping[int, str],
+    *,
+    completeness_evidence_root: Path | None = None,
+) -> OofAcceptanceReceipt:
     checked = tuple(rows)
     if not checked:
         raise ValueError("OOF evaluation rows must not be empty")
     acceptance_material = _load_canonical_acceptance_material()
     if len({row.scene_id for row in checked}) != len(checked):
         raise ValueError("duplicate evaluation scene/object rows")
+    completeness_admission = _admit_completeness_sources(
+        checked,
+        completeness_evidence_root,
+    )
     observed_sources = {
         (row.fold_index, row.scene_id)
         for row in checked
@@ -1331,7 +1611,7 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         object_error_upper_95=_upper_bound(counts["wrong"], sum(len(row.ground_truth) for row in observed_checked)),
         scan_sample_size=len(observed_checked), object_sample_size=sum(len(row.ground_truth) for row in observed_checked),
     )
-    counterfactual_contract = _counterfactual_contract(checked)
+    counterfactual_contract = _counterfactual_contract(checked, completeness_admission)
     utility = _utility_metrics(
         checked,
         matched_by_scene,
@@ -1359,8 +1639,14 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         acceptance_sources=acceptance_material.identity,
         evaluation_input_sha256=_evaluation_input_sha256(checked, policy_items),
         evaluation_row_count=len(checked),
+        completeness_evidence_index_sha256=completeness_admission.index_sha256,
         _evaluation_rows=checked,
         _evaluation_policy_by_fold=policy_items,
+        _completeness_evidence_root=(
+            Path(completeness_evidence_root).resolve(strict=True)
+            if completeness_evidence_root is not None
+            else None
+        ),
         unverified_reasons=tuple(sorted(
             (*manifest_missing, *utility.missing_required_slices,
              *(f"missing_policy_fold:{fold}" for fold in sorted(_EXPECTED_FOLDS - set(policy_by_fold))),
@@ -1377,6 +1663,7 @@ def freeze_oof_receipt(receipt: OofAcceptanceReceipt) -> FrozenOofReceipt:
     authoritative = evaluate_oof(
         receipt._evaluation_rows,
         dict(receipt._evaluation_policy_by_fold),
+        completeness_evidence_root=receipt._completeness_evidence_root,
     )
     if authoritative.to_json_bytes() != receipt.to_json_bytes():
         raise ValueError("OOF receipt does not match authoritative evaluation")
@@ -1392,6 +1679,7 @@ def freeze_oof_receipt(receipt: OofAcceptanceReceipt) -> FrozenOofReceipt:
         receipt.evaluation_input_sha256,
         receipt._evaluation_rows,
         receipt._evaluation_policy_by_fold,
+        receipt._completeness_evidence_root,
     )
 
 
@@ -1401,6 +1689,7 @@ def build_final_development_policy(frozen_receipt: FrozenOofReceipt | None, fusi
     authoritative = evaluate_oof(
         frozen_receipt._evaluation_rows,
         dict(frozen_receipt._evaluation_policy_by_fold),
+        completeness_evidence_root=frozen_receipt._completeness_evidence_root,
     )
     if (
         authoritative.to_json_bytes() != frozen_receipt.payload

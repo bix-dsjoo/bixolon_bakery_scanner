@@ -17,10 +17,20 @@ from .completeness import (
     build_counterfactuals,
     evaluate_completeness,
 )
+from .completeness_evidence import (
+    CompletenessExecutionRecord,
+    CompletenessProposalEvidence,
+    LoadedCompletenessEvidenceBundle,
+    build_completeness_execution_record,
+    load_completeness_evidence_bundle,
+    write_completeness_evidence_bundle,
+)
 
 __all__ = [
-    "CaptureQuality", "CompletenessDecision", "CompletenessPolicy", "CounterfactualCase",
+    "CaptureQuality", "CompletenessDecision", "CompletenessExecutionRecord",
+    "CompletenessPolicy", "CompletenessProposalEvidence", "CounterfactualCase",
     "ForegroundAnalyzer", "ForegroundEvidence", "InvalidDetectorOutput",
-    "ReferenceForegroundAnalyzerConfig", "RFDetrRunner", "build_counterfactuals",
-    "evaluate_completeness",
+    "LoadedCompletenessEvidenceBundle", "ReferenceForegroundAnalyzerConfig", "RFDetrRunner",
+    "build_completeness_execution_record", "build_counterfactuals", "evaluate_completeness",
+    "load_completeness_evidence_bundle", "write_completeness_evidence_bundle",
 ]

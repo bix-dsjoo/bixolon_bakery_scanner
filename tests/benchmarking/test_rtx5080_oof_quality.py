@@ -25,6 +25,11 @@ from bakery_scanner.detection.completeness import (
     ForegroundEvidence,
     build_counterfactuals,
 )
+from bakery_scanner.detection.completeness_evidence import (
+    REQUIRED_COMPLETENESS_INPUT_ARTIFACT_KEYS,
+    build_completeness_execution_record,
+    write_completeness_evidence_bundle,
+)
 
 
 PROVENANCE = {"split_sha256":"1" * 64,"source_evidence_sha256":"2" * 64,"source_image_sha256":"d" * 64,"detector_sha256":"3" * 64,"repvit_checkpoint_sha256":"4" * 64,"repvit_prototype_sha256":"5" * 64,"dinov3_weights_sha256":"6" * 64,"dinov3_support_sha256":"7" * 64,"dinov3_local_bank_sha256":"8" * 64,"preprocess_sha256":"9" * 64,"fold_policy_sha256":"a" * 64,"code_sha256":"b" * 64,"runtime_sha256":"c" * 64,"dino_global_fold_index":0,"dino_local_fold_index":0,"dino_global_split_sha256":"1" * 64,"dino_local_split_sha256":"1" * 64,"dino_global_source_evidence_sha256":"2" * 64,"dino_local_source_evidence_sha256":"2" * 64,"dino_global_runtime_sha256":"c" * 64,"dino_local_runtime_sha256":"c" * 64,"dino_local_model_sha256":"6" * 64,"dino_global_preprocess_sha256":"9" * 64,"dino_local_preprocess_sha256":"9" * 64}
@@ -220,10 +225,14 @@ def test_unverified_reasons_and_receipt_bytes_do_not_expose_absolute_scene_paths
     assert r"C:\private" not in receipt.to_json_bytes().decode("utf-8")
 
 
-def test_counterfactual_requires_each_fault_category_and_does_not_aggregate_one_category():
-    _, observed = _canonical_counterfactual_source()
-    split = _counterfactual_scene("split")
-    receipt = evaluate_oof((observed, split), {0: "a" * 64})
+def test_counterfactual_requires_each_fault_category_and_does_not_aggregate_one_category(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    split = next(row for row in counterfactuals if row.fault_category == "split")
+    receipt = evaluate_oof(
+        (observed, split),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
 
     assert receipt.status == "unverified"
     assert receipt.utility.counterfactual_expected_case_count["merge"] == 1
@@ -241,50 +250,15 @@ def test_linked_counterfactual_rejects_mixed_static_pipeline_provenance():
         evaluate_oof((observed, replace(counterfactual, repvit_checkpoint_sha256="d" * 64)), {0: "a" * 64})
 
 
-def test_task3_counterfactual_payload_is_hash_bound_end_to_end():
-    proposals = (
-        BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),
-    )
-    case = next(item for item in build_counterfactuals(proposals) if item.fault == "missing")
-    quality = CaptureQuality(100.0, 0.5, 0.0)
-    policy = CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5)
-    source = build_counterfactual_source_evidence(
-        source_scene_id="source-0",
-        source_image_sha256="d" * 64,
-        fold_index=0,
-        frame_size=(100, 80),
-        proposals=proposals,
-        foreground=ForegroundEvidence(0.0, 1.0, (), (), (), 0.0),
-        quality=quality,
-        policy=policy,
-    )
-    evidence = build_counterfactual_evidence(source=source, case=case)
-    observed = replace(
-        _scene(scene_id="source-0"),
-        ground_truth=(GroundTruthObject("g0", 1, (10.0, 10.0, 30.0, 30.0), 1),),
-        predictions=(PredictionObject("p0", (10.0, 10.0, 30.0, 30.0), 1, "auto_approved", 1, ()),),
-        counterfactual_source_evidence=source,
-    )
-    counterfactual = _scene(
-        scene_id=f"source-0::counterfactual::{evidence.variant_id}",
-        evidence_kind="counterfactual",
-        source_scene_id="source-0",
-        variant_id=evidence.variant_id,
-        fault_category="missing",
-        state="needs_retake",
-        expected_state="needs_retake",
-        counterfactual_evidence=evidence,
-        counterfactual_evidence_sha256=evidence.sha256,
-        actual_retake_reasons=evidence.decision_reasons,
-        provenance_changes={
-            "source_image_sha256": "d" * 64,
-            "source_evidence_sha256": evidence.sha256,
-            "dino_global_source_evidence_sha256": evidence.sha256,
-            "dino_local_source_evidence_sha256": evidence.sha256,
-        },
-    )
+def test_task3_counterfactual_payload_is_hash_bound_end_to_end(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path, count=1)
+    counterfactual = next(row for row in counterfactuals if row.fault_category == "missing")
 
-    receipt = evaluate_oof((observed, counterfactual), {0: "a" * 64})
+    receipt = evaluate_oof(
+        (observed, counterfactual),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
 
     assert receipt.utility.counterfactual_completeness_block_rate["missing"] == 1.0
     assert "counterfactual:missing" not in receipt.utility.missing_required_slices
@@ -339,14 +313,14 @@ def test_counterfactual_cannot_reuse_observed_source_or_source_image_identity():
         )
 
 
-def test_four_task3_faults_have_four_independent_block_rates():
-    source, observed = _canonical_counterfactual_source()
-    counterfactuals = tuple(
-        _canonical_counterfactual_row(source, case)
-        for case in build_counterfactuals(source.proposals)
-    )
+def test_four_task3_faults_have_four_independent_block_rates(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
 
-    receipt = evaluate_oof((observed, *counterfactuals), {0: "a" * 64})
+    receipt = evaluate_oof(
+        (observed, *counterfactuals),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
 
     assert receipt.utility.counterfactual_completeness_block_rate == {
         "merge": 1.0,
@@ -519,12 +493,15 @@ def test_counterfactual_builder_rejects_unrelated_transform_and_capture_quality_
         )
 
 
-def test_counterfactual_completeness_uses_all_expected_source_variants_as_denominator():
-    source, observed = _canonical_counterfactual_source()
-    cases = build_counterfactuals(source.proposals)
-    submitted = _canonical_counterfactual_row(source, cases[0])
+def test_counterfactual_completeness_uses_all_expected_source_variants_as_denominator(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    submitted = next(row for row in counterfactuals if row.variant_id == "missing-0")
 
-    receipt = evaluate_oof((observed, submitted), {0: "a" * 64})
+    receipt = evaluate_oof(
+        (observed, submitted),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
 
     assert receipt.status == "unverified"
     assert receipt.utility.counterfactual_expected_case_count == {
@@ -545,17 +522,397 @@ def test_missing_counterfactual_source_descriptor_is_explicitly_unverified():
     assert any(reason.startswith("counterfactual_source_unavailable:") for reason in receipt.unverified_reasons)
 
 
-def test_counterfactual_actual_result_and_reason_determine_stress_success_without_touching_quality():
-    source, observed = _canonical_counterfactual_source()
-    missing = next(case for case in build_counterfactuals(source.proposals) if case.variant_id == "missing-0")
-    accepted = _canonical_counterfactual_row(source, missing, state="accepted_scan")
+def test_counterfactual_actual_result_and_reason_determine_stress_success_without_touching_quality(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    missing = next(row for row in counterfactuals if row.variant_id == "missing-0")
+    accepted = replace(missing, state="accepted_scan", actual_retake_reasons=())
     wrong_reason = replace(
-        _canonical_counterfactual_row(source, missing),
+        missing,
         actual_retake_reasons=("capture_quality_unverified",),
     )
 
-    accepted_receipt = evaluate_oof((observed, accepted), {0: "a" * 64})
+    accepted_receipt = evaluate_oof(
+        (observed, accepted),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
     assert accepted_receipt.utility.counterfactual_completeness_block_rate["missing"] == 0.0
     assert accepted_receipt.quality.wrong_auto_approval_count == 0
-    wrong_reason_receipt = evaluate_oof((observed, wrong_reason), {0: "a" * 64})
+    wrong_reason_receipt = evaluate_oof(
+        (observed, wrong_reason),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
     assert wrong_reason_receipt.utility.counterfactual_completeness_block_rate["missing"] == 0.0
+
+
+def _execution_artifacts(provenance: dict[str, object] | None = None) -> dict[str, str]:
+    resolved = {
+        **PROVENANCE,
+        "acceptance_config_sha256": "0" * 64,
+        "fold_manifest_file_sha256": "f" * 64,
+        **(provenance or {}),
+    }
+    return {
+        key: resolved[key]  # type: ignore[return-value]
+        for key in REQUIRED_COMPLETENESS_INPUT_ARTIFACT_KEYS
+    }
+
+
+def _admitted_counterfactual_context(tmp_path, *, count: int = 2):
+    proposals = tuple(
+        BreadProposal(
+            index + 1,
+            "rfdetr_large_bakery_v1",
+            0.99 - index * 0.01,
+            Box(100.0 + index * 40.0, 120.0, 60.0, 60.0),
+            1000,
+            800,
+        )
+        for index in range(count)
+    )
+    foreground = ForegroundEvidence(0.0, 1.0, (), (), (), 0.0)
+    quality = CaptureQuality(100.0, 0.5, 0.0)
+    policy = CompletenessPolicy(0.1, 0.6, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5)
+    record = build_completeness_execution_record(
+        source_scene_identity="admitted-source-0",
+        source_image_sha256="d" * 64,
+        fold_index=0,
+        canonical_frame_version="exif_transposed_rgb_v1",
+        canonical_frame_mode="RGB",
+        frame_size=(1000, 800),
+        proposals=proposals,
+        foreground=foreground,
+        quality=quality,
+        policy=policy,
+        completeness_policy_id="completeness_15plus5_oof_fold_0_v1",
+        completeness_policy_artifact_sha256="e" * 64,
+        code_sha256=PROVENANCE["code_sha256"],
+        input_artifact_sha256=_execution_artifacts(),
+    )
+    evidence_root = tmp_path / f"completeness-{count}"
+    index_sha256 = write_completeness_evidence_bundle((record,), evidence_root)
+    source = build_counterfactual_source_evidence(
+        source_scene_id="admitted-source-0",
+        source_image_sha256="d" * 64,
+        fold_index=0,
+        frame_size=(1000, 800),
+        proposals=proposals,
+        foreground=foreground,
+        quality=quality,
+        policy=policy,
+        execution_record_sha256=record.sha256,
+        completeness_policy_id="completeness_15plus5_oof_fold_0_v1",
+        completeness_policy_artifact_sha256="e" * 64,
+    )
+    truth = tuple(
+        GroundTruthObject(f"g{index}", index + 1, proposal.box.xyxy, index + 1)
+        for index, proposal in enumerate(proposals)
+    )
+    predictions = tuple(
+        PredictionObject(f"p{index}", item.box_xyxy, index + 1, "auto_approved", index + 1, ())
+        for index, item in enumerate(truth)
+    )
+    binding = {
+        "completeness_evidence_index_sha256": index_sha256,
+        "completeness_execution_record_sha256": record.sha256,
+        "canonical_frame_version": "exif_transposed_rgb_v1",
+        "canonical_frame_mode": "RGB",
+        "canonical_frame_size": (1000, 800),
+        "acceptance_config_sha256": "0" * 64,
+        "fold_manifest_file_sha256": "f" * 64,
+    }
+    observed = replace(
+        _scene(count=count, scene_id="admitted-source-0"),
+        ground_truth=truth,
+        predictions=predictions,
+        counterfactual_source_evidence=source,
+        **binding,
+    )
+    counterfactuals = tuple(
+        replace(
+            _scene(
+                scene_id=f"admitted-source-0::counterfactual::{case.variant_id}",
+                evidence_kind="counterfactual",
+                source_scene_id="admitted-source-0",
+                variant_id=case.variant_id,
+                fault_category=case.fault,
+                state="needs_retake",
+                expected_state="needs_retake",
+                counterfactual_evidence=(evidence := build_counterfactual_evidence(source=source, case=case)),
+                counterfactual_evidence_sha256=evidence.sha256,
+                actual_retake_reasons=evidence.decision_reasons,
+                provenance_changes={
+                    "source_image_sha256": "d" * 64,
+                    "source_evidence_sha256": evidence.sha256,
+                    "dino_global_source_evidence_sha256": evidence.sha256,
+                    "dino_local_source_evidence_sha256": evidence.sha256,
+                },
+            ),
+            **binding,
+        )
+        for case in build_counterfactuals(proposals)
+    )
+    return evidence_root, index_sha256, record, source, observed, counterfactuals
+
+
+def test_hash_admitted_actual_completeness_execution_is_the_only_counterfactual_source(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+
+    receipt = evaluate_oof(
+        (observed, *counterfactuals),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
+
+    assert receipt.utility.counterfactual_completeness_block_rate == {
+        "merge": 1.0,
+        "missing": 1.0,
+        "split": 1.0,
+        "truncation": 1.0,
+    }
+    assert receipt.completeness_evidence_index_sha256 == hashlib.sha256(
+        (root / "index.json").read_bytes()
+    ).hexdigest()
+    assert str(root) not in receipt.to_json_bytes().decode("utf-8")
+
+
+@pytest.mark.parametrize("count", (1, 2, 8))
+def test_oof_admits_positive_source_counts_without_a_static_capacity_limit(tmp_path, count: int):
+    root, _, _, _, observed, _ = _admitted_counterfactual_context(tmp_path, count=count)
+
+    receipt = evaluate_oof(
+        (observed,),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
+
+    assert not any(
+        reason.startswith("counterfactual_source_unavailable")
+        for reason in receipt.unverified_reasons
+    )
+    assert receipt.utility.counterfactual_expected_case_count["missing"] == count
+
+
+def test_self_declared_hash_consistent_descriptor_without_external_record_is_unverified(tmp_path):
+    _, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+
+    receipt = evaluate_oof((observed, *counterfactuals), {0: "a" * 64})
+
+    assert receipt.status == "unverified"
+    assert receipt.utility.counterfactual_expected_case_count == {
+        "merge": 0,
+        "missing": 0,
+        "split": 0,
+        "truncation": 0,
+    }
+    assert any(
+        reason.startswith("completeness_evidence_unavailable")
+        for reason in receipt.unverified_reasons
+    )
+
+
+def test_nonaccepted_observed_source_is_rejected_before_counterfactual_denominators(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    nonaccepted = replace(observed, state="needs_retake", expected_state="needs_retake", predictions=())
+
+    with pytest.raises(ValueError, match="accepted_scan"):
+        evaluate_oof(
+            (nonaccepted, *counterfactuals),
+            {0: "a" * 64},
+            completeness_evidence_root=root,
+        )
+
+
+def test_execution_or_index_hash_mismatch_is_rejected_before_counting(tmp_path):
+    root, _, _, source, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    wrong_record = replace(
+        observed,
+        completeness_execution_record_sha256="a" * 64,
+        counterfactual_source_evidence=replace(source, execution_record_sha256="a" * 64),
+    )
+
+    with pytest.raises(ValueError, match="record SHA-256"):
+        evaluate_oof(
+            (wrong_record, *counterfactuals),
+            {0: "a" * 64},
+            completeness_evidence_root=root,
+        )
+    with pytest.raises(ValueError, match="index SHA-256"):
+        evaluate_oof(
+            (replace(observed, completeness_evidence_index_sha256="a" * 64), *counterfactuals),
+            {0: "a" * 64},
+            completeness_evidence_root=root,
+        )
+
+
+def test_absent_index_record_is_rejected_before_counterfactual_denominators(tmp_path):
+    root, _, record, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    other_record = replace(
+        record,
+        source_scene_sha256=hashlib.sha256(b"other-source").hexdigest(),
+    )
+    other_root = tmp_path / "other-completeness"
+    other_index_sha256 = write_completeness_evidence_bundle((other_record,), other_root)
+    absent = replace(observed, completeness_evidence_index_sha256=other_index_sha256)
+
+    with pytest.raises(ValueError, match="absent from admitted index"):
+        evaluate_oof(
+            (absent, *counterfactuals),
+            {0: "a" * 64},
+            completeness_evidence_root=other_root,
+        )
+
+
+def test_actual_needs_retake_execution_record_can_never_be_a_counterfactual_source(tmp_path):
+    _, _, accepted_record, source, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    retake_record = build_completeness_execution_record(
+        source_scene_identity="admitted-source-0",
+        source_image_sha256="d" * 64,
+        fold_index=0,
+        canonical_frame_version="exif_transposed_rgb_v1",
+        canonical_frame_mode="RGB",
+        frame_size=accepted_record.frame_size,
+        proposals=tuple(item.to_proposal() for item in accepted_record.proposals),
+        foreground=accepted_record.foreground,
+        quality=replace(accepted_record.quality, blur_score=0.0),
+        policy=accepted_record.policy,
+        completeness_policy_id=accepted_record.completeness_policy_id,
+        completeness_policy_artifact_sha256=accepted_record.completeness_policy_artifact_sha256,
+        code_sha256=accepted_record.code_sha256,
+        input_artifact_sha256=dict(accepted_record.input_artifact_sha256),
+    )
+    assert retake_record.decision_state == "needs_retake"
+    root = tmp_path / "retake-completeness"
+    index_sha256 = write_completeness_evidence_bundle((retake_record,), root)
+    forged = replace(
+        observed,
+        completeness_evidence_index_sha256=index_sha256,
+        completeness_execution_record_sha256=retake_record.sha256,
+        counterfactual_source_evidence=replace(
+            source,
+            execution_record_sha256=retake_record.sha256,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="accepted_scan"):
+        evaluate_oof(
+            (forged, *counterfactuals),
+            {0: "a" * 64},
+            completeness_evidence_root=root,
+        )
+
+
+@pytest.mark.parametrize("target", ("record", "index"))
+def test_freeze_reloads_external_completeness_bytes_and_detects_post_evaluation_mutation(tmp_path, target: str):
+    root, _, record, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    receipt = evaluate_oof(
+        (observed, *counterfactuals),
+        {0: "a" * 64},
+        completeness_evidence_root=root,
+    )
+    path = (
+        root / "records" / f"{record.source_scene_sha256}.json"
+        if target == "record"
+        else root / "index.json"
+    )
+    path.write_bytes(path.read_bytes() + b" ")
+
+    with pytest.raises(ValueError, match="(record byte size|index SHA-256)"):
+        freeze_oof_receipt(receipt)
+
+
+def test_counterfactual_row_cannot_change_its_admitted_source_binding(tmp_path):
+    root, _, _, _, observed, counterfactuals = _admitted_counterfactual_context(tmp_path)
+    changed = replace(
+        counterfactuals[0],
+        completeness_execution_record_sha256="a" * 64,
+    )
+
+    with pytest.raises(ValueError, match="binding does not match observed source"):
+        evaluate_oof(
+            (observed, changed),
+            {0: "a" * 64},
+            completeness_evidence_root=root,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "image",
+        "frame",
+        "proposal_source",
+        "proposal_id",
+        "proposal_score",
+        "proposal_box",
+        "foreground",
+        "quality",
+        "policy",
+        "policy_identity",
+        "static_pipeline",
+    ),
+)
+def test_observed_descriptor_must_exactly_equal_loaded_execution_evidence(tmp_path, mutation: str):
+    root, _, record, source, observed, _ = _admitted_counterfactual_context(tmp_path)
+    proposals = source.proposals
+    foreground = source.foreground
+    quality = source.quality
+    policy = source.policy
+    source_image_sha256 = source.source_image_sha256
+    frame_size = source.frame_size
+    policy_id = source.completeness_policy_id
+    policy_artifact_sha256 = source.completeness_policy_artifact_sha256
+    row_changes: dict[str, object] = {}
+    if mutation == "image":
+        source_image_sha256 = "a" * 64
+        row_changes["source_image_sha256"] = source_image_sha256
+    elif mutation == "frame":
+        frame_size = (2000, 1600)
+        proposals = tuple(replace(item, image_width=2000, image_height=1600) for item in proposals)
+        row_changes["canonical_frame_size"] = frame_size
+    elif mutation == "proposal_source":
+        proposals = (replace(proposals[0], source="different-detector"), *proposals[1:])
+    elif mutation == "proposal_id":
+        proposals = (replace(proposals[0], image_id=999), *proposals[1:])
+    elif mutation == "proposal_score":
+        proposals = (replace(proposals[0], score=0.1), *proposals[1:])
+    elif mutation == "proposal_box":
+        proposals = (replace(proposals[0], box=Box(110.0, 120.0, 60.0, 60.0)), *proposals[1:])
+        ordered_truth = tuple(sorted(observed.ground_truth, key=lambda item: item.object_order))
+        row_changes["ground_truth"] = (
+            replace(ordered_truth[0], box_xyxy=proposals[0].box.xyxy),
+            *ordered_truth[1:],
+        )
+    elif mutation == "foreground":
+        foreground = replace(foreground, covered_ratio=0.9)
+    elif mutation == "quality":
+        quality = replace(quality, blur_score=101.0)
+    elif mutation == "policy":
+        policy = replace(policy, max_uncovered_ratio=0.2)
+    elif mutation == "policy_identity":
+        policy_id = "different_policy_v1"
+        policy_artifact_sha256 = "a" * 64
+    elif mutation == "static_pipeline":
+        row_changes["detector_sha256"] = "a" * 64
+    fake_source = build_counterfactual_source_evidence(
+        source_scene_id="admitted-source-0",
+        source_image_sha256=source_image_sha256,
+        fold_index=0,
+        frame_size=frame_size,
+        proposals=proposals,
+        foreground=foreground,
+        quality=quality,
+        policy=policy,
+        execution_record_sha256=record.sha256,
+        completeness_policy_id=policy_id,
+        completeness_policy_artifact_sha256=policy_artifact_sha256,
+    )
+    forged = replace(observed, counterfactual_source_evidence=fake_source, **row_changes)
+
+    with pytest.raises(ValueError, match="completeness execution evidence"):
+        evaluate_oof(
+            (forged,),
+            {0: "a" * 64},
+            completeness_evidence_root=root,
+        )
