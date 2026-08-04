@@ -1,0 +1,47 @@
+{
+  "bootstrap": {
+    "confidence": 0.95,
+    "iterations": 2000,
+    "seed": 20260803,
+    "statistic": "nearest_rank_p95"
+  },
+  "device": {
+    "cuda_device": "cuda:0",
+    "gpu_name": "NVIDIA GeForce RTX 5080",
+    "thermal_throttling_allowed": false
+  },
+  "forced_count_evidence": {
+    "count_1_2": "forced_path_performance",
+    "count_8_plus": "forced_path_performance",
+    "quality_eligible": false,
+    "source": "current_crop_identities_only"
+  },
+  "latency_boundary": "encoded_jpeg_bytes_in_worker_memory_to_validated_in_memory_result_payload",
+  "minimum_warmups": 20,
+  "required_slices": {
+    "E": 1000,
+    "H": 1000,
+    "M": 1000,
+    "count_1_2": 1000,
+    "count_3_7": 1000,
+    "count_8_plus": 1000,
+    "dinov3": 1000,
+    "needs_retake": 1000,
+    "overall": 3000,
+    "unknown": 1000
+  },
+  "sample_order": "warmup_then_group_E_M_H_and_path_ids_in_canonical_sorted_repeat_order",
+  "schema_version": 3,
+  "stages": [
+    "decode_canonical",
+    "detector",
+    "completeness",
+    "crop",
+    "repvit",
+    "direct_gate",
+    "dinov3",
+    "fusion_payload",
+    "total"
+  ],
+  "total_p95_limit_ms": 100.0
+}
