@@ -9,10 +9,11 @@ import pytest
 
 from bakery_scanner.benchmarking.rtx5080_acceptance import (
     REQUIRED_ARTIFACT_ROLES,
-    ExecutionRecordIndexArtifact,
+    ExecutionIndexAdmissionError,
     PerformanceSample,
     build_benchmark_schedule,
     build_performance_receipt,
+    admit_execution_record_index,
     canonical_sha256,
     summarize_latency_ms,
     validate_protocol,
@@ -114,38 +115,6 @@ def _execution_record(
     }
     record["record_payload_sha256"] = canonical_sha256(record)
     return record
-
-
-def _index_fixture(
-    records: tuple[dict[str, object], ...] | None = None,
-    *,
-    execution_sha256: str = EXECUTION_SHA,
-    quality_sha256: str = QUALITY_SHA,
-) -> tuple[ExecutionRecordIndexArtifact, object]:
-    rows = records or (
-        _execution_record("e-001", "dinov3", execution_sha256=execution_sha256, quality_sha256=quality_sha256),
-        _execution_record("m-001", "needs_retake", execution_sha256=execution_sha256, quality_sha256=quality_sha256),
-        _execution_record("h-001", "unknown", execution_sha256=execution_sha256, quality_sha256=quality_sha256),
-    )
-    index: dict[str, object] = {
-        "schema_version": 3,
-        "artifact_id": "rtx5080_actual_path_execution_index_v1",
-        "execution_receipt_content_sha256": execution_sha256,
-        "quality_receipt_content_sha256": quality_sha256,
-        "records": list(rows),
-        "records_payload_sha256": canonical_sha256(list(rows)),
-    }
-    index["index_payload_sha256"] = canonical_sha256(index)
-    raw = json.dumps(
-        index, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    artifact = ExecutionRecordIndexArtifact(
-        artifact_id="rtx5080_actual_path_execution_index_v1",
-        path=Path("external/actual-path-index.json"),
-        bytes=len(raw),
-        sha256=hashlib.sha256(raw).hexdigest(),
-    )
-    return artifact, lambda _artifact: raw
 
 
 @pytest.fixture(scope="module")
@@ -330,31 +299,11 @@ def test_protocol_thresholds_and_evidence_kinds_are_immutable() -> None:
         validate_protocol(protocol)
 
 
-def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None:
-    index, loader = _index_fixture(
-        (
-            _execution_record("e-010", "dinov3"),
-            _execution_record("e-001", "dinov3"),
-            _execution_record("m-010", "needs_retake"),
-            _execution_record("m-001", "needs_retake"),
-            _execution_record("h-010", "unknown"),
-            _execution_record("h-001", "unknown"),
-        )
-    )
-    schedule = build_benchmark_schedule(
-        {
-            "E": tuple(f"e-{index:03d}" for index in range(100, 0, -1)),
-            "M": tuple(f"m-{index:03d}" for index in range(99, 0, -1)),
-            "H": tuple(f"h-{index:03d}" for index in range(100, 0, -1)),
-        },
-        execution_index_artifact=index,
-        index_loader=loader,
-        execution_receipt_sha256=EXECUTION_SHA,
-        quality_receipt_sha256=QUALITY_SHA,
-        warmup_count=20,
-        observations_per_group=1000,
-        observations_per_path=1000,
-    )
+def test_schedule_uses_only_verified_external_execution_admission(tmp_path: Path) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = admit_execution_record_index(repository, artifacts)
+
+    schedule = build_benchmark_schedule(admission)
 
     assert len(tuple(item for item in schedule if item.warmup)) == 20
     measured = tuple(item for item in schedule if not item.warmup)
@@ -373,120 +322,95 @@ def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None
     assert tuple(item.slice_name for item in measured[5000:6000]) == ("unknown",) * 1000
 
 
-@pytest.mark.parametrize("path_name", ("dinov3", "needs_retake", "unknown"))
-def test_schedule_rejects_empty_required_actual_path_ids(path_name: str) -> None:
-    rows = tuple(
-        _execution_record(scene_id, kind)
-        for scene_id, kind in (
-            ("e-001", "dinov3"),
-            ("m-001", "needs_retake"),
-            ("h-001", "unknown"),
-        )
-        if kind != path_name and not (path_name == "dinov3" and kind == "unknown")
+def test_self_consistent_forged_index_is_rejected_by_trusted_declaration(
+    tmp_path: Path,
+) -> None:
+    repository, artifacts, index_path = _admission_files(tmp_path)
+    forged = json.loads(index_path.read_text(encoding="utf-8"))
+    forged["records"][0]["input_sha256"] = "f" * 64
+    forged["records"][0]["record_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in forged["records"][0].items() if key != "record_payload_sha256"}
     )
-    index, loader = _index_fixture(rows)
-
-    with pytest.raises(ValueError, match=rf"{path_name}.*actual path"):
-        build_benchmark_schedule(
-            {
-                "E": tuple(f"e-{index:03d}" for index in range(1, 101)),
-                "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
-                "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
-            },
-            execution_index_artifact=index,
-            index_loader=loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
-
-
-def test_schedule_rejects_arbitrary_current_id_without_execution_evidence() -> None:
-    index, loader = _index_fixture((_execution_record("e-001", "direct"),))
-    with pytest.raises(ValueError, match="actual path execution evidence"):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=index,
-            index_loader=loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
-
-
-def test_schedule_rejects_path_flag_or_canonical_record_hash_mismatch() -> None:
-    malformed = _execution_record("e-001", "dinov3")
-    malformed["dino_object_count"] = 0
-    malformed["record_payload_sha256"] = canonical_sha256(
-        {key: value for key, value in malformed.items() if key != "record_payload_sha256"}
+    forged["records_payload_sha256"] = canonical_sha256(forged["records"])
+    forged["index_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in forged.items() if key != "index_payload_sha256"}
     )
-    malformed_index, malformed_loader = _index_fixture((malformed,))
-    tampered = _execution_record("e-001", "dinov3")
-    tampered["input_sha256"] = "f" * 64
-    tampered_index, tampered_loader = _index_fixture((tampered,))
+    _write_json(index_path, forged)
 
-    with pytest.raises(ValueError, match="DINO flag|object count"):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=malformed_index,
-            index_loader=malformed_loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
-    with pytest.raises(ValueError, match="record hash"):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=tampered_index,
-            index_loader=tampered_loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
+    with pytest.raises(ExecutionIndexAdmissionError, match="SHA-256"):
+        admit_execution_record_index(repository, artifacts)
 
 
-def test_schedule_rejects_execution_or_quality_receipt_identity_mismatch() -> None:
-    index, loader = _index_fixture()
-    with pytest.raises(ValueError, match="execution receipt identity"):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=index,
-            index_loader=loader,
-            execution_receipt_sha256="8" * 64,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
-    quality_index, quality_loader = _index_fixture(quality_sha256="8" * 64)
-    with pytest.raises(ValueError, match="quality receipt identity"):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=quality_index,
-            index_loader=quality_loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
+def test_self_consistent_manifest_rewrite_is_rejected_by_repository_lock(
+    tmp_path: Path,
+) -> None:
+    repository, artifacts, index_path = _admission_files(tmp_path)
+    forged = json.loads(index_path.read_text(encoding="utf-8"))
+    forged["records"][0]["input_sha256"] = "f" * 64
+    forged["records"][0]["record_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in forged["records"][0].items() if key != "record_payload_sha256"}
+    )
+    forged["records_payload_sha256"] = canonical_sha256(forged["records"])
+    forged["index_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in forged.items() if key != "index_payload_sha256"}
+    )
+    _write_json(index_path, forged)
+    manifest_path = (
+        repository
+        / "benchmarks/locked-manifests/rtx5080_15plus5_execution_evidence_v1.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["execution_index"] = _declared(
+        "external", index_path, artifacts
+    )
+    manifest["manifest_payload_sha256"] = canonical_sha256(
+        {key: value for key, value in manifest.items() if key != "manifest_payload_sha256"}
+    )
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(ExecutionIndexAdmissionError, match="trusted manifest.*SHA-256"):
+        admit_execution_record_index(repository, artifacts)
 
 
-def test_schedule_rejects_index_artifact_byte_or_payload_hash_mismatch() -> None:
-    index, loader = _index_fixture()
-    wrong_artifact = replace(index, sha256="f" * 64)
+def test_admission_rejects_record_input_hash_not_in_admitted_scene_map(
+    tmp_path: Path,
+) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path, mismatched_scene_input=True)
 
-    with pytest.raises(ValueError, match="index artifact SHA-256"):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=wrong_artifact,
-            index_loader=loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-        )
+    with pytest.raises(ExecutionIndexAdmissionError, match="scene input identity"):
+        admit_execution_record_index(repository, artifacts)
 
 
-def test_scheduler_forbids_caller_authored_path_records_as_authority() -> None:
-    index, loader = _index_fixture()
-    with pytest.raises(TypeError):
-        build_benchmark_schedule(
-            _schedule_groups(),
-            execution_index_artifact=index,
-            index_loader=loader,
-            execution_receipt_sha256=EXECUTION_SHA,
-            quality_receipt_sha256=QUALITY_SHA,
-            path_evidence={"dinov3": (_execution_record("e-001", "dinov3"),)},
-        )
+def test_scheduler_rejects_non_admission_and_missing_external_evidence(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="verified execution-index admission"):
+        build_benchmark_schedule(object())
+    with pytest.raises(ExecutionIndexAdmissionError, match="trusted manifest.*missing"):
+        admit_execution_record_index(tmp_path / "repository", tmp_path / "external")
+
+
+def test_scheduler_rejects_post_admission_record_mutation(tmp_path: Path) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = admit_execution_record_index(repository, artifacts)
+    object.__setattr__(admission.records[0], "input_sha256", "f" * 64)
+
+    with pytest.raises(ValueError, match="verified execution-index admission"):
+        build_benchmark_schedule(admission)
+
+
+def test_admission_rejects_trusted_manifest_parent_symlink(tmp_path: Path) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    locked_root = repository / "benchmarks/locked-manifests"
+    actual_root = repository / "benchmarks/actual-locked-manifests"
+    locked_root.rename(actual_root)
+    try:
+        locked_root.symlink_to(actual_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(ExecutionIndexAdmissionError, match="symlink|reparse"):
+        admit_execution_record_index(repository, artifacts)
 
 
 def _schedule_groups() -> dict[str, tuple[str, ...]]:
@@ -495,3 +419,147 @@ def _schedule_groups() -> dict[str, tuple[str, ...]]:
         "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
         "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
     }
+
+
+def _admission_files(
+    tmp_path: Path, *, mismatched_scene_input: bool = False
+) -> tuple[Path, Path, Path]:
+    repository = tmp_path / "repository"
+    artifacts = tmp_path / "external"
+    split_root = repository / "data/splits/rtx5080_15plus5_oof_v1"
+    locked_root = repository / "benchmarks/locked-manifests"
+    split_root.mkdir(parents=True)
+    locked_root.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    groups = _schedule_groups()
+    scene_ids = tuple(scene for group in ("E", "M", "H") for scene in groups[group])
+    inventory_base = {
+        "schema_version": 1,
+        "source_sha256": "1" * 64,
+        "scene_count": 299,
+        "box_count": 0,
+        "difficulty_counts": {"E": 100, "H": 100, "M": 99},
+        "isolated_counts": {},
+        "scene_ids": list(scene_ids),
+    }
+    inventory = {**inventory_base, "manifest_sha256": canonical_sha256(inventory_base)}
+    inventory_path = split_root / "inventory.json"
+    _write_json(inventory_path, inventory)
+    fold_paths: list[Path] = []
+    for fold in range(5):
+        evaluation = list(scene_ids[fold::5])
+        fold_base = {
+            "schema_version": 1,
+            "fold_index": fold,
+            "seed": 20260803,
+            "source_sha256": "1" * 64,
+            "scene_ids": {"train": [], "calibration": [], "evaluation": evaluation},
+        }
+        path = split_root / f"fold-{fold}.json"
+        _write_json(path, {**fold_base, "manifest_sha256": canonical_sha256(fold_base)})
+        fold_paths.append(path)
+    execution_path = artifacts / "execution-receipt.json"
+    quality_path = artifacts / "quality-receipt.json"
+    _write_sealed_receipt(execution_path, "verified_actual_execution")
+    _write_sealed_receipt(quality_path, "quality-passed-performance-unverified")
+    execution_sha = hashlib.sha256(execution_path.read_bytes()).hexdigest()
+    quality_sha = hashlib.sha256(quality_path.read_bytes()).hexdigest()
+    input_identities = {
+        scene_id: hashlib.sha256(scene_id.encode()).hexdigest() for scene_id in scene_ids
+    }
+    scene_map_base = {
+        "schema_version": 1,
+        "inventory_manifest_sha256": inventory["manifest_sha256"],
+        "fold_manifest_sha256": {
+            str(index): json.loads(path.read_text(encoding="utf-8"))["manifest_sha256"]
+            for index, path in enumerate(fold_paths)
+        },
+        "scene_input_sha256": input_identities,
+    }
+    scene_map = {**scene_map_base, "payload_sha256": canonical_sha256(scene_map_base)}
+    scene_map_path = artifacts / "scene-input-identities.json"
+    _write_json(scene_map_path, scene_map)
+    records = (
+        _execution_record("e-001", "dinov3", execution_sha256=execution_sha, quality_sha256=quality_sha),
+        _execution_record("e-010", "dinov3", execution_sha256=execution_sha, quality_sha256=quality_sha),
+        _execution_record("m-001", "needs_retake", execution_sha256=execution_sha, quality_sha256=quality_sha),
+        _execution_record("m-010", "needs_retake", execution_sha256=execution_sha, quality_sha256=quality_sha),
+        _execution_record("h-001", "unknown", execution_sha256=execution_sha, quality_sha256=quality_sha),
+        _execution_record("h-010", "unknown", execution_sha256=execution_sha, quality_sha256=quality_sha),
+    )
+    if mismatched_scene_input:
+        records[0]["input_sha256"] = "f" * 64
+        records[0]["record_payload_sha256"] = canonical_sha256(
+            {key: value for key, value in records[0].items() if key != "record_payload_sha256"}
+        )
+    index_base = {
+        "schema_version": 3,
+        "artifact_id": "rtx5080_actual_path_execution_index_v1",
+        "execution_receipt_content_sha256": execution_sha,
+        "quality_receipt_content_sha256": quality_sha,
+        "records": list(records),
+        "records_payload_sha256": canonical_sha256(list(records)),
+    }
+    index = {**index_base, "index_payload_sha256": canonical_sha256(index_base)}
+    index_path = artifacts / "execution-index.json"
+    _write_json(index_path, index)
+    manifest_base = {
+        "schema_version": 1,
+        "manifest_id": "rtx5080_15plus5_execution_evidence_v1",
+        "artifacts": {
+            "execution_index": _declared("external", index_path, artifacts),
+            "execution_receipt": _declared("external", execution_path, artifacts),
+            "quality_receipt": _declared("external", quality_path, artifacts),
+            "scene_input_identities": _declared("external", scene_map_path, artifacts),
+            "split_inventory": _declared("repository", inventory_path, repository),
+        },
+        "fold_manifests": [
+            _declared("repository", path, repository) for path in fold_paths
+        ],
+    }
+    manifest = {**manifest_base, "manifest_payload_sha256": canonical_sha256(manifest_base)}
+    manifest_path = locked_root / "rtx5080_15plus5_execution_evidence_v1.json"
+    _write_json(manifest_path, manifest)
+    manifest_raw = manifest_path.read_bytes()
+    _write_json(
+        repository / "artifacts.lock.json",
+        {
+            "schema_version": 1,
+            "canonical_pipeline": "rfdetr_l_repvit_m1_dinov3_vits16_cpu",
+            "artifacts": [
+                {
+                    "id": "rtx5080_15plus5_execution_evidence_manifest_v1",
+                    "kind": "benchmark-evidence-manifest",
+                    "local_path": "benchmarks/locked-manifests/rtx5080_15plus5_execution_evidence_v1.json",
+                    "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+                    "bytes": len(manifest_raw),
+                    "storage": "git",
+                }
+            ],
+        },
+    )
+    return repository, artifacts, index_path
+
+
+def _declared(root: str, path: Path, base: Path) -> dict[str, object]:
+    raw = path.read_bytes()
+    return {
+        "root": root,
+        "local_path": path.relative_to(base).as_posix(),
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _write_sealed_receipt(path: Path, status: str) -> None:
+    base = {"schema_version": 3, "status": status}
+    _write_json(path, {**base, "receipt_sha256": canonical_sha256(base)})
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        json.dumps(
+            value, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    )

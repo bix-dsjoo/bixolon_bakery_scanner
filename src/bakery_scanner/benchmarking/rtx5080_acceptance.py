@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import random
+import stat
 from types import MappingProxyType
 from typing import Literal
 
@@ -85,6 +86,15 @@ _EVIDENCE_KINDS = frozenset(
 _LOWER_HEX = frozenset("0123456789abcdef")
 _BOOTSTRAP_SEED = 20260803
 _BOOTSTRAP_ITERATIONS = 2000
+_TRUSTED_EXECUTION_MANIFEST = Path(
+    "benchmarks/locked-manifests/rtx5080_15plus5_execution_evidence_v1.json"
+)
+_TRUSTED_EXECUTION_MANIFEST_POSIX = (
+    "benchmarks/locked-manifests/rtx5080_15plus5_execution_evidence_v1.json"
+)
+_TRUSTED_EXECUTION_MANIFEST_LOCK_ID = (
+    "rtx5080_15plus5_execution_evidence_manifest_v1"
+)
 _EXPECTED_PROTOCOL = {
     "bootstrap": {
         "confidence": 0.95,
@@ -290,25 +300,6 @@ class PerformanceSample:
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutionRecordIndexArtifact:
-    """Hash-admitted immutable external execution-record index artifact."""
-
-    artifact_id: Literal["rtx5080_actual_path_execution_index_v1"]
-    path: Path
-    bytes: int
-    sha256: str
-
-    def __post_init__(self) -> None:
-        if self.artifact_id != "rtx5080_actual_path_execution_index_v1":
-            raise ValueError("execution index artifact identity is invalid")
-        if not isinstance(self.path, Path) or self.path == Path("."):
-            raise ValueError("execution index artifact path is invalid")
-        if type(self.bytes) is not int or self.bytes < 1:
-            raise ValueError("execution index artifact bytes must be positive")
-        _sha256(self.sha256, "execution index artifact SHA-256")
-
-
-@dataclass(frozen=True, slots=True)
 class _ActualExecutionRecord:
     scene_id: str
     input_sha256: str
@@ -384,6 +375,30 @@ class BenchmarkScheduleItem:
     group: Literal["E", "M", "H"]
     slice_name: str
     warmup: bool
+
+
+class ExecutionIndexAdmissionError(ValueError):
+    """Raised when immutable external execution evidence cannot be admitted."""
+
+
+_ADMISSION_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedExecutionIndexAdmission:
+    scenes_by_group: Mapping[str, tuple[str, ...]]
+    scene_input_sha256: Mapping[str, str]
+    records: tuple[_ActualExecutionRecord, ...]
+    execution_receipt_sha256: str
+    quality_receipt_sha256: str
+    _token: object
+
+    def __post_init__(self) -> None:
+        if self._token is not _ADMISSION_TOKEN:
+            raise ValueError("verified execution-index admission token is invalid")
+
+
+_ADMISSION_REGISTRY: dict[int, tuple[_VerifiedExecutionIndexAdmission, str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -614,52 +629,404 @@ def build_performance_receipt(
     )
 
 
-def _read_execution_index_bytes(artifact: ExecutionRecordIndexArtifact) -> bytes:
-    artifact.__post_init__()
-    path = artifact.path.resolve()
-    if artifact.path.is_symlink() or not path.is_file():
-        raise ValueError("execution index artifact must be a regular immutable file")
+def admit_execution_record_index(
+    repository_root: Path, artifact_root: Path
+) -> object:
+    """Admit only evidence anchored by the repository's fixed trusted manifest."""
+    try:
+        return _admit_execution_record_index(repository_root, artifact_root)
+    except ExecutionIndexAdmissionError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise ExecutionIndexAdmissionError(str(exc)) from exc
+
+
+def _admit_execution_record_index(
+    repository_root: Path, artifact_root: Path
+) -> _VerifiedExecutionIndexAdmission:
+    if not isinstance(repository_root, Path) or not isinstance(artifact_root, Path):
+        raise ValueError("repository and external artifact roots must be paths")
+    repository_lexical = repository_root.absolute()
+    if _is_link_or_reparse(repository_lexical):
+        raise ValueError("repository root may not be a symlink or reparse point")
+    repository = repository_lexical.resolve()
+    external = artifact_root.resolve()
+    manifest_path = repository / _TRUSTED_EXECUTION_MANIFEST
+    if not manifest_path.is_file():
+        raise ExecutionIndexAdmissionError("trusted manifest is missing")
+    _require_unlinked_contained_path(repository, manifest_path, "trusted manifest")
+    manifest_raw = _verify_trusted_manifest_lock(repository, manifest_path)
+    manifest = _parse_canonical_json(manifest_raw, "trusted manifest")
+    expected_manifest_keys = {
+        "schema_version",
+        "manifest_id",
+        "artifacts",
+        "fold_manifests",
+        "manifest_payload_sha256",
+    }
+    if (
+        set(manifest) != expected_manifest_keys
+        or manifest["schema_version"] != 1
+        or manifest["manifest_id"] != "rtx5080_15plus5_execution_evidence_v1"
+    ):
+        raise ValueError("trusted manifest schema or identity is invalid")
+    _verify_internal_hash(manifest, "manifest_payload_sha256", "trusted manifest")
+    declarations = manifest["artifacts"]
+    expected_roles = {
+        "execution_index",
+        "execution_receipt",
+        "quality_receipt",
+        "scene_input_identities",
+        "split_inventory",
+    }
+    if not isinstance(declarations, Mapping) or set(declarations) != expected_roles:
+        raise ValueError("trusted manifest artifact declarations are incomplete")
+    fold_declarations = manifest["fold_manifests"]
+    if not isinstance(fold_declarations, list) or len(fold_declarations) != 5:
+        raise ValueError("trusted manifest must declare five fold manifests")
+
+    verified = {
+        role: _read_declared_json(
+            declarations[role], repository, external, role.replace("_", " ")
+        )
+        for role in sorted(expected_roles)
+    }
+    folds = tuple(
+        _read_declared_json(item, repository, external, f"fold manifest {index}")
+        for index, item in enumerate(fold_declarations)
+    )
+    inventory, inventory_sha, scene_ids = _validate_inventory(
+        verified["split_inventory"]
+    )
+    fold_hashes = _validate_folds(folds, inventory, scene_ids)
+    scenes_by_group = _group_inventory(scene_ids)
+    scene_inputs = _validate_scene_input_map(
+        verified["scene_input_identities"], inventory_sha, fold_hashes, scene_ids
+    )
+    execution_sha = _validate_receipt(
+        verified["execution_receipt"], "verified_actual_execution", "execution receipt"
+    )
+    quality_sha = _validate_receipt(
+        verified["quality_receipt"],
+        "quality-passed-performance-unverified",
+        "quality receipt",
+    )
+    records = _load_execution_index(
+        verified["execution_index"],
+        execution_receipt_sha256=execution_sha,
+        quality_receipt_sha256=quality_sha,
+    )
+    if any(record.scene_id not in scene_inputs for record in records):
+        raise ValueError("actual execution evidence must bind current scenes")
+    for record in records:
+        if record.input_sha256 != scene_inputs[record.scene_id]:
+            raise ValueError(
+                f"record scene input identity mismatch for {record.scene_id}"
+            )
+    admission = _VerifiedExecutionIndexAdmission(
+        scenes_by_group=MappingProxyType(scenes_by_group),
+        scene_input_sha256=MappingProxyType(scene_inputs),
+        records=records,
+        execution_receipt_sha256=execution_sha,
+        quality_receipt_sha256=quality_sha,
+        _token=_ADMISSION_TOKEN,
+    )
+    _ADMISSION_REGISTRY[id(admission)] = (admission, _admission_fingerprint(admission))
+    return admission
+
+
+def _verify_trusted_manifest_lock(repository: Path, manifest_path: Path) -> bytes:
+    lock_path = repository / "artifacts.lock.json"
+    _require_unlinked_contained_path(repository, lock_path, "artifact lock")
+    if not lock_path.is_file():
+        raise ValueError("trusted manifest artifact lock is missing")
+    lock_raw = _read_stable_bytes(lock_path, "artifact lock")
+    try:
+        lock = json.loads(lock_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("trusted manifest artifact lock is invalid JSON") from exc
+    if not isinstance(lock, Mapping) or lock.get("schema_version") != 1:
+        raise ValueError("trusted manifest artifact lock schema is invalid")
+    artifacts = lock.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("trusted manifest artifact lock entries are invalid")
+    matching = [
+        item
+        for item in artifacts
+        if isinstance(item, Mapping)
+        and item.get("id") == _TRUSTED_EXECUTION_MANIFEST_LOCK_ID
+    ]
+    if len(matching) != 1:
+        raise ValueError("trusted manifest artifact lock entry is missing or duplicated")
+    declaration = matching[0]
+    if set(declaration) != {
+        "id",
+        "kind",
+        "local_path",
+        "sha256",
+        "bytes",
+        "storage",
+    }:
+        raise ValueError("trusted manifest artifact lock entry schema is invalid")
+    if (
+        declaration["kind"] != "benchmark-evidence-manifest"
+        or declaration["local_path"] != _TRUSTED_EXECUTION_MANIFEST_POSIX
+        or declaration["storage"] != "git"
+    ):
+        raise ValueError("trusted manifest artifact lock identity is invalid")
+    expected_bytes = declaration["bytes"]
+    if type(expected_bytes) is not int or expected_bytes < 1:
+        raise ValueError("trusted manifest artifact lock byte size is invalid")
+    expected_sha = _sha256(
+        declaration["sha256"], "trusted manifest artifact lock SHA-256"
+    )
+    raw = _read_stable_bytes(manifest_path, "trusted manifest")
+    if len(raw) != expected_bytes:
+        raise ValueError("trusted manifest byte size mismatch against artifact lock")
+    if hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise ValueError("trusted manifest SHA-256 mismatch against artifact lock")
+    return raw
+
+
+def _require_unlinked_contained_path(root: Path, path: Path, label: str) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{label} path escapes repository root") from exc
+    current = root
+    if _is_link_or_reparse(current):
+        raise ValueError(f"{label} path may not traverse a symlink or reparse point")
+    for part in relative.parts:
+        current /= part
+        if _is_link_or_reparse(current):
+            raise ValueError(f"{label} path may not traverse a symlink or reparse point")
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"{label} path escapes repository root")
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(attributes & reparse_flag)
+
+
+def _read_stable_bytes(path: Path, label: str) -> bytes:
+    if _is_link_or_reparse(path) or not path.is_file():
+        raise ValueError(f"{label} must be a regular immutable file")
     before = path.stat()
     raw = path.read_bytes()
     after = path.stat()
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-        raise ValueError("execution index artifact changed while reading")
+        raise ValueError(f"{label} changed while reading")
     return raw
 
 
-def _load_execution_index(
-    artifact: ExecutionRecordIndexArtifact,
-    loader: Callable[[ExecutionRecordIndexArtifact], bytes],
-    *,
-    execution_receipt_sha256: str,
-    quality_receipt_sha256: str,
-) -> tuple[_ActualExecutionRecord, ...]:
-    if not isinstance(artifact, ExecutionRecordIndexArtifact):
-        raise ValueError("hash-admitted execution index artifact is required")
-    artifact.__post_init__()
-    if not callable(loader):
-        raise ValueError("verified execution index loader is required")
-    raw = loader(artifact)
-    if not isinstance(raw, bytes):
-        raise ValueError("execution index loader must return immutable bytes")
-    if len(raw) != artifact.bytes:
-        raise ValueError("execution index artifact byte size mismatch")
-    if hashlib.sha256(raw).hexdigest() != artifact.sha256:
-        raise ValueError("execution index artifact SHA-256 mismatch")
+def _read_canonical_json(path: Path, label: str) -> Mapping[str, object]:
+    return _parse_canonical_json(_read_stable_bytes(path, label), label)
+
+
+def _parse_canonical_json(raw: bytes, label: str) -> Mapping[str, object]:
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("execution index artifact is invalid JSON") from exc
-    if not isinstance(value, Mapping) or canonical_sha256(value) != artifact.sha256:
-        raise ValueError("execution index artifact payload identity mismatch")
-    if json.dumps(
+        raise ValueError(f"{label} is invalid JSON") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a JSON object")
+    canonical = json.dumps(
         value,
         allow_nan=False,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-    ).encode("utf-8") != raw:
-        raise ValueError("execution index artifact bytes must be canonical JSON")
+    ).encode("utf-8")
+    if raw != canonical:
+        raise ValueError(f"{label} bytes must be canonical JSON")
+    return value
+
+
+def _read_declared_json(
+    declaration: object, repository: Path, external: Path, label: str
+) -> Mapping[str, object]:
+    if not isinstance(declaration, Mapping) or set(declaration) != {
+        "root",
+        "local_path",
+        "bytes",
+        "sha256",
+    }:
+        raise ValueError(f"{label} descriptor schema is invalid")
+    root_name = declaration["root"]
+    if root_name not in {"repository", "external"}:
+        raise ValueError(f"{label} descriptor root is invalid")
+    relative_text = declaration["local_path"]
+    if not isinstance(relative_text, str) or not relative_text:
+        raise ValueError(f"{label} descriptor path is invalid")
+    relative = PurePosixPath(relative_text)
+    if (
+        relative.is_absolute()
+        or relative_text != relative.as_posix()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError(f"{label} descriptor path is invalid")
+    declared_bytes = declaration["bytes"]
+    if type(declared_bytes) is not int or declared_bytes < 1:
+        raise ValueError(f"{label} descriptor byte size is invalid")
+    declared_sha = _sha256(declaration["sha256"], f"{label} descriptor SHA-256")
+    root = repository if root_name == "repository" else external
+    candidate = root.joinpath(*relative.parts)
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"{label} descriptor escapes its declared root")
+    current = root
+    for part in relative.parts:
+        current /= part
+        if _is_link_or_reparse(current):
+            raise ValueError(
+                f"{label} descriptor may not traverse a symlink or reparse point"
+            )
+    if not resolved.is_file():
+        raise ValueError(f"{label} declared artifact is missing")
+    before = resolved.stat()
+    raw = resolved.read_bytes()
+    after = resolved.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError(f"{label} changed while reading")
+    if len(raw) != declared_bytes:
+        raise ValueError(f"{label} byte size mismatch")
+    if hashlib.sha256(raw).hexdigest() != declared_sha:
+        raise ValueError(f"{label} SHA-256 mismatch")
+    return _parse_canonical_json(raw, label)
+
+
+def _verify_internal_hash(
+    value: Mapping[str, object], hash_field: str, label: str
+) -> str:
+    digest = _sha256(value.get(hash_field), f"{label} {hash_field}")
+    identity = dict(value)
+    del identity[hash_field]
+    if digest != canonical_sha256(identity):
+        raise ValueError(f"{label} payload hash mismatch")
+    return digest
+
+
+def _validate_receipt(
+    value: Mapping[str, object], expected_status: str, label: str
+) -> str:
+    if value.get("schema_version") != 3 or value.get("status") != expected_status:
+        raise ValueError(f"{label} status or schema is invalid")
+    _verify_internal_hash(value, "receipt_sha256", label)
+    return canonical_sha256(value)
+
+
+def _validate_inventory(
+    value: Mapping[str, object],
+) -> tuple[Mapping[str, object], str, tuple[str, ...]]:
+    inventory_sha = _verify_internal_hash(value, "manifest_sha256", "split inventory")
+    scene_values = value.get("scene_ids")
+    expected_counts = {"E": 100, "M": 99, "H": 100}
+    if (
+        value.get("schema_version") != 1
+        or value.get("scene_count") != 299
+        or value.get("difficulty_counts") != expected_counts
+        or not isinstance(scene_values, list)
+    ):
+        raise ValueError("split inventory schema or counts are invalid")
+    source_sha = _sha256(value.get("source_sha256"), "split inventory source SHA-256")
+    del source_sha
+    scene_ids = tuple(scene_values)
+    if len(scene_ids) != 299 or len(set(scene_ids)) != 299:
+        raise ValueError("split inventory must contain 299 unique scenes")
+    for scene_id in scene_ids:
+        _text(scene_id, "split inventory scene ID")
+    return value, inventory_sha, scene_ids
+
+
+def _validate_folds(
+    folds: tuple[Mapping[str, object], ...],
+    inventory: Mapping[str, object],
+    scene_ids: tuple[str, ...],
+) -> dict[str, str]:
+    source_sha = inventory["source_sha256"]
+    fold_by_index: dict[int, tuple[Mapping[str, object], str]] = {}
+    for value in folds:
+        digest = _verify_internal_hash(value, "manifest_sha256", "fold manifest")
+        index = value.get("fold_index")
+        if (
+            type(index) is not int
+            or index not in range(5)
+            or index in fold_by_index
+            or value.get("schema_version") != 1
+            or value.get("seed") != _BOOTSTRAP_SEED
+            or value.get("source_sha256") != source_sha
+        ):
+            raise ValueError("fold manifest identity is invalid")
+        fold_by_index[index] = (value, digest)
+    if set(fold_by_index) != set(range(5)):
+        raise ValueError("fold manifests must contain indices zero through four")
+    evaluation: list[str] = []
+    for index in range(5):
+        assignments = fold_by_index[index][0].get("scene_ids")
+        if not isinstance(assignments, Mapping):
+            raise ValueError("fold scene assignments are invalid")
+        rows = assignments.get("evaluation")
+        if not isinstance(rows, list):
+            raise ValueError("fold evaluation scenes are invalid")
+        evaluation.extend(rows)
+    if len(evaluation) != len(set(evaluation)) or set(evaluation) != set(scene_ids):
+        raise ValueError("fold evaluation scenes must partition the current inventory")
+    return {str(index): fold_by_index[index][1] for index in range(5)}
+
+
+def _group_inventory(scene_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {group: [] for group in GROUPS}
+    for scene_id in scene_ids:
+        matches = [
+            group
+            for group in GROUPS
+            if scene_id.lower().startswith(f"{group.lower()}-")
+            or f"_{group.lower()}_" in scene_id.lower()
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"scene difficulty identity is invalid for {scene_id}")
+        grouped[matches[0]].append(scene_id)
+    result = {group: tuple(sorted(grouped[group])) for group in GROUPS}
+    if {group: len(result[group]) for group in GROUPS} != {"E": 100, "M": 99, "H": 100}:
+        raise ValueError("current scene difficulty groups do not match inventory counts")
+    return result
+
+
+def _validate_scene_input_map(
+    value: Mapping[str, object],
+    inventory_sha: str,
+    fold_hashes: Mapping[str, str],
+    scene_ids: tuple[str, ...],
+) -> dict[str, str]:
+    if value.get("schema_version") != 1:
+        raise ValueError("scene input identity map schema is invalid")
+    _verify_internal_hash(value, "payload_sha256", "scene input identity map")
+    if value.get("inventory_manifest_sha256") != inventory_sha:
+        raise ValueError("scene input identity inventory binding mismatch")
+    if value.get("fold_manifest_sha256") != dict(fold_hashes):
+        raise ValueError("scene input identity fold bindings mismatch")
+    identities = value.get("scene_input_sha256")
+    if not isinstance(identities, Mapping) or set(identities) != set(scene_ids):
+        raise ValueError("scene input identity map must bind the current inventory")
+    return {
+        scene_id: _sha256(identities[scene_id], f"scene input identity for {scene_id}")
+        for scene_id in scene_ids
+    }
+
+
+def _load_execution_index(
+    value: Mapping[str, object],
+    *,
+    execution_receipt_sha256: str,
+    quality_receipt_sha256: str,
+) -> tuple[_ActualExecutionRecord, ...]:
     expected_keys = {
         "schema_version",
         "artifact_id",
@@ -671,7 +1038,7 @@ def _load_execution_index(
     }
     if set(value) != expected_keys or value["schema_version"] != 3:
         raise ValueError("execution index artifact schema is invalid")
-    if value["artifact_id"] != artifact.artifact_id:
+    if value["artifact_id"] != "rtx5080_actual_path_execution_index_v1":
         raise ValueError("execution index artifact ID mismatch")
     for field in (
         "execution_receipt_content_sha256",
@@ -704,20 +1071,70 @@ def _load_execution_index(
     return records
 
 
+def _admission_fingerprint(admission: _VerifiedExecutionIndexAdmission) -> str:
+    return canonical_sha256(
+        {
+            "scenes_by_group": {
+                group: list(admission.scenes_by_group[group]) for group in GROUPS
+            },
+            "scene_input_sha256": dict(sorted(admission.scene_input_sha256.items())),
+            "records": [
+                {
+                    **record._identity_payload(),
+                    "record_payload_sha256": record.record_payload_sha256,
+                }
+                for record in admission.records
+            ],
+            "execution_receipt_sha256": admission.execution_receipt_sha256,
+            "quality_receipt_sha256": admission.quality_receipt_sha256,
+        }
+    )
+
+
+def _require_verified_admission(value: object) -> _VerifiedExecutionIndexAdmission:
+    message = "verified execution-index admission is required"
+    if not isinstance(value, _VerifiedExecutionIndexAdmission):
+        raise ValueError(message)
+    registered = _ADMISSION_REGISTRY.get(id(value))
+    if registered is None or registered[0] is not value:
+        raise ValueError(message)
+    try:
+        value.__post_init__()
+        _sha256(value.execution_receipt_sha256, "execution receipt identity")
+        _sha256(value.quality_receipt_sha256, "quality receipt identity")
+        if (
+            not isinstance(value.records, tuple)
+            or not value.records
+            or any(not isinstance(record, _ActualExecutionRecord) for record in value.records)
+        ):
+            raise ValueError("admission records are invalid")
+        for record in value.records:
+            record.__post_init__()
+            if (
+                record.execution_receipt_content_sha256
+                != value.execution_receipt_sha256
+                or record.quality_receipt_content_sha256
+                != value.quality_receipt_sha256
+                or value.scene_input_sha256.get(record.scene_id) != record.input_sha256
+            ):
+                raise ValueError("admission record identity binding mismatch")
+        if _admission_fingerprint(value) != registered[1]:
+            raise ValueError("admission seal mismatch")
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+    return value
+
+
 def build_benchmark_schedule(
-    scenes_by_group: Mapping[str, Sequence[str]],
+    admission: object,
     *,
-    execution_index_artifact: ExecutionRecordIndexArtifact,
-    execution_receipt_sha256: str,
-    quality_receipt_sha256: str,
-    index_loader: Callable[[ExecutionRecordIndexArtifact], bytes] = (
-        _read_execution_index_bytes
-    ),
     warmup_count: int = 20,
     observations_per_group: int = 1000,
     observations_per_path: int = 1000,
 ) -> tuple[BenchmarkScheduleItem, ...]:
-    """Schedule only paths proven by a hash-admitted external execution index."""
+    """Schedule only paths proven by an immutable external evidence admission."""
+    admission = _require_verified_admission(admission)
+    scenes_by_group = admission.scenes_by_group
     if not isinstance(scenes_by_group, Mapping) or set(scenes_by_group) != set(GROUPS):
         raise ValueError("benchmark scenes must contain exactly E, M, and H")
     if type(warmup_count) is not int or warmup_count < 20:
@@ -726,8 +1143,6 @@ def build_benchmark_schedule(
         raise ValueError("benchmark requires at least 1000 observations per group")
     if type(observations_per_path) is not int or observations_per_path < 1000:
         raise ValueError("benchmark requires at least 1000 observations per path")
-    _sha256(execution_receipt_sha256, "execution receipt identity")
-    _sha256(quality_receipt_sha256, "quality receipt identity")
     normalized: dict[str, tuple[str, ...]] = {}
     all_ids: list[str] = []
     for group in GROUPS:
@@ -746,12 +1161,7 @@ def build_benchmark_schedule(
         raise ValueError("benchmark schedule must bind the exact E/M/H inventory")
     if len(set(all_ids)) != len(all_ids):
         raise ValueError("benchmark scene IDs cannot appear in multiple groups")
-    records = _load_execution_index(
-        execution_index_artifact,
-        index_loader,
-        execution_receipt_sha256=execution_receipt_sha256,
-        quality_receipt_sha256=quality_receipt_sha256,
-    )
+    records = admission.records
     required_paths = ("dinov3", "needs_retake", "unknown")
     group_by_scene = {
         scene_id: group for group in GROUPS for scene_id in normalized[group]
@@ -941,9 +1351,10 @@ __all__ = [
     "REQUIRED_SLICES",
     "STAGES",
     "BenchmarkScheduleItem",
-    "ExecutionRecordIndexArtifact",
+    "ExecutionIndexAdmissionError",
     "PerformanceReceipt",
     "PerformanceSample",
+    "admit_execution_record_index",
     "build_benchmark_schedule",
     "build_performance_receipt",
     "canonical_sha256",
