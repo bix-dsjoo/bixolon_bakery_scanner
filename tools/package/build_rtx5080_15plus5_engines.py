@@ -75,13 +75,21 @@ def build_engines(
         bundle = _load_onnx_bundle(bundle_root, graph_inspector)
     except (EngineBuildError, OSError) as exc:
         raise EngineBuildError(str(exc)) from exc
-    runtime_verifier = verify_runtime or verify_active_tensorrt_python
     try:
-        active_tensorrt = dict(runtime_verifier(runtime))
+        active_tensorrt = dict(verify_active_tensorrt_python(runtime))
     except EngineAdmissionError as exc:
         raise EngineBuildError(str(exc)) from exc
     except Exception as exc:
         raise EngineBuildError("active TensorRT Python verification failed") from exc
+    if verify_runtime is not None:
+        try:
+            asserted_tensorrt = dict(verify_runtime(runtime))
+        except EngineAdmissionError as exc:
+            raise EngineBuildError(str(exc)) from exc
+        except Exception as exc:
+            raise EngineBuildError("active TensorRT Python assertion failed") from exc
+        if asserted_tensorrt != active_tensorrt:
+            raise EngineBuildError("active TensorRT Python assertion receipt mismatch")
     expected_active_tensorrt = {
         "distribution": runtime.tensorrt_distribution.name,
         "version": runtime.tensorrt_distribution.version,
