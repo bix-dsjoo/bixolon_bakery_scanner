@@ -94,7 +94,7 @@ def test_status_selection_is_fail_closed_and_top3_is_independent(
     )
 
 
-def test_compact_receipt_whitelists_aggregate_evidence_only() -> None:
+def _fabricated_acceptance() -> dict[str, object]:
     private_path = r"C:\private\datasets\scan.jpg"
     acceptance = {
         "status": "quality-accepted",
@@ -170,18 +170,34 @@ def test_compact_receipt_whitelists_aggregate_evidence_only() -> None:
         "sample_size_limit": "observed OOF only",
         "raw_predictions": [{"image_path": private_path}],
     }
+    return acceptance
 
-    payload = build_compact_receipt(acceptance)
-    serialized = json.dumps(payload, sort_keys=True)
 
-    assert payload["status"] == "quality-passed-performance-unverified"
-    assert payload["non_target_rejection"] == {
-        "status": "unverified_no_negative_scenes"
+def test_compact_receipt_rejects_private_relative_scene_and_raw_nested_payload() -> None:
+    acceptance = _fabricated_acceptance()
+    quality = acceptance["quality"]
+    utility = acceptance["utility"]
+    assert isinstance(quality, dict) and isinstance(utility, dict)
+    quality["private_scene"] = "customer-order-scene-0001.jpg"
+    utility["raw_payload"] = {
+        "prediction": {"object_id": "customer-order-object-9"}
     }
-    assert payload["quality"]["wrong_auto_approval_count"] == 0
-    assert "raw_predictions" not in payload
-    assert "private_path" not in serialized
-    assert "C:\\" not in serialized
+
+    with pytest.raises(ValueError, match="validated Task 6|unknown|private|raw"):
+        build_compact_receipt(acceptance)
+
+
+def test_quality_pass_cannot_be_built_from_fabricated_acceptance_mapping() -> None:
+    acceptance = _fabricated_acceptance()
+    quality = acceptance["quality"]
+    utility = acceptance["utility"]
+    assert isinstance(quality, dict) and isinstance(utility, dict)
+    quality.pop("private_path")
+    utility.pop("private_payload")
+    acceptance.pop("raw_predictions")
+
+    with pytest.raises(ValueError, match="validated Task 6|frozen"):
+        build_compact_receipt(acceptance)
 
 
 def test_top3_missing_slice_is_quality_failure_not_utility_failure() -> None:

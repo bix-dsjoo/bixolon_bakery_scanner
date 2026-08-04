@@ -19,7 +19,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from bakery_scanner.benchmarking.oof15plus5 import OofEvaluationRow, evaluate_oof
+from bakery_scanner.benchmarking.oof15plus5 import (
+    FrozenOofReceipt,
+    OofAcceptanceReceipt,
+    OofEvaluationRow,
+    evaluate_oof,
+    freeze_oof_receipt,
+)
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -85,6 +91,33 @@ _UTILITY_FLOORS = {
     "unnecessary_retake": (0.20, 0.30, "maximum"),
     "auto_sku_approval_coverage": (0.70, 0.60, "minimum"),
     "unknown_rate": (0.30, 0.40, "maximum"),
+}
+_SAMPLE_SIZE_LIMIT = "Exact one-sided 95% bounds describe only the observed OOF sample; they do not establish a 0.1% production-risk claim."
+_UTILITY_SLICE_KEYS = {"overall", "E", "M", "H"}
+_COUNTERFACTUAL_KEYS = {"missing", "split", "merge", "truncation"}
+_REPORT_SLICE_KEYS = {
+    "difficulty",
+    "sku",
+    "object_count",
+    "image_shape",
+    "catalog_segment",
+    "evidence_kind",
+}
+_MISSING_UTILITY_CATEGORIES = {
+    "normal_scan_acceptance",
+    "unnecessary_retake",
+    "auto_sku_approval_coverage",
+    "unknown_rate",
+    "unknown_top3_recall",
+    "retake",
+    "incremental_auto_sku_approval_coverage",
+    "counterfactual",
+    "counterfactual_source_unavailable",
+    "counterfactual_source_unadmitted",
+    "completeness_evidence_unavailable",
+    "completeness_evidence_binding_missing",
+    "completeness_evidence_index_mismatch",
+    "missing_counterfactual_variant",
 }
 
 
@@ -340,7 +373,10 @@ def build_oof_receipt(
         policies,
         completeness_evidence_root=completeness_evidence_root,
     )
-    return build_compact_receipt(json.loads(acceptance.to_json_bytes()))
+    source: OofAcceptanceReceipt | FrozenOofReceipt = acceptance
+    if acceptance.status == "quality-accepted":
+        source = freeze_oof_receipt(acceptance)
+    return build_compact_receipt(source)
 
 
 def verify_row_artifact_binding(
@@ -402,14 +438,17 @@ def select_status(
     return "quality-passed-performance-unverified"
 
 
-def build_compact_receipt(acceptance: Mapping[str, object]) -> dict[str, object]:
-    """Whitelist aggregate fields from a validated Task 6 acceptance receipt."""
-    if not isinstance(acceptance, Mapping):
-        raise ValueError("OOF acceptance payload must be a mapping")
+def build_compact_receipt(
+    acceptance: OofAcceptanceReceipt | FrozenOofReceipt,
+) -> dict[str, object]:
+    """Publish exact aggregates from revalidated immutable Task 6 evidence."""
+    acceptance, task6_identity = _revalidate_task6_receipt(acceptance)
     quality = _mapping(acceptance.get("quality"), "quality")
     utility = _mapping(acceptance.get("utility"), "utility")
     compact_quality = _whitelist(quality, _QUALITY_KEYS, "quality")
     compact_utility = _whitelist(utility, _UTILITY_KEYS, "utility")
+    _validate_quality_aggregates(compact_quality)
+    _validate_utility_aggregates(compact_utility)
     source_status = acceptance.get("status")
     if source_status == "unverified":
         status = "unverified_quality_evidence"
@@ -455,40 +494,81 @@ def build_compact_receipt(acceptance: Mapping[str, object]) -> dict[str, object]
         "count_8_plus": None,
     }:
         raise ValueError("object-count quality claims differ from the approved policy")
+    scene_count = _nonnegative_int(acceptance.get("scene_count"), "scene_count")
+    object_count = _nonnegative_int(acceptance.get("object_count"), "object_count")
+    registered_total = _nonnegative_int(
+        acceptance.get("registered_object_total"), "registered_object_total"
+    )
+    unknown_count = _nonnegative_int(acceptance.get("unknown_count"), "unknown_count")
+    if scene_count != 299 or object_count != 1406:
+        raise ValueError("compact OOF receipt requires the exact 299-scene/1406-object inventory")
+    if source_status == "quality-accepted" and registered_total + unknown_count != object_count:
+        raise ValueError("quality-passed final object totals must equal ground truth")
+    top3_hits = _exact_count_mapping(
+        acceptance.get("top3_rank_hits"),
+        {"rank_1", "rank_2", "rank_3", "miss"},
+        "top3_rank_hits",
+    )
+    count_slices = _exact_count_mapping(
+        acceptance.get("object_count_slices"),
+        {"count_1_2", "count_3_7", "count_8_plus"},
+        "object_count_slices",
+    )
+    if sum(count_slices.values()) != scene_count:
+        raise ValueError("object-count slices must cover exactly the observed scenes")
+    report_slices = _validate_report_slices(
+        acceptance.get("report_slices"), scene_count=scene_count, object_count=object_count
+    )
+    acceptance_sources = _validate_acceptance_sources(
+        acceptance.get("acceptance_sources")
+    )
+    evaluation_input_sha256 = acceptance.get("evaluation_input_sha256")
+    if not _is_sha256(evaluation_input_sha256):
+        raise ValueError("evaluation_input_sha256 is invalid")
+    evaluation_row_count = _nonnegative_int(
+        acceptance.get("evaluation_row_count"), "evaluation_row_count"
+    )
+    if evaluation_row_count < scene_count:
+        raise ValueError("evaluation row count cannot omit observed scenes")
+    completeness_index = acceptance.get("completeness_evidence_index_sha256")
+    if completeness_index is not None and not _is_sha256(completeness_index):
+        raise ValueError("completeness evidence index identity is invalid")
+    if acceptance.get("sample_size_limit") != _SAMPLE_SIZE_LIMIT:
+        raise ValueError("sample-size limitation text is not canonical")
+    missing_summary = _compact_missing_utility_slices(
+        compact_utility["missing_required_slices"]
+    )
+    published_utility = {
+        key: value
+        for key, value in compact_utility.items()
+        if key != "missing_required_slices"
+    }
+    published_utility["missing_required_slices"] = missing_summary
     payload: dict[str, object] = {
         "schema_version": 1,
         "status": status,
         "performance_status": "unverified",
-        "scene_count": acceptance.get("scene_count"),
-        "object_count": acceptance.get("object_count"),
-        "registered_object_total": acceptance.get("registered_object_total"),
-        "unknown_count": acceptance.get("unknown_count"),
+        "scene_count": scene_count,
+        "object_count": object_count,
+        "registered_object_total": registered_total,
+        "unknown_count": unknown_count,
         "quality": compact_quality,
-        "utility": compact_utility,
+        "utility": published_utility,
         "top3": {
             "passed": _top3_passed(compact_utility["unknown_top3_recall"]),
-            "rank_hits": _mapping(
-                acceptance.get("top3_rank_hits"), "top3_rank_hits"
-            ),
+            "rank_hits": top3_hits,
         },
-        "object_count_slices": _mapping(
-            acceptance.get("object_count_slices"), "object_count_slices"
-        ),
-        "report_slices": _mapping(
-            acceptance.get("report_slices"), "report_slices"
-        ),
+        "object_count_slices": count_slices,
+        "report_slices": report_slices,
         "quality_claims_by_count": claims,
         "policy_by_fold": dict(sorted(policies.items())),
         "seed_by_fold": dict(sorted(seeds.items())),
-        "acceptance_sources": _mapping(
-            acceptance.get("acceptance_sources"), "acceptance_sources"
-        ),
-        "evaluation_input_sha256": acceptance.get("evaluation_input_sha256"),
-        "evaluation_row_count": acceptance.get("evaluation_row_count"),
-        "completeness_evidence_index_sha256": acceptance.get(
-            "completeness_evidence_index_sha256"
-        ),
-        "sample_size_limit": acceptance.get("sample_size_limit"),
+        "acceptance_sources": acceptance_sources,
+        "evaluation_input_sha256": evaluation_input_sha256,
+        "evaluation_row_count": evaluation_row_count,
+        "completeness_evidence_index_sha256": completeness_index,
+        "sample_size_limit": _SAMPLE_SIZE_LIMIT,
+        "task6_receipt": task6_identity,
         "non_target_rejection": {"status": "unverified_no_negative_scenes"},
     }
     _reject_private_or_absolute_paths(payload)
@@ -636,6 +716,236 @@ def _utility_without_top3_passed(utility: Mapping[str, object]) -> bool:
     return all(_finite_rate(value) and float(value) == 1.0 for value in counterfactual.values())
 
 
+def _revalidate_task6_receipt(
+    value: object,
+) -> tuple[Mapping[str, object], Mapping[str, object]]:
+    if isinstance(value, FrozenOofReceipt):
+        authoritative = evaluate_oof(
+            value._evaluation_rows,
+            dict(value._evaluation_policy_by_fold),
+            completeness_evidence_root=value._completeness_evidence_root,
+        )
+        frozen = freeze_oof_receipt(authoritative)
+        if (
+            frozen.payload != value.payload
+            or frozen.sha256 != value.sha256
+            or frozen.evaluation_input_sha256 != value.evaluation_input_sha256
+        ):
+            raise ValueError("frozen Task 6 receipt does not match authoritative evidence")
+        payload = _decode_canonical_task6_payload(value.payload)
+        return payload, {
+            "frozen": True,
+            "sha256": value.sha256,
+            "evaluation_input_sha256": value.evaluation_input_sha256,
+        }
+    if isinstance(value, OofAcceptanceReceipt):
+        authoritative = evaluate_oof(
+            value._evaluation_rows,
+            dict(value._evaluation_policy_by_fold),
+            completeness_evidence_root=value._completeness_evidence_root,
+        )
+        payload_bytes = value.to_json_bytes()
+        if authoritative.to_json_bytes() != payload_bytes:
+            raise ValueError("Task 6 receipt does not match authoritative evaluation")
+        if authoritative.status == "quality-accepted":
+            raise ValueError("quality-passed compact receipt requires a frozen Task 6 receipt")
+        payload = _decode_canonical_task6_payload(payload_bytes)
+        return payload, {
+            "frozen": False,
+            "sha256": hashlib.sha256(payload_bytes).hexdigest(),
+            "evaluation_input_sha256": value.evaluation_input_sha256,
+        }
+    raise ValueError(
+        "compact output requires a validated Task 6 receipt, not an acceptance mapping"
+    )
+
+
+def _decode_canonical_task6_payload(payload: bytes) -> Mapping[str, object]:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Task 6 receipt payload is not canonical JSON") from exc
+    if (
+        not isinstance(value, Mapping)
+        or _canonical_json(value) != payload
+        or value.get("schema_version") != 1
+    ):
+        raise ValueError("Task 6 receipt payload is not canonical schema-v1 JSON")
+    return value
+
+
+def _validate_quality_aggregates(value: Mapping[str, object]) -> None:
+    count_fields = _QUALITY_KEYS[:9]
+    for field in count_fields:
+        _nonnegative_int(value[field], f"quality.{field}")
+    for field in ("scan_error_upper_95", "object_error_upper_95"):
+        if not _finite_rate(value[field]):
+            raise ValueError(f"quality.{field} must be a finite rate")
+    if (
+        _nonnegative_int(value["scan_sample_size"], "quality.scan_sample_size")
+        != 299
+        or _nonnegative_int(
+            value["object_sample_size"], "quality.object_sample_size"
+        )
+        != 1406
+    ):
+        raise ValueError("quality sample sizes must bind the exact inventory")
+
+
+def _validate_utility_aggregates(value: Mapping[str, object]) -> None:
+    for field in (
+        "normal_scan_acceptance",
+        "unnecessary_retake",
+        "auto_sku_approval_coverage",
+        "unknown_rate",
+        "unknown_top3_recall",
+    ):
+        rates = _mapping(value[field], f"utility.{field}")
+        if set(rates) != _UTILITY_SLICE_KEYS or any(
+            item is not None and not _finite_rate(item) for item in rates.values()
+        ):
+            raise ValueError(f"utility.{field} has an invalid slice schema")
+    incremental = value["incremental_auto_sku_approval_coverage"]
+    if incremental is not None and not _finite_rate(incremental):
+        raise ValueError("incremental utility coverage must be a finite rate")
+    counterfactual = _mapping(
+        value["counterfactual_completeness_block_rate"],
+        "counterfactual_completeness_block_rate",
+    )
+    if set(counterfactual) != _COUNTERFACTUAL_KEYS or any(
+        item is not None and not _finite_rate(item) for item in counterfactual.values()
+    ):
+        raise ValueError("counterfactual block-rate schema is invalid")
+    for field in (
+        "counterfactual_expected_case_count",
+        "counterfactual_submitted_case_count",
+    ):
+        _exact_count_mapping(value[field], _COUNTERFACTUAL_KEYS, field)
+    missing = value["missing_required_slices"]
+    if not isinstance(missing, (list, tuple)) or any(
+        not isinstance(item, str) or not item for item in missing
+    ):
+        raise ValueError("missing utility slices must be immutable reason strings")
+    if type(value["has_violation"]) is not bool or type(value["passes"]) is not bool:
+        raise ValueError("utility decision flags must be booleans")
+
+
+def _validate_report_slices(
+    value: object,
+    *,
+    scene_count: int,
+    object_count: int,
+) -> dict[str, dict[str, int]]:
+    report = _mapping(value, "report_slices")
+    if set(report) != _REPORT_SLICE_KEYS:
+        raise ValueError("report_slices has unknown or missing aggregate categories")
+    allowed = {
+        "difficulty": {"E", "M", "H"},
+        "sku": {str(index) for index in range(1, 21)},
+        "object_count": {"count_1_2", "count_3_7", "count_8_plus"},
+        "image_shape": {"landscape", "portrait", "square"},
+        "catalog_segment": {"base", "incremental"},
+        "evidence_kind": {"observed", "counterfactual"},
+    }
+    checked: dict[str, dict[str, int]] = {}
+    for category in sorted(_REPORT_SLICE_KEYS):
+        rows = _mapping(report[category], f"report_slices.{category}")
+        if not set(rows) <= allowed[category]:
+            raise ValueError(
+                f"report_slices.{category} contains a free-form/private key"
+            )
+        checked[category] = {
+            key: _nonnegative_int(item, f"report_slices.{category}.{key}")
+            for key, item in sorted(rows.items())
+        }
+    for category in (
+        "difficulty",
+        "object_count",
+        "image_shape",
+        "catalog_segment",
+    ):
+        if sum(checked[category].values()) != scene_count:
+            raise ValueError(f"report_slices.{category} does not cover observed scenes")
+    if sum(checked["sku"].values()) != object_count:
+        raise ValueError("report_slices.sku does not cover ground-truth objects")
+    if checked["evidence_kind"].get("observed") != scene_count:
+        raise ValueError("report_slices.evidence_kind does not bind observed scenes")
+    return checked
+
+
+def _validate_acceptance_sources(value: object) -> dict[str, object]:
+    sources = _mapping(value, "acceptance_sources")
+    keys = {
+        "utility_config_sha256",
+        "fold_manifest_file_sha256",
+        "fold_manifest_payload_sha256",
+        "fold_evaluation_scene_set_sha256",
+        "fold_source_sha256",
+        "seed_by_fold",
+        "combined_sha256",
+    }
+    if set(sources) != keys:
+        raise ValueError("acceptance_sources has unknown or missing fields")
+    if not _is_sha256(sources["utility_config_sha256"]) or not _is_sha256(
+        sources["combined_sha256"]
+    ):
+        raise ValueError("acceptance source identity is invalid")
+    result: dict[str, object] = {
+        "utility_config_sha256": sources["utility_config_sha256"],
+        "combined_sha256": sources["combined_sha256"],
+    }
+    fold_keys = {str(fold) for fold in range(5)}
+    for field in (
+        "fold_manifest_file_sha256",
+        "fold_manifest_payload_sha256",
+        "fold_evaluation_scene_set_sha256",
+        "fold_source_sha256",
+    ):
+        mapping = _mapping(sources[field], f"acceptance_sources.{field}")
+        if set(mapping) != fold_keys or any(
+            not _is_sha256(item) for item in mapping.values()
+        ):
+            raise ValueError(f"acceptance_sources.{field} is invalid")
+        result[field] = dict(sorted(mapping.items()))
+    seeds = _mapping(sources["seed_by_fold"], "acceptance_sources.seed_by_fold")
+    if set(seeds) != fold_keys or any(type(item) is not int for item in seeds.values()):
+        raise ValueError("acceptance_sources.seed_by_fold is invalid")
+    result["seed_by_fold"] = dict(sorted(seeds.items()))
+    return result
+
+
+def _compact_missing_utility_slices(value: object) -> dict[str, object]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("missing utility slices are invalid")
+    categories = []
+    for reason in value:
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("missing utility slice reason is invalid")
+        category = reason.split(":", 1)[0]
+        if category not in _MISSING_UTILITY_CATEGORIES:
+            raise ValueError("missing utility slice contains an unknown/private reason")
+        categories.append(category)
+    return {"count": len(value), "categories": sorted(set(categories))}
+
+
+def _exact_count_mapping(
+    value: object, expected_keys: set[str], field: str
+) -> dict[str, int]:
+    mapping = _mapping(value, field)
+    if set(mapping) != expected_keys:
+        raise ValueError(f"{field} has unknown or missing keys")
+    return {
+        key: _nonnegative_int(item, f"{field}.{key}")
+        for key, item in sorted(mapping.items())
+    }
+
+
+def _nonnegative_int(value: object, field: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return value
+
+
 def _validate_raw_row(row: Mapping[str, object]) -> None:
     if set(row) != _RAW_ROW_KEYS:
         raise ValueError("raw OOF row has unknown or missing fields")
@@ -673,9 +983,9 @@ def _verify_artifact_hashes(value: Mapping[str, object]) -> None:
 def _whitelist(
     source: Mapping[str, object], keys: Sequence[str], field: str
 ) -> dict[str, object]:
-    missing = set(keys) - set(source)
-    if missing:
-        raise ValueError(f"{field} aggregate fields are missing: {sorted(missing)}")
+    expected = set(keys)
+    if set(source) != expected:
+        raise ValueError(f"{field} contains unknown or missing aggregate fields")
     return {key: source[key] for key in keys}
 
 
