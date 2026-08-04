@@ -7,6 +7,7 @@ import pytest
 
 from bakery_scanner.benchmarking.rtx5080_acceptance import (
     REQUIRED_ARTIFACT_ROLES,
+    ActualPathEvidence,
     PerformanceSample,
     build_benchmark_schedule,
     build_performance_receipt,
@@ -34,6 +35,7 @@ PROTOCOL_SHA = "c" * 64
 RUNTIME_SHA = canonical_sha256(RUNTIME)
 ARTIFACT_SHA = canonical_sha256(ARTIFACTS)
 CURRENT_CROPS = frozenset({"d" * 64, "e" * 64})
+EXECUTION_SHA = "9" * 64
 
 
 def _sample(
@@ -86,6 +88,30 @@ def _sample(
             "fusion_payload": 3.0,
             "total": total,
         },
+    )
+
+
+def _actual_path(
+    scene_id: str,
+    path_name: str,
+    *,
+    execution_sha256: str = EXECUTION_SHA,
+    quality_sha256: str = QUALITY_SHA,
+) -> ActualPathEvidence:
+    dino = path_name in {"dinov3", "unknown"}
+    retake = path_name == "needs_retake"
+    unknown = path_name == "unknown"
+    return ActualPathEvidence.build(
+        scene_id=scene_id,
+        input_sha256=hashlib.sha256(scene_id.encode()).hexdigest(),
+        execution_receipt_sha256=execution_sha256,
+        quality_receipt_sha256=quality_sha256,
+        state="needs_retake" if retake else "accepted_scan",
+        dino_executed=dino,
+        dino_object_count=4 if dino else 0,
+        needs_retake=retake,
+        unknown=unknown,
+        unknown_total=1 if unknown else 0,
     )
 
 
@@ -278,11 +304,16 @@ def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None
             "M": tuple(f"m-{index:03d}" for index in range(99, 0, -1)),
             "H": tuple(f"h-{index:03d}" for index in range(100, 0, -1)),
         },
-        path_scene_ids={
-            "dinov3": ("e-010", "e-001"),
-            "needs_retake": ("m-010", "m-001"),
-            "unknown": ("h-010", "h-001"),
+        path_evidence={
+            "dinov3": (_actual_path("e-010", "dinov3"), _actual_path("e-001", "dinov3")),
+            "needs_retake": (
+                _actual_path("m-010", "needs_retake"),
+                _actual_path("m-001", "needs_retake"),
+            ),
+            "unknown": (_actual_path("h-010", "unknown"), _actual_path("h-001", "unknown")),
         },
+        execution_receipt_sha256=EXECUTION_SHA,
+        quality_receipt_sha256=QUALITY_SHA,
         warmup_count=20,
         observations_per_group=1000,
         observations_per_path=1000,
@@ -308,9 +339,9 @@ def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None
 @pytest.mark.parametrize("path_name", ("dinov3", "needs_retake", "unknown"))
 def test_schedule_rejects_empty_required_actual_path_ids(path_name: str) -> None:
     paths = {
-        "dinov3": ("e-001",),
-        "needs_retake": ("m-001",),
-        "unknown": ("h-001",),
+        "dinov3": (_actual_path("e-001", "dinov3"),),
+        "needs_retake": (_actual_path("m-001", "needs_retake"),),
+        "unknown": (_actual_path("h-001", "unknown"),),
     }
     paths[path_name] = ()
 
@@ -321,5 +352,79 @@ def test_schedule_rejects_empty_required_actual_path_ids(path_name: str) -> None
                 "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
                 "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
             },
-            path_scene_ids=paths,
+            path_evidence=paths,
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
         )
+
+
+def test_schedule_rejects_arbitrary_current_id_without_execution_evidence() -> None:
+    with pytest.raises(ValueError, match="actual execution evidence"):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            path_evidence={
+                "dinov3": ("e-001",),
+                "needs_retake": (_actual_path("m-001", "needs_retake"),),
+                "unknown": (_actual_path("h-001", "unknown"),),
+            },
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
+        )
+
+
+def test_schedule_rejects_path_flag_or_canonical_record_hash_mismatch() -> None:
+    wrong_path = _actual_path("e-001", "needs_retake")
+    tampered = _actual_path("e-001", "dinov3").to_payload()
+    tampered["input_sha256"] = "f" * 64
+
+    with pytest.raises(ValueError, match="dinov3.*predicate"):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            path_evidence=_path_evidence(dinov3=(wrong_path,)),
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
+        )
+    with pytest.raises(ValueError, match="record hash"):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            path_evidence=_path_evidence(dinov3=(tampered,)),
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
+        )
+
+
+def test_schedule_rejects_execution_or_quality_receipt_identity_mismatch() -> None:
+    with pytest.raises(ValueError, match="execution receipt identity"):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            path_evidence=_path_evidence(),
+            execution_receipt_sha256="8" * 64,
+            quality_receipt_sha256=QUALITY_SHA,
+        )
+    with pytest.raises(ValueError, match="quality receipt identity"):
+        build_benchmark_schedule(
+            _schedule_groups(),
+            path_evidence=_path_evidence(
+                dinov3=(
+                    _actual_path("e-001", "dinov3", quality_sha256="8" * 64),
+                )
+            ),
+            execution_receipt_sha256=EXECUTION_SHA,
+            quality_receipt_sha256=QUALITY_SHA,
+        )
+
+
+def _schedule_groups() -> dict[str, tuple[str, ...]]:
+    return {
+        "E": tuple(f"e-{index:03d}" for index in range(1, 101)),
+        "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
+        "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
+    }
+
+
+def _path_evidence(*, dinov3=None):
+    return {
+        "dinov3": dinov3 or (_actual_path("e-001", "dinov3"),),
+        "needs_retake": (_actual_path("m-001", "needs_retake"),),
+        "unknown": (_actual_path("h-001", "unknown"),),
+    }

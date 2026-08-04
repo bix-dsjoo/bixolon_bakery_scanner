@@ -289,6 +289,107 @@ class PerformanceSample:
 
 
 @dataclass(frozen=True, slots=True)
+class ActualPathEvidence:
+    """One canonical actual execution record eligible for path scheduling."""
+
+    schema_version: Literal[3]
+    scene_id: str
+    input_sha256: str
+    execution_receipt_sha256: str
+    quality_receipt_sha256: str
+    state: Literal["accepted_scan", "needs_retake"]
+    dino_executed: bool
+    dino_object_count: int
+    needs_retake: bool
+    unknown: bool
+    unknown_total: int
+    record_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 3:
+            raise ValueError("actual path evidence schema_version must be 3")
+        _text(self.scene_id, "actual path scene_id")
+        for value, label in (
+            (self.input_sha256, "actual path input_sha256"),
+            (self.execution_receipt_sha256, "actual path execution receipt identity"),
+            (self.quality_receipt_sha256, "actual path quality receipt identity"),
+            (self.record_sha256, "actual path record hash"),
+        ):
+            _sha256(value, label)
+        if self.state not in {"accepted_scan", "needs_retake"}:
+            raise ValueError("actual path state is invalid")
+        for value, label in (
+            (self.dino_executed, "dino_executed"),
+            (self.needs_retake, "needs_retake"),
+            (self.unknown, "unknown"),
+        ):
+            if type(value) is not bool:
+                raise ValueError(f"actual path {label} must be boolean")
+        _non_negative_int(self.dino_object_count, "actual path dino_object_count")
+        _non_negative_int(self.unknown_total, "actual path unknown_total")
+        if self.dino_executed != (self.dino_object_count > 0):
+            raise ValueError("actual path DINO flag and object count disagree")
+        if self.needs_retake != (self.state == "needs_retake"):
+            raise ValueError("actual path retake flag and state disagree")
+        if self.unknown != (self.unknown_total > 0):
+            raise ValueError("actual path Unknown flag and total disagree")
+        if self.needs_retake and (self.dino_executed or self.unknown):
+            raise ValueError("actual needs_retake evidence cannot claim classification paths")
+        if self.unknown and (not self.dino_executed or self.state != "accepted_scan"):
+            raise ValueError("actual Unknown evidence requires accepted DINO execution")
+        if self.dino_executed and self.state != "accepted_scan":
+            raise ValueError("actual DINO evidence requires accepted_scan state")
+        if self.record_sha256 != canonical_sha256(self._identity_payload()):
+            raise ValueError("actual path record hash does not match canonical evidence")
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        scene_id: str,
+        input_sha256: str,
+        execution_receipt_sha256: str,
+        quality_receipt_sha256: str,
+        state: Literal["accepted_scan", "needs_retake"],
+        dino_executed: bool,
+        dino_object_count: int,
+        needs_retake: bool,
+        unknown: bool,
+        unknown_total: int,
+    ) -> "ActualPathEvidence":
+        values = {
+            "schema_version": 3,
+            "scene_id": scene_id,
+            "input_sha256": input_sha256,
+            "execution_receipt_sha256": execution_receipt_sha256,
+            "quality_receipt_sha256": quality_receipt_sha256,
+            "state": state,
+            "dino_executed": dino_executed,
+            "dino_object_count": dino_object_count,
+            "needs_retake": needs_retake,
+            "unknown": unknown,
+            "unknown_total": unknown_total,
+        }
+        return cls(**values, record_sha256=canonical_sha256(values))  # type: ignore[arg-type]
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "ActualPathEvidence":
+        if not isinstance(value, Mapping) or set(value) != set(cls.__dataclass_fields__):
+            raise ValueError("actual execution evidence record schema is invalid")
+        return cls(**dict(value))  # type: ignore[arg-type]
+
+    def _identity_payload(self) -> dict[str, object]:
+        return {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+            if name != "record_sha256"
+        }
+
+    def to_payload(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkScheduleItem:
     ordinal: int
     scene_id: str
@@ -528,7 +629,11 @@ def build_performance_receipt(
 def build_benchmark_schedule(
     scenes_by_group: Mapping[str, Sequence[str]],
     *,
-    path_scene_ids: Mapping[str, Sequence[str]],
+    path_evidence: Mapping[
+        str, Sequence[ActualPathEvidence | Mapping[str, object]]
+    ],
+    execution_receipt_sha256: str,
+    quality_receipt_sha256: str,
     warmup_count: int = 20,
     observations_per_group: int = 1000,
     observations_per_path: int = 1000,
@@ -542,6 +647,8 @@ def build_benchmark_schedule(
         raise ValueError("benchmark requires at least 1000 observations per group")
     if type(observations_per_path) is not int or observations_per_path < 1000:
         raise ValueError("benchmark requires at least 1000 observations per path")
+    _sha256(execution_receipt_sha256, "execution receipt identity")
+    _sha256(quality_receipt_sha256, "quality receipt identity")
     normalized: dict[str, tuple[str, ...]] = {}
     all_ids: list[str] = []
     for group in GROUPS:
@@ -561,23 +668,42 @@ def build_benchmark_schedule(
     if len(set(all_ids)) != len(all_ids):
         raise ValueError("benchmark scene IDs cannot appear in multiple groups")
     required_paths = ("dinov3", "needs_retake", "unknown")
-    if not isinstance(path_scene_ids, Mapping) or set(path_scene_ids) != set(required_paths):
-        raise ValueError("benchmark actual path IDs must cover every required path")
+    if not isinstance(path_evidence, Mapping) or set(path_evidence) != set(required_paths):
+        raise ValueError("benchmark actual execution evidence must cover every required path")
     group_by_scene = {
         scene_id: group for group in GROUPS for scene_id in normalized[group]
     }
-    normalized_paths: dict[str, tuple[str, ...]] = {}
+    normalized_paths: dict[str, tuple[ActualPathEvidence, ...]] = {}
     for path_name in required_paths:
-        values = path_scene_ids[path_name]
+        values = path_evidence[path_name]
         if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-            raise ValueError(f"{path_name} actual path IDs must be a sequence")
-        ordered = tuple(sorted(values))
+            raise ValueError(f"{path_name} actual execution evidence must be a sequence")
+        try:
+            records = tuple(
+                item
+                if isinstance(item, ActualPathEvidence)
+                else ActualPathEvidence.from_mapping(item)
+                for item in values
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path_name} actual execution evidence invalid: {exc}"
+            ) from exc
+        ordered = tuple(sorted(records, key=lambda item: item.scene_id))
         if not ordered:
-            raise ValueError(f"{path_name} actual path IDs must not be empty")
-        if len(set(ordered)) != len(ordered):
-            raise ValueError(f"{path_name} actual path IDs must be unique")
-        if any(scene_id not in group_by_scene for scene_id in ordered):
-            raise ValueError(f"{path_name} actual path IDs must bind current scenes")
+            raise ValueError(f"{path_name} actual path evidence must not be empty")
+        if len({record.scene_id for record in ordered}) != len(ordered):
+            raise ValueError(f"{path_name} actual path evidence scene IDs must be unique")
+        if any(record.scene_id not in group_by_scene for record in ordered):
+            raise ValueError(f"{path_name} actual path evidence must bind current scenes")
+        for record in ordered:
+            record.__post_init__()
+            if record.execution_receipt_sha256 != execution_receipt_sha256:
+                raise ValueError(f"{path_name} execution receipt identity mismatch")
+            if record.quality_receipt_sha256 != quality_receipt_sha256:
+                raise ValueError(f"{path_name} quality receipt identity mismatch")
+            if not _path_predicate(path_name, record):
+                raise ValueError(f"{path_name} actual path predicate mismatch")
         normalized_paths[path_name] = ordered
     flattened = tuple((group, scene_id) for group in GROUPS for scene_id in normalized[group])
     schedule: list[BenchmarkScheduleItem] = []
@@ -595,9 +721,9 @@ def build_benchmark_schedule(
             )
             ordinal += 1
     for path_name in required_paths:
-        scenes = normalized_paths[path_name]
+        records = normalized_paths[path_name]
         for index in range(observations_per_path):
-            scene_id = scenes[index % len(scenes)]
+            scene_id = records[index % len(records)].scene_id
             schedule.append(
                 BenchmarkScheduleItem(
                     ordinal, scene_id, group_by_scene[scene_id], path_name, False
@@ -605,6 +731,16 @@ def build_benchmark_schedule(
             )
             ordinal += 1
     return tuple(schedule)
+
+
+def _path_predicate(path_name: str, record: ActualPathEvidence) -> bool:
+    if path_name == "dinov3":
+        return record.dino_executed and record.dino_object_count > 0
+    if path_name == "needs_retake":
+        return record.needs_retake and record.state == "needs_retake"
+    if path_name == "unknown":
+        return record.unknown and record.unknown_total > 0 and record.dino_executed
+    return False
 
 
 def _validate_runtime_identity(value: Mapping[str, object]) -> dict[str, object]:
@@ -739,6 +875,7 @@ __all__ = [
     "REQUIRED_SLICES",
     "STAGES",
     "BenchmarkScheduleItem",
+    "ActualPathEvidence",
     "PerformanceReceipt",
     "PerformanceSample",
     "build_benchmark_schedule",
