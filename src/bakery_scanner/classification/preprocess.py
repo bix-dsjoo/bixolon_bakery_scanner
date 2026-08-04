@@ -3,11 +3,102 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+from dataclasses import asdict, dataclass
 
 from PIL import Image
 from torchvision import transforms
 
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import CanonicalImage
+
+
+@dataclass(frozen=True, slots=True)
+class ClassifierPreprocessDescriptor:
+    """Immutable identity of every Task 5 tight/context pixel transform."""
+
+    schema_version: int = 1
+    canonical_frame_version: str = "exif_visual_rgb_v1"
+    crop_rule: str = "total_padding_split_floor_ceil_clip_rgb"
+    input_size: int = 224
+    context_padding: float = 0.10
+    interpolation: str = "bilinear_antialias_true"
+    normalization_mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
+    normalization_std: tuple[float, float, float] = (0.229, 0.224, 0.225)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1 or self.canonical_frame_version != "exif_visual_rgb_v1":
+            raise ValueError("unsupported classifier preprocessing descriptor")
+        if self.crop_rule != "total_padding_split_floor_ceil_clip_rgb":
+            raise ValueError("classifier crop rule is not canonical")
+        if self.input_size != 224 or self.context_padding != 0.10:
+            raise ValueError("classifier preprocessing must use 224 and context padding 0.10")
+        if self.interpolation != "bilinear_antialias_true":
+            raise ValueError("classifier interpolation must be bilinear with antialiasing")
+        if self.normalization_mean != (0.485, 0.456, 0.406) or self.normalization_std != (0.229, 0.224, 0.225):
+            raise ValueError("classifier normalization is not canonical")
+
+    def to_payload(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["normalization_mean"] = list(self.normalization_mean)
+        payload["normalization_std"] = list(self.normalization_std)
+        return payload
+
+    def sha256(self) -> str:
+        encoded = json.dumps(
+            self.to_payload(), allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class CropPair:
+    tight: Image.Image
+    context: Image.Image
+    box: Box
+    context_product_box: Box
+
+
+def build_crop_pair(
+    frame: CanonicalImage,
+    box: Box,
+    context_padding: float = 0.10,
+) -> CropPair:
+    """Build ordered tight/context crops in the verified canonical frame."""
+    if not isinstance(frame, CanonicalImage):
+        raise ValueError("frame must be a CanonicalImage")
+    _require_canonical_frame(frame)
+    try:
+        frame.require_box(box)
+    except ValueError as exc:
+        raise ValueError("box must stay within canonical visual image bounds") from exc
+    if context_padding != 0.10:
+        raise ValueError("context padding must be the immutable value 0.10")
+    tight = _crop_one(frame.image, box, 0.0)
+    context_bounds = _crop_bounds(frame.image, box, context_padding)
+    left, top, right, bottom = context_bounds
+    context = frame.image.crop((left, top, right, bottom))
+    return CropPair(
+        tight=tight,
+        context=context,
+        box=box,
+        context_product_box=Box(box.x - left, box.y - top, box.width, box.height),
+    )
+
+
+def _require_canonical_frame(frame: CanonicalImage) -> None:
+    width, height = frame.visual_size
+    if (
+        frame.frame_version != "exif_visual_rgb_v1"
+        or frame.image.mode != "RGB"
+        or type(width) is not int
+        or type(height) is not int
+        or width <= 0
+        or height <= 0
+        or frame.image.size != frame.visual_size
+    ):
+        raise ValueError("canonical frame invariants are invalid")
 
 
 def make_padded_crops(

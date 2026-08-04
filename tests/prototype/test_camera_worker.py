@@ -373,6 +373,126 @@ def test_worker_emits_exactly_one_fatal_when_initialization_fails():
     assert all(row["type"] != "ready" for row in events)
 
 
+def test_live_worker_candidate_admission_failure_is_explicit_and_never_falls_back():
+    calls = {"admit": 0, "load": 0, "legacy": 0}
+
+    class Provider:
+        def admit(self):
+            calls["admit"] += 1
+            raise ValueError("engine hash mismatch")
+
+        def load(self, receipt):
+            calls["load"] += 1
+            return FakeRuntime(device="cuda:0")
+
+    def legacy_factory(_emit):
+        calls["legacy"] += 1
+        return FakeRuntime()
+
+    stdout = io.StringIO()
+    status = serve(
+        io.StringIO(),
+        stdout,
+        runtime_factory=legacy_factory,
+        runtime_profile_id="rtx5080_15plus5_single_frame_v1",
+        candidate_runtime_provider=Provider(),
+        stderr=io.StringIO(),
+    )
+
+    assert status == 1
+    assert calls == {"admit": 1, "load": 0, "legacy": 0}
+    assert _events(stdout)[-1]["code"] == "admission_failed"
+
+
+def test_live_worker_uses_admitted_candidate_for_analysis_requests(tmp_path: Path):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    calls = {"admit": 0, "load": 0, "legacy": 0}
+
+    class Provider:
+        def admit(self):
+            calls["admit"] += 1
+            return "receipt"
+
+        def load(self, receipt):
+            assert receipt == "receipt"
+            calls["load"] += 1
+            return FakeRuntime(device="cuda:0")
+
+    stdout = io.StringIO()
+    status = serve(
+        io.StringIO(
+            json.dumps({"type": "analyze", "request_id": "scan-1", "image_path": str(image)})
+            + "\n"
+            + '{"type":"shutdown","request_id":"stop"}\n'
+        ),
+        stdout,
+        runtime_factory=lambda _emit: calls.__setitem__("legacy", calls["legacy"] + 1),
+        runtime_profile_id="rtx5080_15plus5_single_frame_v1",
+        candidate_runtime_provider=Provider(),
+    )
+
+    assert status == 0
+    assert calls == {"admit": 1, "load": 1, "legacy": 0}
+    assert any(event.get("request_id") == "scan-1" and event["type"] == "result" for event in _events(stdout))
+
+
+def test_cli_forwards_candidate_profile_and_provider_to_serve():
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_profile", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    provider = object()
+    observed = {}
+
+    def fake_serve(stdin, stdout, **kwargs):
+        observed.update(kwargs)
+        return 17
+
+    status = module.serve_selected_runtime(
+        stdin=io.StringIO(),
+        stdout=io.StringIO(),
+        runtime_factory=lambda _emit: None,
+        code_identity={"code_commit": "a" * 40, "code_identity_sha256": "b" * 64},
+        runtime_profile="rtx5080_15plus5_single_frame_v1",
+        candidate_provider_factory=lambda: provider,
+        serve_fn=fake_serve,
+    )
+
+    assert status == 17
+    assert observed["runtime_profile_id"] == "rtx5080_15plus5_single_frame_v1"
+    assert observed["candidate_runtime_provider"] is provider
+
+
+def test_cli_preserves_explicit_legacy_profile():
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_legacy", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = {}
+
+    def fail_provider():
+        raise AssertionError("legacy profile must not construct candidate provider")
+
+    def fake_serve(stdin, stdout, **kwargs):
+        observed.update(kwargs)
+        return 0
+
+    assert module.serve_selected_runtime(
+        stdin=io.StringIO(),
+        stdout=io.StringIO(),
+        runtime_factory=lambda _emit: None,
+        code_identity={"code_commit": "a" * 40, "code_identity_sha256": "b" * 64},
+        runtime_profile="legacy",
+        candidate_provider_factory=fail_provider,
+        serve_fn=fake_serve,
+    ) == 0
+    assert observed["runtime_profile_id"] == "legacy"
+    assert observed["candidate_runtime_provider"] is None
+
+
 def test_worker_closes_initialized_runtime_when_ready_event_cannot_encode():
     stdout = io.StringIO()
     runtime = FakeRuntime(startup_metrics={"unencodable": object()})

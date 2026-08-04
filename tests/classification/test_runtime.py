@@ -19,14 +19,17 @@ from bakery_scanner.classification.contracts import (
 )
 from bakery_scanner.classification.dinov3 import DinoGlobalLocalEvidence, DinoV3Rechecker
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
+from bakery_scanner.classification.local_bank import LocalPatchBank
 from bakery_scanner.classification.fusion_ranker import FusionRanker
 from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibration
 from bakery_scanner.classification.preprocess import build_transform
+from bakery_scanner.classification.preprocess import ClassifierPreprocessDescriptor
 from bakery_scanner.classification.repvit import RepVitEvidence
 from bakery_scanner.classification.risk_calibrator import RiskCalibrator
 from bakery_scanner.classification.runtime import (
     ClassifierPipeline,
     CudaTimingCollector,
+    TightContextRepVitEvidence,
     SerialStageTimings,
 )
 from bakery_scanner.contracts import Box
@@ -396,6 +399,299 @@ def test_infer_many_batches_repvit_and_only_rechecks_direct_rejections():
     assert dino.received_object_count == 2
     assert result.dino_object_count == 2
     assert result.timings.total_ms >= result.timings.crop_ms + result.timings.repvit_ms
+
+
+class StaticPairRunner(RecordingRunner):
+    def __init__(self, evidence: tuple[TightContextRepVitEvidence, ...], *, fail_chunk: int | None = None) -> None:
+        super().__init__(evidence[0].scores)
+        self.evidence = evidence
+        self.fail_chunk = fail_chunk
+        self.chunks: list[tuple[tuple[Image.Image, ...], tuple[bool, ...]]] = []
+        self.cursor = 0
+
+    def score_tight_context_chunk(self, rows, *, valid_mask):
+        self.chunks.append((tuple(rows), tuple(valid_mask)))
+        if self.fail_chunk == len(self.chunks):
+            raise RuntimeError("repvit static chunk failed")
+        valid_objects = sum(valid_mask) // 2
+        selected = self.evidence[self.cursor : self.cursor + valid_objects]
+        self.cursor += valid_objects
+        return selected
+
+
+class StaticContextDino(FullEvidenceDino):
+    def __init__(self, evidence: tuple[DinoGlobalLocalEvidence, ...], *, fail_chunk: int | None = None) -> None:
+        super().__init__(evidence[0].global_scores)
+        self.evidence = evidence
+        self.fail_chunk = fail_chunk
+        self.chunks = []
+        self.cursor = 0
+
+    def score_context_chunk_global_and_local_evidence(
+        self, crops, product_boxes, local_bank, *, repvit_scores, valid_mask
+    ):
+        self.chunks.append((tuple(crops), tuple(product_boxes), tuple(valid_mask), tuple(repvit_scores)))
+        if self.fail_chunk == len(self.chunks):
+            raise RuntimeError("dino static chunk failed")
+        valid_objects = sum(valid_mask)
+        selected = self.evidence[self.cursor : self.cursor + valid_objects]
+        self.cursor += valid_objects
+        return selected
+
+
+class LegacyOnlyStaticRepVit(RecordingRunner):
+    """A legacy runner that must never be selected by the schema-3 path."""
+
+    def __init__(self, evidence: TightContextRepVitEvidence) -> None:
+        super().__init__(evidence.scores)
+        self.evidence = evidence
+        self.legacy_calls = 0
+
+    def score_many_with_evidence(self, crop_groups, *, max_objects):
+        self.legacy_calls += 1
+        return (self.evidence,) * len(crop_groups)
+
+
+class LegacyOnlyStaticDino(FullEvidenceDino):
+    """A dynamic-only DINO fake; schema-3 must reject it before scoring."""
+
+    def __init__(self, evidence: DinoGlobalLocalEvidence) -> None:
+        super().__init__(evidence.global_scores)
+        self.evidence = evidence
+        self.legacy_calls = 0
+
+    def score_many_global_and_local_evidence(
+        self, crop_groups, product_box_groups, local_bank, *, repvit_scores, max_objects
+    ):
+        self.legacy_calls += 1
+        return (self.evidence,) * len(crop_groups)
+
+
+def _paired_evidence(
+    aggregate: ModelScoreVector,
+    tight: ModelScoreVector | None = None,
+    context: ModelScoreVector | None = None,
+) -> TightContextRepVitEvidence:
+    return TightContextRepVitEvidence(
+        scores=aggregate,
+        tight_scores=tight or aggregate,
+        context_scores=context or aggregate,
+        feature=torch.ones(384),
+        crop_disagreement=0.01,
+    )
+
+
+def test_direct_gate_rejects_tight_context_top1_disagreement():
+    aggregate = _repvit_scores({6: 0.80, 5: 0.20})
+    repvit = StaticPairRunner((
+        _paired_evidence(
+            aggregate,
+            tight=_repvit_scores({6: 0.80, 5: 0.20}),
+            context=_repvit_scores({5: 0.80, 6: 0.20}),
+        ),
+    ))
+    dino = StaticContextDino((
+        DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5),
+    ))
+    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank())
+
+    result = pipeline.infer_many(
+        _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+    )
+
+    assert result.dino_object_count == 1
+    assert result.decisions[0].decision_path is not DecisionPath.REPVIT_DIRECT
+    assert repvit.chunks[0][1] == (True, True) + (False,) * 12
+    assert dino.chunks[0][2] == (True,) + (False,) * 6
+    assert dino.chunks[0][0][0].size == (44, 22)
+
+
+def test_static_route_requires_immutable_fusion_before_repvit_execution():
+    aggregate = _repvit_scores({6: 0.80, 5: 0.20})
+    repvit = StaticPairRunner((_paired_evidence(aggregate),))
+
+    with pytest.raises(ValueError, match="immutable fusion"):
+        _pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load")).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert repvit.chunks == []
+
+
+def test_static_preprocess_hash_is_distinct_and_mismatch_aborts_before_repvit():
+    descriptor_hash = ClassifierPreprocessDescriptor().sha256()
+    legacy_hash = preprocess_sha256(ClassifierConfig.load(Path("configs/classifier_policy.yaml")).preprocess)
+    assert descriptor_hash != legacy_hash
+    aggregate = _repvit_scores({6: 0.80, 5: 0.20})
+    repvit = StaticPairRunner((_paired_evidence(aggregate),))
+
+    pipeline = _static_pipeline(
+        repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=_static_local_bank(),
+    )
+    assert pipeline.fusion_policy is not None
+    hashes = dict(pipeline.fusion_policy.artifact_hashes)
+    hashes["preprocess_sha256"] = legacy_hash
+    pipeline.fusion_policy = replace(pipeline.fusion_policy, artifact_hashes=hashes)
+
+    with pytest.raises(ValueError, match="static preprocessing"):
+        pipeline.infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert repvit.chunks == []
+
+
+@pytest.mark.parametrize(
+    ("local_bank", "message"),
+    (
+        (None, "local support bank"),
+        (object(), "local support bank"),
+        (LocalPatchBank({}, "not-a-sha256"), "local support identity"),
+        (LocalPatchBank({}, "1" * 64), "local support identity"),
+    ),
+)
+def test_static_route_requires_matching_local_bank_identity_before_direct_repvit(
+    local_bank, message
+):
+    repvit = StaticPairRunner((_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})),))
+
+    with pytest.raises(ValueError, match=message):
+        _static_pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=local_bank,
+        ).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert repvit.chunks == []
+
+
+def test_static_route_rejects_legacy_repvit_runner_without_executing_it():
+    repvit = LegacyOnlyStaticRepVit(_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})))
+
+    with pytest.raises(ValueError, match="tight/context static scoring"):
+        _static_pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=_static_local_bank(),
+        ).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert repvit.legacy_calls == 0
+
+
+def test_static_route_rejects_legacy_dino_runner_without_executing_it():
+    repvit = StaticPairRunner((_paired_evidence(_repvit_scores({6: 0.50, 5: 0.30})),))
+    dino = LegacyOnlyStaticDino(
+        DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5)
+    )
+
+    with pytest.raises(ValueError, match="context static scoring"):
+        _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank()).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert dino.legacy_calls == 0
+
+
+def test_static_route_rejects_padded_or_mis_sized_evidence_before_partial_result():
+    class PaddedRepVit(StaticPairRunner):
+        def score_tight_context_chunk(self, rows, *, valid_mask):
+            super().score_tight_context_chunk(rows, valid_mask=valid_mask)
+            return (self.evidence[0],) * 7
+
+    repvit = PaddedRepVit((_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})),))
+    with pytest.raises(ValueError, match="must align exactly"):
+        _static_pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=_static_local_bank(),
+        ).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+
+def test_static_route_rejects_padded_dino_evidence_before_partial_result():
+    class PaddedDino(StaticContextDino):
+        def score_context_chunk_global_and_local_evidence(
+            self, crops, product_boxes, local_bank, *, repvit_scores, valid_mask
+        ):
+            super().score_context_chunk_global_and_local_evidence(
+                crops, product_boxes, local_bank, repvit_scores=repvit_scores, valid_mask=valid_mask
+            )
+            return (self.evidence[0],) * 7
+
+    repvit = StaticPairRunner((_paired_evidence(_repvit_scores({6: 0.50, 5: 0.30})),))
+    dino = PaddedDino((DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5),))
+    with pytest.raises(ValueError, match="must align exactly"):
+        _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank()).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+
+def test_static_repvit_chunks_eight_objects_as_ordered_pairs_and_restores_order():
+    boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
+    evidence = tuple(_paired_evidence(_repvit_scores({sku_id: 0.80, 20 if sku_id != 20 else 19: 0.20})) for sku_id in range(1, 9))
+    repvit = StaticPairRunner(evidence)
+    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must stay lazy"), local_bank=_static_local_bank())
+
+    result = pipeline.infer_many(
+        _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+    )
+
+    assert [decision.box for decision in result.decisions] == list(boxes)
+    assert len(repvit.chunks) == 2
+    assert all(len(rows) == 14 and len(mask) == 14 for rows, mask in repvit.chunks)
+    assert repvit.chunks[0][1] == (True,) * 14
+    assert repvit.chunks[1][1] == (True, True) + (False,) * 12
+    assert [crop.size for crop in repvit.chunks[0][0][:4]] == [(8, 10), (10, 12), (8, 10), (10, 12)]
+
+
+def test_static_dino_receives_only_rejected_context_crops_in_seven_object_chunks():
+    boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
+    rejected = tuple(_paired_evidence(_repvit_scores({6: 0.50, 5: 0.30})) for _ in boxes)
+    dino_rows = tuple(DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5) for _ in boxes)
+    repvit = StaticPairRunner(rejected)
+    dino = StaticContextDino(dino_rows)
+    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank())
+
+    result = pipeline.infer_many(
+        _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+    )
+
+    assert len(result.decisions) == 8
+    assert result.dino_object_count == 8
+    assert len(dino.chunks) == 2
+    assert dino.chunks[0][2] == (True,) * 7
+    assert dino.chunks[1][2] == (True,) + (False,) * 6
+    assert all(crop.size == (10, 12) for crop in dino.chunks[0][0])
+
+
+def test_static_chunk_failure_aborts_whole_operation_without_partial_decisions():
+    boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
+    evidence = tuple(_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})) for _ in boxes)
+    repvit = StaticPairRunner(evidence, fail_chunk=2)
+
+    with pytest.raises(RuntimeError, match="static chunk failed"):
+        _static_pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=_static_local_bank()).infer_many(
+            _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+
+def test_static_batch_contract_accepts_one_two_and_more_than_seven_objects():
+    for count in (1, 2, 8):
+        boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(count))
+        evidence = tuple(_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})) for _ in boxes)
+        result = _static_pipeline(
+            repvit=StaticPairRunner(evidence),
+            dino_loader=lambda: pytest.fail("DINO must stay lazy"),
+            local_bank=_static_local_bank(),
+        ).infer_many(
+            _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+        assert len(result.decisions) == count
 
 
 def test_batch_shared_cuda_timing_never_synchronizes_the_host_clock():
@@ -780,7 +1076,7 @@ def test_runtime_fusion_local_agreement_uses_dino_evidence_despite_risk_abstenti
     assert result.provenance.calibration_id == "fusion_policy_v1"
 
 
-def test_runtime_records_high_margin_consensus_abstention_reason():
+def test_legacy_runtime_rejects_schema3_consensus_policy():
     config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
     selected = _calibration(direct_threshold=0.99)
     provenance = ModelProvenance(
@@ -815,10 +1111,8 @@ def test_runtime_records_high_margin_consensus_abstention_reason():
         fusion_provenance=replace(provenance, calibration_id="fusion_policy_v1", calibration_sha256="9" * 64),
     )
 
-    result = pipeline.infer(_image(), _box())
-
-    assert result.decision == "unknown"
-    assert result.unknown_reason == "fusion_global_consensus_margin"
+    with pytest.raises(ValueError, match="schema-3 static policy"):
+        pipeline.infer(_image(), _box())
 
 
 def test_recheck_confirmation_keeps_fused_confidence_meaning():
@@ -1107,6 +1401,115 @@ def test_load_builds_provenance_and_defers_dino_model_load(monkeypatch, tmp_path
     assert dino_loads == 0
 
 
+def test_load_rejects_schema3_policy_bound_to_legacy_preprocess(monkeypatch, tmp_path):
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    calibration = _calibration(
+        repvit_checkpoint_sha256=config.repvit.checkpoint_sha256,
+        repvit_manifest_sha256=config.repvit.manifest_sha256,
+        repvit_prototype_sha256=config.repvit.prototype_bank_sha256,
+        dinov3_weights_sha256=config.dinov3.weights_sha256,
+        dinov3_support_sha256=config.dinov3.support_sha256,
+        preprocess_sha256=preprocess_sha256(config.preprocess),
+    )
+    calibration_path = tmp_path / "policy.json"
+    calibration_path.write_bytes(calibration.to_json_bytes())
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": preprocess_sha256(config.preprocess),
+        },
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    fusion_path = tmp_path / "fusion.json"
+    fusion_path.write_bytes(fusion.to_json_bytes())
+    configured = config.model_copy(update={
+        "calibration": config.calibration.model_copy(update={
+            "artifact": calibration_path,
+            "fusion_policy": fusion_path,
+            "fusion_policy_sha256": hashlib.sha256(fusion_path.read_bytes()).hexdigest(),
+        })
+    })
+    monkeypatch.setattr("bakery_scanner.classification.runtime.ClassifierConfig.load", lambda path: configured)
+    monkeypatch.setattr("bakery_scanner.classification.runtime.RepVitM1Runner.load", lambda *args, **kwargs: pytest.fail("models must not load"))
+
+    with pytest.raises(ValueError, match="schema-3.*static preprocessing"):
+        ClassifierPipeline.load(tmp_path / "classifier.yaml")
+
+
+@pytest.mark.parametrize("invalid_artifact", ("dino_support", "local_bank"))
+def test_schema3_load_eagerly_admits_dino_metadata_before_repvit_or_inference(
+    monkeypatch, tmp_path, invalid_artifact
+):
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    static_sha256 = ClassifierPreprocessDescriptor().sha256()
+    calibration = _calibration(
+        repvit_checkpoint_sha256=config.repvit.checkpoint_sha256,
+        repvit_manifest_sha256=config.repvit.manifest_sha256,
+        repvit_prototype_sha256=config.repvit.prototype_bank_sha256,
+        dinov3_weights_sha256=config.dinov3.weights_sha256,
+        dinov3_support_sha256=config.dinov3.support_sha256,
+        preprocess_sha256=static_sha256,
+    )
+    calibration_path = tmp_path / "policy.json"
+    calibration_path.write_bytes(calibration.to_json_bytes())
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes={
+            "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
+            "repvit_manifest_sha256": config.repvit.manifest_sha256,
+            "repvit_prototype_sha256": config.repvit.prototype_bank_sha256,
+            "dinov3_weights_sha256": config.dinov3.weights_sha256,
+            "dinov3_support_sha256": config.dinov3.support_sha256,
+            "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
+            "preprocess_sha256": static_sha256,
+        },
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    fusion_path = tmp_path / "fusion.json"
+    fusion_path.write_bytes(fusion.to_json_bytes())
+    configured = config.model_copy(update={
+        "calibration": config.calibration.model_copy(update={
+            "artifact": calibration_path,
+            "fusion_policy": fusion_path,
+            "fusion_policy_sha256": hashlib.sha256(fusion_path.read_bytes()).hexdigest(),
+        })
+    })
+    monkeypatch.setattr("bakery_scanner.classification.runtime.ClassifierConfig.load", lambda path: configured)
+    monkeypatch.setattr("bakery_scanner.classification.runtime.RepVitM1Runner.load", lambda *args, **kwargs: pytest.fail("RepViT must not load before static DINO admission"))
+
+    if invalid_artifact == "dino_support":
+        monkeypatch.setattr(
+            "bakery_scanner.classification.runtime.DinoV3Rechecker.validate_artifacts",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("DINO support OOF preprocessing mismatch")),
+            raising=False,
+        )
+    else:
+        monkeypatch.setattr("bakery_scanner.classification.runtime.DinoV3Rechecker.validate_artifacts", lambda *args, **kwargs: None, raising=False)
+        monkeypatch.setattr(
+            "bakery_scanner.classification.runtime._load_local_bank",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("local bank OOF preprocessing mismatch")),
+        )
+
+    with pytest.raises(ValueError, match="OOF preprocessing mismatch"):
+        ClassifierPipeline.load(tmp_path / "classifier.yaml")
+
+
 def _pipeline(
     *,
     repvit: RecordingRunner,
@@ -1177,9 +1580,8 @@ def _fusion_pipeline(
             "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256,
             "preprocess_sha256": preprocess_sha256(config.preprocess),
         },
-        decision_rule="fusion_local_or_global_consensus_margin_v1",
-        schema_version=3,
-        consensus_margin_floor=0.85,
+        decision_rule="fusion_local_agree_v1",
+        schema_version=2,
     )
     return ClassifierPipeline(
         config=config,
@@ -1195,6 +1597,62 @@ def _fusion_pipeline(
         ),
         local_bank=local_bank,
     )
+
+
+def _static_pipeline(*, repvit, dino_loader, local_bank) -> ClassifierPipeline:
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    static_preprocess = ClassifierPreprocessDescriptor().sha256()
+    selected = _calibration(preprocess_sha256=static_preprocess)
+    provenance = ModelProvenance(
+        repvit_artifact_id=selected.repvit_artifact_id,
+        repvit_sha256="1" * 64,
+        dinov3_artifact_id=selected.dinov3_artifact_id,
+        dinov3_sha256="2" * 64,
+        dinov3_support_sha256="3" * 64,
+        calibration_id=selected.calibration_id,
+        calibration_sha256=hashlib.sha256(selected.to_json_bytes()).hexdigest(),
+        preprocess_sha256=static_preprocess,
+        repvit_manifest_sha256="0" * 64,
+        repvit_prototype_sha256="0" * 64,
+    )
+    hashes = {
+        "repvit_checkpoint_sha256": "1" * 64,
+        "repvit_manifest_sha256": "0" * 64,
+        "repvit_prototype_sha256": "0" * 64,
+        "dinov3_weights_sha256": "2" * 64,
+        "dinov3_support_sha256": "3" * 64,
+        "dinov3_local_bank_sha256": "0" * 64,
+        "preprocess_sha256": static_preprocess,
+    }
+    fusion = FusionPolicyArtifact(
+        ranker=FusionRanker((0.0,) * 9, (1.0,) * 9, (1.0,) + (0.0,) * 8, 0.0),
+        risk_calibrator=RiskCalibrator((0.0,) * 9, (1.0,) * 9, (0.0,) * 9, 0.0),
+        risk_threshold=0.2,
+        development_evidence_sha256="0" * 64,
+        artifact_hashes=hashes,
+        decision_rule="fusion_local_or_global_consensus_margin_v1",
+        schema_version=3,
+        consensus_margin_floor=0.85,
+    )
+    return ClassifierPipeline(
+        config=config,
+        repvit=repvit,
+        dino_loader=dino_loader,
+        policy=DecisionPolicy(selected, provenance=provenance),
+        prototype_bank=FixedPrototypeBank(),
+        fusion_policy=fusion,
+        fusion_provenance=replace(
+            provenance,
+            calibration_id="fusion_policy_static_v1",
+            calibration_sha256="9" * 64,
+        ),
+        local_bank=local_bank,
+    )
+
+
+def _static_local_bank() -> LocalPatchBank:
+    """Minimal concrete bank used only by runners that never invoke .score()."""
+    return LocalPatchBank({}, "0" * 64)
 
 
 def _calibration(**overrides: object) -> PolicyCalibration:

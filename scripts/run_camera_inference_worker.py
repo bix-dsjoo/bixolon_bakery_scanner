@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence, TextIO
 
 
 _ATTESTED_TREES = ("src", "dino", "data", "configs", "policies")
@@ -37,6 +37,35 @@ _DEPLOYED_IDENTITY_KEYS = {
     "code_commit",
     "code_identity_sha256",
 }
+_CANDIDATE_PROFILE = "rtx5080_15plus5_single_frame_v1"
+_LEGACY_PROFILE = "legacy"
+
+
+def serve_selected_runtime(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    runtime_factory: Callable[[Callable[[str, str | None], None]], object],
+    code_identity: dict[str, str],
+    runtime_profile: str,
+    candidate_provider_factory: Callable[[], object],
+    serve_fn: Callable[..., int],
+) -> int:
+    """Forward one explicit launch selection to the worker without fallback."""
+    if runtime_profile == _CANDIDATE_PROFILE:
+        candidate_provider = candidate_provider_factory()
+    elif runtime_profile == _LEGACY_PROFILE:
+        candidate_provider = None
+    else:
+        raise ValueError("unsupported camera runtime profile")
+    return serve_fn(
+        stdin,
+        stdout,
+        runtime_factory=runtime_factory,
+        code_identity=code_identity,
+        runtime_profile_id=runtime_profile,
+        candidate_runtime_provider=candidate_provider,
+    )
 
 
 def resolve_paths(
@@ -243,6 +272,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument(
+        "--runtime-profile",
+        choices=(_CANDIDATE_PROFILE, _LEGACY_PROFILE),
+        default=_CANDIDATE_PROFILE,
+    )
     parser.add_argument("--warmup-image", required=True, type=Path)
     parser.add_argument("--allow-external-warmup", action="store_true")
     parser.add_argument("--staged-root", type=Path)
@@ -289,6 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.path.insert(0, str(dino_root))
         sys.path.insert(0, str(source_root))
         from bakery_scanner.prototype.camera_runtime import CameraInferenceRuntime
+        from bakery_scanner.prototype.camera_runtime import CandidateAdmissionFailed
         from bakery_scanner.prototype.camera_worker import serve
 
         def runtime_factory(emit):
@@ -300,11 +335,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 artifact_root=root,
             )
 
-        return serve(
-            sys.stdin,
-            sys.stdout,
+        class CandidateAdmissionProvider:
+            """Fail closed until the externally admitted engine runtime is staged."""
+
+            def admit(self):
+                manifest = (
+                    root
+                    / "artifacts"
+                    / "rtx5080_15plus5_single_frame_v1"
+                    / "admission.json"
+                )
+                if not manifest.is_file():
+                    raise CandidateAdmissionFailed(
+                        "admission_failed: candidate admission manifest is unavailable; "
+                        "no fallback"
+                    )
+                raise CandidateAdmissionFailed(
+                    "admission_failed: candidate engine-session provider is unavailable; "
+                    "no fallback"
+                )
+
+            def load(self, receipt):
+                del receipt
+                raise CandidateAdmissionFailed(
+                    "admission_failed: candidate runtime was not admitted; no fallback"
+                )
+
+        return serve_selected_runtime(
+            stdin=sys.stdin,
+            stdout=sys.stdout,
             runtime_factory=runtime_factory,
             code_identity=code_identity,
+            runtime_profile=args.runtime_profile,
+            candidate_provider_factory=CandidateAdmissionProvider,
+            serve_fn=serve,
         )
 
 

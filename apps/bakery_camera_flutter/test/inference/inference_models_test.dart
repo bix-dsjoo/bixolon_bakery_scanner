@@ -2,6 +2,66 @@ import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('candidate retake preserves chain and increments attempts', () {
+    final result = CandidateScanResult.fromJson(_candidateRetakeJson(attempt: 1));
+
+    expect(result.objects, isEmpty);
+    expect(result.skuTotals, isEmpty);
+    expect(result.problemRegions, hasLength(1));
+    expect(result.nextRetakeRequest.retakeChainId, 'chain-1');
+    expect(result.nextRetakeRequest.attempt, 2);
+  });
+
+  test('candidate third retake requires manual catalog without partial inference', () {
+    final result = CandidateScanResult.fromJson(_candidateRetakeJson(attempt: 3));
+
+    expect(result.manualCatalogRequired, isTrue);
+    expect(() => result.nextRetakeRequest, throwsStateError);
+
+    final partial = _candidateRetakeJson(attempt: 3);
+    partial['objects'] = [<String, Object?>{'partial': true}];
+    expect(() => CandidateScanResult.fromJson(partial), throwsFormatException);
+  });
+
+  test('candidate schema rejects unknown fields and non-finite timings', () {
+    final unknown = _candidateRetakeJson()..['extra'] = true;
+    expect(() => CandidateScanResult.fromJson(unknown), throwsFormatException);
+
+    final nonFinite = _candidateRetakeJson();
+    (nonFinite['timings_ms']! as Map<String, Object?>)['detector'] = double.nan;
+    expect(() => CandidateScanResult.fromJson(nonFinite), throwsFormatException);
+  });
+
+  test('candidate parser rejects noncanonical object and Top3 SKU names', () {
+    final wrongObject = _candidateObjectJson()
+      ..['sku_name'] = 'not canonical';
+    expect(
+      () => CandidateInferenceObject.fromJson(
+        wrongObject,
+        scanId: 'scan-1',
+        expectedOrder: 1,
+        imageWidth: 100,
+        imageHeight: 100,
+        runtimeProfileId: 'rtx5080_trt_fp16_static7_v1',
+      ),
+      throwsFormatException,
+    );
+
+    final wrongTop3 = _candidateObjectJson();
+    ((wrongTop3['top3']! as List<Object?>).first! as Map<String, Object?>)
+        ['sku_name'] = 'not canonical';
+    expect(
+      () => CandidateInferenceObject.fromJson(
+        wrongTop3,
+        scanId: 'scan-1',
+        expectedOrder: 1,
+        imageWidth: 100,
+        imageHeight: 100,
+        runtimeProfileId: 'rtx5080_trt_fp16_static7_v1',
+      ),
+      throwsFormatException,
+    );
+  });
   test('parses a deterministic fail-closed result contract', () {
     final result = InferenceResult.fromJson(
       _resultJson(
@@ -625,6 +685,82 @@ void main() {
     }
   });
 }
+
+Map<String, Object?> _candidateRetakeJson({int attempt = 1}) => {
+  'type': 'result',
+  'request_id': 'scan-1',
+  'scan_id': 'scan-1',
+  'retake_chain_id': 'chain-1',
+  'state': 'needs_retake',
+  'object_total': 0,
+  'registered_object_total': 0,
+  'unknown_total': 0,
+  'sku_totals': <String, Object?>{},
+  'objects': <Object?>[],
+  'reasons': <Object?>['overlap_or_occlusion'],
+  'problem_regions': <Object?>[
+    {
+      'box_xyxy': <Object?>[1.0, 2.0, 5.0, 6.0],
+      'center_normalized': <Object?>[0.15, 0.2],
+      'object_order': 1,
+    },
+  ],
+  'attempt': attempt,
+  'canonical_frame': <String, Object?>{'width': 20, 'height': 20},
+  'timings_ms': <String, Object?>{
+    'decode_canonical': 1.0,
+    'detector': 2.0,
+    'completeness': 3.0,
+    'crop': 0.0,
+    'repvit': 0.0,
+    'direct_gate': 0.0,
+    'dinov3': 0.0,
+    'fusion_payload': 0.0,
+    'total': 6.0,
+  },
+  'provenance': <String, Object?>{
+    'pipeline_id': 'rtx5080_15plus5_single_frame_v1',
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+    'admission_receipt_sha256': 'a' * 64,
+    'artifact_hashes': <String, Object?>{'detector': 'b' * 64},
+  },
+  'manual_catalog_required': attempt >= 3,
+  'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  'receipt_id': 'a' * 64,
+};
+
+Map<String, Object?> _candidateObjectJson() => {
+  'object_id': 'scan-1#0001',
+  'sku_id': 1,
+  'sku_name': 'Walnut Donut',
+  'decision_path': 'direct_approved',
+  'location': <String, Object?>{
+    'box_xyxy': <Object?>[10.0, 10.0, 30.0, 30.0],
+    'center_normalized': <Object?>[0.2, 0.2],
+    'object_order': 1,
+  },
+  'confidence': <String, Object?>{
+    'detector_calibrated': 0.9,
+    'sku_acceptance_calibrated': 0.8,
+    'fusion_margin': null,
+  },
+  'top3': <Object?>[
+    {'rank': 1, 'sku_id': 1, 'sku_name': 'Walnut Donut', 'score': 0.8},
+    {'rank': 2, 'sku_id': 2, 'sku_name': 'Croffle', 'score': 0.15},
+    {'rank': 3, 'sku_id': 3, 'sku_name': 'Waffle', 'score': 0.05},
+  ],
+  'provenance': <String, Object?>{
+    'detector_artifact_id': 'detector',
+    'detector_sha256': 'a' * 64,
+    'repvit_artifact_id': 'repvit',
+    'repvit_sha256': 'b' * 64,
+    'dinov3_artifact_id': 'dinov3',
+    'dinov3_sha256': 'c' * 64,
+    'fusion_policy_id': 'fusion',
+    'fusion_policy_sha256': 'd' * 64,
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  },
+};
 
 Map<String, Object?> _startupMetricsJson() {
   return {

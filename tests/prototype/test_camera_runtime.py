@@ -27,10 +27,43 @@ from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.prototype.camera_protocol import WorkerPhase
 from bakery_scanner.prototype.presentation_policy import PresentationPolicy
 from bakery_scanner.prototype.camera_runtime import (
+    CandidateAdmissionFailed,
     CameraInferenceRuntime,
+    select_candidate_runtime,
     _applied_artifact_hashes,
     _load_detector_manifest,
 )
+
+
+def test_candidate_selector_returns_only_admitted_runtime():
+    candidate = object()
+
+    selected = select_candidate_runtime(
+        "rtx5080_15plus5_single_frame_v1",
+        admit=lambda: "admitted",
+        load=lambda receipt: candidate if receipt == "admitted" else None,
+    )
+
+    assert selected is candidate
+
+
+def test_candidate_selector_reports_admission_failed_without_legacy_fallback():
+    legacy_called = False
+
+    def legacy_loader():
+        nonlocal legacy_called
+        legacy_called = True
+        return object()
+
+    with pytest.raises(CandidateAdmissionFailed, match="admission_failed"):
+        select_candidate_runtime(
+            "rtx5080_15plus5_single_frame_v1",
+            admit=lambda: (_ for _ in ()).throw(ValueError("hash mismatch")),
+            load=lambda _: object(),
+            legacy_fallback=legacy_loader,
+        )
+
+    assert legacy_called is False
 
 
 def _write_image(path: Path, size: tuple[int, int] = (80, 60)) -> Path:

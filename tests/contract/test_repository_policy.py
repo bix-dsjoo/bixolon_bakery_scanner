@@ -134,6 +134,20 @@ def test_git_contains_no_oversized_or_runtime_generated_payloads():
     ]
 
 
+def test_rtx5080_completion_receipt_is_git_safe_and_never_promotes_production():
+    receipt = json.loads(
+        (ROOT / "experiments/rtx5080_15plus5_single_frame_v1/receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert receipt["status"] == "unverified"
+    assert receipt["production_status"] == "unverified"
+    assert "non_target_rejection" in receipt["unverified_boundaries"]
+    assert "p95" not in json.dumps(receipt)
+    assert "C:\\" not in json.dumps(receipt)
+
+
 def test_ci_installs_the_vendored_dinov3_package_before_pytest():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 

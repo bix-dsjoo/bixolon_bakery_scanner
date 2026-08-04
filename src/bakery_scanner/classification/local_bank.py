@@ -11,6 +11,8 @@ from typing import Mapping, Sequence
 import torch
 import torch.nn.functional as functional
 
+from .preprocess import ClassifierPreprocessDescriptor
+
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SKU_IDS = tuple(range(1, 21))
@@ -77,6 +79,7 @@ class LocalPatchBank:
         *,
         dino_weights_sha256: str,
         preprocess_sha256: str,
+        expected_oof_preprocess_sha256: str | None = None,
     ) -> "LocalPatchBank":
         payload_path = Path(path)
         if not payload_path.is_file():
@@ -96,6 +99,16 @@ class LocalPatchBank:
             raise ValueError("local patch bank preprocess SHA-256 mismatch")
         if payload.get("canonical_frame_version") != "exif_visual_rgb_v1":
             raise ValueError("local patch bank canonical frame is invalid")
+        if expected_oof_preprocess_sha256 is not None:
+            descriptor = ClassifierPreprocessDescriptor()
+            metadata = payload.get("oof_metadata")
+            if (
+                expected_oof_preprocess_sha256 != descriptor.sha256()
+                or not isinstance(metadata, dict)
+                or metadata.get("preprocessing_sha256") != expected_oof_preprocess_sha256
+                or metadata.get("preprocessing_descriptor") != descriptor.to_payload()
+            ):
+                raise ValueError("local patch bank OOF preprocessing descriptor or SHA-256 mismatch")
         patches = payload.get("patches")
         if not isinstance(patches, dict) or tuple(sorted(patches)) != _SKU_IDS:
             raise ValueError("local patch bank must contain every canonical SKU")

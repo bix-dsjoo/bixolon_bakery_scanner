@@ -20,6 +20,7 @@ from .camera_protocol import (
     progress_event,
     validate_result_event,
 )
+from .camera_runtime import CandidateAdmissionFailed, select_candidate_runtime
 
 
 class CameraRuntime(Protocol):
@@ -36,6 +37,15 @@ class CameraRuntime(Protocol):
 
 
 RuntimeFactory = Callable[[Callable[[str, str | None], None]], CameraRuntime]
+
+
+class CandidateRuntimeProvider(Protocol):
+    def admit(self) -> object: ...
+    def load(self, receipt: object) -> CameraRuntime: ...
+
+
+_CANDIDATE_PROFILE = "rtx5080_15plus5_single_frame_v1"
+_LEGACY_PROFILE = "legacy"
 _STARTUP_EVENTS = frozenset({"loading", "warming"})
 _CODE_IDENTITY_FIELDS = frozenset({"code_commit", "code_identity_sha256"})
 _LOWER_HEX = frozenset("0123456789abcdef")
@@ -57,6 +67,8 @@ def serve(
     runtime_factory: RuntimeFactory,
     stderr: TextIO | None = None,
     code_identity: Mapping[str, str] | None = None,
+    runtime_profile_id: str | None = None,
+    candidate_runtime_provider: CandidateRuntimeProvider | None = None,
 ) -> int:
     """Serve requests until shutdown or EOF, keeping stdout protocol-only."""
     diagnostics = stderr or sys.stderr
@@ -84,9 +96,29 @@ def serve(
     emit_startup("loading")
     try:
         with contextlib.redirect_stdout(diagnostics):
-            runtime = runtime_factory(emit_startup)
+            if runtime_profile_id == _CANDIDATE_PROFILE:
+                if candidate_runtime_provider is None:
+                    raise CandidateAdmissionFailed(
+                        "admission_failed: candidate runtime provider is unavailable; no fallback"
+                    )
+                runtime = select_candidate_runtime(
+                    _CANDIDATE_PROFILE,
+                    admit=candidate_runtime_provider.admit,
+                    load=candidate_runtime_provider.load,
+                    legacy_fallback=lambda: runtime_factory(emit_startup),
+                )
+            elif runtime_profile_id in {None, _LEGACY_PROFILE}:
+                runtime = runtime_factory(emit_startup)
+            else:
+                raise ValueError("unsupported worker runtime profile")
         emit_startup("warming")
         emit(_ready_event(runtime, code_identity=attested_identity))
+    except CandidateAdmissionFailed as exc:
+        if runtime is not None:
+            _close_runtime(runtime, diagnostics)
+        _write_diagnostic(diagnostics, "candidate admission failed", exc)
+        emit({"type": "fatal", "code": "admission_failed", "message": str(exc)})
+        return 1
     except Exception as exc:
         if runtime is not None:
             _close_runtime(runtime, diagnostics)
