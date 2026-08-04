@@ -1,0 +1,905 @@
+"""Fail-closed, hash-bound scoring for RPC few-shot research evidence.
+
+This module deliberately operates on RPC category identifiers only.  It has no
+dependency on the bakery runtime taxonomy or any model adapter.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from numbers import Real
+from typing import Any, Iterable, Literal, Mapping, Sequence
+
+
+_HASH_NAMES = (
+    "condition_manifest_sha256",
+    "model_sha256",
+    "support_sha256",
+    "calibration_sha256",
+    "policy_sha256",
+    "preprocessing_sha256",
+    "code_sha256",
+)
+_BOUND_HASH_NAMES = _HASH_NAMES[:-1]
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_DIFFICULTIES = ("E", "M", "H")
+GroundTruthIdentity = tuple[str, int, str, str, int]
+PairIdentity = tuple[str, int, int, str, int]
+BranchName = Literal["repvit_global", "dinov3_global", "dinov3_local"]
+_BRANCH_SCORE_FIELDS: Mapping[BranchName, str] = {
+    "repvit_global": "repvit_global_scores",
+    "dinov3_global": "dinov3_global_scores",
+    "dinov3_local": "dinov3_local_scores",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LockedGroundTruthRow:
+    """One immutable prediction opportunity in the locked RPC cohort."""
+
+    sample_id: str
+    object_id: int
+    burst_id: str
+    difficulty: str
+    truth_category_id: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sample_id, str) or not self.sample_id:
+            raise ValueError("ground-truth sample_id must be nonempty")
+        if type(self.object_id) is not int or self.object_id <= 0:
+            raise ValueError("ground-truth object_id must be a positive integer")
+        if not isinstance(self.burst_id, str) or not self.burst_id:
+            raise ValueError("ground-truth burst_id must be nonempty")
+        if self.difficulty not in _DIFFICULTIES:
+            raise ValueError("ground-truth difficulty must be E, M, or H")
+        if type(self.truth_category_id) is not int or self.truth_category_id <= 0:
+            raise ValueError("ground-truth category ID must be a positive integer")
+
+    @property
+    def identity(self) -> GroundTruthIdentity:
+        return (
+            self.sample_id,
+            self.object_id,
+            self.burst_id,
+            self.difficulty,
+            self.truth_category_id,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "burst_id": self.burst_id,
+            "difficulty": self.difficulty,
+            "object_id": self.object_id,
+            "sample_id": self.sample_id,
+            "truth_category_id": self.truth_category_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "LockedGroundTruthRow":
+        expected = {
+            "burst_id",
+            "difficulty",
+            "object_id",
+            "sample_id",
+            "truth_category_id",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("invalid locked ground-truth object")
+        try:
+            return cls(
+                sample_id=value["sample_id"],  # type: ignore[arg-type]
+                object_id=value["object_id"],  # type: ignore[arg-type]
+                burst_id=value["burst_id"],  # type: ignore[arg-type]
+                difficulty=value["difficulty"],  # type: ignore[arg-type]
+                truth_category_id=value["truth_category_id"],  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid locked ground-truth object") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchEvidenceRow:
+    """One score-bearing, reproducible research evaluation observation."""
+
+    sample_id: str
+    object_id: int
+    condition_id: str
+    fold: int
+    difficulty: str
+    burst_id: str
+    truth_category_id: int
+    predicted_category_id: int | None
+    score_category_ids: tuple[int, ...]
+    repvit_global_scores: tuple[float, ...]
+    dinov3_global_scores: tuple[float, ...]
+    dinov3_local_scores: tuple[float, ...]
+    conditional_dino_executed: bool
+    condition_manifest_sha256: str
+    model_sha256: str
+    support_sha256: str
+    calibration_sha256: str
+    policy_sha256: str
+    preprocessing_sha256: str
+    code_sha256: str
+
+    def __post_init__(self) -> None:
+        for name in ("sample_id", "condition_id", "burst_id"):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name):
+                raise ValueError(f"{name} must be nonempty")
+        if type(self.object_id) is not int or self.object_id <= 0:
+            raise ValueError("object_id must be a positive integer")
+        if type(self.fold) is not int or self.fold < 0:
+            raise ValueError("fold must be a non-negative integer")
+        if self.difficulty not in _DIFFICULTIES:
+            raise ValueError("difficulty must be E, M, or H")
+        if type(self.truth_category_id) is not int or self.truth_category_id <= 0:
+            raise ValueError("truth category ID must be a positive integer")
+        if self.predicted_category_id is not None and (
+            type(self.predicted_category_id) is not int or self.predicted_category_id <= 0
+        ):
+            raise ValueError("predicted category ID must be a positive integer or None")
+        category_ids = _integer_tuple(self.score_category_ids, "score category IDs")
+        if not category_ids or len(set(category_ids)) != len(category_ids):
+            raise ValueError("score category IDs must be a nonempty ordered unique sequence")
+        for branch, field_name in _BRANCH_SCORE_FIELDS.items():
+            scores = _finite_tuple(getattr(self, field_name), f"{branch} scores")
+            if len(scores) != len(category_ids):
+                raise ValueError(
+                    f"score category IDs and {branch} scores must have equal length"
+                )
+            object.__setattr__(self, field_name, scores)
+        if self.truth_category_id not in category_ids:
+            raise ValueError("truth category ID is missing from scores")
+        if self.predicted_category_id is not None and self.predicted_category_id not in category_ids:
+            raise ValueError("predicted category ID is missing from scores")
+        if type(self.conditional_dino_executed) is not bool:
+            raise ValueError("conditional_dino_executed must be boolean")
+        object.__setattr__(self, "score_category_ids", category_ids)
+        for name in _HASH_NAMES:
+            _validate_hash(name, getattr(self, name))
+
+    @property
+    def pair_identity(self) -> PairIdentity:
+        return (
+            self.sample_id,
+            self.object_id,
+            self.fold,
+            self.burst_id,
+            self.truth_category_id,
+        )
+
+    @property
+    def ground_truth_identity(self) -> GroundTruthIdentity:
+        return (
+            self.sample_id,
+            self.object_id,
+            self.burst_id,
+            self.difficulty,
+            self.truth_category_id,
+        )
+
+    def branch_top1_category_id(self, branch: BranchName) -> int:
+        """Return a branch Top-1 using the producer's ordered first maximum."""
+        try:
+            scores = getattr(self, _BRANCH_SCORE_FIELDS[branch])
+        except (KeyError, TypeError) as exc:
+            raise ValueError("unsupported score branch") from exc
+        return self.score_category_ids[
+            max(range(len(scores)), key=scores.__getitem__)
+        ]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "sample_id": self.sample_id,
+            "object_id": self.object_id,
+            "condition_id": self.condition_id,
+            "fold": self.fold,
+            "difficulty": self.difficulty,
+            "burst_id": self.burst_id,
+            "truth_category_id": self.truth_category_id,
+            "predicted_category_id": self.predicted_category_id,
+            "score_category_ids": list(self.score_category_ids),
+            "repvit_global_scores": list(self.repvit_global_scores),
+            "dinov3_global_scores": list(self.dinov3_global_scores),
+            "dinov3_local_scores": list(self.dinov3_local_scores),
+            "conditional_dino_executed": self.conditional_dino_executed,
+            **{name: getattr(self, name) for name in _HASH_NAMES},
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ResearchEvidenceRow":
+        if not isinstance(value, Mapping):
+            raise ValueError("evidence row must be an object")
+        required = {
+            "sample_id", "object_id", "condition_id", "fold", "difficulty", "burst_id", "truth_category_id",
+            "predicted_category_id", "score_category_ids", "repvit_global_scores",
+            "dinov3_global_scores", "dinov3_local_scores", "conditional_dino_executed", *_HASH_NAMES,
+        }
+        missing = required - set(value)
+        extra = set(value) - required
+        if missing or extra:
+            raise ValueError("evidence row has missing or unrecognized fields")
+        try:
+            return cls(
+                sample_id=value["sample_id"],  # type: ignore[arg-type]
+                object_id=value["object_id"],  # type: ignore[arg-type]
+                condition_id=value["condition_id"],  # type: ignore[arg-type]
+                fold=value["fold"],  # type: ignore[arg-type]
+                difficulty=value["difficulty"],  # type: ignore[arg-type]
+                burst_id=value["burst_id"],  # type: ignore[arg-type]
+                truth_category_id=value["truth_category_id"],  # type: ignore[arg-type]
+                predicted_category_id=value["predicted_category_id"],  # type: ignore[arg-type]
+                score_category_ids=tuple(value["score_category_ids"]),  # type: ignore[arg-type]
+                repvit_global_scores=tuple(value["repvit_global_scores"]),  # type: ignore[arg-type]
+                dinov3_global_scores=tuple(value["dinov3_global_scores"]),  # type: ignore[arg-type]
+                dinov3_local_scores=tuple(value["dinov3_local_scores"]),  # type: ignore[arg-type]
+                conditional_dino_executed=value["conditional_dino_executed"],  # type: ignore[arg-type]
+                **{name: value[name] for name in _HASH_NAMES},  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid evidence row") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class BranchTop1Summary:
+    sample_count: int
+    novel_macro_recall: float
+    base_macro_recall: float
+    per_category_recall: Mapping[int, float]
+    confusion_matrix: Mapping[int, Mapping[int, int]]
+    fifth_percentile_sku_accuracy: float
+    wrong_registered_sku_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class DifficultySummary:
+    sample_count: int
+    unknown_rate: float
+    registered_coverage: float
+    wrong_registered_sku_rate: float
+    novel_macro_final_correct_recall: float
+    base_macro_final_correct_recall: float
+    conditional_dino_execution_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class FullSystemSummary:
+    sample_count: int
+    wrong_registered_sku_rate: float
+    novel_wrong_registered_sku_rate: float
+    base_wrong_registered_sku_rate: float
+    unknown_rate: float
+    registered_coverage: float
+    novel_macro_final_correct_recall: float
+    base_macro_final_correct_recall: float
+    per_category_final_correct_recall: Mapping[int, float]
+    novel_loss_over_10pp_fraction: float
+    conditional_dino_execution_rate: float
+    by_difficulty: Mapping[str, DifficultySummary]
+
+
+@dataclass(frozen=True, slots=True)
+class PairedBootstrapInterval:
+    replicates: int
+    seed: int
+    novel_macro_recall_lower_delta: float
+    novel_macro_recall_upper_delta: float
+    novel_wrong_registered_sku_rate_lower_delta: float
+    novel_wrong_registered_sku_rate_upper_delta: float
+    base_macro_recall_lower_delta: float
+    base_macro_recall_upper_delta: float
+
+
+@dataclass(frozen=True, slots=True)
+class PairedConditionEvidence:
+    """One fold/seed condition pair participating in a final aggregate."""
+
+    fold: int
+    support_seed: int
+    novel_category_ids: frozenset[int]
+    candidate: tuple[ResearchEvidenceRow, ...]
+    reference: tuple[ResearchEvidenceRow, ...]
+
+
+def validate_evidence_rows(rows: Iterable[ResearchEvidenceRow]) -> tuple[ResearchEvidenceRow, ...]:
+    """Reject duplicates and mixed condition/provenance within one evidence file."""
+    frozen = tuple(rows)
+    if not frozen:
+        raise ValueError("evidence must not be empty")
+    if not all(isinstance(row, ResearchEvidenceRow) for row in frozen):
+        raise ValueError("evidence rows must be ResearchEvidenceRow instances")
+    object_ids = [row.object_id for row in frozen]
+    if len(object_ids) != len(set(object_ids)):
+        raise ValueError("duplicate object_id")
+    first = frozen[0]
+    provenance = _provenance_key(first)
+    if any(row.condition_id != first.condition_id or _provenance_key(row) != provenance for row in frozen[1:]):
+        raise ValueError("provenance mismatch within evidence")
+    return frozen
+
+
+def validate_evidence_completeness(
+    rows: Iterable[ResearchEvidenceRow],
+    expected: Iterable[LockedGroundTruthRow],
+) -> tuple[ResearchEvidenceRow, ...]:
+    """Require exact locked-object coverage with no omissions or additions."""
+    frozen = validate_evidence_rows(rows)
+    ground_truth = tuple(expected)
+    if not ground_truth or not all(
+        isinstance(row, LockedGroundTruthRow) for row in ground_truth
+    ):
+        raise ValueError("locked ground-truth rows must be nonempty")
+    identities = [row.identity for row in ground_truth]
+    object_ids = [row.object_id for row in ground_truth]
+    if (
+        len(identities) != len(set(identities))
+        or len(object_ids) != len(set(object_ids))
+        or {row.ground_truth_identity for row in frozen} != set(identities)
+        or len(frozen) != len(ground_truth)
+    ):
+        raise ValueError("evidence does not exactly match locked ground-truth identity")
+    return frozen
+
+
+def validate_evidence_against_condition(
+    rows: Iterable[ResearchEvidenceRow], condition: Mapping[str, object]
+) -> tuple[ResearchEvidenceRow, ...]:
+    """Bind canonical rows to the immutable condition receipt's hashes."""
+    frozen = validate_evidence_rows(rows)
+    expected_id, expected_hashes = condition_provenance(condition)
+    novel, base = condition_cohort(condition)
+    registered = _receipt_registered_categories(condition)
+    nested = condition.get("condition")
+    expected_fold = nested.get("fold") if isinstance(nested, Mapping) else None
+    permitted = novel | base
+    for row in frozen:
+        if row.condition_id != expected_id:
+            raise ValueError("condition ID provenance mismatch")
+        if row.fold != expected_fold:
+            raise ValueError("fold provenance mismatch")
+        for name, expected in expected_hashes.items():
+            if getattr(row, name) != expected:
+                raise ValueError(f"{name} provenance mismatch")
+        if row.truth_category_id not in permitted or (
+            row.predicted_category_id is not None and row.predicted_category_id not in permitted
+        ):
+            raise ValueError("evidence category is outside the bound cohort")
+        if row.score_category_ids != registered:
+            raise ValueError("score category IDs must equal the complete registered cohort order")
+    observed_truth = {row.truth_category_id for row in frozen}
+    if novel - observed_truth:
+        raise ValueError("novel cohort is absent from evidence")
+    if base - observed_truth:
+        raise ValueError("base cohort is absent from evidence")
+    return frozen
+
+
+def _receipt_registered_categories(condition: Mapping[str, object]) -> tuple[int, ...]:
+    scoring = condition.get("scoring")
+    if not isinstance(scoring, Mapping):
+        raise ValueError("condition receipt lacks immutable scoring plan")
+    values = scoring.get("registered_category_ids")
+    categories = _integer_tuple(values, "registered category IDs")
+    if not categories or len(set(categories)) != len(categories):
+        raise ValueError("registered category IDs must be a complete ordered unique cohort")
+    return categories
+
+
+def condition_provenance(condition: Mapping[str, object]) -> tuple[str, Mapping[str, str]]:
+    """Read the score-binding fields from a completed immutable receipt JSON."""
+    if not isinstance(condition, Mapping):
+        raise ValueError("condition receipt must be an object")
+    nested = condition.get("condition")
+    condition_id = nested.get("condition_id") if isinstance(nested, Mapping) else None
+    if not isinstance(condition_id, str) or not condition_id:
+        raise ValueError("condition receipt lacks condition_id")
+    hashes: dict[str, str] = {}
+    for name in _HASH_NAMES:
+        value = condition.get(name)
+        _validate_hash(name, value)
+        hashes[name] = value
+    return condition_id, hashes
+
+
+def condition_cohort(condition: Mapping[str, object]) -> tuple[set[int], set[int]]:
+    """Return the receipt-bound novel/base cohorts, never an ambient override."""
+    if not isinstance(condition, Mapping):
+        raise ValueError("condition receipt must be an object")
+    cohort = condition.get("cohort")
+    nested = condition.get("condition")
+    if not isinstance(cohort, Mapping) or not isinstance(nested, Mapping):
+        raise ValueError("condition receipt lacks bound cohort")
+    fold = cohort.get("fold")
+    if type(fold) is not int or fold != nested.get("fold"):
+        raise ValueError("condition receipt cohort fold mismatch")
+    _validate_hash("cohort manifest_sha256", cohort.get("manifest_sha256"))
+    novel = _category_set(cohort.get("novel_category_ids"), "novel cohort")
+    base = _category_set(cohort.get("base_category_ids"), "base cohort")
+    if novel & base:
+        raise ValueError("novel and base cohorts overlap")
+    return novel, base
+
+
+def validate_paired_evidence(
+    candidate: Iterable[ResearchEvidenceRow], reference: Iterable[ResearchEvidenceRow]
+) -> tuple[tuple[ResearchEvidenceRow, ...], tuple[ResearchEvidenceRow, ...]]:
+    """Require exact one-to-one pairing without conflating distinct conditions."""
+    candidate_rows = validate_evidence_rows(candidate)
+    reference_rows = validate_evidence_rows(reference)
+    candidate_ids = {row.pair_identity for row in candidate_rows}
+    reference_ids = {row.pair_identity for row in reference_rows}
+    if candidate_ids != reference_ids:
+        raise ValueError("paired identity mismatch")
+    if len(candidate_ids) != len(candidate_rows) or len(reference_ids) != len(reference_rows):
+        raise ValueError("duplicate paired identity")
+    reference_by_identity = {row.pair_identity: row for row in reference_rows}
+    if any(row.difficulty != reference_by_identity[row.pair_identity].difficulty for row in candidate_rows):
+        raise ValueError("paired difficulty mismatch")
+    return candidate_rows, reference_rows
+
+
+def branch_top1_summary(
+    rows: Iterable[ResearchEvidenceRow],
+    *,
+    branch: BranchName,
+    novel_category_ids: set[int] | frozenset[int],
+) -> BranchTop1Summary:
+    frozen = validate_evidence_rows(rows)
+    _validate_observed_cohorts(frozen, frozenset(novel_category_ids))
+    recalls = _category_recalls(
+        frozen,
+        lambda row: row.branch_top1_category_id(branch) == row.truth_category_id,
+    )
+    return BranchTop1Summary(
+        sample_count=len(frozen),
+        novel_macro_recall=_macro(recalls, novel_category_ids),
+        base_macro_recall=_macro(recalls, _base_categories(frozen, novel_category_ids)),
+        per_category_recall=recalls,
+        confusion_matrix=_branch_confusion_matrix(frozen, branch),
+        fifth_percentile_sku_accuracy=_percentile(tuple(recalls.values()), 0.05),
+        wrong_registered_sku_rate=_mean(
+            row.branch_top1_category_id(branch) != row.truth_category_id for row in frozen
+        ),
+    )
+
+
+def branch_top1_agreement(
+    rows: Iterable[ResearchEvidenceRow],
+    *,
+    first: BranchName,
+    second: BranchName,
+) -> float:
+    frozen = validate_evidence_rows(rows)
+    return _mean(
+        row.branch_top1_category_id(first) == row.branch_top1_category_id(second)
+        for row in frozen
+    )
+
+
+def full_system_summary(
+    rows: Iterable[ResearchEvidenceRow], *, novel_category_ids: set[int] | frozenset[int], reference_rows: Iterable[ResearchEvidenceRow] | None = None
+) -> FullSystemSummary:
+    frozen = validate_evidence_rows(rows)
+    _validate_observed_cohorts(frozen, frozenset(novel_category_ids))
+    if reference_rows is not None:
+        _, reference = validate_paired_evidence(frozen, reference_rows)
+        reference_recalls = _category_recalls(reference, _final_correct)
+    else:
+        reference_recalls = None
+    return _full_summary(frozen, frozenset(novel_category_ids), reference_recalls)
+
+
+def bootstrap_paired_deltas(
+    candidate: Iterable[ResearchEvidenceRow], reference: Iterable[ResearchEvidenceRow], *, novel_category_ids: set[int] | frozenset[int], seed: int, replicates: int
+) -> PairedBootstrapInterval:
+    """Deterministically resample category/fold then scene-burst/difficulty pairs."""
+    candidate_rows = tuple(candidate)
+    reference_rows = tuple(reference)
+    if not candidate_rows:
+        raise ValueError("evidence must not be empty")
+    folds = {row.fold for row in candidate_rows}
+    if len(folds) != 1:
+        raise ValueError("single-condition bootstrap requires exactly one fold")
+    return bootstrap_paired_condition_deltas(
+        (
+            PairedConditionEvidence(
+                fold=next(iter(folds)),
+                support_seed=0,
+                novel_category_ids=frozenset(novel_category_ids),
+                candidate=candidate_rows,
+                reference=reference_rows,
+            ),
+        ),
+        seed=seed,
+        replicates=replicates,
+    )
+
+
+def bootstrap_paired_condition_deltas(
+    conditions: Iterable[PairedConditionEvidence],
+    *,
+    seed: int,
+    replicates: int,
+) -> PairedBootstrapInterval:
+    """Run one paired hierarchy across every declared fold/seed condition."""
+    if type(seed) is not int:
+        raise ValueError("seed must be an integer")
+    if type(replicates) is not int or replicates <= 0:
+        raise ValueError("replicates must be a positive integer")
+    frozen = tuple(conditions)
+    if not frozen or not all(isinstance(item, PairedConditionEvidence) for item in frozen):
+        raise ValueError("aggregate bootstrap requires paired condition evidence")
+    if len({(item.fold, item.support_seed) for item in frozen}) != len(frozen):
+        raise ValueError("duplicate fold/support-seed evidence")
+    prepared: dict[
+        int,
+        list[
+            tuple[
+                PairedConditionEvidence,
+                tuple[tuple[ResearchEvidenceRow, ResearchEvidenceRow], ...],
+            ]
+        ],
+    ] = defaultdict(list)
+    for item in frozen:
+        if type(item.fold) is not int or item.fold < 0 or type(item.support_seed) is not int:
+            raise ValueError("invalid fold/support-seed evidence")
+        candidate_rows, reference_rows = validate_paired_evidence(
+            item.candidate, item.reference
+        )
+        if any(row.fold != item.fold for row in candidate_rows + reference_rows):
+            raise ValueError("aggregate evidence fold mismatch")
+        _validate_observed_cohorts(candidate_rows, item.novel_category_ids)
+        _validate_observed_cohorts(reference_rows, item.novel_category_ids)
+        reference_by_id = {row.pair_identity: row for row in reference_rows}
+        paired = tuple((row, reference_by_id[row.pair_identity]) for row in candidate_rows)
+        prepared[item.fold].append((item, paired))
+    for fold_groups in prepared.values():
+        template_item, template_pairs = fold_groups[0]
+        template_signature = {
+            (pair[0].pair_identity, pair[0].difficulty) for pair in template_pairs
+        }
+        for item, pairs in fold_groups[1:]:
+            if item.novel_category_ids != template_item.novel_category_ids:
+                raise ValueError("fold evidence novel cohort mismatch")
+            if {
+                (pair[0].pair_identity, pair[0].difficulty) for pair in pairs
+            } != template_signature:
+                raise ValueError("fold/seed evidence identity mismatch")
+    randomizer = random.Random(seed)
+    deltas: list[tuple[float, float, float]] = []
+    for _ in range(replicates):
+        condition_deltas: list[tuple[float, float, float]] = []
+        for fold in sorted(prepared):
+            fold_groups = prepared[fold]
+            template_item, template_pairs = fold_groups[0]
+            sampled_template, novel_multiplicity = _hierarchical_sample_with_weights(
+                template_pairs, randomizer, template_item.novel_category_ids
+            )
+            sampled_ids = tuple(pair[0].pair_identity for pair in sampled_template)
+            for item, pairs in fold_groups:
+                by_identity = {pair[0].pair_identity: pair for pair in pairs}
+                sampled = tuple(by_identity[identity] for identity in sampled_ids)
+                sampled_candidate = tuple(pair[0] for pair in sampled)
+                sampled_reference = tuple(pair[1] for pair in sampled)
+                candidate_metrics = _bootstrap_metrics(
+                    sampled_candidate,
+                    item.novel_category_ids,
+                    novel_multiplicity,
+                )
+                reference_metrics = _bootstrap_metrics(
+                    sampled_reference,
+                    item.novel_category_ids,
+                    novel_multiplicity,
+                )
+                condition_deltas.append(
+                    tuple(
+                        candidate - reference
+                        for candidate, reference in zip(
+                            candidate_metrics, reference_metrics, strict=True
+                        )
+                    )
+                )
+        deltas.append(
+            tuple(
+                sum(delta[index] for delta in condition_deltas)
+                / len(condition_deltas)
+                for index in range(3)
+            )
+        )
+    return PairedBootstrapInterval(
+        replicates=replicates,
+        seed=seed,
+        novel_macro_recall_lower_delta=_percentile([delta[0] for delta in deltas], 0.025),
+        novel_macro_recall_upper_delta=_percentile([delta[0] for delta in deltas], 0.975),
+        novel_wrong_registered_sku_rate_lower_delta=_percentile(
+            [delta[1] for delta in deltas], 0.025
+        ),
+        novel_wrong_registered_sku_rate_upper_delta=_percentile(
+            [delta[1] for delta in deltas], 0.975
+        ),
+        base_macro_recall_lower_delta=_percentile([delta[2] for delta in deltas], 0.025),
+        base_macro_recall_upper_delta=_percentile([delta[2] for delta in deltas], 0.975),
+    )
+
+
+def passes_minimum_rule(
+    candidate: FullSystemSummary,
+    reference: FullSystemSummary,
+    interval: PairedBootstrapInterval,
+    *,
+    base_checkpoint_macro_recall: float,
+) -> bool:
+    """Apply the preregistered fail-closed rule; Unknown-only output cannot pass."""
+    if not isinstance(candidate, FullSystemSummary) or not isinstance(reference, FullSystemSummary):
+        raise ValueError("candidate and reference must be full-system summaries")
+    if not isinstance(interval, PairedBootstrapInterval):
+        raise ValueError("interval must be a paired bootstrap interval")
+    if (
+        not isinstance(base_checkpoint_macro_recall, Real)
+        or isinstance(base_checkpoint_macro_recall, bool)
+        or not math.isfinite(float(base_checkpoint_macro_recall))
+        or not 0.0 <= float(base_checkpoint_macro_recall) <= 1.0
+    ):
+        raise ValueError("base checkpoint macro recall must be finite and in [0, 1]")
+    unknown_only = candidate.registered_coverage == 0.0
+    base_delta = candidate.base_macro_final_correct_recall - float(base_checkpoint_macro_recall)
+    tolerance = 1e-12
+    return (
+        not unknown_only
+        and interval.novel_macro_recall_lower_delta >= -0.02 - tolerance
+        and interval.novel_wrong_registered_sku_rate_upper_delta <= 0.005 + tolerance
+        and candidate.novel_loss_over_10pp_fraction <= 0.05 + tolerance
+        and base_delta >= -0.01 - tolerance
+    )
+
+
+def _full_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int], reference_recalls: Mapping[int, float] | None) -> FullSystemSummary:
+    recalls = _category_recalls(rows, _final_correct)
+    by_difficulty = {
+        difficulty: _difficulty_summary(tuple(row for row in rows if row.difficulty == difficulty), novel)
+        for difficulty in _DIFFICULTIES
+    }
+    losses = [
+        category for category in novel if category in recalls and reference_recalls is not None
+        and reference_recalls.get(category, 0.0) - recalls[category] > 0.10
+    ]
+    return FullSystemSummary(
+        sample_count=len(rows),
+        wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows),
+        novel_wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows if row.truth_category_id in novel),
+        base_wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows if row.truth_category_id not in novel),
+        unknown_rate=_mean(row.predicted_category_id is None for row in rows),
+        registered_coverage=_mean(row.predicted_category_id is not None for row in rows),
+        novel_macro_final_correct_recall=_macro(recalls, novel),
+        base_macro_final_correct_recall=_macro(recalls, _base_categories(rows, novel)),
+        per_category_final_correct_recall=recalls,
+        novel_loss_over_10pp_fraction=(len(losses) / len(novel)) if novel else 0.0,
+        conditional_dino_execution_rate=_mean(row.conditional_dino_executed for row in rows),
+        by_difficulty=by_difficulty,
+    )
+
+
+def _difficulty_summary(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int]) -> DifficultySummary:
+    if not rows:
+        return DifficultySummary(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    recalls = _category_recalls(rows, _final_correct)
+    return DifficultySummary(
+        sample_count=len(rows),
+        unknown_rate=_mean(row.predicted_category_id is None for row in rows),
+        registered_coverage=_mean(row.predicted_category_id is not None for row in rows),
+        wrong_registered_sku_rate=_mean(_wrong_registered(row) for row in rows),
+        novel_macro_final_correct_recall=_macro(recalls, novel),
+        base_macro_final_correct_recall=_macro(recalls, _base_categories(rows, novel)),
+        conditional_dino_execution_rate=_mean(
+            row.conditional_dino_executed for row in rows
+        ),
+    )
+
+
+def _hierarchical_sample(
+    pairs: Sequence[tuple[ResearchEvidenceRow, ResearchEvidenceRow]], randomizer: random.Random, novel: frozenset[int]
+) -> tuple[tuple[ResearchEvidenceRow, ResearchEvidenceRow], ...]:
+    sampled, _ = _hierarchical_sample_with_weights(pairs, randomizer, novel)
+    return sampled
+
+
+def _hierarchical_sample_with_weights(
+    pairs: Sequence[tuple[ResearchEvidenceRow, ResearchEvidenceRow]],
+    randomizer: random.Random,
+    novel: frozenset[int],
+) -> tuple[
+    tuple[tuple[ResearchEvidenceRow, ResearchEvidenceRow], ...],
+    Mapping[tuple[int, int], int],
+]:
+    by_fold: dict[int, list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]]] = defaultdict(list)
+    for pair in pairs:
+        by_fold[pair[0].fold].append(pair)
+    sampled: list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]] = []
+    novel_multiplicity: dict[tuple[int, int], int] = {}
+    for fold in sorted(by_fold):
+        fold_pairs = by_fold[fold]
+        novel_categories = sorted(
+            {pair[0].truth_category_id for pair in fold_pairs} & novel
+        )
+        sampled_novel = [
+            randomizer.choice(novel_categories) for _ in novel_categories
+        ]
+        novel_multiplicity.update(
+            {
+                (fold, category): sampled_novel.count(category)
+                for category in novel_categories
+            }
+        )
+        by_difficulty: dict[
+            str,
+            dict[str, list[tuple[ResearchEvidenceRow, ResearchEvidenceRow]]],
+        ] = defaultdict(lambda: defaultdict(list))
+        for pair in fold_pairs:
+            by_difficulty[pair[0].difficulty][pair[0].burst_id].append(pair)
+        for difficulty in sorted(by_difficulty):
+            bursts = sorted(by_difficulty[difficulty])
+            for burst in (randomizer.choice(bursts) for _ in bursts):
+                sampled.extend(by_difficulty[difficulty][burst])
+    return tuple(sampled), novel_multiplicity
+
+
+def _bootstrap_metrics(
+    rows: Sequence[ResearchEvidenceRow],
+    novel: frozenset[int],
+    novel_multiplicity: Mapping[tuple[int, int], int],
+) -> tuple[float, float, float]:
+    """Apply category draw weights after sampling whole scene-burst clusters."""
+    recalls = _category_recalls(rows, _final_correct)
+    observed_folds = {row.fold for row in rows}
+    drawn_novel = tuple(
+        (category, multiplicity)
+        for (fold, category), multiplicity in novel_multiplicity.items()
+        if category in novel and fold in observed_folds
+    )
+    novel_draw_count = sum(multiplicity for _, multiplicity in drawn_novel)
+    novel_macro = (
+        sum(
+            recalls.get(category, 0.0) * multiplicity
+            for category, multiplicity in drawn_novel
+        )
+        / novel_draw_count
+        if novel_draw_count
+        else 0.0
+    )
+    weighted_novel_rows = tuple(
+        (row, novel_multiplicity.get((row.fold, row.truth_category_id), 0))
+        for row in rows
+        if row.truth_category_id in novel
+    )
+    novel_object_count = sum(weight for _, weight in weighted_novel_rows)
+    novel_wrong_rate = (
+        sum(_wrong_registered(row) * weight for row, weight in weighted_novel_rows)
+        / novel_object_count
+        if novel_object_count
+        else 0.0
+    )
+    return (
+        novel_macro,
+        novel_wrong_rate,
+        _macro(recalls, _base_categories(rows, novel)),
+    )
+
+
+def _branch_confusion_matrix(
+    rows: Sequence[ResearchEvidenceRow], branch: BranchName
+) -> dict[int, dict[int, int]]:
+    """Count forced branch predictions by truth SKU in stable numeric order."""
+    result: dict[int, dict[int, int]] = {}
+    for row in rows:
+        truth = row.truth_category_id
+        predicted = row.branch_top1_category_id(branch)
+        counts = result.setdefault(truth, {})
+        counts[predicted] = counts.get(predicted, 0) + 1
+    return {
+        truth: {predicted: counts[predicted] for predicted in sorted(counts)}
+        for truth, counts in sorted(result.items())
+    }
+
+
+def _category_recalls(rows: Sequence[ResearchEvidenceRow], predicate: Any) -> dict[int, float]:
+    grouped: dict[int, list[ResearchEvidenceRow]] = defaultdict(list)
+    for row in rows:
+        grouped[row.truth_category_id].append(row)
+    return {category: _mean(predicate(row) for row in items) for category, items in sorted(grouped.items())}
+
+
+def _base_categories(rows: Sequence[ResearchEvidenceRow], novel: set[int] | frozenset[int]) -> set[int]:
+    return {row.truth_category_id for row in rows} - set(novel)
+
+
+def _macro(recalls: Mapping[int, float], categories: Iterable[int]) -> float:
+    selected = [recalls[category] for category in sorted(set(categories)) if category in recalls]
+    return sum(selected) / len(selected) if selected else 0.0
+
+
+def _validate_observed_cohorts(rows: Sequence[ResearchEvidenceRow], novel: frozenset[int]) -> None:
+    if not novel:
+        raise ValueError("novel cohort must not be empty")
+    observed = {row.truth_category_id for row in rows}
+    absent_novel = novel - observed
+    if absent_novel:
+        raise ValueError("novel cohort is absent from evidence")
+    if not observed - novel:
+        raise ValueError("base cohort is absent from evidence")
+
+
+def _category_set(value: object, name: str) -> set[int]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{name} must be a nonempty category ID sequence")
+    try:
+        result = set(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a nonempty category ID sequence") from exc
+    if not result or any(type(item) is not int or item <= 0 for item in result):
+        raise ValueError(f"{name} must be a nonempty category ID sequence")
+    return result
+
+
+def _final_correct(row: ResearchEvidenceRow) -> bool:
+    return row.predicted_category_id == row.truth_category_id
+
+
+def _wrong_registered(row: ResearchEvidenceRow) -> bool:
+    return row.predicted_category_id is not None and row.predicted_category_id != row.truth_category_id
+
+
+def _mean(values: Iterable[bool]) -> float:
+    frozen = tuple(values)
+    return sum(frozen) / len(frozen) if frozen else 0.0
+
+
+def _percentile(values: Sequence[float], proportion: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("bootstrap produced no values")
+    position = (len(ordered) - 1) * proportion
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _provenance_key(row: ResearchEvidenceRow) -> tuple[str, ...]:
+    return tuple(getattr(row, name) for name in _HASH_NAMES)
+
+
+def _validate_hash(name: str, value: object) -> None:
+    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+        raise ValueError(f"{name} must be lowercase SHA-256")
+
+
+def _integer_tuple(values: object, name: str) -> tuple[int, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be an integer sequence")
+    try:
+        frozen = tuple(values)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer sequence") from exc
+    if any(type(value) is not int or value <= 0 for value in frozen):
+        raise ValueError(f"{name} must be positive integers")
+    return frozen
+
+
+def _finite_tuple(values: object, name: str) -> tuple[float, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be a finite numeric sequence")
+    try:
+        frozen = tuple(values)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a finite numeric sequence") from exc
+    if any(isinstance(value, bool) or not isinstance(value, Real) for value in frozen):
+        raise ValueError(f"{name} must be a finite numeric sequence")
+    result = tuple(float(value) for value in frozen)
+    if not all(math.isfinite(value) for value in result):
+        raise ValueError(f"{name} must be finite")
+    return result
