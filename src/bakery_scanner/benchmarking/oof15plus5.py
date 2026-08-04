@@ -35,6 +35,7 @@ _DINO_BINDING_HASH_FIELDS = (
 )
 _EXPECTED_FOLDS = frozenset(range(5))
 _UTILITY_CONFIG = Path("configs/evaluation/rtx5080_15plus5_oof_v1.yaml")
+_COUNTERFACTUAL_FAULT_CATEGORIES = frozenset({"missing_or_uncovered", "split", "merge", "truncation"})
 
 
 def _finite(value: object, field_name: str) -> float:
@@ -136,6 +137,7 @@ class OofEvaluationRow:
     evidence_status: Literal["verified"] = "verified"
     source_scene_id: str | None = None
     variant_id: str | None = None
+    fault_category: Literal["missing_or_uncovered", "split", "merge", "truncation"] | None = None
 
     def __post_init__(self) -> None:
         if self.evidence_kind not in {"observed", "counterfactual"}:
@@ -190,7 +192,7 @@ class OofEvaluationRow:
         if self.evidence_status != "verified":
             raise ValueError("OOF evidence must have verified input status")
         if self.evidence_kind == "observed":
-            if self.source_scene_id != self.scene_id or self.variant_id is not None:
+            if self.source_scene_id != self.scene_id or self.variant_id is not None or self.fault_category is not None:
                 raise ValueError("observed evidence must bind its own source scene without a variant")
         elif self.evidence_kind == "counterfactual":
             if (
@@ -199,8 +201,9 @@ class OofEvaluationRow:
                 or not isinstance(self.variant_id, str)
                 or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", self.variant_id)
                 or self.scene_id != f"{self.source_scene_id}::counterfactual::{self.variant_id}"
+                or self.fault_category not in _COUNTERFACTUAL_FAULT_CATEGORIES
             ):
-                raise ValueError("counterfactual evidence requires a distinct deterministic variant identity")
+                raise ValueError("counterfactual evidence requires a distinct deterministic variant identity and fault category")
         if self.final_policy_sha256 is not None:
             raise ValueError("final policy/OOF receipt circularity is forbidden")
 
@@ -230,7 +233,7 @@ class OofUtility:
     unknown_rate: Mapping[str, float | None]
     unknown_top3_recall: Mapping[str, float | None]
     incremental_auto_sku_approval_coverage: float | None
-    counterfactual_completeness_block_rate: float | None
+    counterfactual_completeness_block_rate: Mapping[str, float | None]
     missing_required_slices: tuple[str, ...]
     has_violation: bool
     passes: bool
@@ -261,6 +264,7 @@ class OofAcceptanceReceipt:
         payload["policy_by_fold"] = {str(key): value for key, value in sorted(self.policy_by_fold.items())}
         payload["provenance_by_fold"] = {str(key): value for key, value in sorted(self.provenance_by_fold.items())}
         payload["seed_by_fold"] = {str(key): value for key, value in sorted(self.seed_by_fold.items())}
+        _reject_private_paths(payload)
         return json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
 
@@ -332,6 +336,24 @@ def _rate(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
 
 
+def _safe_identifier(value: str) -> str:
+    """Expose reproducible identity without serializing a scene name/path."""
+    return "scene_sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _pipeline_identity(row: OofEvaluationRow) -> Mapping[str, str]:
+    """The linked variant may have new source bytes, never a new static pipeline."""
+    return {
+        field: getattr(row, field)
+        for field in (*_HASH_FIELDS, *_DINO_BINDING_HASH_FIELDS)
+        if field not in {
+            "source_evidence_sha256",
+            "dino_global_source_evidence_sha256",
+            "dino_local_source_evidence_sha256",
+        }
+    }
+
+
 def _load_utility_floors() -> Mapping[str, Mapping[str, float]]:
     try:
         value = yaml.safe_load(_UTILITY_CONFIG.read_text(encoding="utf-8"))
@@ -381,17 +403,17 @@ def _manifest_missing_identities(rows: tuple[OofEvaluationRow, ...]) -> tuple[st
         fold_rows = tuple(row for row in rows if row.fold_index == fold and row.evidence_kind == "observed")
         expected_set = set(scene_ids)
         observed_set = set(observed_by_fold[fold])
-        missing.extend(f"missing_observed_scene:{fold}:{scene_id}" for scene_id in sorted(expected_set - observed_set))
-        missing.extend(f"unexpected_observed_scene:{fold}:{scene_id}" for scene_id in sorted(observed_set - expected_set))
+        missing.extend(f"missing_observed_scene:{fold}:{_safe_identifier(scene_id)}" for scene_id in sorted(expected_set - observed_set))
+        missing.extend(f"unexpected_observed_scene:{fold}:{_safe_identifier(scene_id)}" for scene_id in sorted(observed_set - expected_set))
         for row in fold_rows:
             if row.declared_evaluation_scene_ids != tuple(scene_ids):
-                missing.append(f"declared_evaluation_identity_mismatch:{fold}:{row.scene_id}")
+                missing.append(f"declared_evaluation_identity_mismatch:{fold}:{_safe_identifier(row.scene_id)}")
             if row.split_sha256 != manifest_sha:
-                missing.append(f"split_identity_mismatch:{fold}:{row.scene_id}")
+                missing.append(f"split_identity_mismatch:{fold}:{_safe_identifier(row.scene_id)}")
             if row.source_evidence_sha256 != source_sha:
-                missing.append(f"source_identity_mismatch:{fold}:{row.scene_id}")
+                missing.append(f"source_identity_mismatch:{fold}:{_safe_identifier(row.scene_id)}")
             if row.seed != seed:
-                missing.append(f"seed_identity_mismatch:{fold}:{row.scene_id}")
+                missing.append(f"seed_identity_mismatch:{fold}:{_safe_identifier(row.scene_id)}")
     return tuple(sorted(set(missing)))
 
 
@@ -445,10 +467,19 @@ def _utility_metrics(
     )
     if incremental_auto is None:
         missing.append("incremental_auto_sku_approval_coverage")
-    counterfactual = tuple(row for row in rows if row.evidence_kind == "counterfactual")
-    counterfactual_block = _rate(sum(row.state in {"needs_retake", "no_target_detected"} for row in counterfactual), len(counterfactual))
-    if counterfactual_block is None:
-        missing.append("counterfactual_completeness_block_rate")
+    counterfactual_block: dict[str, float | None] = {}
+    for category in sorted(_COUNTERFACTUAL_FAULT_CATEGORIES):
+        counterfactual = tuple(
+            row
+            for row in rows
+            if row.evidence_kind == "counterfactual" and row.fault_category == category
+        )
+        counterfactual_block[category] = _rate(
+            sum(row.state in {"needs_retake", "no_target_detected"} for row in counterfactual),
+            len(counterfactual),
+        )
+        if counterfactual_block[category] is None:
+            missing.append(f"counterfactual:{category}")
 
     has_violation = False
     for name, values in measurements.items():
@@ -460,8 +491,9 @@ def _utility_metrics(
             has_violation = has_violation or not passed
     if incremental_auto is not None:
         has_violation = has_violation or incremental_auto < 0.50
-    if counterfactual_block is not None:
-        has_violation = has_violation or counterfactual_block < 1.0
+    for value in counterfactual_block.values():
+        if value is not None:
+            has_violation = has_violation or value < 1.0
     return OofUtility(
         normal_scan_acceptance=measurements["normal_scan_acceptance"],
         unnecessary_retake=measurements["unnecessary_retake"],
@@ -493,6 +525,17 @@ def evaluate_oof(rows: Sequence[OofEvaluationRow], policy_by_fold: Mapping[int, 
         for row in checked
     ):
         raise ValueError("counterfactual source must reference an observed evaluation scene in the same fold")
+    observed_pipeline = {
+        (row.fold_index, row.scene_id): _pipeline_identity(row)
+        for row in checked
+        if row.evidence_kind == "observed"
+    }
+    if any(
+        row.evidence_kind == "counterfactual"
+        and observed_pipeline[(row.fold_index, row.source_scene_id)] != _pipeline_identity(row)
+        for row in checked
+    ):
+        raise ValueError("linked counterfactual pipeline provenance does not match observed evidence")
     for fold, digest in policy_by_fold.items():
         if type(fold) is not int or fold not in range(5) or not _SHA256.fullmatch(digest):
             raise ValueError("fold policy mapping is invalid")
