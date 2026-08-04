@@ -106,6 +106,8 @@ class CounterfactualCase:
     proposals: tuple[BreadProposal, ...]
     foreground: ForegroundEvidence
     frame_size: tuple[int, int]
+    target_indices: tuple[int, ...]
+    intended_retake_reasons: tuple[RetakeReason, ...]
 
     def __post_init__(self) -> None:
         if self.evidence_kind != "counterfactual":
@@ -118,6 +120,28 @@ class CounterfactualCase:
             raise ValueError("counterfactual foreground must use ForegroundEvidence")
         width, height = _canonical_frame_size(self.frame_size)
         _validate_proposals(self.proposals, width, height)
+        if (
+            not isinstance(self.target_indices, tuple)
+            or not self.target_indices
+            or any(type(index) is not int or index < 0 for index in self.target_indices)
+            or len(set(self.target_indices)) != len(self.target_indices)
+            or tuple(sorted(self.target_indices)) != self.target_indices
+            or (self.fault == "merge") != (len(self.target_indices) == 2)
+            or (self.fault != "merge" and len(self.target_indices) != 1)
+        ):
+            raise ValueError("counterfactual target indices are invalid")
+        if (
+            not isinstance(self.intended_retake_reasons, tuple)
+            or not self.intended_retake_reasons
+            or not all(isinstance(reason, RetakeReason) for reason in self.intended_retake_reasons)
+            or tuple(reason for reason in RetakeReason if reason in self.intended_retake_reasons)
+            != self.intended_retake_reasons
+        ):
+            raise ValueError("counterfactual intended retake reasons are invalid")
+
+    @property
+    def variant_id(self) -> str:
+        return f"{self.fault}-" + "-".join(str(index) for index in self.target_indices)
 
 
 class ForegroundAnalyzer(Protocol):
@@ -233,6 +257,10 @@ def build_counterfactuals(gt_boxes: tuple[BreadProposal, ...]) -> tuple[Counterf
             "counterfactual", "missing", gt_boxes[:index] + gt_boxes[index + 1:],
             replace(clear, uncovered_ratio=1.0, problem_regions=(proposal.box.xyxy,)),
             (width, height),
+            (index,),
+            (
+                (RetakeReason.NO_TARGET_DETECTED,) if len(gt_boxes) == 1 else ()
+            ) + (RetakeReason.UNCOVERED_FOREGROUND,),
         ))
     for left_index, left in enumerate(gt_boxes):
         for right_index in range(left_index + 1, len(gt_boxes)):
@@ -245,6 +273,8 @@ def build_counterfactuals(gt_boxes: tuple[BreadProposal, ...]) -> tuple[Counterf
                 "counterfactual", "merge", proposals,
                 replace(clear, possible_merge_regions=(_union(left.box, right.box).xyxy,)),
                 (width, height),
+                (left_index, right_index),
+                (RetakeReason.POSSIBLE_MERGE,),
             ))
     for index, proposal in enumerate(gt_boxes):
         left, right = _split(proposal)
@@ -252,10 +282,19 @@ def build_counterfactuals(gt_boxes: tuple[BreadProposal, ...]) -> tuple[Counterf
             "counterfactual", "split", gt_boxes[:index] + (left, right) + gt_boxes[index + 1:],
             replace(clear, possible_split_regions=(proposal.box.xyxy,)),
             (width, height),
+            (index,),
+            (RetakeReason.POSSIBLE_SPLIT,),
         ))
     for index, proposal in enumerate(gt_boxes):
         truncated = replace(proposal, box=Box(0.0, proposal.box.y, proposal.box.width, proposal.box.height))
-        cases.append(CounterfactualCase("counterfactual", "truncation", gt_boxes[:index] + (truncated,) + gt_boxes[index + 1:], clear, (width, height)))
+        cases.append(CounterfactualCase(
+            "counterfactual", "truncation",
+            gt_boxes[:index] + (truncated,) + gt_boxes[index + 1:],
+            clear,
+            (width, height),
+            (index,),
+            (RetakeReason.TRUNCATED_OBJECT,),
+        ))
     return tuple(cases)
 
 

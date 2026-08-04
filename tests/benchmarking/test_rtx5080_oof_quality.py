@@ -12,6 +12,7 @@ from bakery_scanner.benchmarking.oof15plus5 import (
     OofEvaluationRow,
     PredictionObject,
     build_counterfactual_evidence,
+    build_counterfactual_source_evidence,
     build_final_development_policy,
     evaluate_oof,
     freeze_oof_receipt,
@@ -21,6 +22,7 @@ from bakery_scanner.contracts import Box, BreadProposal
 from bakery_scanner.detection.completeness import (
     CaptureQuality,
     CompletenessPolicy,
+    ForegroundEvidence,
     build_counterfactuals,
 )
 
@@ -28,30 +30,19 @@ from bakery_scanner.detection.completeness import (
 PROVENANCE = {"split_sha256":"1" * 64,"source_evidence_sha256":"2" * 64,"source_image_sha256":"d" * 64,"detector_sha256":"3" * 64,"repvit_checkpoint_sha256":"4" * 64,"repvit_prototype_sha256":"5" * 64,"dinov3_weights_sha256":"6" * 64,"dinov3_support_sha256":"7" * 64,"dinov3_local_bank_sha256":"8" * 64,"preprocess_sha256":"9" * 64,"fold_policy_sha256":"a" * 64,"code_sha256":"b" * 64,"runtime_sha256":"c" * 64,"dino_global_fold_index":0,"dino_local_fold_index":0,"dino_global_split_sha256":"1" * 64,"dino_local_split_sha256":"1" * 64,"dino_global_source_evidence_sha256":"2" * 64,"dino_local_source_evidence_sha256":"2" * 64,"dino_global_runtime_sha256":"c" * 64,"dino_local_runtime_sha256":"c" * 64,"dino_local_model_sha256":"6" * 64,"dino_global_preprocess_sha256":"9" * 64,"dino_local_preprocess_sha256":"9" * 64}
 
 
-def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan", evidence_kind: str = "observed", source_scene_id: str | None = None, variant_id: str | None = None, fault_category: str | None = None, counterfactual_evidence: object | None = None, counterfactual_evidence_sha256: str | None = None, provenance_changes: dict[str, object] | None = None) -> OofEvaluationRow:
+def _scene(*, count: int = 1, unknown: bool = False, wrong: bool = False, fold_index: int = 0, scene_id: str | None = None, state: str = "accepted_scan", expected_state: str | None = "accepted_scan", evidence_kind: str = "observed", source_scene_id: str | None = None, variant_id: str | None = None, fault_category: str | None = None, counterfactual_evidence: object | None = None, counterfactual_evidence_sha256: str | None = None, actual_retake_reasons: tuple[str, ...] | None = None, provenance_changes: dict[str, object] | None = None) -> OofEvaluationRow:
     truth = tuple(GroundTruthObject(f"g{i}", i + 1, (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1) for i in range(count))
     predictions = () if state == "needs_retake" else tuple(PredictionObject(f"p{i}", (i * 20.0, 0.0, i * 20.0 + 10.0, 10.0), i + 1, "unknown" if unknown else "auto_approved", None if unknown else (20 if wrong and i == 0 else i + 1), (1, 2, 3) if unknown else ()) for i in range(count))
     resolved_scene_id = scene_id or f"scene-{fold_index}-{count}"
     provenance = {**PROVENANCE, "dino_global_fold_index": fold_index, "dino_local_fold_index": fold_index, **(provenance_changes or {})}
-    return OofEvaluationRow(scene_id=resolved_scene_id, fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(resolved_scene_id,) if evidence_kind == "observed" else (source_scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind=evidence_kind, ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, source_scene_id=source_scene_id or resolved_scene_id, variant_id=variant_id, fault_category=fault_category, counterfactual_evidence=counterfactual_evidence, counterfactual_evidence_sha256=counterfactual_evidence_sha256, **provenance)
+    return OofEvaluationRow(scene_id=resolved_scene_id, fold_index=fold_index, role="evaluation", declared_evaluation_scene_ids=(resolved_scene_id,) if evidence_kind == "observed" else (source_scene_id or f"scene-{fold_index}-{count}",), state=state, difficulty="E", image_shape="landscape", catalog_segment="base", evidence_kind=evidence_kind, ground_truth=truth, predictions=predictions, seed=20260803, expected_state=expected_state, source_scene_id=source_scene_id or resolved_scene_id, variant_id=variant_id, fault_category=fault_category, counterfactual_evidence=counterfactual_evidence, counterfactual_evidence_sha256=counterfactual_evidence_sha256, actual_retake_reasons=actual_retake_reasons, **provenance)
 
 
 def _counterfactual_scene(fault: str, *, source_image_sha256: str = "d" * 64) -> OofEvaluationRow:
-    proposals = (
-        BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),
-        BreadProposal(1, "rfdetr_large_bakery_v1", 0.8, Box(20, 10, 20, 20), 100, 80),
-    )
-    case = next(item for item in build_counterfactuals(proposals) if item.fault == fault)
-    variant_id = f"{fault}-v1"
-    evidence = build_counterfactual_evidence(
-        source_scene_id="source-0",
-        source_image_sha256=source_image_sha256,
-        fold_index=0,
-        variant_id=variant_id,
-        case=case,
-        quality=CaptureQuality(100.0, 0.5, 0.0),
-        policy=CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
-    )
+    source, _ = _canonical_counterfactual_source(source_image_sha256=source_image_sha256)
+    case = next(item for item in build_counterfactuals(source.proposals) if item.fault == fault)
+    evidence = build_counterfactual_evidence(source=source, case=case)
+    variant_id = evidence.variant_id
     return _scene(
         scene_id=f"source-0::counterfactual::{variant_id}",
         evidence_kind="counterfactual",
@@ -62,6 +53,7 @@ def _counterfactual_scene(fault: str, *, source_image_sha256: str = "d" * 64) ->
         expected_state="needs_retake",
         counterfactual_evidence=evidence,
         counterfactual_evidence_sha256=evidence.sha256,
+        actual_retake_reasons=evidence.decision_reasons,
         provenance_changes={
             "source_image_sha256": source_image_sha256,
             "source_evidence_sha256": evidence.sha256,
@@ -201,7 +193,7 @@ def test_needs_retake_cannot_carry_partial_final_predictions():
 
 
 def test_counterfactual_requires_a_distinct_deterministic_variant_of_an_observed_scene():
-    observed = _scene(scene_id="source-0")
+    _, observed = _canonical_counterfactual_source()
     with pytest.raises(ValueError, match="counterfactual"):
         _scene(
         scene_id="source-0",
@@ -229,18 +221,20 @@ def test_unverified_reasons_and_receipt_bytes_do_not_expose_absolute_scene_paths
 
 
 def test_counterfactual_requires_each_fault_category_and_does_not_aggregate_one_category():
-    observed = _scene(scene_id="source-0")
+    _, observed = _canonical_counterfactual_source()
     split = _counterfactual_scene("split")
     receipt = evaluate_oof((observed, split), {0: "a" * 64})
 
     assert receipt.status == "unverified"
-    assert "counterfactual:merge" in receipt.utility.missing_required_slices
+    assert receipt.utility.counterfactual_expected_case_count["merge"] == 1
+    assert receipt.utility.counterfactual_completeness_block_rate["merge"] == 0.0
+    assert any("merge-0-1" in reason for reason in receipt.utility.missing_required_slices)
     with pytest.raises(ValueError, match="fault category"):
         replace(split, fault_category="non_target")
 
 
 def test_linked_counterfactual_rejects_mixed_static_pipeline_provenance():
-    observed = _scene(scene_id="source-0")
+    _, observed = _canonical_counterfactual_source()
     counterfactual = _counterfactual_scene("merge")
 
     with pytest.raises(ValueError, match="linked counterfactual pipeline provenance"):
@@ -254,26 +248,34 @@ def test_task3_counterfactual_payload_is_hash_bound_end_to_end():
     case = next(item for item in build_counterfactuals(proposals) if item.fault == "missing")
     quality = CaptureQuality(100.0, 0.5, 0.0)
     policy = CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5)
-    evidence = build_counterfactual_evidence(
+    source = build_counterfactual_source_evidence(
         source_scene_id="source-0",
         source_image_sha256="d" * 64,
         fold_index=0,
-        variant_id="missing-v1",
-        case=case,
+        frame_size=(100, 80),
+        proposals=proposals,
+        foreground=ForegroundEvidence(0.0, 1.0, (), (), (), 0.0),
         quality=quality,
         policy=policy,
     )
-    observed = _scene(scene_id="source-0")
+    evidence = build_counterfactual_evidence(source=source, case=case)
+    observed = replace(
+        _scene(scene_id="source-0"),
+        ground_truth=(GroundTruthObject("g0", 1, (10.0, 10.0, 30.0, 30.0), 1),),
+        predictions=(PredictionObject("p0", (10.0, 10.0, 30.0, 30.0), 1, "auto_approved", 1, ()),),
+        counterfactual_source_evidence=source,
+    )
     counterfactual = _scene(
-        scene_id="source-0::counterfactual::missing-v1",
+        scene_id=f"source-0::counterfactual::{evidence.variant_id}",
         evidence_kind="counterfactual",
         source_scene_id="source-0",
-        variant_id="missing-v1",
+        variant_id=evidence.variant_id,
         fault_category="missing",
         state="needs_retake",
         expected_state="needs_retake",
         counterfactual_evidence=evidence,
         counterfactual_evidence_sha256=evidence.sha256,
+        actual_retake_reasons=evidence.decision_reasons,
         provenance_changes={
             "source_image_sha256": "d" * 64,
             "source_evidence_sha256": evidence.sha256,
@@ -294,25 +296,30 @@ def test_counterfactual_cannot_reuse_observed_source_or_source_image_identity():
     proposals = (BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),)
     case = next(item for item in build_counterfactuals(proposals) if item.fault == "truncation")
     evidence = build_counterfactual_evidence(
-        source_scene_id="source-0",
-        source_image_sha256="e" * 64,
-        fold_index=0,
-        variant_id="truncation-v1",
+        source=build_counterfactual_source_evidence(
+            source_scene_id="source-0",
+            source_image_sha256="e" * 64,
+            fold_index=0,
+            frame_size=(100, 80),
+            proposals=proposals,
+            foreground=ForegroundEvidence(0.0, 1.0, (), (), (), 0.0),
+            quality=CaptureQuality(100.0, 0.5, 0.0),
+            policy=CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
+        ),
         case=case,
-        quality=CaptureQuality(100.0, 0.5, 0.0),
-        policy=CompletenessPolicy(0.1, 0.5, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
     )
     observed = _scene(scene_id="source-0")
     counterfactual = _scene(
-        scene_id="source-0::counterfactual::truncation-v1",
+        scene_id=f"source-0::counterfactual::{evidence.variant_id}",
         evidence_kind="counterfactual",
         source_scene_id="source-0",
-        variant_id="truncation-v1",
+        variant_id=evidence.variant_id,
         fault_category="truncation",
         state="needs_retake",
         expected_state="needs_retake",
         counterfactual_evidence=evidence,
         counterfactual_evidence_sha256=evidence.sha256,
+        actual_retake_reasons=evidence.decision_reasons,
         provenance_changes={
             "source_image_sha256": "e" * 64,
             "source_evidence_sha256": evidence.sha256,
@@ -333,10 +340,10 @@ def test_counterfactual_cannot_reuse_observed_source_or_source_image_identity():
 
 
 def test_four_task3_faults_have_four_independent_block_rates():
-    observed = _scene(scene_id="source-0")
+    source, observed = _canonical_counterfactual_source()
     counterfactuals = tuple(
-        _counterfactual_scene(fault)
-        for fault in ("missing", "merge", "split", "truncation")
+        _canonical_counterfactual_row(source, case)
+        for case in build_counterfactuals(source.proposals)
     )
 
     receipt = evaluate_oof((observed, *counterfactuals), {0: "a" * 64})
@@ -403,3 +410,152 @@ def test_evaluation_row_must_cross_bind_canonical_config_and_manifest_file_hashe
     assert not any(reason.startswith("acceptance_config_identity_mismatch") for reason in receipt.unverified_reasons)
     assert not any(reason.startswith("manifest_file_identity_mismatch") for reason in receipt.unverified_reasons)
     assert any(reason.startswith("split_identity_mismatch") for reason in receipt.unverified_reasons)
+
+
+def test_forged_partial_receipt_cannot_be_promoted_and_frozen():
+    receipt = evaluate_oof((_scene(),), {0: "a" * 64})
+    forged = replace(
+        receipt,
+        status="quality-accepted",
+        utility=replace(
+            receipt.utility,
+            missing_required_slices=(),
+            has_violation=False,
+            passes=True,
+        ),
+        policy_by_fold={fold: "a" * 64 for fold in range(5)},
+        provenance_by_fold={fold: receipt.provenance_by_fold[0] for fold in range(5)},
+    )
+
+    with pytest.raises(ValueError, match="authoritative evaluation"):
+        freeze_oof_receipt(forged)
+
+
+def test_counterfactual_rows_cannot_change_observed_primary_quality_or_bounds():
+    _, observed = _canonical_counterfactual_source()
+    baseline = evaluate_oof((observed,), {0: "a" * 64})
+    with_stress = evaluate_oof((observed, _counterfactual_scene("missing")), {0: "a" * 64})
+
+    assert with_stress.quality == baseline.quality
+    assert with_stress.scene_count == baseline.scene_count == 1
+    assert with_stress.object_count == baseline.object_count == 2
+    assert with_stress.top3_rank_hits == baseline.top3_rank_hits
+    assert with_stress.object_count_slices == baseline.object_count_slices
+
+
+def _canonical_counterfactual_source(*, source_image_sha256: str = "d" * 64):
+    proposals = (
+        BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),
+        BreadProposal(1, "rfdetr_large_bakery_v1", 0.8, Box(20, 10, 20, 20), 100, 80),
+    )
+    source = build_counterfactual_source_evidence(
+        source_scene_id="source-0",
+        source_image_sha256=source_image_sha256,
+        fold_index=0,
+        frame_size=(100, 80),
+        proposals=proposals,
+        foreground=ForegroundEvidence(0.0, 1.0, (), (), (), 0.0),
+        quality=CaptureQuality(100.0, 0.5, 0.0),
+        policy=CompletenessPolicy(0.1, 0.6, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
+    )
+    truth = (
+        GroundTruthObject("g0", 1, (10.0, 10.0, 30.0, 30.0), 1),
+        GroundTruthObject("g1", 2, (20.0, 10.0, 40.0, 30.0), 2),
+    )
+    predictions = (
+        PredictionObject("p0", truth[0].box_xyxy, 1, "auto_approved", 1, ()),
+        PredictionObject("p1", truth[1].box_xyxy, 2, "auto_approved", 2, ()),
+    )
+    observed = replace(
+        _scene(count=2, scene_id="source-0"),
+        ground_truth=truth,
+        predictions=predictions,
+        source_image_sha256=source_image_sha256,
+        counterfactual_source_evidence=source,
+    )
+    return source, observed
+
+
+def _canonical_counterfactual_row(source, case, *, state="needs_retake"):
+    evidence = build_counterfactual_evidence(source=source, case=case)
+    return _scene(
+        scene_id=f"source-0::counterfactual::{evidence.variant_id}",
+        evidence_kind="counterfactual",
+        source_scene_id="source-0",
+        variant_id=evidence.variant_id,
+        fault_category=evidence.fault,
+        state=state,
+        expected_state="needs_retake",
+        counterfactual_evidence=evidence,
+        counterfactual_evidence_sha256=evidence.sha256,
+        actual_retake_reasons=evidence.decision_reasons if state == "needs_retake" else (),
+        provenance_changes={
+            "source_image_sha256": "d" * 64,
+            "source_evidence_sha256": evidence.sha256,
+            "dino_global_source_evidence_sha256": evidence.sha256,
+            "dino_local_source_evidence_sha256": evidence.sha256,
+        },
+    )
+
+
+def test_counterfactual_builder_rejects_unrelated_transform_and_capture_quality_masquerade():
+    source, _ = _canonical_counterfactual_source()
+    unrelated = build_counterfactuals((
+        BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(50, 40, 10, 10), 100, 80),
+    ))[0]
+
+    with pytest.raises(ValueError, match="canonical source transform"):
+        build_counterfactual_evidence(source=source, case=unrelated)
+    with pytest.raises(ValueError, match="capture-quality|accepted observed source"):
+        build_counterfactual_source_evidence(
+            source_scene_id="source-0",
+            source_image_sha256="d" * 64,
+            fold_index=0,
+            frame_size=(100, 80),
+            proposals=(BreadProposal(1, "rfdetr_large_bakery_v1", 0.9, Box(10, 10, 20, 20), 100, 80),),
+            foreground=ForegroundEvidence(0.0, 1.0, (), (), (), 0.0),
+            quality=CaptureQuality(0.0, 0.5, 0.0),
+            policy=CompletenessPolicy(0.1, 0.6, 0.01, 10.0, (0.2, 0.8), 0.1, 0.5),
+        )
+
+
+def test_counterfactual_completeness_uses_all_expected_source_variants_as_denominator():
+    source, observed = _canonical_counterfactual_source()
+    cases = build_counterfactuals(source.proposals)
+    submitted = _canonical_counterfactual_row(source, cases[0])
+
+    receipt = evaluate_oof((observed, submitted), {0: "a" * 64})
+
+    assert receipt.status == "unverified"
+    assert receipt.utility.counterfactual_expected_case_count == {
+        "merge": 1,
+        "missing": 2,
+        "split": 2,
+        "truncation": 2,
+    }
+    assert receipt.utility.counterfactual_submitted_case_count["missing"] == 1
+    assert receipt.utility.counterfactual_completeness_block_rate["missing"] == 0.5
+    assert any(reason.startswith("missing_counterfactual_variant:") for reason in receipt.unverified_reasons)
+
+
+def test_missing_counterfactual_source_descriptor_is_explicitly_unverified():
+    receipt = evaluate_oof((_scene(scene_id="source-without-proposals"),), {0: "a" * 64})
+
+    assert receipt.status == "unverified"
+    assert any(reason.startswith("counterfactual_source_unavailable:") for reason in receipt.unverified_reasons)
+
+
+def test_counterfactual_actual_result_and_reason_determine_stress_success_without_touching_quality():
+    source, observed = _canonical_counterfactual_source()
+    missing = next(case for case in build_counterfactuals(source.proposals) if case.variant_id == "missing-0")
+    accepted = _canonical_counterfactual_row(source, missing, state="accepted_scan")
+    wrong_reason = replace(
+        _canonical_counterfactual_row(source, missing),
+        actual_retake_reasons=("capture_quality_unverified",),
+    )
+
+    accepted_receipt = evaluate_oof((observed, accepted), {0: "a" * 64})
+    assert accepted_receipt.utility.counterfactual_completeness_block_rate["missing"] == 0.0
+    assert accepted_receipt.quality.wrong_auto_approval_count == 0
+    wrong_reason_receipt = evaluate_oof((observed, wrong_reason), {0: "a" * 64})
+    assert wrong_reason_receipt.utility.counterfactual_completeness_block_rate["missing"] == 0.0

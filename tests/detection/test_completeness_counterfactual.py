@@ -37,3 +37,26 @@ def test_single_object_missing_case_preserves_canonical_frame_without_proposals(
 
     assert missing.proposals == ()
     assert missing.frame_size == FRAME
+    assert missing.target_indices == (0,)
+    assert missing.variant_id == "missing-0"
+    assert missing.intended_retake_reasons == (
+        RetakeReason.NO_TARGET_DETECTED,
+        RetakeReason.UNCOVERED_FOREGROUND,
+    )
+
+
+def test_counterfactual_transform_identity_is_deterministic_and_source_indexed() -> None:
+    from bakery_scanner.detection.completeness import build_counterfactuals
+
+    cases = build_counterfactuals((_proposal(10, 10), _proposal(15, 10)))
+
+    assert len({case.variant_id for case in cases}) == len(cases)
+    assert {(case.fault, case.target_indices) for case in cases} == {
+        ("missing", (0,)),
+        ("missing", (1,)),
+        ("merge", (0, 1)),
+        ("split", (0,)),
+        ("split", (1,)),
+        ("truncation", (0,)),
+        ("truncation", (1,)),
+    }
