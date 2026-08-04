@@ -26,7 +26,7 @@ from .contracts import (
     SkuCandidate,
     StageTimings,
 )
-from .dinov3 import DinoV3Rechecker
+from .dinov3 import DinoGlobalLocalEvidence, DinoV3Rechecker
 from .errors import DinoInferenceError
 from .full_evidence import FullEvidenceRow
 from .fusion_policy import FusionPolicyArtifact
@@ -998,8 +998,11 @@ class ClassifierPipeline:
             }
             if any(hashes[name] != value for name, value in expected.items()):
                 raise ValueError(f"static {label} artifact identity does not match fusion policy")
-        local_sha256 = getattr(self._local_bank, "sha256", None)
-        if local_sha256 is not None and local_sha256 != hashes["dinov3_local_bank_sha256"]:
+        local_bank = self._get_local_bank()
+        if not isinstance(local_bank, LocalPatchBank):
+            raise ValueError("static inference requires an admitted local support bank contract")
+        local_sha256 = local_bank.sha256
+        if not _is_sha256(local_sha256) or local_sha256 != hashes["dinov3_local_bank_sha256"]:
             raise ValueError("static local support identity does not match fusion policy")
 
     def _uses_static_policy(self) -> bool:
@@ -1016,18 +1019,16 @@ class ClassifierPipeline:
         valid_mask: tuple[bool, ...],
         valid_count: int,
     ) -> tuple[object, ...]:
+        _require_static_repvit_chunk_contract(rows, valid_mask, valid_count)
         score_static = getattr(self.repvit, "score_tight_context_chunk", None)
-        if callable(score_static):
-            result = tuple(score_static(rows, valid_mask=valid_mask))
-        else:
-            score_many = getattr(self.repvit, "score_many_with_evidence", None)
-            if not callable(score_many):
-                raise ValueError("RepViT runner does not expose tight/context static scoring")
-            groups = tuple((rows[index], rows[index + 1]) for index in range(0, len(rows), 2))
-            result = tuple(score_many(groups, max_objects=7))
-        if len(result) not in {valid_count, 7}:
-            raise ValueError("RepViT static chunk evidence must align with valid or padded objects")
-        return result[:valid_count]
+        if not callable(score_static):
+            raise ValueError("RepViT runner does not expose tight/context static scoring")
+        result = tuple(score_static(rows, valid_mask=valid_mask))
+        if len(result) != valid_count:
+            raise ValueError("RepViT static chunk evidence must align exactly with valid objects")
+        if any(not isinstance(evidence, TightContextRepVitEvidence) for evidence in result):
+            raise ValueError("RepViT static chunk evidence is malformed")
+        return result
 
     def _score_context_dino_chunk(
         self,
@@ -1040,29 +1041,24 @@ class ClassifierPipeline:
         valid_mask: tuple[bool, ...],
         valid_count: int,
     ) -> tuple[object, ...]:
+        _require_static_dino_chunk_contract(
+            crops, product_boxes, repvit_scores, valid_mask, valid_count
+        )
         score_static = getattr(dino, "score_context_chunk_global_and_local_evidence", None)
-        if callable(score_static):
-            result = tuple(score_static(
-                crops,
-                product_boxes,
-                local_bank,
-                repvit_scores=repvit_scores,
-                valid_mask=valid_mask,
-            ))
-        else:
-            score_many = getattr(dino, "score_many_global_and_local_evidence", None)
-            if not callable(score_many):
-                raise ValueError("DINO runner does not expose context static scoring")
-            result = tuple(score_many(
-                tuple((crop,) for crop in crops),
-                tuple((box,) for box in product_boxes),
-                local_bank,
-                repvit_scores=repvit_scores,
-                max_objects=7,
-            ))
-        if len(result) not in {valid_count, 7}:
-            raise ValueError("DINO static chunk evidence must align with valid or padded objects")
-        return result[:valid_count]
+        if not callable(score_static):
+            raise ValueError("DINO runner does not expose context static scoring")
+        result = tuple(score_static(
+            crops,
+            product_boxes,
+            local_bank,
+            repvit_scores=repvit_scores,
+            valid_mask=valid_mask,
+        ))
+        if len(result) != valid_count:
+            raise ValueError("DINO static chunk evidence must align exactly with valid objects")
+        if any(not isinstance(evidence, DinoGlobalLocalEvidence) for evidence in result):
+            raise ValueError("DINO static chunk evidence is malformed")
+        return result
 
     def preflight_benchmark(
         self,
@@ -1355,6 +1351,54 @@ def _pad_static_chunk(values: tuple[Any, ...], capacity: int) -> tuple[Any, ...]
     if not values or len(values) > capacity:
         raise ValueError("static chunk must contain one through capacity valid values")
     return values + (values[-1],) * (capacity - len(values))
+
+
+def _require_static_repvit_chunk_contract(
+    rows: tuple[Image.Image, ...],
+    valid_mask: tuple[bool, ...],
+    valid_count: int,
+) -> None:
+    if (
+        len(rows) != 14
+        or len(valid_mask) != 14
+        or type(valid_count) is not int
+        or not 1 <= valid_count <= 7
+        or any(type(value) is not bool for value in valid_mask)
+    ):
+        raise ValueError("RepViT static chunk contract is invalid")
+    expected = (True,) * (2 * valid_count) + (False,) * (14 - 2 * valid_count)
+    if valid_mask != expected:
+        raise ValueError("RepViT static mask must contain ordered valid pairs followed by padding")
+
+
+def _require_static_dino_chunk_contract(
+    crops: tuple[Image.Image, ...],
+    product_boxes: tuple[Box, ...],
+    repvit_scores: tuple[ModelScoreVector, ...],
+    valid_mask: tuple[bool, ...],
+    valid_count: int,
+) -> None:
+    if (
+        len(crops) != 7
+        or len(product_boxes) != 7
+        or len(repvit_scores) != 7
+        or len(valid_mask) != 7
+        or type(valid_count) is not int
+        or not 1 <= valid_count <= 7
+        or any(type(value) is not bool for value in valid_mask)
+    ):
+        raise ValueError("DINO static chunk contract is invalid")
+    expected = (True,) * valid_count + (False,) * (7 - valid_count)
+    if valid_mask != expected:
+        raise ValueError("DINO static mask must contain ordered valid rows followed by padding")
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _require_tight_context_evidence(evidence: object) -> None:

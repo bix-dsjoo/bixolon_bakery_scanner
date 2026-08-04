@@ -19,6 +19,7 @@ from bakery_scanner.classification.contracts import (
 )
 from bakery_scanner.classification.dinov3 import DinoGlobalLocalEvidence, DinoV3Rechecker
 from bakery_scanner.classification.fusion_policy import FusionPolicyArtifact
+from bakery_scanner.classification.local_bank import LocalPatchBank
 from bakery_scanner.classification.fusion_ranker import FusionRanker
 from bakery_scanner.classification.policy import DecisionPolicy, PolicyCalibration
 from bakery_scanner.classification.preprocess import build_transform
@@ -438,6 +439,34 @@ class StaticContextDino(FullEvidenceDino):
         return selected
 
 
+class LegacyOnlyStaticRepVit(RecordingRunner):
+    """A legacy runner that must never be selected by the schema-3 path."""
+
+    def __init__(self, evidence: TightContextRepVitEvidence) -> None:
+        super().__init__(evidence.scores)
+        self.evidence = evidence
+        self.legacy_calls = 0
+
+    def score_many_with_evidence(self, crop_groups, *, max_objects):
+        self.legacy_calls += 1
+        return (self.evidence,) * len(crop_groups)
+
+
+class LegacyOnlyStaticDino(FullEvidenceDino):
+    """A dynamic-only DINO fake; schema-3 must reject it before scoring."""
+
+    def __init__(self, evidence: DinoGlobalLocalEvidence) -> None:
+        super().__init__(evidence.global_scores)
+        self.evidence = evidence
+        self.legacy_calls = 0
+
+    def score_many_global_and_local_evidence(
+        self, crop_groups, product_box_groups, local_bank, *, repvit_scores, max_objects
+    ):
+        self.legacy_calls += 1
+        return (self.evidence,) * len(crop_groups)
+
+
 def _paired_evidence(
     aggregate: ModelScoreVector,
     tight: ModelScoreVector | None = None,
@@ -464,7 +493,7 @@ def test_direct_gate_rejects_tight_context_top1_disagreement():
     dino = StaticContextDino((
         DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5),
     ))
-    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=object())
+    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank())
 
     result = pipeline.infer_many(
         _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
@@ -497,7 +526,7 @@ def test_static_preprocess_hash_is_distinct_and_mismatch_aborts_before_repvit():
     repvit = StaticPairRunner((_paired_evidence(aggregate),))
 
     pipeline = _static_pipeline(
-        repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=object(),
+        repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=_static_local_bank(),
     )
     assert pipeline.fusion_policy is not None
     hashes = dict(pipeline.fusion_policy.artifact_hashes)
@@ -512,11 +541,101 @@ def test_static_preprocess_hash_is_distinct_and_mismatch_aborts_before_repvit():
     assert repvit.chunks == []
 
 
+@pytest.mark.parametrize(
+    ("local_bank", "message"),
+    (
+        (None, "local support bank"),
+        (object(), "local support bank"),
+        (LocalPatchBank({}, "not-a-sha256"), "local support identity"),
+        (LocalPatchBank({}, "1" * 64), "local support identity"),
+    ),
+)
+def test_static_route_requires_matching_local_bank_identity_before_direct_repvit(
+    local_bank, message
+):
+    repvit = StaticPairRunner((_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})),))
+
+    with pytest.raises(ValueError, match=message):
+        _static_pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=local_bank,
+        ).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert repvit.chunks == []
+
+
+def test_static_route_rejects_legacy_repvit_runner_without_executing_it():
+    repvit = LegacyOnlyStaticRepVit(_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})))
+
+    with pytest.raises(ValueError, match="tight/context static scoring"):
+        _static_pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=_static_local_bank(),
+        ).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert repvit.legacy_calls == 0
+
+
+def test_static_route_rejects_legacy_dino_runner_without_executing_it():
+    repvit = StaticPairRunner((_paired_evidence(_repvit_scores({6: 0.50, 5: 0.30})),))
+    dino = LegacyOnlyStaticDino(
+        DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5)
+    )
+
+    with pytest.raises(ValueError, match="context static scoring"):
+        _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank()).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+    assert dino.legacy_calls == 0
+
+
+def test_static_route_rejects_padded_or_mis_sized_evidence_before_partial_result():
+    class PaddedRepVit(StaticPairRunner):
+        def score_tight_context_chunk(self, rows, *, valid_mask):
+            super().score_tight_context_chunk(rows, valid_mask=valid_mask)
+            return (self.evidence[0],) * 7
+
+    repvit = PaddedRepVit((_paired_evidence(_repvit_scores({6: 0.80, 5: 0.20})),))
+    with pytest.raises(ValueError, match="must align exactly"):
+        _static_pipeline(
+            repvit=repvit,
+            dino_loader=lambda: pytest.fail("DINO must not load"),
+            local_bank=_static_local_bank(),
+        ).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+
+def test_static_route_rejects_padded_dino_evidence_before_partial_result():
+    class PaddedDino(StaticContextDino):
+        def score_context_chunk_global_and_local_evidence(
+            self, crops, product_boxes, local_bank, *, repvit_scores, valid_mask
+        ):
+            super().score_context_chunk_global_and_local_evidence(
+                crops, product_boxes, local_bank, repvit_scores=repvit_scores, valid_mask=valid_mask
+            )
+            return (self.evidence[0],) * 7
+
+    repvit = StaticPairRunner((_paired_evidence(_repvit_scores({6: 0.50, 5: 0.30})),))
+    dino = PaddedDino((DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5),))
+    with pytest.raises(ValueError, match="must align exactly"):
+        _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank()).infer_many(
+            _image(), (_box(),), repvit_rows_per_invocation=14, dino_objects_per_invocation=7
+        )
+
+
 def test_static_repvit_chunks_eight_objects_as_ordered_pairs_and_restores_order():
     boxes = tuple(Box(2 + index * 11, 10, 8, 10) for index in range(8))
     evidence = tuple(_paired_evidence(_repvit_scores({sku_id: 0.80, 20 if sku_id != 20 else 19: 0.20})) for sku_id in range(1, 9))
     repvit = StaticPairRunner(evidence)
-    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must stay lazy"), local_bank=object())
+    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must stay lazy"), local_bank=_static_local_bank())
 
     result = pipeline.infer_many(
         _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
@@ -536,7 +655,7 @@ def test_static_dino_receives_only_rejected_context_crops_in_seven_object_chunks
     dino_rows = tuple(DinoGlobalLocalEvidence(_dino_scores({6: 0.80}), {6: 0.90}, 32, 0.5) for _ in boxes)
     repvit = StaticPairRunner(rejected)
     dino = StaticContextDino(dino_rows)
-    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=object())
+    pipeline = _static_pipeline(repvit=repvit, dino_loader=lambda: dino, local_bank=_static_local_bank())
 
     result = pipeline.infer_many(
         _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
@@ -556,7 +675,7 @@ def test_static_chunk_failure_aborts_whole_operation_without_partial_decisions()
     repvit = StaticPairRunner(evidence, fail_chunk=2)
 
     with pytest.raises(RuntimeError, match="static chunk failed"):
-        _static_pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=object()).infer_many(
+        _static_pipeline(repvit=repvit, dino_loader=lambda: pytest.fail("DINO must not load"), local_bank=_static_local_bank()).infer_many(
             _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
         )
 
@@ -568,7 +687,7 @@ def test_static_batch_contract_accepts_one_two_and_more_than_seven_objects():
         result = _static_pipeline(
             repvit=StaticPairRunner(evidence),
             dino_loader=lambda: pytest.fail("DINO must stay lazy"),
-            local_bank=object(),
+            local_bank=_static_local_bank(),
         ).infer_many(
             _image(), boxes, repvit_rows_per_invocation=14, dino_objects_per_invocation=7
         )
@@ -1529,6 +1648,11 @@ def _static_pipeline(*, repvit, dino_loader, local_bank) -> ClassifierPipeline:
         ),
         local_bank=local_bank,
     )
+
+
+def _static_local_bank() -> LocalPatchBank:
+    """Minimal concrete bank used only by runners that never invoke .score()."""
+    return LocalPatchBank({}, "0" * 64)
 
 
 def _calibration(**overrides: object) -> PolicyCalibration:
