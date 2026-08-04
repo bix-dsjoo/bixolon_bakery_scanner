@@ -293,6 +293,7 @@ class BenchmarkScheduleItem:
     ordinal: int
     scene_id: str
     group: Literal["E", "M", "H"]
+    slice_name: str
     warmup: bool
 
 
@@ -527,16 +528,20 @@ def build_performance_receipt(
 def build_benchmark_schedule(
     scenes_by_group: Mapping[str, Sequence[str]],
     *,
+    path_scene_ids: Mapping[str, Sequence[str]],
     warmup_count: int = 20,
     observations_per_group: int = 1000,
+    observations_per_path: int = 1000,
 ) -> tuple[BenchmarkScheduleItem, ...]:
-    """Cycle canonical sorted scene IDs after an excluded warm-up prefix."""
+    """Cycle sorted group and actual path IDs after an excluded warm-up prefix."""
     if not isinstance(scenes_by_group, Mapping) or set(scenes_by_group) != set(GROUPS):
         raise ValueError("benchmark scenes must contain exactly E, M, and H")
     if type(warmup_count) is not int or warmup_count < 20:
         raise ValueError("benchmark requires at least 20 warm-up runs")
     if type(observations_per_group) is not int or observations_per_group < 1000:
         raise ValueError("benchmark requires at least 1000 observations per group")
+    if type(observations_per_path) is not int or observations_per_path < 1000:
+        raise ValueError("benchmark requires at least 1000 observations per path")
     normalized: dict[str, tuple[str, ...]] = {}
     all_ids: list[str] = []
     for group in GROUPS:
@@ -555,17 +560,48 @@ def build_benchmark_schedule(
         raise ValueError("benchmark schedule must bind the exact E/M/H inventory")
     if len(set(all_ids)) != len(all_ids):
         raise ValueError("benchmark scene IDs cannot appear in multiple groups")
+    required_paths = ("dinov3", "needs_retake", "unknown")
+    if not isinstance(path_scene_ids, Mapping) or set(path_scene_ids) != set(required_paths):
+        raise ValueError("benchmark actual path IDs must cover every required path")
+    group_by_scene = {
+        scene_id: group for group in GROUPS for scene_id in normalized[group]
+    }
+    normalized_paths: dict[str, tuple[str, ...]] = {}
+    for path_name in required_paths:
+        values = path_scene_ids[path_name]
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            raise ValueError(f"{path_name} actual path IDs must be a sequence")
+        ordered = tuple(sorted(values))
+        if not ordered:
+            raise ValueError(f"{path_name} actual path IDs must not be empty")
+        if len(set(ordered)) != len(ordered):
+            raise ValueError(f"{path_name} actual path IDs must be unique")
+        if any(scene_id not in group_by_scene for scene_id in ordered):
+            raise ValueError(f"{path_name} actual path IDs must bind current scenes")
+        normalized_paths[path_name] = ordered
     flattened = tuple((group, scene_id) for group in GROUPS for scene_id in normalized[group])
     schedule: list[BenchmarkScheduleItem] = []
     for index in range(warmup_count):
         group, scene_id = flattened[index % len(flattened)]
-        schedule.append(BenchmarkScheduleItem(index, scene_id, group, True))
+        schedule.append(BenchmarkScheduleItem(index, scene_id, group, "warmup", True))
     ordinal = warmup_count
     for group in GROUPS:
         scenes = normalized[group]
         for index in range(observations_per_group):
             schedule.append(
-                BenchmarkScheduleItem(ordinal, scenes[index % len(scenes)], group, False)
+                BenchmarkScheduleItem(
+                    ordinal, scenes[index % len(scenes)], group, group, False
+                )
+            )
+            ordinal += 1
+    for path_name in required_paths:
+        scenes = normalized_paths[path_name]
+        for index in range(observations_per_path):
+            scene_id = scenes[index % len(scenes)]
+            schedule.append(
+                BenchmarkScheduleItem(
+                    ordinal, scene_id, group_by_scene[scene_id], path_name, False
+                )
             )
             ordinal += 1
     return tuple(schedule)

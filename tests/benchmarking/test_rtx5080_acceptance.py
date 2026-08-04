@@ -278,14 +278,48 @@ def test_schedule_has_twenty_warmups_then_sorted_deterministic_repeats() -> None
             "M": tuple(f"m-{index:03d}" for index in range(99, 0, -1)),
             "H": tuple(f"h-{index:03d}" for index in range(100, 0, -1)),
         },
+        path_scene_ids={
+            "dinov3": ("e-010", "e-001"),
+            "needs_retake": ("m-010", "m-001"),
+            "unknown": ("h-010", "h-001"),
+        },
         warmup_count=20,
         observations_per_group=1000,
+        observations_per_path=1000,
     )
 
     assert len(tuple(item for item in schedule if item.warmup)) == 20
     measured = tuple(item for item in schedule if not item.warmup)
-    assert len(measured) == 3000
+    assert len(measured) == 6000
     assert tuple(item.scene_id for item in measured[:4]) == (
         "e-001", "e-002", "e-003", "e-004"
     )
     assert tuple(item.group for item in measured[:1001])[-1] == "M"
+    assert tuple(item.scene_id for item in measured[3000:3004]) == (
+        "e-001", "e-010", "e-001", "e-010"
+    )
+    assert tuple(item.slice_name for item in measured[3000:4000]) == ("dinov3",) * 1000
+    assert tuple(item.slice_name for item in measured[4000:5000]) == (
+        "needs_retake",
+    ) * 1000
+    assert tuple(item.slice_name for item in measured[5000:6000]) == ("unknown",) * 1000
+
+
+@pytest.mark.parametrize("path_name", ("dinov3", "needs_retake", "unknown"))
+def test_schedule_rejects_empty_required_actual_path_ids(path_name: str) -> None:
+    paths = {
+        "dinov3": ("e-001",),
+        "needs_retake": ("m-001",),
+        "unknown": ("h-001",),
+    }
+    paths[path_name] = ()
+
+    with pytest.raises(ValueError, match=rf"{path_name}.*actual path"):
+        build_benchmark_schedule(
+            {
+                "E": tuple(f"e-{index:03d}" for index in range(1, 101)),
+                "M": tuple(f"m-{index:03d}" for index in range(1, 100)),
+                "H": tuple(f"h-{index:03d}" for index in range(1, 101)),
+            },
+            path_scene_ids=paths,
+        )
