@@ -33,14 +33,14 @@
    passed:
 
    ```text
-   python -m pytest tests/integration/test_rtx5080_15plus5_gpu.py tests/integration/test_gpu_batch_parity.py tests/prototype/test_camera_runtime.py -q
+   $env:PYTHONPATH = (Join-Path (Get-Location) 'src'); python -m pytest tests/integration/test_rtx5080_15plus5_gpu.py tests/integration/test_gpu_batch_parity.py tests/prototype/test_camera_runtime.py -q
    45 passed in 6.71s
    ```
 
 ## Complete Python verification
 
 ```text
-python -m pytest tests/prototype tests/deployment tests/e2e tests/integration/test_gpu_batch_parity.py -q
+$env:PYTHONPATH = (Join-Path (Get-Location) 'src'); python -m pytest tests/prototype tests/deployment tests/e2e tests/integration/test_gpu_batch_parity.py -q
 325 passed, 9 deselected in 22.68s
 ```
 
@@ -88,8 +88,20 @@ cannot embed its own final hash.
 - Wrapped the production-default safety test's initialized runtime in
   `try`/`finally` and calls `runtime.close()` even though its fake backend is a
   no-op.
-- Verification: `python -m pytest
-  tests/integration/test_rtx5080_15plus5_gpu.py -q` passed: 1 passed in
-  4.71s.
+- Verification: `$env:PYTHONPATH = (Join-Path (Get-Location) 'src'); python
+  -m pytest tests/integration/test_rtx5080_15plus5_gpu.py -q` passed: 1
+  passed in 4.71s.
 - Commit evidence: `fix(review): GPU 참조 모드 점검 보정` (the task handoff
   provides its immutable commit identifier).
+
+## Review round 2 evidence correction
+
+All Python evidence commands above explicitly set `PYTHONPATH` from the
+current PowerShell worktree location, rather than relying on an inherited path
+that could resolve the primary checkout. The focused command below was rerun
+from `C:\workspace\bixolon_bakery_scanner\.worktrees\dual-runtime-exe`:
+
+```text
+$env:PYTHONPATH = (Join-Path (Get-Location) 'src'); python -m pytest tests/integration/test_rtx5080_15plus5_gpu.py tests/integration/test_gpu_batch_parity.py tests/prototype/test_camera_runtime.py -q
+45 passed in 7.24s
+```
