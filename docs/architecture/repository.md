@@ -39,6 +39,10 @@ portable_rfdetr_cpu/  Canonical RF-DETR CPU compatibility package path
   latency evidence.
 - `artifacts` validates repository-wide external artifact identity before a
   pipeline starts.
+- `tools/artifacts/register_rtx5080_15plus5.py` computes IDs, byte sizes, and
+  SHA-256 values only from external final artifacts; it rejects Git-local
+  model/engine payloads. The accompanying compact completion receipt is a
+  status record, never a production-promotion mechanism.
 - `prototype` and `apps` implement the camera evaluation product boundary.
 
 Dependencies flow inward through contracts. Applications and scripts may
@@ -52,3 +56,8 @@ Existing imports, root-level configs, scripts, and portable directories remain
 valid until an explicit migration is versioned and tested. New work uses the
 stable namespaces and grouped configs. Compatibility files are thin facades or
 documented entry points, not competing sources of truth.
+
+The RTX 5080 15+5 candidate stays `production-unverified` when external
+artifacts, GPU runtime evidence, quality evidence, or performance evidence are
+unavailable. Such a receipt records the boundary without adding placeholder
+artifact identities to `artifacts.lock.json`.
