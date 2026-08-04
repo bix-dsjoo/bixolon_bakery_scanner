@@ -7,15 +7,19 @@ from pathlib import Path
 
 import pytest
 
+import tools.artifacts.register_rtx5080_15plus5 as completion_module
 from bakery_scanner.benchmarking import rtx5080_acceptance as acceptance_module
+from bakery_scanner.benchmarking.oof15plus5 import FrozenOofReceipt
 from bakery_scanner.benchmarking.rtx5080_acceptance import (
     REQUIRED_ARTIFACT_ROLES,
     ExecutionIndexAdmissionError,
     PerformanceSample,
+    admit_completion_performance,
     build_benchmark_schedule,
     build_performance_receipt,
     admit_execution_record_index,
     canonical_sha256,
+    require_completion_performance_admission,
     summarize_latency_ms,
     validate_protocol,
 )
@@ -323,6 +327,71 @@ def test_schedule_uses_only_verified_external_execution_admission(
         "needs_retake",
     ) * 1000
     assert tuple(item.slice_name for item in measured[5000:6000]) == ("unknown",) * 1000
+
+
+def test_completion_capability_requires_admitted_execution_and_passed_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid_samples
+) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = _admit(monkeypatch, repository, artifacts)
+    quality_receipt_sha = admission.quality_receipt_sha256
+    samples = tuple(
+        replace(row, quality_receipt_sha256=quality_receipt_sha) for row in valid_samples
+    )
+    performance = build_performance_receipt(
+        samples, RUNTIME, ARTIFACTS, quality_receipt_sha256=quality_receipt_sha,
+        protocol_sha256=PROTOCOL_SHA, allowed_current_crop_sha256s=CURRENT_CROPS,
+    )
+
+    sealed = admit_completion_performance(admission, performance, quality_receipt_sha)
+
+    assert require_completion_performance_admission(sealed).performance_receipt_sha256 == performance.receipt_sha256
+    with pytest.raises(ValueError, match="verified completion"):
+        require_completion_performance_admission(object())
+    with pytest.raises(ValueError, match="admitted quality"):
+        admit_completion_performance(admission, performance, "f" * 64)
+
+
+def test_sealed_completion_capability_permits_development_status_only_with_typed_frozen_oof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid_samples
+) -> None:
+    repository, artifacts, _ = _admission_files(tmp_path)
+    admission = _admit(monkeypatch, repository, artifacts)
+    quality_receipt_sha = admission.quality_receipt_sha256
+    final_policy = b"final-fusion-policy"
+    performance_artifacts = dict(ARTIFACTS)
+    performance_artifacts["fusion_policy"] = hashlib.sha256(final_policy).hexdigest()
+    performance_artifact_sha = canonical_sha256(performance_artifacts)
+    performance = build_performance_receipt(
+        tuple(
+            replace(
+                row,
+                quality_receipt_sha256=quality_receipt_sha,
+                artifact_identity_sha256=performance_artifact_sha,
+            )
+            for row in valid_samples
+        ),
+        RUNTIME, performance_artifacts, quality_receipt_sha256=quality_receipt_sha,
+        protocol_sha256=PROTOCOL_SHA, allowed_current_crop_sha256s=CURRENT_CROPS,
+    )
+    sealed = admit_completion_performance(admission, performance, quality_receipt_sha)
+    frozen = object.__new__(FrozenOofReceipt)
+    object.__setattr__(frozen, "sha256", "e" * 64)
+    monkeypatch.setattr(
+        completion_module, "build_final_development_policy", lambda receipt, policy: final_policy
+    )
+    artifact_identities = {
+        role: performance_artifacts[role]
+        for role in ("rfdetr_engine", "repvit_engine", "dinov3_engine", "fusion_policy")
+    }
+
+    receipt = completion_module.build_completion_receipt(
+        frozen, performance, artifact_identities,
+        completion_admission=sealed, final_policy_bytes=b"source-policy",
+    )
+
+    assert receipt["status"] == "development-complete"
+    assert receipt["production_status"] == "unverified"
 
 
 def test_self_consistent_forged_index_is_rejected_by_trusted_declaration(

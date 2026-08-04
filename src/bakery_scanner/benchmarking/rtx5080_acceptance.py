@@ -399,6 +399,27 @@ class _VerifiedExecutionIndexAdmission:
 
 
 _ADMISSION_REGISTRY: dict[int, tuple[_VerifiedExecutionIndexAdmission, str]] = {}
+_COMPLETION_PERFORMANCE_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionPerformanceAdmission:
+    """Opaque binding of admitted execution evidence to one passed receipt."""
+
+    execution_receipt_sha256: str
+    quality_receipt_sha256: str
+    performance_receipt_sha256: str
+    artifact_identity_sha256: str
+    _token: object
+
+    def __post_init__(self) -> None:
+        if self._token is not _COMPLETION_PERFORMANCE_TOKEN:
+            raise ValueError("completion performance admission token is invalid")
+
+
+_COMPLETION_PERFORMANCE_REGISTRY: dict[
+    int, tuple[CompletionPerformanceAdmission, str]
+] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -639,6 +660,74 @@ def admit_execution_record_index(artifact_root: Path) -> object:
         raise
     except (OSError, TypeError, ValueError) as exc:
         raise ExecutionIndexAdmissionError(str(exc)) from exc
+
+
+def admit_completion_performance(
+    admission: object,
+    performance: PerformanceReceipt,
+    admitted_quality_receipt_sha256: str,
+) -> object:
+    """Seal one passed receipt only after canonical execution admission.
+
+    This is intentionally capability-based: callers cannot synthesize a
+    completion token from JSON or a self-hashed performance receipt.
+    """
+    verified = _require_verified_admission(admission)
+    if not isinstance(performance, PerformanceReceipt):
+        raise ValueError("completion requires a PerformanceReceipt object")
+    performance.__post_init__()
+    _sha256(admitted_quality_receipt_sha256, "admitted quality receipt SHA-256")
+    if performance.status != "performance-passed":
+        raise ValueError("completion requires performance-passed evidence")
+    if performance.quality_receipt_sha256 != admitted_quality_receipt_sha256:
+        raise ValueError("performance receipt does not bind admitted quality evidence")
+    if verified.quality_receipt_sha256 != admitted_quality_receipt_sha256:
+        raise ValueError("execution admission does not bind admitted quality evidence")
+    result = CompletionPerformanceAdmission(
+        execution_receipt_sha256=verified.execution_receipt_sha256,
+        quality_receipt_sha256=verified.quality_receipt_sha256,
+        performance_receipt_sha256=performance.receipt_sha256,
+        artifact_identity_sha256=performance.artifact_identity_sha256,
+        _token=_COMPLETION_PERFORMANCE_TOKEN,
+    )
+    _COMPLETION_PERFORMANCE_REGISTRY[id(result)] = (
+        result,
+        canonical_sha256(
+            {
+                "execution_receipt_sha256": result.execution_receipt_sha256,
+                "quality_receipt_sha256": result.quality_receipt_sha256,
+                "performance_receipt_sha256": result.performance_receipt_sha256,
+                "artifact_identity_sha256": result.artifact_identity_sha256,
+            }
+        ),
+    )
+    return result
+
+
+def require_completion_performance_admission(
+    value: object,
+) -> CompletionPerformanceAdmission:
+    """Return only a non-forgeable completion admission capability."""
+    if not isinstance(value, CompletionPerformanceAdmission):
+        raise ValueError("verified completion performance admission is required")
+    registered = _COMPLETION_PERFORMANCE_REGISTRY.get(id(value))
+    if registered is None or registered[0] is not value:
+        raise ValueError("verified completion performance admission is required")
+    try:
+        value.__post_init__()
+        fingerprint = canonical_sha256(
+            {
+                "execution_receipt_sha256": value.execution_receipt_sha256,
+                "quality_receipt_sha256": value.quality_receipt_sha256,
+                "performance_receipt_sha256": value.performance_receipt_sha256,
+                "artifact_identity_sha256": value.artifact_identity_sha256,
+            }
+        )
+        if fingerprint != registered[1]:
+            raise ValueError("completion admission seal mismatch")
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("verified completion performance admission is required") from exc
+    return value
 
 
 def _canonical_repository_root() -> Path:

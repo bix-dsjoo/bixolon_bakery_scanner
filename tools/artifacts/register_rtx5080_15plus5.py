@@ -13,7 +13,14 @@ import math
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
-from bakery_scanner.benchmarking.rtx5080_acceptance import PerformanceReceipt
+from bakery_scanner.benchmarking.oof15plus5 import (
+    FrozenOofReceipt,
+    build_final_development_policy,
+)
+from bakery_scanner.benchmarking.rtx5080_acceptance import (
+    PerformanceReceipt,
+    require_completion_performance_admission,
+)
 
 
 _REQUIRED_PERFORMANCE_SLICES = frozenset(
@@ -36,9 +43,12 @@ class RegistrationError(ValueError):
 
 
 def build_completion_receipt(
-    quality_receipt: Mapping[str, object],
-    performance_receipt: Mapping[str, object],
+    quality_receipt: object,
+    performance_receipt: object,
     artifacts: Mapping[str, str],
+    *,
+    completion_admission: object | None = None,
+    final_policy_bytes: bytes | None = None,
 ) -> dict[str, object]:
     """Build a Git-safe final status without promoting production.
 
@@ -46,9 +56,14 @@ def build_completion_receipt(
     summary is copied. This prevents an incomplete receipt from looking like a
     numeric quality/performance result.
     """
-    quality = _receipt_identity(quality_receipt, "quality")
-    performance = _receipt_identity(performance_receipt, "performance")
-    if _is_unverified(quality["status"]) or _is_unverified(performance["status"]):
+    if isinstance(quality_receipt, Mapping) and isinstance(performance_receipt, Mapping):
+        quality = _receipt_identity(quality_receipt, "quality")
+        performance = _receipt_identity(performance_receipt, "performance")
+    else:
+        quality = performance = None
+    if quality is not None and performance is not None and (
+        _is_unverified(quality["status"]) or _is_unverified(performance["status"])
+    ):
         return _seal(
             {
                 "schema_version": 1,
@@ -60,9 +75,37 @@ def build_completion_receipt(
                 "unverified_boundaries": _unverified_boundaries(quality, performance),
             }
         )
-    raise ValueError(
-        "development-complete requires a validated FrozenOofReceipt and "
-        "canonical-root admitted Task 11 execution evidence"
+    if not isinstance(quality_receipt, FrozenOofReceipt):
+        raise ValueError("development-complete requires a validated FrozenOofReceipt")
+    if not isinstance(performance_receipt, PerformanceReceipt):
+        raise ValueError("development-complete requires a PerformanceReceipt object")
+    if not isinstance(final_policy_bytes, bytes):
+        raise ValueError("development-complete requires final policy bytes")
+    completion = require_completion_performance_admission(completion_admission)
+    performance_receipt.__post_init__()
+    if completion.performance_receipt_sha256 != performance_receipt.receipt_sha256:
+        raise ValueError("completion admission performance receipt mismatch")
+    if completion.quality_receipt_sha256 != performance_receipt.quality_receipt_sha256:
+        raise ValueError("completion admission quality receipt mismatch")
+    policy_bytes = build_final_development_policy(quality_receipt, final_policy_bytes)
+    artifact_identities = _validated_artifacts(artifacts, allow_empty=False)
+    if artifact_identities["fusion_policy"] != hashlib.sha256(policy_bytes).hexdigest():
+        raise ValueError("final fusion policy artifact identity mismatch")
+    for role, digest in artifact_identities.items():
+        if performance_receipt.artifact_identities.get(role) != digest:
+            raise ValueError(f"performance receipt artifact identity mismatch: {role}")
+    if completion.artifact_identity_sha256 != performance_receipt.artifact_identity_sha256:
+        raise ValueError("completion admission artifact identity mismatch")
+    return _seal(
+        {
+            "schema_version": 1,
+            "status": "development-complete",
+            "production_status": "unverified",
+            "quality": {"frozen_oof_receipt_sha256": quality_receipt.sha256},
+            "performance": {"receipt_sha256": performance_receipt.receipt_sha256},
+            "artifact_identities": artifact_identities,
+            "unverified_boundaries": ["non_target_rejection", "production_promotion"],
+        }
     )
 
 
