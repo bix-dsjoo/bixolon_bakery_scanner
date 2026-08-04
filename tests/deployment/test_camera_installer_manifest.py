@@ -10,7 +10,10 @@ from scripts.build_camera_installer_payload import (
     build_package_manifest,
     load_pipeline_allowlist,
 )
-from scripts.run_camera_inference_worker import compute_deployed_worker_code_identity
+from scripts.run_camera_inference_worker import (
+    compute_deployed_worker_code_identity,
+    deployed_worker_identity_paths,
+)
 from scripts.verify_camera_installation import (
     verify_deployed_worker_identity,
     verify_package_manifest,
@@ -63,6 +66,21 @@ def test_deployed_identity_verifier_rejects_tampered_worker_source(tmp_path: Pat
 
     with pytest.raises(ValueError, match="deployed worker code identity does not match"):
         verify_deployed_worker_identity(tmp_path)
+
+
+def test_deployed_worker_identity_covers_dual_runtime_sources() -> None:
+    """Catch an installer identity that omits either dual-runtime worker module."""
+    identity_paths = deployed_worker_identity_paths()
+
+    for worker_path in (
+        "src/bakery_scanner/prototype/camera_runtime.py",
+        "src/bakery_scanner/prototype/camera_protocol.py",
+    ):
+        assert any(
+            worker_path == identity_path
+            or worker_path.startswith(f"{identity_path}/")
+            for identity_path in identity_paths
+        )
 
 
 def test_manifest_verifier_rejects_hash_mismatch_and_extra_file(

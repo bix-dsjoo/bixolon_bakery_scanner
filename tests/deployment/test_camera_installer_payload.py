@@ -194,7 +194,7 @@ def payload_root(tmp_path: Path) -> Path:
     _write_attested_worker_tree(repo_root)
     runtime_lock = repo_root / "deployment" / "camera_installer" / "runtime-lock.json"
     runtime_lock.parent.mkdir(parents=True)
-    runtime_lock.write_text("{}\n", encoding="utf-8")
+    runtime_lock.write_text('{"cpu_fallback": true}\n', encoding="utf-8")
     subprocess.run(("git", "init", str(repo_root)), check=True, capture_output=True)
     subprocess.run(("git", "-C", str(repo_root), "config", "user.email", "test@example.com"), check=True)
     subprocess.run(("git", "-C", str(repo_root), "config", "user.name", "Test"), check=True)
@@ -268,9 +268,44 @@ def test_camera_payload_contains_hashed_presentation_policy(
     )
 
 
+def test_payload_runtime_lock_declares_cpu_reference_fallback() -> None:
+    """Catch a payload lock that does not promise CPU reference execution."""
+    repo_root = Path(__file__).parents[2]
+
+    lock = validate_runtime_lock(
+        repo_root / "deployment" / "camera_installer" / "runtime-lock.json"
+    )
+
+    assert lock.get("cpu_fallback") is True
+
+
+@pytest.mark.parametrize("cpu_fallback", (None, False))
+def test_payload_runtime_lock_rejects_missing_or_false_cpu_reference_fallback(
+    tmp_path: Path,
+    cpu_fallback: bool | None,
+) -> None:
+    """Catch the builder accepting a lock that omits CPU fallback packaging."""
+    repo_root = Path(__file__).parents[2]
+    lock = json.loads(
+        (
+            repo_root / "deployment" / "camera_installer" / "runtime-lock.json"
+        ).read_text(encoding="utf-8")
+    )
+    if cpu_fallback is None:
+        lock.pop("cpu_fallback", None)
+    else:
+        lock["cpu_fallback"] = cpu_fallback
+    path = tmp_path / "runtime-lock.json"
+    path.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cpu_fallback.*true"):
+        validate_runtime_lock(path)
+
+
 def test_runtime_lock_rejects_non_pinned_python(tmp_path: Path) -> None:
     lock = {
         "schema_version": 1,
+        "cpu_fallback": True,
         "python": {"version": "3.12.0"},
         "packages": {},
     }
