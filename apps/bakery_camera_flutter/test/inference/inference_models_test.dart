@@ -2,6 +2,89 @@ import 'package:bakery_camera_prototype/src/inference/inference_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('candidate retake preserves chain and increments attempts', () {
+    final result = CandidateScanResult.fromJson(_candidateRetakeJson(attempt: 1));
+
+    expect(result.objects, isEmpty);
+    expect(result.skuTotals, isEmpty);
+    expect(result.problemRegions, hasLength(1));
+    expect(result.nextRetakeRequest.retakeChainId, 'chain-1');
+    expect(result.nextRetakeRequest.attempt, 2);
+  });
+
+  test('candidate third retake requires manual catalog without partial inference', () {
+    final result = CandidateScanResult.fromJson(_candidateRetakeJson(attempt: 3));
+
+    expect(result.manualCatalogRequired, isTrue);
+    expect(() => result.nextRetakeRequest, throwsStateError);
+
+    final partial = _candidateRetakeJson(attempt: 3);
+    partial['objects'] = [<String, Object?>{'partial': true}];
+    expect(() => CandidateScanResult.fromJson(partial), throwsFormatException);
+  });
+
+  test('admitted candidate preserves verified GPU runtime evidence', () {
+    final payload = _candidateRetakeJson()
+      ..['state'] = 'accepted_scan'
+      ..['object_total'] = 1
+      ..['registered_object_total'] = 1
+      ..['unknown_total'] = 0
+      ..['sku_totals'] = <String, Object?>{'1': 1}
+      ..['objects'] = <Object?>[_candidateObjectJson()]
+      ..['reasons'] = <Object?>[]
+      ..['problem_regions'] = <Object?>[]
+      ..['attempt'] = null
+      ..['manual_catalog_required'] = false;
+
+    final result = InferenceResult.fromJson(payload);
+
+    expect(result.device, 'cuda:0');
+    expect(result.executionDevice, 'cuda:0');
+    expect(result.runtimeMode, RuntimeMode.gpuFastVerified);
+    expect(result.fallbackReason, isNull);
+    expect(result.scanToResultMs, 6.0);
+    expect(result.inferenceMs, 5.0);
+  });
+
+  test('candidate schema rejects unknown fields and non-finite timings', () {
+    final unknown = _candidateRetakeJson()..['extra'] = true;
+    expect(() => CandidateScanResult.fromJson(unknown), throwsFormatException);
+
+    final nonFinite = _candidateRetakeJson();
+    (nonFinite['timings_ms']! as Map<String, Object?>)['detector'] = double.nan;
+    expect(() => CandidateScanResult.fromJson(nonFinite), throwsFormatException);
+  });
+
+  test('candidate parser rejects noncanonical object and Top3 SKU names', () {
+    final wrongObject = _candidateObjectJson()
+      ..['sku_name'] = 'not canonical';
+    expect(
+      () => CandidateInferenceObject.fromJson(
+        wrongObject,
+        scanId: 'scan-1',
+        expectedOrder: 1,
+        imageWidth: 100,
+        imageHeight: 100,
+        runtimeProfileId: 'rtx5080_trt_fp16_static7_v1',
+      ),
+      throwsFormatException,
+    );
+
+    final wrongTop3 = _candidateObjectJson();
+    ((wrongTop3['top3']! as List<Object?>).first! as Map<String, Object?>)
+        ['sku_name'] = 'not canonical';
+    expect(
+      () => CandidateInferenceObject.fromJson(
+        wrongTop3,
+        scanId: 'scan-1',
+        expectedOrder: 1,
+        imageWidth: 100,
+        imageHeight: 100,
+        runtimeProfileId: 'rtx5080_trt_fp16_static7_v1',
+      ),
+      throwsFormatException,
+    );
+  });
   test('parses a deterministic fail-closed result contract', () {
     final result = InferenceResult.fromJson(
       _resultJson(
@@ -23,6 +106,45 @@ void main() {
     expect(result.objects.last.candidates, hasLength(3));
     expect(result.objects.last.isUnknown, isTrue);
     expect(result.timings.totalMs, 42.0);
+  });
+
+  test('parses CUDA reference runtime evidence', () {
+    final result = InferenceResult.fromJson(
+      _resultJson(
+        device: 'cuda:0',
+        executionDevice: 'cuda:0',
+        runtimeMode: 'gpu_reference',
+        fallbackReason: 'rfdetr_engine_parity_missing',
+      ),
+    );
+
+    expect(result.executionDevice, 'cuda:0');
+    expect(result.runtimeMode, RuntimeMode.gpuReference);
+    expect(result.fallbackReason, 'rfdetr_engine_parity_missing');
+  });
+
+  test('rejects mismatched runtime device mode and fallback evidence', () {
+    for (final mutation in <void Function(Map<String, Object?>)>[
+      (result) => result['runtime_mode'] = 'gpu_reference',
+      (result) => result['fallback_reason'] = null,
+      (result) {
+        result['device'] = 'cuda:0';
+        result['execution_device'] = 'cuda:0';
+        result['runtime_mode'] = 'gpu_fast_verified';
+        result['fallback_reason'] = 'unexpected_fallback';
+      },
+      (result) {
+        result['execution_device'] = 'cuda:0';
+        result['runtime_mode'] = 'gpu_reference';
+        result['fallback_reason'] = 'rfdetr_engine_parity_missing';
+      },
+      (result) => result['fallback_reason'] = '',
+      (result) => result['inference_ms'] = 43.0,
+    ]) {
+      final result = _resultJson();
+      mutation(result);
+      expect(() => InferenceResult.fromJson(result), throwsFormatException);
+    }
   });
 
   test('requires eight timing stages and exact object diagnostics', () {
@@ -618,20 +740,125 @@ void main() {
       (metrics) => metrics['device'] = 'gpu',
       (metrics) => metrics['repvit_id'] = '',
       (metrics) => metrics['detector_threshold'] = 1.1,
+      (metrics) => metrics['runtime_mode'] = 'gpu_reference',
+      (metrics) => metrics['fallback_reason'] = null,
     ]) {
       final metrics = _startupMetricsJson();
       mutation(metrics);
       expect(() => StartupMetrics.fromJson(metrics), throwsFormatException);
     }
   });
+
+  test('startup metrics constructor rejects impossible runtime admission', () {
+    for (final build in <StartupMetrics Function()>[
+      () => _startupMetrics(runtimeMode: RuntimeMode.gpuReference),
+      () => _startupMetrics(fallbackReason: null),
+      () => _startupMetrics(fallbackReason: ''),
+    ]) {
+      expect(build, throwsFormatException);
+    }
+  });
 }
+
+Map<String, Object?> _candidateRetakeJson({int attempt = 1}) => {
+  'type': 'result',
+  'request_id': 'scan-1',
+  'scan_id': 'scan-1',
+  'retake_chain_id': 'chain-1',
+  'state': 'needs_retake',
+  'object_total': 0,
+  'registered_object_total': 0,
+  'unknown_total': 0,
+  'sku_totals': <String, Object?>{},
+  'objects': <Object?>[],
+  'reasons': <Object?>['overlap_or_occlusion'],
+  'problem_regions': <Object?>[
+    {
+      'box_xyxy': <Object?>[1.0, 2.0, 5.0, 6.0],
+      'center_normalized': <Object?>[0.15, 0.2],
+      'object_order': 1,
+    },
+  ],
+  'attempt': attempt,
+  'canonical_frame': <String, Object?>{'width': 20, 'height': 20},
+  'timings_ms': <String, Object?>{
+    'decode_canonical': 1.0,
+    'detector': 2.0,
+    'completeness': 3.0,
+    'crop': 0.0,
+    'repvit': 0.0,
+    'direct_gate': 0.0,
+    'dinov3': 0.0,
+    'fusion_payload': 0.0,
+    'total': 6.0,
+  },
+  'provenance': <String, Object?>{
+    'pipeline_id': 'rtx5080_15plus5_single_frame_v1',
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+    'admission_receipt_sha256': 'a' * 64,
+    'artifact_hashes': <String, Object?>{'detector': 'b' * 64},
+  },
+  'manual_catalog_required': attempt >= 3,
+  'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  'receipt_id': 'a' * 64,
+};
+
+Map<String, Object?> _candidateObjectJson() => {
+  'object_id': 'scan-1#0001',
+  'sku_id': 1,
+  'sku_name': 'Walnut Donut',
+  'decision_path': 'direct_approved',
+  'location': <String, Object?>{
+    'box_xyxy': <Object?>[10.0, 10.0, 15.0, 15.0],
+    'center_normalized': <Object?>[0.625, 0.625],
+    'object_order': 1,
+  },
+  'confidence': <String, Object?>{
+    'detector_calibrated': 0.9,
+    'sku_acceptance_calibrated': 0.8,
+    'fusion_margin': null,
+  },
+  'top3': <Object?>[
+    {'rank': 1, 'sku_id': 1, 'sku_name': 'Walnut Donut', 'score': 0.8},
+    {'rank': 2, 'sku_id': 2, 'sku_name': 'Croffle', 'score': 0.15},
+    {'rank': 3, 'sku_id': 3, 'sku_name': 'Waffle', 'score': 0.05},
+  ],
+  'provenance': <String, Object?>{
+    'detector_artifact_id': 'detector',
+    'detector_sha256': 'a' * 64,
+    'repvit_artifact_id': 'repvit',
+    'repvit_sha256': 'b' * 64,
+    'dinov3_artifact_id': 'dinov3',
+    'dinov3_sha256': 'c' * 64,
+    'fusion_policy_id': 'fusion',
+    'fusion_policy_sha256': 'd' * 64,
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  },
+};
+
+StartupMetrics _startupMetrics({
+  RuntimeMode runtimeMode = RuntimeMode.cpuReference,
+  String? fallbackReason = 'CPU reference runtime selected',
+}) => StartupMetrics(
+  device: 'cpu',
+  runtimeMode: runtimeMode,
+  loadMs: 12.5,
+  warmupMs: 7,
+  fallbackReason: fallbackReason,
+  detectorId: 'rfdetr_large_bakery_v1',
+  repvitId: 'repvit_m1_15plus5_v1',
+  dinov3Id: 'dinov3_vits16_15plus5_v1',
+  fusionPolicyId: 'fusion_local_or_global_v1',
+  detectorThreshold: .42,
+);
 
 Map<String, Object?> _startupMetricsJson() {
   return {
     'device': 'cpu',
+    'runtime_mode': 'cpu_reference',
     'load_ms': 12.5,
     'warmup_ms': 7.0,
-    'fallback_reason': null,
+    'fallback_reason': 'CPU reference runtime selected',
     'detector_id': 'rfdetr_large_bakery_v1',
     'repvit_id': 'repvit_m1_15plus5_v1',
     'dinov3_id': 'dinov3_vits16_15plus5_v1',
@@ -657,6 +884,12 @@ Map<String, Object?> _resultJson({
   Map<String, int>? counts,
   int unknownCount = 0,
   Map<String, Object?>? presentation,
+  String device = 'cpu',
+  String executionDevice = 'cpu',
+  String runtimeMode = 'cpu_reference',
+  String? fallbackReason = 'CPU reference runtime selected',
+  double scanToResultMs = 42.0,
+  double inferenceMs = 34.0,
 }) {
   final resultObjects =
       objects ?? <Map<String, Object?>>[_confirmedObject('object-1')];
@@ -668,7 +901,12 @@ Map<String, Object?> _resultJson({
     'type': 'result',
     'request_id': requestId,
     'image': {'width': 640, 'height': 480},
-    'device': 'cpu',
+    'device': device,
+    'execution_device': executionDevice,
+    'runtime_mode': runtimeMode,
+    'fallback_reason': fallbackReason,
+    'scan_to_result_ms': scanToResultMs,
+    'inference_ms': inferenceMs,
     'objects': resultObjects,
     'counts': counts ?? {'6': 1},
     'unknown_count': unknownCount,

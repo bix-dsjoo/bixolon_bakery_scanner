@@ -244,6 +244,12 @@ Use frozen DINOv3 embeddings from eligible train images:
 - above that point, add images round-robin across strata before adding another
   image from an already overrepresented stratum.
 
+The declared DIV support seeds are independent deterministic draws: after the
+centroid-medoid first shot, seed-bound SHA-256 ranking chooses the next eligible
+capture stratum, while farthest-first still chooses the image within that
+stratum. A repeated seed must reproduce exactly the same ordered list; distinct
+declared seeds must not silently reuse one support draw.
+
 For every seed, support sets are nested:
 
 ```text
@@ -275,6 +281,9 @@ Top-1 results are more than two percentage points below another method and it
 offers no branch-level wrong-SKU improvement. Any contender within one
 percentage point of the best method on either branch, or on a non-dominated
 accuracy/error trade-off, expands to ten seeds. At most two methods continue.
+The five-seed receipt is only a screen: when it declares an expansion, it may
+not schedule Stage 2. A separate hash-bound ten-seed re-selection receipt must
+recompute the decision from exactly the retained expansion contenders.
 
 ### Stage 2: ascending learning curve
 
@@ -285,7 +294,9 @@ For the surviving methods, evaluate:
 ```
 
 Continue to `40 -> 80 -> 150` only if no smaller count passes. Always train the
-balanced 150-shot reference and all-available diagnostic once.
+balanced 150-shot reference and all-available diagnostic once. The
+all-available run is an ascending-stage, upper-bound diagnostic only (not a
+shot count and never a minimum-selection candidate).
 
 Each point starts with five support seeds. Clearly failing points do not receive
 more seeds. A point within three percentage points of the provisional
@@ -318,6 +329,23 @@ Only these frozen conditions enter the expensive confirmation:
 3. the next larger passing anchor;
 4. the balanced 150-shot reference.
 
+"Last failing" is not an arbitrary smaller shot count. It is the immediate
+predecessor in the preregistered Stage-2/3 sequence: for example, a `k=5`
+candidate requires the Stage-3 `k=4` failure, `k=8` requires `k=6`, and
+`k=20` requires `k=18`. A candidate that skips an evaluated anchor or
+refinement point is invalid.
+
+When `k=1` is itself the provisional minimum, there is no lower failing shot.
+Its preregistered special case therefore confirms exactly `k=1`, the next
+passing anchor `k=3`, and `k=150`; it must not invent a lower failure. The
+Stage-5 pair remains `k=1` and `k=150` and retains the same artifact binding.
+
+When `k=80` is the provisional minimum, `k=150` is both its preregistered next
+larger anchor and the balanced reference. Its confirmation therefore contains
+exactly three receipts: failing `k=40`, passing `k=80`, and passing/reference
+`k=150`. It must not add a duplicate `k=150` receipt or substitute a later
+anchor; the Stage-5 pair remains `k=80` and `k=150`.
+
 For every condition, rebuild and hash:
 
 ```text
@@ -344,6 +372,33 @@ Evaluate exactly two frozen conditions on `test2019`:
 
 - the provisional minimum;
 - the balanced 150-shot reference.
+
+The Stage-5 scheduler accepts no free method, selector, or shot-count input.
+For each fold and support seed it consumes a canonical Stage-4 selection
+certificate containing four distinct confirmation-score receipt SHA-256 values:
+last failure, provisional minimum, next passing anchor, and the balanced
+150-shot reference. The only preregistered three-receipt exceptions are
+`k=1/3/150` (no lower failure) and `k=40/80/150` (`k=150` serves as both next
+anchor and reference). The certificate requires one common method/selector/
+fold/seed, a failing last-lower point where one exists, a passing provisional
+minimum and next anchor, and a passing 150-shot reference. Both locked
+conditions must reproduce that certificate exactly; their candidate/reference
+method and selector must match, and their reference is exactly `k=150`.
+
+The certificate is not authorized by digest strings alone. Before scheduling,
+scoring, or aggregating a locked condition, resolve every declared external
+receipt path, require canonical bytes whose SHA-256 values equal the claims,
+and verify each is a completed provisional Stage-4 confirmation receipt for
+the declared condition, cohort, scoring plan, method, selector, fold, and
+support seed.
+
+It also carries one hash-bound, canonical direct scorer receipt for every
+Stage-2/3 point in the selected ascending lineage (all prior failures, the
+smallest passing point, its next passing anchor, and the mandatory 150-shot
+ascending reference). Each receipt is re-derived from its raw evidence before
+Stage 5 and must reproduce its claimed pass/fail rule. This prevents a
+self-consistent confirmation quartet from inventing a minimum after skipped
+ascending or refinement candidates.
 
 If the provisional minimum passes, it is the RPC minimum for this model and
 capture contract. If it fails, no larger count is selected from the same locked

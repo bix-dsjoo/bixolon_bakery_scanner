@@ -10,6 +10,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, TypeAlias
 
+from bakery_scanner.pipelines.rtx5080_15plus5.contracts import (
+    CANONICAL_SKUS,
+    RetakeReason,
+    ScanResult,
+    scan_result_payload,
+)
+
 _PRESENTATION_FIELDS = {
     "state",
     "final_count_usable",
@@ -36,6 +43,9 @@ _TIMING_STAGES = frozenset(
         "total",
     }
 )
+_RUNTIME_MODES = frozenset(
+    {"gpu_fast_verified", "gpu_reference", "cpu_reference"}
+)
 _OBJECT_FIELDS = frozenset(
     {
         "object_id", "sku_id", "sku_name", "bbox_xyxy", "confidence",
@@ -45,8 +55,48 @@ _OBJECT_FIELDS = frozenset(
 _RESULT_FIELDS = frozenset(
     {
         "type", "request_id", "image", "device", "objects", "counts",
-        "unknown_count", "presentation", "timings_ms", "diagnostics",
+        "unknown_count", "execution_device", "runtime_mode", "fallback_reason",
+        "scan_to_result_ms", "inference_ms", "presentation", "timings_ms",
+        "diagnostics",
     }
+)
+_CANDIDATE_RESULT_FIELDS = frozenset(
+    {
+        "type", "request_id", "scan_id", "retake_chain_id", "state", "object_total",
+        "registered_object_total", "unknown_total", "sku_totals", "objects",
+        "reasons", "problem_regions", "attempt", "canonical_frame",
+        "timings_ms", "provenance", "manual_catalog_required",
+        "runtime_profile_id", "receipt_id",
+    }
+)
+_CANDIDATE_TIMING_STAGES = frozenset(
+    {
+        "decode_canonical", "detector", "completeness", "crop", "repvit",
+        "direct_gate", "dinov3", "fusion_payload", "total",
+    }
+)
+_CANDIDATE_OBJECT_FIELDS = frozenset(
+    {
+        "object_id", "sku_id", "sku_name", "decision_path", "location",
+        "confidence", "top3", "provenance",
+    }
+)
+_CANDIDATE_PROVENANCE_FIELDS = frozenset(
+    {
+        "pipeline_id", "runtime_profile_id", "admission_receipt_sha256",
+        "artifact_hashes",
+    }
+)
+_CANDIDATE_OBJECT_PROVENANCE_FIELDS = frozenset(
+    {
+        "detector_artifact_id", "detector_sha256", "repvit_artifact_id",
+        "repvit_sha256", "dinov3_artifact_id", "dinov3_sha256",
+        "fusion_policy_id", "fusion_policy_sha256", "runtime_profile_id",
+    }
+)
+_LOCATION_FIELDS = frozenset({"box_xyxy", "center_normalized", "object_order"})
+_CONFIDENCE_FIELDS = frozenset(
+    {"detector_calibrated", "sku_acceptance_calibrated", "fusion_margin"}
 )
 _REGISTERED_PATHS = frozenset({"repvit_direct", "dinov3_confirmed", "fusion_ranked"})
 _PROVENANCE_FIELDS = frozenset(
@@ -157,6 +207,9 @@ def progress_event(request_id: str, phase: WorkerPhase) -> dict[str, object]:
 
 def validate_result_event(result: Mapping[str, object]) -> None:
     """Reject malformed or internally inconsistent presentation routing."""
+    if isinstance(result, Mapping) and set(result) == _CANDIDATE_RESULT_FIELDS:
+        _validate_candidate_result_event(result)
+        return
     if (
         not isinstance(result, Mapping)
         or set(result) != _RESULT_FIELDS
@@ -168,6 +221,7 @@ def validate_result_event(result: Mapping[str, object]) -> None:
         raise ValueError("runtime result request_id is invalid")
     if result["device"] not in {"cpu", "cuda:0"}:
         raise ValueError("runtime result device is invalid")
+    _validate_runtime_scope(result)
     width, height = _validate_result_image(result["image"])
     object_ids, unknown_ids, registered_counts = _result_object_ids(
         result["objects"], width, height
@@ -258,6 +312,315 @@ def validate_result_event(result: Mapping[str, object]) -> None:
         )
     ):
         raise ValueError("object retake presentation state is inconsistent")
+
+
+def encode_scan_result(result: ScanResult) -> dict[str, object]:
+    """Wrap the immutable candidate ScanResult as a strict worker event."""
+    payload = scan_result_payload(result)
+    provenance = payload["provenance"]
+    assert isinstance(provenance, Mapping)
+    event = {
+        "type": "result",
+        "request_id": payload["scan_id"],
+        **payload,
+        "runtime_profile_id": provenance["runtime_profile_id"],
+        "receipt_id": provenance["admission_receipt_sha256"],
+    }
+    validate_result_event(event)
+    return event
+
+
+def _validate_candidate_result_event(result: Mapping[str, object]) -> None:
+    if result.get("type") != "result":
+        raise ValueError("candidate runtime result type is invalid")
+    scan_id = _required_text(result["scan_id"], "candidate scan_id")
+    if _required_text(result["request_id"], "candidate request_id") != scan_id:
+        raise ValueError("candidate request_id must equal scan_id")
+    _required_text(result["retake_chain_id"], "candidate retake_chain_id")
+    frame = result["canonical_frame"]
+    if not isinstance(frame, Mapping) or set(frame) != {"width", "height"}:
+        raise ValueError("candidate canonical_frame is invalid")
+    width = _positive_integer(frame["width"], "candidate frame width")
+    height = _positive_integer(frame["height"], "candidate frame height")
+
+    provenance = result["provenance"]
+    if not isinstance(provenance, Mapping) or set(provenance) != _CANDIDATE_PROVENANCE_FIELDS:
+        raise ValueError("candidate result provenance is invalid")
+    if provenance["pipeline_id"] != "rtx5080_15plus5_single_frame_v1":
+        raise ValueError("candidate pipeline identity is invalid")
+    profile = _required_text(provenance["runtime_profile_id"], "candidate runtime profile")
+    receipt = _candidate_sha(provenance["admission_receipt_sha256"], "candidate admission receipt")
+    if result["runtime_profile_id"] != profile or result["receipt_id"] != receipt:
+        raise ValueError("candidate runtime profile or receipt identity mismatch")
+    artifacts = provenance["artifact_hashes"]
+    if not isinstance(artifacts, Mapping) or not artifacts:
+        raise ValueError("candidate artifact provenance is invalid")
+    for artifact_id, digest in artifacts.items():
+        _required_text(artifact_id, "candidate artifact ID")
+        _candidate_sha(digest, "candidate artifact SHA-256")
+
+    _validate_candidate_timings(result["timings_ms"])
+    objects = result["objects"]
+    if not isinstance(objects, list):
+        raise ValueError("candidate objects must be a list")
+    state = result["state"]
+    if state == "needs_retake" and objects:
+        raise ValueError("candidate retake must not contain partial inference")
+    registered_counts: dict[str, int] = {}
+    unknown_count = 0
+    locations: list[tuple[float, float, float, float, float, float]] = []
+    for index, value in enumerate(objects, start=1):
+        sku_id, location = _validate_candidate_object(
+            value, index=index, scan_id=scan_id, width=width, height=height,
+            runtime_profile_id=profile,
+        )
+        locations.append(location)
+        if sku_id is None:
+            unknown_count += 1
+        else:
+            key = str(sku_id)
+            registered_counts[key] = registered_counts.get(key, 0) + 1
+    if locations != sorted(locations, key=lambda row: (row[5], row[4], row[0], row[1])):
+        raise ValueError("candidate object order is invalid")
+
+    object_total = _non_negative_integer(result["object_total"], "candidate object_total")
+    registered_total = _non_negative_integer(
+        result["registered_object_total"], "candidate registered_object_total"
+    )
+    reported_unknown = _non_negative_integer(result["unknown_total"], "candidate unknown_total")
+    if (
+        object_total != len(objects)
+        or registered_total != len(objects) - unknown_count
+        or reported_unknown != unknown_count
+    ):
+        raise ValueError("candidate result totals do not match objects")
+    totals = result["sku_totals"]
+    if not isinstance(totals, Mapping) or dict(totals) != registered_counts:
+        raise ValueError("candidate SKU totals do not match registered objects")
+
+    reasons = result["reasons"]
+    regions = result["problem_regions"]
+    if not isinstance(reasons, list) or len(reasons) != len(set(reasons)):
+        raise ValueError("candidate retake reasons are invalid")
+    allowed_reasons = {reason.value for reason in RetakeReason}
+    if any(reason not in allowed_reasons for reason in reasons):
+        raise ValueError("candidate retake reasons are invalid")
+    if not isinstance(regions, list):
+        raise ValueError("candidate problem regions are invalid")
+    for index, region in enumerate(regions, start=1):
+        _candidate_location(region, index, width, height)
+
+    manual = result["manual_catalog_required"]
+    if type(manual) is not bool:
+        raise ValueError("candidate manual_catalog_required must be boolean")
+    attempt = result["attempt"]
+    if state == "needs_retake":
+        if objects or registered_counts or object_total or registered_total or reported_unknown:
+            raise ValueError("candidate retake must not contain partial inference")
+        attempt_value = _positive_integer(attempt, "candidate retake attempt")
+        if not reasons or manual is not (attempt_value >= 3):
+            raise ValueError("candidate retake attempt or manual escalation is invalid")
+    elif state == "accepted_scan":
+        if not objects or reasons or regions or attempt is not None or manual:
+            raise ValueError("candidate accepted scan carries invalid retake fields")
+    else:
+        raise ValueError("candidate result state is invalid")
+
+
+def _validate_candidate_object(
+    value: object,
+    *,
+    index: int,
+    scan_id: str,
+    width: int,
+    height: int,
+    runtime_profile_id: str,
+) -> tuple[int | None, tuple[float, float, float, float, float, float]]:
+    if not isinstance(value, Mapping) or set(value) != _CANDIDATE_OBJECT_FIELDS:
+        raise ValueError("candidate object schema is invalid")
+    object_id = _required_text(value["object_id"], "candidate object_id")
+    if object_id != f"{scan_id}#{index:04d}":
+        raise ValueError("candidate object identity or order is invalid")
+    location = _candidate_location(value["location"], index, width, height)
+    confidence = value["confidence"]
+    if not isinstance(confidence, Mapping) or set(confidence) != _CONFIDENCE_FIELDS:
+        raise ValueError("candidate object confidence is invalid")
+    _candidate_probability(confidence["detector_calibrated"], "detector confidence")
+    acceptance = confidence["sku_acceptance_calibrated"]
+    margin = confidence["fusion_margin"]
+    if acceptance is not None:
+        _candidate_probability(acceptance, "SKU acceptance confidence")
+    if margin is not None:
+        _candidate_non_negative_finite(margin, "fusion margin")
+
+    object_provenance = value["provenance"]
+    if (
+        not isinstance(object_provenance, Mapping)
+        or set(object_provenance) != _CANDIDATE_OBJECT_PROVENANCE_FIELDS
+        or object_provenance["runtime_profile_id"] != runtime_profile_id
+    ):
+        raise ValueError("candidate object provenance is invalid")
+    for field in (
+        "detector_artifact_id", "repvit_artifact_id", "dinov3_artifact_id",
+        "fusion_policy_id", "runtime_profile_id",
+    ):
+        _required_text(object_provenance[field], f"candidate object {field}")
+    for field in (
+        "detector_sha256", "repvit_sha256", "dinov3_sha256",
+        "fusion_policy_sha256",
+    ):
+        _candidate_sha(object_provenance[field], f"candidate object {field}")
+
+    sku_id = value["sku_id"]
+    path = value["decision_path"]
+    name = value["sku_name"]
+    if sku_id is None:
+        if name != "Unknown" or path != "unknown_top3" or acceptance is not None:
+            raise ValueError("candidate Unknown object is invalid")
+    else:
+        if type(sku_id) is not int or sku_id not in CANONICAL_SKUS:
+            raise ValueError("candidate registered SKU is invalid")
+        if name != CANONICAL_SKUS[sku_id] or path not in {"direct_approved", "consensus_approved"} or acceptance is None:
+            raise ValueError("candidate registered object is invalid")
+    _candidate_top3(value["top3"])
+    return sku_id, location
+
+
+def _candidate_location(
+    value: object, order: int, width: int, height: int
+) -> tuple[float, float, float, float, float, float]:
+    if not isinstance(value, Mapping) or set(value) != _LOCATION_FIELDS:
+        raise ValueError("candidate object location is invalid")
+    box = value["box_xyxy"]
+    center = value["center_normalized"]
+    if not isinstance(box, list) or len(box) != 4 or not isinstance(center, list) or len(center) != 2:
+        raise ValueError("candidate object location is invalid")
+    try:
+        x1, y1, x2, y2 = (float(item) for item in box)
+        cx, cy = (float(item) for item in center)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate object location is invalid") from exc
+    if (
+        any(isinstance(item, bool) for item in (*box, *center))
+        or not all(math.isfinite(item) for item in (x1, y1, x2, y2, cx, cy))
+        or x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1
+        or x2 > width or y2 > height or not 0 <= cx <= 1 or not 0 <= cy <= 1
+        or abs(cx - (x1 + x2) / (2 * width)) > 1e-6
+        or abs(cy - (y1 + y2) / (2 * height)) > 1e-6
+        or value["object_order"] != order
+        or type(value["object_order"]) is not int
+    ):
+        raise ValueError("candidate object location is invalid")
+    return (x1, y1, x2, y2, cx, cy)
+
+
+def _candidate_top3(value: object) -> None:
+    if not isinstance(value, list) or len(value) != 3:
+        raise ValueError("candidate exact Top3 is invalid")
+    parsed: list[tuple[int, int, float]] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"rank", "sku_id", "sku_name", "score"}:
+            raise ValueError("candidate exact Top3 is invalid")
+        rank = item["rank"]
+        sku_id = item["sku_id"]
+        if type(rank) is not int or type(sku_id) is not int or sku_id not in CANONICAL_SKUS or item["sku_name"] != CANONICAL_SKUS[sku_id]:
+            raise ValueError("candidate exact Top3 is invalid")
+        score = _candidate_probability(item["score"], "candidate Top3 score")
+        parsed.append((rank, sku_id, score))
+    if (
+        tuple(row[0] for row in parsed) != (1, 2, 3)
+        or len({row[1] for row in parsed}) != 3
+        or any(parsed[index][2] < parsed[index + 1][2] for index in range(2))
+    ):
+        raise ValueError("candidate exact Top3 is invalid")
+
+
+def _validate_candidate_timings(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != _CANDIDATE_TIMING_STAGES:
+        raise ValueError("candidate timings_ms schema is invalid")
+    for stage, timing in value.items():
+        _candidate_non_negative_finite(timing, f"candidate timing {stage}")
+    if float(value["total"]) < max(float(value[stage]) for stage in _CANDIDATE_TIMING_STAGES - {"total"}):
+        raise ValueError("candidate total timing is invalid")
+
+
+def _candidate_probability(value: object, name: str) -> float:
+    numeric = _candidate_non_negative_finite(value, name)
+    if numeric > 1:
+        raise ValueError(f"{name} is invalid")
+    return numeric
+
+
+def _candidate_non_negative_finite(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0:
+        raise ValueError(f"{name} is invalid")
+    return float(value)
+
+
+def _candidate_sha(value: object, name: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(character not in _LOWER_HEX for character in value):
+        raise ValueError(f"{name} is invalid")
+    return value
+
+
+def _required_text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is invalid")
+    return value
+
+
+def _positive_integer(value: object, name: str) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{name} is invalid")
+    return value
+
+
+def _non_negative_integer(value: object, name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} is invalid")
+    return value
+
+
+def _validate_runtime_scope(result: Mapping[str, object]) -> None:
+    execution_device = result["execution_device"]
+    if execution_device not in {"cpu", "cuda:0"}:
+        raise ValueError("runtime result execution device is invalid")
+    if execution_device != result["device"]:
+        raise ValueError("runtime result execution device must match device")
+
+    runtime_mode = result["runtime_mode"]
+    if runtime_mode not in _RUNTIME_MODES:
+        raise ValueError("runtime result runtime mode is invalid")
+    if runtime_mode == "cpu_reference":
+        if execution_device != "cpu":
+            raise ValueError("runtime result CPU mode requires cpu device")
+    elif execution_device != "cuda:0":
+        raise ValueError("runtime result GPU mode requires cuda:0 device")
+
+    fallback_reason = result["fallback_reason"]
+    if runtime_mode == "gpu_fast_verified":
+        if fallback_reason is not None:
+            raise ValueError("runtime result verified GPU fallback reason is invalid")
+    elif not isinstance(fallback_reason, str) or not fallback_reason:
+        raise ValueError("runtime result reference fallback reason is invalid")
+
+    scan_to_result_ms = _validate_runtime_latency(
+        result["scan_to_result_ms"], "scan_to_result_ms"
+    )
+    inference_ms = _validate_runtime_latency(result["inference_ms"], "inference_ms")
+    if inference_ms > scan_to_result_ms:
+        raise ValueError("runtime result inference_ms exceeds scan_to_result_ms")
+
+
+def _validate_runtime_latency(value: object, field: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value < 0.0
+    ):
+        raise ValueError(f"runtime result {field} is invalid")
+    return float(value)
 
 
 def _require_exact_ranked_top3(

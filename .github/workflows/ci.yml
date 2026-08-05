@@ -21,6 +21,7 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev,verifier]"
+      - run: python -m pip install "rfdetr==1.8.3"
       - run: python -m pip install --no-deps -e ./dino
       - run: python -m bakery_scanner.artifacts.cli --manifest-only
       - run: python -m pytest

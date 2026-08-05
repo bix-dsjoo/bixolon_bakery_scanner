@@ -478,8 +478,8 @@ const _diagnosticsModel = DiagnosticsSnapshot(
     ),
   ),
   storage: DiagnosticsStorageStatus(
-    schemaVersion: 4,
-    migrationStatus: 'created_schema_v4',
+    schemaVersion: 5,
+    migrationStatus: 'created_schema_v5',
     auditRoot: 'C:/audit',
     persistenceReady: true,
     activeCatalogRevisionId: 'catalog-v1',

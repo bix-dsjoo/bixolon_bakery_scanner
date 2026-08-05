@@ -22,16 +22,21 @@ from .contracts import (
     ClassificationDecision,
     DecisionPath,
     ModelProvenance,
+    ModelScoreVector,
     SkuCandidate,
     StageTimings,
 )
-from .dinov3 import DinoV3Rechecker
+from .dinov3 import DinoGlobalLocalEvidence, DinoV3Rechecker
 from .errors import DinoInferenceError
 from .full_evidence import FullEvidenceRow
 from .fusion_policy import FusionPolicyArtifact
 from .local_bank import LocalPatchBank
 from .policy import DecisionPolicy, DirectEvidence, PolicyCalibration
-from .preprocess import make_padded_crops_with_product_boxes
+from .preprocess import (
+    ClassifierPreprocessDescriptor,
+    build_crop_pair,
+    make_padded_crops_with_product_boxes,
+)
 from .repvit import RepVitM1Runner, RepVitPrototypeBank
 
 
@@ -210,6 +215,27 @@ class BatchInferenceResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TightContextRepVitEvidence:
+    """Pair-aware RepViT evidence required by the static 15+5 direct gate."""
+
+    scores: ModelScoreVector
+    tight_scores: ModelScoreVector
+    context_scores: ModelScoreVector
+    feature: torch.Tensor
+    crop_disagreement: float
+
+    def __post_init__(self) -> None:
+        if self.scores.sku_ids != self.tight_scores.sku_ids or self.scores.sku_ids != self.context_scores.sku_ids:
+            raise ValueError("tight/context RepViT class order must align")
+        if any(scores.model_id != "repvit_m1_15plus5_v1" or scores.score_kind != "probability" for scores in (self.scores, self.tight_scores, self.context_scores)):
+            raise ValueError("tight/context evidence must use canonical RepViT probabilities")
+        if tuple(self.feature.shape) != (384,) or not torch.isfinite(self.feature).all().item():
+            raise ValueError("tight/context RepViT feature must have shape (384,)")
+        if not math.isfinite(self.crop_disagreement) or self.crop_disagreement < 0.0:
+            raise ValueError("tight/context crop disagreement must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkPreflightEvidence:
     repvit: int
     dinov3_global_local: int
@@ -342,6 +368,24 @@ class ClassifierPipeline:
         configure_cpu_process(config.runtime)
         calibration_payload = (calibration_path or config.calibration.artifact).read_bytes()
         calibration = PolicyCalibration.from_json_bytes(calibration_payload)
+        fusion_policy = None
+        fusion_payload = None
+        if config.calibration.fusion_policy is not None:
+            fusion_payload = config.calibration.fusion_policy.read_bytes()
+            if hashlib.sha256(fusion_payload).hexdigest() != config.calibration.fusion_policy_sha256:
+                raise ValueError("fusion policy SHA-256 does not match classifier config")
+            fusion_policy = FusionPolicyArtifact.from_json_bytes(fusion_payload)
+        static_policy = (
+            fusion_policy is not None
+            and fusion_policy.schema_version == 3
+            and fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
+        )
+        if static_policy and fusion_policy.artifact_hashes["preprocess_sha256"] != ClassifierPreprocessDescriptor().sha256():
+            raise ValueError("schema-3 fusion policy requires static preprocessing identity")
+        active_preprocess_sha256 = (
+            ClassifierPreprocessDescriptor().sha256()
+            if static_policy else preprocess_sha256(config.preprocess)
+        )
         provenance = ModelProvenance(
             repvit_artifact_id=config.repvit.artifact_id,
             repvit_sha256=config.repvit.checkpoint_sha256,
@@ -350,18 +394,14 @@ class ClassifierPipeline:
             dinov3_support_sha256=config.dinov3.support_sha256,
             calibration_id=calibration.calibration_id,
             calibration_sha256=hashlib.sha256(calibration.to_json_bytes()).hexdigest(),
-            preprocess_sha256=preprocess_sha256(config.preprocess),
+            preprocess_sha256=active_preprocess_sha256,
             repvit_manifest_sha256=config.repvit.manifest_sha256,
             repvit_prototype_sha256=config.repvit.prototype_bank_sha256 or "0" * 64,
         )
         policy = DecisionPolicy(calibration, provenance=provenance)
-        fusion_policy = None
         fusion_provenance = None
-        if config.calibration.fusion_policy is not None:
-            fusion_payload = config.calibration.fusion_policy.read_bytes()
-            if hashlib.sha256(fusion_payload).hexdigest() != config.calibration.fusion_policy_sha256:
-                raise ValueError("fusion policy SHA-256 does not match classifier config")
-            fusion_policy = FusionPolicyArtifact.from_json_bytes(fusion_payload)
+        if fusion_policy is not None:
+            assert fusion_payload is not None
             expected_hashes = {
                 "repvit_checkpoint_sha256": config.repvit.checkpoint_sha256,
                 "repvit_manifest_sha256": config.repvit.manifest_sha256,
@@ -369,7 +409,7 @@ class ClassifierPipeline:
                 "dinov3_weights_sha256": config.dinov3.weights_sha256,
                 "dinov3_support_sha256": config.dinov3.support_sha256,
                 "dinov3_local_bank_sha256": config.dinov3.local_bank_sha256 or "0" * 64,
-                "preprocess_sha256": preprocess_sha256(config.preprocess),
+                "preprocess_sha256": active_preprocess_sha256,
             }
             if fusion_policy.artifact_hashes != expected_hashes:
                 raise ValueError("fusion policy artifacts do not match classifier config")
@@ -378,7 +418,20 @@ class ClassifierPipeline:
                 calibration_id=f"fusion_policy_{fusion_policy.decision_rule}",
                 calibration_sha256=hashlib.sha256(fusion_payload).hexdigest(),
             )
-        repvit = RepVitM1Runner.load(config)
+        admitted_local_bank = None
+        if static_policy:
+            DinoV3Rechecker.validate_artifacts(
+                config,
+                expected_preprocess_sha256=active_preprocess_sha256,
+            )
+            admitted_local_bank = _load_local_bank(
+                config,
+                preprocess_identity=active_preprocess_sha256,
+            )
+        repvit = RepVitM1Runner.load(
+            config,
+            **({"expected_preprocess_sha256": active_preprocess_sha256} if static_policy else {}),
+        )
         if "repvit" in config.runtime.compile_models:
             repvit.model = torch.compile(repvit.model)
         if config.repvit.prototype_bank is None or config.repvit.prototype_bank_sha256 is None:
@@ -386,18 +439,26 @@ class ClassifierPipeline:
         prototype_bank = RepVitPrototypeBank.load(
             config.repvit.prototype_bank,
             checkpoint_sha256=config.repvit.checkpoint_sha256,
-            expected_preprocess_sha256=preprocess_sha256(config.preprocess),
+            expected_preprocess_sha256=active_preprocess_sha256,
             expected_sha256=config.repvit.prototype_bank_sha256,
         )
         return cls(
             config=config,
             repvit=repvit,
-            dino_loader=lambda: DinoV3Rechecker.load(config),
+            dino_loader=lambda: DinoV3Rechecker.load(
+                config,
+                **({"expected_preprocess_sha256": active_preprocess_sha256} if static_policy else {}),
+            ),
             policy=policy,
             prototype_bank=prototype_bank,
             fusion_policy=fusion_policy,
             fusion_provenance=fusion_provenance,
-            local_bank_loader=lambda: _load_local_bank(config),
+            local_bank=admitted_local_bank,
+            local_bank_loader=(
+                None
+                if static_policy
+                else lambda: _load_local_bank(config, preprocess_identity=active_preprocess_sha256)
+            ),
             stage_timing_sink=stage_timing_sink,
         )
 
@@ -409,6 +470,8 @@ class ClassifierPipeline:
         on_stage: Callable[[str], None] | None = None,
         on_timing: _StageTimingSink | None = None,
     ) -> ClassificationDecision:
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires tight/context batch inference")
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         total_started = self._timestamp()
@@ -571,11 +634,25 @@ class ClassifierPipeline:
         image: Image.Image | CanonicalImage,
         boxes: Sequence[Box],
         *,
-        repvit_max_objects: int,
-        dino_max_objects: int,
+        repvit_max_objects: int | None = None,
+        dino_max_objects: int | None = None,
+        repvit_rows_per_invocation: int | None = None,
+        dino_objects_per_invocation: int | None = None,
         cuda_timing: CudaTimingCollector | None = None,
     ) -> BatchInferenceResult:
         """Classify ordered detector boxes with shared batch evidence extraction."""
+        if repvit_rows_per_invocation is not None or dino_objects_per_invocation is not None:
+            if repvit_max_objects is not None or dino_max_objects is not None:
+                raise ValueError("legacy and static classifier batch contracts cannot be mixed")
+            return self._infer_many_tight_context(
+                image,
+                boxes,
+                repvit_rows_per_invocation=repvit_rows_per_invocation,
+                dino_objects_per_invocation=dino_objects_per_invocation,
+                cuda_timing=cuda_timing,
+            )
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires tight/context batch inference")
         total_started = self._host_now()
         owns_cuda_timing = False
         frame = _canonical_frame(image)
@@ -740,6 +817,249 @@ class ClassifierPipeline:
             len(recheck_indexes),
         )
 
+    def _infer_many_tight_context(
+        self,
+        image: Image.Image | CanonicalImage,
+        boxes: Sequence[Box],
+        *,
+        repvit_rows_per_invocation: int | None,
+        dino_objects_per_invocation: int | None,
+        cuda_timing: CudaTimingCollector | None,
+    ) -> BatchInferenceResult:
+        """Run the isolated Task 5 static tight/context evidence contract."""
+        if repvit_rows_per_invocation != 14:
+            raise ValueError("repvit_rows_per_invocation must be the static value 14")
+        if dino_objects_per_invocation != 7:
+            raise ValueError("dino_objects_per_invocation must be the static value 7")
+        self._require_static_admission()
+        total_started = self._host_now()
+        owns_cuda_timing = False
+        frame = _canonical_frame(image)
+        ordered_boxes = tuple(boxes)
+        for box in ordered_boxes:
+            _validate_visual_box(frame, box)
+        if not ordered_boxes:
+            total_finished = self._host_now()
+            return BatchInferenceResult(
+                (),
+                BatchStageTimings(0.0, 0.0, 0.0, 0.0, _milliseconds(total_started, total_finished)),
+                0,
+            )
+        if self.config.runtime.device == "CUDA:0" and torch.cuda.is_available() and cuda_timing is None:
+            cuda_timing = CudaTimingCollector("cuda:0", synchronize=self.clock.synchronize)
+            owns_cuda_timing = True
+
+        crop_started = self._host_now()
+        pairs = tuple(build_crop_pair(frame, box) for box in ordered_boxes)
+        crop_finished = self._host_now()
+
+        repvit_started = self._host_now()
+        repvit_evidence: list[object] = []
+        object_capacity = repvit_rows_per_invocation // 2
+        for start in range(0, len(pairs), object_capacity):
+            valid_pairs = pairs[start : start + object_capacity]
+            padded_pairs = _pad_static_chunk(valid_pairs, object_capacity)
+            rows = tuple(crop for pair in padded_pairs for crop in (pair.tight, pair.context))
+            valid_mask = tuple(
+                row_index < 2 * len(valid_pairs)
+                for row_index in range(repvit_rows_per_invocation)
+            )
+            action = lambda rows=rows, valid_mask=valid_mask, valid_count=len(valid_pairs): self._score_tight_context_chunk(
+                rows, valid_mask=valid_mask, valid_count=valid_count
+            )
+            chunk_evidence = cuda_timing.measure("repvit", action) if cuda_timing is not None else action()
+            repvit_evidence.extend(chunk_evidence)
+        repvit_finished = self._host_now()
+        if len(repvit_evidence) != len(ordered_boxes):
+            raise ValueError("RepViT static evidence must align with input boxes")
+
+        decisions: list[ClassificationDecision | None] = [None] * len(ordered_boxes)
+        recheck_indexes: list[int] = []
+        nearest_distances: list[float] = []
+        for index, (box, evidence) in enumerate(zip(ordered_boxes, repvit_evidence, strict=True)):
+            _require_tight_context_evidence(evidence)
+            nearest_distance = min(self.prototype_bank.distances(evidence.feature))
+            nearest_distances.append(nearest_distance)
+            direct = None
+            if _pair_top1_agrees(evidence):
+                direct = self.policy.direct(
+                    evidence.scores,
+                    evidence=DirectEvidence(
+                        crop_disagreement=evidence.crop_disagreement,
+                        nearest_prototype_distance=nearest_distance,
+                    ),
+                    box=box,
+                )
+            if direct is None:
+                recheck_indexes.append(index)
+            else:
+                decisions[index] = direct
+
+        dino_started = self._host_now()
+        fusion_ms = 0.0
+        if recheck_indexes:
+            dino = self._get_dino()
+            local_bank = self._get_local_bank()
+            if local_bank is None:
+                raise ValueError("static DINO inference requires a local support bank")
+            for start in range(0, len(recheck_indexes), dino_objects_per_invocation):
+                valid_indexes = recheck_indexes[start : start + dino_objects_per_invocation]
+                padded_indexes = _pad_static_chunk(tuple(valid_indexes), dino_objects_per_invocation)
+                context_crops = tuple(pairs[index].context for index in padded_indexes)
+                product_boxes = tuple(pairs[index].context_product_box for index in padded_indexes)
+                aligned_repvit = tuple(repvit_evidence[index].scores for index in padded_indexes)
+                valid_mask = tuple(index < len(valid_indexes) for index in range(dino_objects_per_invocation))
+                action = lambda: self._score_context_dino_chunk(
+                    dino,
+                    context_crops,
+                    product_boxes,
+                    local_bank,
+                    repvit_scores=aligned_repvit,
+                    valid_mask=valid_mask,
+                    valid_count=len(valid_indexes),
+                )
+                # Do not catch chunk failures: the Task 5 contract aborts the scan.
+                dino_evidence = cuda_timing.measure("dinov3", action) if cuda_timing is not None else action()
+                fusion_started = self._host_now()
+                for index, evidence in zip(valid_indexes, dino_evidence, strict=True):
+                    decisions[index] = self._fusion_decision(
+                        repvit_scores=repvit_evidence[index].scores,
+                        dino_scores=evidence.global_scores,
+                        local_scores=evidence.local_scores,
+                        crop_disagreement=repvit_evidence[index].crop_disagreement,
+                        nearest_prototype_distance=nearest_distances[index],
+                        patch_count=evidence.product_patch_count,
+                        patch_ratio=evidence.product_patch_ratio,
+                        box=ordered_boxes[index],
+                    )
+                fusion_finished = self._host_now()
+                fusion_ms += _milliseconds(fusion_started, fusion_finished)
+        dino_finished = self._host_now()
+        if any(decision is None for decision in decisions):
+            raise RuntimeError("static batch inference did not produce every decision")
+        total_finished = self._host_now()
+        repvit_ms = _milliseconds(repvit_started, repvit_finished)
+        dino_ms = _milliseconds(dino_started, dino_finished)
+        if owns_cuda_timing:
+            assert cuda_timing is not None
+            event_timings = cuda_timing.finalize()
+            repvit_ms = event_timings.get("repvit", 0.0)
+            dino_ms = event_timings.get("dinov3", 0.0)
+            total_finished = self._host_now()
+        total_ms = _milliseconds(total_started, total_finished)
+        completed = tuple(
+            self._with_metadata(
+                decision,
+                frame=frame,
+                repvit_ms=repvit_ms,
+                dinov3_ms=0.0 if index not in recheck_indexes else dino_ms,
+                total_ms=total_ms,
+                failure_code=decision.provenance.failure_code,
+            )
+            for index, decision in enumerate(decisions)
+            if decision is not None
+        )
+        return BatchInferenceResult(
+            completed,
+            BatchStageTimings(
+                crop_ms=_milliseconds(crop_started, crop_finished),
+                repvit_ms=repvit_ms,
+                dinov3_ms=dino_ms,
+                fusion_ms=fusion_ms,
+                total_ms=total_ms,
+            ),
+            len(recheck_indexes),
+        )
+
+    def _require_static_admission(self) -> None:
+        if self.fusion_policy is None or self.fusion_provenance is None:
+            raise ValueError("static inference requires an admitted immutable fusion policy")
+        if (
+            self.fusion_policy.schema_version != 3
+            or self.fusion_policy.decision_rule != "fusion_local_or_global_consensus_margin_v1"
+            or self.fusion_policy.consensus_margin_floor != 0.85
+        ):
+            raise ValueError("static inference requires the immutable consensus fusion policy")
+        descriptor_sha256 = ClassifierPreprocessDescriptor().sha256()
+        hashes = self.fusion_policy.artifact_hashes
+        if hashes["preprocess_sha256"] != descriptor_sha256:
+            raise ValueError("static preprocessing SHA-256 does not match fusion policy")
+        for label, provenance in (
+            ("direct policy", self.policy.provenance),
+            ("fusion policy", self.fusion_provenance),
+        ):
+            expected = {
+                "repvit_checkpoint_sha256": provenance.repvit_sha256,
+                "repvit_manifest_sha256": provenance.repvit_manifest_sha256,
+                "repvit_prototype_sha256": provenance.repvit_prototype_sha256,
+                "dinov3_weights_sha256": provenance.dinov3_sha256,
+                "dinov3_support_sha256": provenance.dinov3_support_sha256,
+                "preprocess_sha256": provenance.preprocess_sha256,
+            }
+            if any(hashes[name] != value for name, value in expected.items()):
+                raise ValueError(f"static {label} artifact identity does not match fusion policy")
+        local_bank = self._get_local_bank()
+        if not isinstance(local_bank, LocalPatchBank):
+            raise ValueError("static inference requires an admitted local support bank contract")
+        local_sha256 = local_bank.sha256
+        if not _is_sha256(local_sha256) or local_sha256 != hashes["dinov3_local_bank_sha256"]:
+            raise ValueError("static local support identity does not match fusion policy")
+
+    def _uses_static_policy(self) -> bool:
+        return (
+            self.fusion_policy is not None
+            and self.fusion_policy.schema_version == 3
+            and self.fusion_policy.decision_rule == "fusion_local_or_global_consensus_margin_v1"
+        )
+
+    def _score_tight_context_chunk(
+        self,
+        rows: tuple[Image.Image, ...],
+        *,
+        valid_mask: tuple[bool, ...],
+        valid_count: int,
+    ) -> tuple[object, ...]:
+        _require_static_repvit_chunk_contract(rows, valid_mask, valid_count)
+        score_static = getattr(self.repvit, "score_tight_context_chunk", None)
+        if not callable(score_static):
+            raise ValueError("RepViT runner does not expose tight/context static scoring")
+        result = tuple(score_static(rows, valid_mask=valid_mask))
+        if len(result) != valid_count:
+            raise ValueError("RepViT static chunk evidence must align exactly with valid objects")
+        if any(not isinstance(evidence, TightContextRepVitEvidence) for evidence in result):
+            raise ValueError("RepViT static chunk evidence is malformed")
+        return result
+
+    def _score_context_dino_chunk(
+        self,
+        dino: object,
+        crops: tuple[Image.Image, ...],
+        product_boxes: tuple[Box, ...],
+        local_bank: object,
+        *,
+        repvit_scores: tuple[ModelScoreVector, ...],
+        valid_mask: tuple[bool, ...],
+        valid_count: int,
+    ) -> tuple[object, ...]:
+        _require_static_dino_chunk_contract(
+            crops, product_boxes, repvit_scores, valid_mask, valid_count
+        )
+        score_static = getattr(dino, "score_context_chunk_global_and_local_evidence", None)
+        if not callable(score_static):
+            raise ValueError("DINO runner does not expose context static scoring")
+        result = tuple(score_static(
+            crops,
+            product_boxes,
+            local_bank,
+            repvit_scores=repvit_scores,
+            valid_mask=valid_mask,
+        ))
+        if len(result) != valid_count:
+            raise ValueError("DINO static chunk evidence must align exactly with valid objects")
+        if any(not isinstance(evidence, DinoGlobalLocalEvidence) for evidence in result):
+            raise ValueError("DINO static chunk evidence is malformed")
+        return result
+
     def preflight_benchmark(
         self,
         image: Image.Image | CanonicalImage,
@@ -749,6 +1069,8 @@ class ClassifierPipeline:
         dino_max_objects: int,
     ) -> BenchmarkPreflightEvidence:
         """Execute benchmark warm-up work without producing an evaluated decision."""
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires a tight/context benchmark preflight")
         frame = _canonical_frame(image)
         ordered_boxes = tuple(boxes)
         if not ordered_boxes:
@@ -823,6 +1145,8 @@ class ClassifierPipeline:
 
     def preflight_models(self, image: Image.Image | CanonicalImage, box: Box) -> None:
         """Load and execute all configured model evidence before measured inference."""
+        if self._uses_static_policy():
+            raise ValueError("schema-3 static policy requires a tight/context model preflight")
         frame = _canonical_frame(image)
         _validate_visual_box(frame, box)
         crops, product_boxes = make_padded_crops_with_product_boxes(
@@ -954,7 +1278,7 @@ class ClassifierPipeline:
             dinov3_weights_sha256=self.config.dinov3.weights_sha256,
             dinov3_support_sha256=self.config.dinov3.support_sha256,
             dinov3_local_bank_sha256=self.config.dinov3.local_bank_sha256 or "0" * 64,
-            preprocess_sha256=preprocess_sha256(self.config.preprocess),
+            preprocess_sha256=self.fusion_policy.artifact_hashes["preprocess_sha256"],
         )
         ranked = self.fusion_policy.ranker.rank(row)
         decision, _ = self.fusion_policy.decide(row)
@@ -1023,6 +1347,86 @@ def _milliseconds(started: float, finished: float) -> float:
     return (finished - started) * 1000.0
 
 
+def _pad_static_chunk(values: tuple[Any, ...], capacity: int) -> tuple[Any, ...]:
+    if not values or len(values) > capacity:
+        raise ValueError("static chunk must contain one through capacity valid values")
+    return values + (values[-1],) * (capacity - len(values))
+
+
+def _require_static_repvit_chunk_contract(
+    rows: tuple[Image.Image, ...],
+    valid_mask: tuple[bool, ...],
+    valid_count: int,
+) -> None:
+    if (
+        len(rows) != 14
+        or len(valid_mask) != 14
+        or type(valid_count) is not int
+        or not 1 <= valid_count <= 7
+        or any(type(value) is not bool for value in valid_mask)
+    ):
+        raise ValueError("RepViT static chunk contract is invalid")
+    expected = (True,) * (2 * valid_count) + (False,) * (14 - 2 * valid_count)
+    if valid_mask != expected:
+        raise ValueError("RepViT static mask must contain ordered valid pairs followed by padding")
+
+
+def _require_static_dino_chunk_contract(
+    crops: tuple[Image.Image, ...],
+    product_boxes: tuple[Box, ...],
+    repvit_scores: tuple[ModelScoreVector, ...],
+    valid_mask: tuple[bool, ...],
+    valid_count: int,
+) -> None:
+    if (
+        len(crops) != 7
+        or len(product_boxes) != 7
+        or len(repvit_scores) != 7
+        or len(valid_mask) != 7
+        or type(valid_count) is not int
+        or not 1 <= valid_count <= 7
+        or any(type(value) is not bool for value in valid_mask)
+    ):
+        raise ValueError("DINO static chunk contract is invalid")
+    expected = (True,) * valid_count + (False,) * (7 - valid_count)
+    if valid_mask != expected:
+        raise ValueError("DINO static mask must contain ordered valid rows followed by padding")
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _require_tight_context_evidence(evidence: object) -> None:
+    required = ("scores", "tight_scores", "context_scores", "feature", "crop_disagreement")
+    if any(not hasattr(evidence, name) for name in required):
+        raise ValueError("RepViT static evidence must include tight and context scores")
+    if not all(
+        isinstance(getattr(evidence, name), ModelScoreVector)
+        for name in ("scores", "tight_scores", "context_scores")
+    ):
+        raise ValueError("RepViT static evidence score vectors are invalid")
+
+
+def _pair_top1_agrees(evidence: object) -> bool:
+    tight = evidence.tight_scores
+    context = evidence.context_scores
+    if tight.sku_ids != context.sku_ids:
+        return False
+    return _score_top1(tight) == _score_top1(context)
+
+
+def _score_top1(scores: ModelScoreVector) -> int:
+    return min(
+        scores.sku_ids,
+        key=lambda sku_id: (-scores.values[scores.sku_ids.index(sku_id)], sku_id),
+    )
+
+
 def _canonical_frame(image: Image.Image | CanonicalImage) -> CanonicalImage:
     if isinstance(image, CanonicalImage):
         return image
@@ -1033,13 +1437,14 @@ def _validate_visual_box(frame: CanonicalImage, box: Box) -> None:
     frame.require_box(box)
 
 
-def _load_local_bank(config: ClassifierConfig) -> LocalPatchBank:
+def _load_local_bank(config: ClassifierConfig, *, preprocess_identity: str | None = None) -> LocalPatchBank:
     if config.dinov3.local_bank is None or config.dinov3.local_bank_sha256 is None:
         raise ValueError("DINO local patch bank is required for local recheck")
     bank = LocalPatchBank.load(
         config.dinov3.local_bank,
         dino_weights_sha256=config.dinov3.weights_sha256,
-        preprocess_sha256=preprocess_sha256(config.preprocess),
+        preprocess_sha256=preprocess_identity or preprocess_sha256(config.preprocess),
+        **({"expected_oof_preprocess_sha256": preprocess_identity} if preprocess_identity == ClassifierPreprocessDescriptor().sha256() else {}),
     )
     if bank.sha256 != config.dinov3.local_bank_sha256:
         raise ValueError("DINO local patch bank SHA-256 mismatch")

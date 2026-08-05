@@ -17,6 +17,34 @@ void main() {
       config.workerScript,
       r'C:\Program Files\App\pipeline\scripts\run_camera_inference_worker.py',
     );
+    expect(config.runtimeProfile, InferenceLaunchConfig.candidateRuntimeProfile);
+    expect(
+      config.arguments,
+      containsAllInOrder([
+        '--runtime-profile',
+        InferenceLaunchConfig.candidateRuntimeProfile,
+      ]),
+    );
+  });
+
+  test('legacy runtime requires an explicit environment selection', () {
+    final config = InferenceLaunchConfig.resolve(
+      environment: const {'BAKERY_INFERENCE_RUNTIME_PROFILE': 'legacy'},
+      executablePath: r'C:\installed\bakery_camera_prototype.exe',
+    );
+
+    expect(config.runtimeProfile, 'legacy');
+    expect(config.arguments, containsAllInOrder(['--runtime-profile', 'legacy']));
+  });
+
+  test('unknown runtime profile fails closed', () {
+    expect(
+      () => InferenceLaunchConfig.resolve(
+        environment: const {'BAKERY_INFERENCE_RUNTIME_PROFILE': 'other'},
+        executablePath: r'C:\installed\bakery_camera_prototype.exe',
+      ),
+      throwsStateError,
+    );
   });
 
   test('both development overrides preserve repository launching', () {
@@ -76,6 +104,8 @@ void main() {
       r'C:\bakery & echo unsafe',
       '--device',
       'auto',
+      '--runtime-profile',
+      InferenceLaunchConfig.candidateRuntimeProfile,
       '--warmup-image',
       r'C:\bakery & echo unsafe\samples\batch2_e3_m3_h3\g20_b02_e_0301.jpg',
     ]);

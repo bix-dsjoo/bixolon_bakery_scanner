@@ -20,9 +20,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$payload = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $PayloadRoot))
-$compiler = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $IsccPath))
-$output = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputDir))
+$payload = [System.IO.Path]::GetFullPath($PayloadRoot)
+$compiler = [System.IO.Path]::GetFullPath($IsccPath)
+$output = [System.IO.Path]::GetFullPath($OutputDir)
 $definition = Join-Path $repoRoot 'deployment\camera_installer\BakeryCameraEvaluator.iss'
 $verifier = Join-Path $repoRoot 'scripts\verify_camera_installation.py'
 

@@ -13,8 +13,108 @@ from bakery_scanner.prototype.camera_protocol import (
     parse_request,
     progress_event,
 )
+from bakery_scanner.pipelines.rtx5080_15plus5.contracts import (
+    CandidateConfidence,
+    CanonicalFrame,
+    DecisionPath,
+    FinalObject,
+    ObjectLocation,
+    ObjectProvenance,
+    RetakeReason,
+    ScanProvenance,
+    ScanResult,
+    ScanState,
+    SkuCandidate,
+    StageTimings as CandidateStageTimings,
+)
 
 _POLICY_SHA256 = "a" * 64
+_HASH = "a" * 64
+
+
+def _candidate_retake(attempt: int = 1) -> ScanResult:
+    return ScanResult.needs_retake(
+        scan_id="scan-1",
+        retake_chain_id="chain-1",
+        attempt=attempt,
+        reasons=(RetakeReason.OVERLAP_OR_OCCLUSION,),
+        problem_regions=(ObjectLocation((1.0, 2.0, 5.0, 6.0), (0.15, 0.2), 1),),
+        timings_ms=CandidateStageTimings(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 36.0),
+        provenance=ScanProvenance(
+            "rtx5080_15plus5_single_frame_v1",
+            "rtx5080_trt_fp16_static7_v1",
+            _HASH,
+            {"detector": _HASH},
+        ),
+        canonical_frame=CanonicalFrame(20, 20),
+    )
+
+
+def _candidate_accepted(count: int) -> ScanResult:
+    provenance = ObjectProvenance(
+        "detector", _HASH, "repvit", _HASH, "dinov3", _HASH,
+        "fusion", _HASH, "rtx5080_trt_fp16_static7_v1",
+    )
+    top3 = (
+        SkuCandidate(1, 1, "Walnut Donut", 0.9),
+        SkuCandidate(2, 2, "Croffle", 0.08),
+        SkuCandidate(3, 3, "Waffle", 0.02),
+    )
+    objects = tuple(
+        FinalObject(
+            f"scan-1#{index:04d}", 1, "Walnut Donut", DecisionPath.DIRECT,
+            ObjectLocation(
+                (float(index), 10.0, float(index + 1), 12.0),
+                ((index + 0.5) / 100, 0.11), index,
+            ),
+            CandidateConfidence(0.9, 0.9, None), top3, provenance,
+        )
+        for index in range(1, count + 1)
+    )
+    return ScanResult(
+        "scan-1", "chain-1", ScanState.ACCEPTED, objects, (),
+        CandidateStageTimings(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 36.0),
+        ScanProvenance(
+            "rtx5080_15plus5_single_frame_v1",
+            "rtx5080_trt_fp16_static7_v1", _HASH, {"detector": _HASH},
+        ),
+        CanonicalFrame(100, 100), False,
+    )
+
+
+def test_candidate_worker_needs_retake_has_no_partial_objects_or_totals():
+    event = camera_protocol.encode_scan_result(_candidate_retake())
+
+    camera_protocol.validate_result_event(event)
+    assert event["objects"] == []
+    assert event["sku_totals"] == {}
+    assert event["object_total"] == 0
+    assert event["runtime_profile_id"] == "rtx5080_trt_fp16_static7_v1"
+    assert event["receipt_id"] == _HASH
+
+
+def test_candidate_worker_third_retake_requires_manual_catalog():
+    event = camera_protocol.encode_scan_result(_candidate_retake(attempt=3))
+
+    assert event["retake_chain_id"] == "chain-1"
+    assert event["attempt"] == 3
+    assert event["manual_catalog_required"] is True
+
+
+def test_candidate_worker_rejects_partial_retake_payload():
+    event = camera_protocol.encode_scan_result(_candidate_retake())
+    event["objects"] = [{"partial": True}]
+
+    with pytest.raises(ValueError, match="retake"):
+        camera_protocol.validate_result_event(event)
+
+
+@pytest.mark.parametrize("count", [1, 2, 8])
+def test_candidate_worker_accepts_nonempty_scan_counts_without_a_three_to_seven_gate(count):
+    event = camera_protocol.encode_scan_result(_candidate_accepted(count))
+
+    camera_protocol.validate_result_event(event)
+    assert event["object_total"] == count
 
 
 def _presentation(**overrides: object) -> dict[str, object]:
@@ -38,6 +138,11 @@ def _result(presentation: dict[str, object]) -> dict[str, object]:
         "request_id": "request-1",
         "image": {"width": 20, "height": 20},
         "device": "cpu",
+        "execution_device": "cpu",
+        "runtime_mode": "cpu_reference",
+        "fallback_reason": "CPU reference runtime selected",
+        "scan_to_result_ms": 8.0,
+        "inference_ms": 7.0,
         "objects": [
             _object("object-1", sku_id=6, sku_name="Croissant", decision_path="repvit_direct"),
             {

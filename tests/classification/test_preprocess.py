@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import pytest
 from PIL import Image
 
-from bakery_scanner.classification.preprocess import make_padded_crops, make_padded_crops_with_product_boxes
+from bakery_scanner.classification.preprocess import (
+    ClassifierPreprocessDescriptor,
+    build_crop_pair,
+    make_padded_crops,
+    make_padded_crops_with_product_boxes,
+)
 from bakery_scanner.contracts import Box
+from bakery_scanner.data.preprocess import canonicalize_image
+from bakery_scanner.data.preprocess import CanonicalImage
 
 
 def test_three_padded_crops_are_ordered_and_clipped():
@@ -53,3 +61,49 @@ def test_padded_crops_return_the_product_box_in_each_crop_coordinate_frame():
         Box(2, 1, 40, 20),
         Box(3, 2, 40, 20),
     )
+
+
+def test_tight_context_pair_uses_canonical_frame_and_exact_order():
+    frame = canonicalize_image(Image.new("L", (100, 80), 42))
+
+    pair = build_crop_pair(frame, Box(20, 30, 40, 20))
+
+    assert pair.box == Box(20, 30, 40, 20)
+    assert pair.tight.mode == pair.context.mode == "RGB"
+    assert pair.tight.size == (40, 20)
+    assert pair.context.size == (44, 22)
+    assert pair.context_product_box == Box(2, 1, 40, 20)
+
+
+def test_classifier_preprocess_descriptor_is_hashable_and_complete():
+    descriptor = ClassifierPreprocessDescriptor()
+
+    assert descriptor.input_size == 224
+    assert descriptor.context_padding == 0.10
+    assert descriptor.interpolation == "bilinear_antialias_true"
+    assert descriptor.canonical_frame_version == "exif_visual_rgb_v1"
+    assert descriptor.normalization_mean == (0.485, 0.456, 0.406)
+    assert descriptor.normalization_std == (0.229, 0.224, 0.225)
+    assert hash(descriptor) == hash(ClassifierPreprocessDescriptor())
+    assert len(descriptor.sha256()) == 64
+
+
+def test_crop_pair_rejects_noncanonical_or_out_of_bounds_input():
+    with pytest.raises(ValueError, match="CanonicalImage"):
+        build_crop_pair(Image.new("RGB", (10, 10)), Box(0, 0, 5, 5))
+
+    with pytest.raises(ValueError, match="canonical visual"):
+        build_crop_pair(canonicalize_image(Image.new("RGB", (10, 10))), Box(8, 8, 5, 5))
+
+
+@pytest.mark.parametrize(
+    "frame",
+    (
+        CanonicalImage(Image.new("L", (10, 10)), (10, 10), (10, 10), 1),
+        CanonicalImage(Image.new("RGB", (10, 10)), (9, 10), (10, 10), 1),
+        CanonicalImage(Image.new("RGB", (0, 10)), (0, 10), (0, 10), 1),
+    ),
+)
+def test_crop_pair_rejects_manually_bypassed_canonical_frame(frame):
+    with pytest.raises(ValueError, match="canonical frame"):
+        build_crop_pair(frame, Box(0, 0, 5, 5))

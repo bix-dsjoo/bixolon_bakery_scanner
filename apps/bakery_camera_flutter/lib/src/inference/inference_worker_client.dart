@@ -510,15 +510,7 @@ final class InferenceWorkerClient {
   ) async {
     final process = await Process.start(
       config.pythonExecutable,
-      [
-        config.workerScript,
-        '--repo-root',
-        config.repoRoot,
-        '--device',
-        'auto',
-        '--warmup-image',
-        config.warmupImage,
-      ],
+      config.arguments,
       runInShell: false,
       environment: const {'PYTHONDONTWRITEBYTECODE': '1'},
     );

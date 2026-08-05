@@ -5,7 +5,7 @@ import 'package:drift_flutter/drift_flutter.dart';
 
 part 'app_database.g.dart';
 
-const applicationVersion = '1.1.0+4';
+const applicationVersion = '1.1.0+5';
 
 @DataClassName('CatalogRevisionRow')
 class CatalogRevisions extends Table {
@@ -325,7 +325,7 @@ CHECK (
     '''
 CHECK (
   CASE WHEN json_valid(provenance_json) THEN
-    json_type(provenance_json, '\$.detector_id') = 'text'
+    CASE WHEN (json_type(provenance_json, '\$.detector_id') = 'text'
     AND json_type(provenance_json, '\$.repvit_artifact_id') = 'text'
     AND json_extract(provenance_json, '\$.repvit_sha256') IS NOT NULL
     AND json_type(provenance_json, '\$.repvit_sha256') = 'text'
@@ -366,7 +366,30 @@ CHECK (
       NOT GLOB '*[^0-9a-f]*'
     AND json_extract(provenance_json, '\$.canonical_frame_version')
       = 'exif_visual_rgb_v1'
-    AND json_extract(provenance_json, '\$.exif_orientation') BETWEEN 1 AND 8
+    AND json_extract(provenance_json, '\$.exif_orientation') BETWEEN 1 AND 8)
+    OR (
+      json_type(provenance_json, '\$.detector_artifact_id') = 'text'
+      AND json_type(provenance_json, '\$.detector_sha256') = 'text'
+      AND length(json_extract(provenance_json, '\$.detector_sha256')) = 64
+      AND json_extract(provenance_json, '\$.detector_sha256')
+        NOT GLOB '*[^0-9a-f]*'
+      AND json_type(provenance_json, '\$.repvit_artifact_id') = 'text'
+      AND json_type(provenance_json, '\$.repvit_sha256') = 'text'
+      AND length(json_extract(provenance_json, '\$.repvit_sha256')) = 64
+      AND json_extract(provenance_json, '\$.repvit_sha256')
+        NOT GLOB '*[^0-9a-f]*'
+      AND json_type(provenance_json, '\$.dinov3_artifact_id') = 'text'
+      AND json_type(provenance_json, '\$.dinov3_sha256') = 'text'
+      AND length(json_extract(provenance_json, '\$.dinov3_sha256')) = 64
+      AND json_extract(provenance_json, '\$.dinov3_sha256')
+        NOT GLOB '*[^0-9a-f]*'
+      AND json_type(provenance_json, '\$.fusion_policy_id') = 'text'
+      AND json_type(provenance_json, '\$.fusion_policy_sha256') = 'text'
+      AND length(json_extract(provenance_json, '\$.fusion_policy_sha256')) = 64
+      AND json_extract(provenance_json, '\$.fusion_policy_sha256')
+        NOT GLOB '*[^0-9a-f]*'
+      AND json_type(provenance_json, '\$.runtime_profile_id') = 'text'
+    ) THEN 1 ELSE 0 END
   ELSE 0 END
 )''',
   ];
@@ -651,14 +674,14 @@ class BakeryDatabase extends _$BakeryDatabase {
   String _lastMigrationResult = 'not_opened';
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (migrator) async {
       await migrator.createAll();
       await _installIntegrityGuards();
-      _lastMigrationResult = 'created_schema_v4';
+      _lastMigrationResult = 'created_schema_v5';
       await _installSettings();
       await _installSettingsRevisionEntries();
       await _installSettingsIntegrityGuards();
@@ -668,6 +691,38 @@ class BakeryDatabase extends _$BakeryDatabase {
         throw StateError(
           'database schema $from is newer than supported schema $to',
         );
+      }
+      if (from == 4 && to == 5) {
+        await _migrateInferenceObjectsToV5(migrator);
+        return;
+      }
+      if (from == 3 && to == 5) {
+        await migrator.createTable(settingsRevisionEntries);
+        await _backfillSettingsRevisionEntries();
+        await _installSettingsIntegrityGuards();
+        await _migrateInferenceObjectsToV5(migrator);
+        return;
+      }
+      if (from == 2 && to == 5) {
+        await migrator.addColumn(
+          adminReviewAnnotations,
+          adminReviewAnnotations.conclusionCode,
+        );
+        await migrator.createTable(settingsRevisionEntries);
+        await _backfillSettingsRevisionEntries();
+        await _installReviewIntegrityGuards();
+        await _installSettingsIntegrityGuards();
+        await _migrateInferenceObjectsToV5(migrator);
+        return;
+      }
+      if (from == 1 && to == 5) {
+        await migrator.createTable(adminReviewAnnotations);
+        await migrator.createTable(settingsRevisionEntries);
+        await _backfillSettingsRevisionEntries();
+        await _installReviewIntegrityGuards();
+        await _installSettingsIntegrityGuards();
+        await _migrateInferenceObjectsToV5(migrator);
+        return;
       }
       if (from == 3 && to == 4) {
         await migrator.createTable(settingsRevisionEntries);
@@ -735,6 +790,63 @@ class BakeryDatabase extends _$BakeryDatabase {
       applicationVersion: settings.applicationVersionValue,
       lastMigrationResult: settings.lastMigrationResult,
     );
+  }
+
+  Future<void> _migrateInferenceObjectsToV5(Migrator migrator) async {
+    for (final trigger in const [
+      'completed_inference_object_no_insert',
+      'completed_inference_object_no_update',
+      'completed_inference_object_no_delete',
+    ]) {
+      await customStatement('DROP TRIGGER IF EXISTS $trigger');
+    }
+    await migrator.alterTable(TableMigration(inferenceObjects));
+    await _installInferenceObjectIntegrityGuards();
+  }
+
+  Future<void> _installInferenceObjectIntegrityGuards() async {
+    await customStatement('''
+CREATE TRIGGER completed_inference_object_no_insert
+BEFORE INSERT ON inference_objects
+WHEN EXISTS (
+  SELECT 1
+  FROM scan_attempts AS attempt
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE attempt.attempt_id = NEW.attempt_id
+    AND (attempt.status = 'completed' OR session.state <> 'active')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'immutable scan cannot gain inference objects');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_object_no_update
+BEFORE UPDATE ON inference_objects
+WHEN EXISTS (
+  SELECT 1
+  FROM scan_attempts AS attempt
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE attempt.attempt_id IN (OLD.attempt_id, NEW.attempt_id)
+    AND (attempt.status = 'completed' OR session.state <> 'active')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'inference object is immutable');
+END
+''');
+    await customStatement('''
+CREATE TRIGGER completed_inference_object_no_delete
+BEFORE DELETE ON inference_objects
+WHEN EXISTS (
+  SELECT 1
+  FROM scan_attempts AS attempt
+  JOIN checkout_sessions AS session ON session.session_id = attempt.session_id
+  WHERE attempt.attempt_id = OLD.attempt_id
+    AND (attempt.status = 'completed' OR session.state <> 'active')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'inference object is immutable');
+END
+''');
   }
 
   Future<void> _installSettings() async {

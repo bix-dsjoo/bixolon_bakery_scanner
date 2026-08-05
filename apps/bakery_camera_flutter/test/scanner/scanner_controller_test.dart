@@ -701,9 +701,10 @@ final class FakeMonotonicClock {
 StartupMetrics _startupMetrics() {
   return StartupMetrics(
     device: 'cpu',
+    runtimeMode: RuntimeMode.cpuReference,
     loadMs: 120,
     warmupMs: 30,
-    fallbackReason: null,
+    fallbackReason: 'CPU reference runtime selected',
     detectorId: 'rfdetr_large_bakery_v1',
     repvitId: 'repvit_m1_15plus5_v1',
     dinov3Id: 'dinov3_vits16_15plus5_v1',
@@ -718,6 +719,11 @@ InferenceResult _emptyResult({double workerTotalMs = 37}) {
     'request_id': 'analysis-1',
     'image': {'width': 1920, 'height': 1080},
     'device': 'cpu',
+    'execution_device': 'cpu',
+    'runtime_mode': 'cpu_reference',
+    'fallback_reason': 'CPU reference runtime selected',
+    'scan_to_result_ms': workerTotalMs,
+    'inference_ms': workerTotalMs,
     'objects': <Object?>[],
     'counts': <String, Object?>{},
     'unknown_count': 0,
@@ -751,6 +757,11 @@ InferenceResult _confirmedResult() {
     'request_id': 'analysis-1',
     'image': {'width': 1920, 'height': 1080},
     'device': 'cpu',
+    'execution_device': 'cpu',
+    'runtime_mode': 'cpu_reference',
+    'fallback_reason': 'CPU reference runtime selected',
+    'scan_to_result_ms': 37.0,
+    'inference_ms': 37.0,
     'objects': [
       {
         'object_id': 'object-1',

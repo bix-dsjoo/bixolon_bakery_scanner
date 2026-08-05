@@ -1,0 +1,27 @@
+schema_version: 1
+pipeline_id: rtx5080_15plus5_single_frame_v1
+# This identity-bearing manifest is externally staged with the candidate.  It is
+# intentionally absent from Git until verified artifacts and runtime receipts exist.
+admission_manifest: ../../artifacts/rtx5080_15plus5_single_frame_v1/admission.json
+evaluation_config: ../evaluation/rtx5080_15plus5_oof_v1.yaml
+runtime:
+  device: CUDA:0
+  precision: FP16
+  repvit_chunk_capacity_objects: 7
+  dinov3_chunk_capacity_objects: 7
+  p95_limit_ms: 100.0
+  stage_budgets_ms:
+    decode_canonical: 10.0
+    detector: 36.0
+    completeness: 6.0
+    crop: 4.0
+    repvit: 12.0
+    direct_gate: 2.0
+    dinov3: 18.0
+    fusion_payload: 6.0
+    headroom: 8.0
+# Batch 14 holds tight/context pairs for seven objects; DINO batch 7 holds
+# seven rejected objects. These are invocation chunk capacities, never scan limits.
+repvit_batch_size: 14
+dinov3_batch_size: 7
+fusion_margin: 0.85

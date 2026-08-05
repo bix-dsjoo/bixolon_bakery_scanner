@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -15,7 +16,12 @@ from typing import Iterable
 
 import yaml
 
-APP_VERSION = "1.0.0"
+from scripts.run_camera_inference_worker import (
+    compute_deployed_worker_code_identity,
+    deployed_worker_identity_paths,
+)
+
+APP_VERSION = "1.1.0"
 RUNTIME_PROFILE = "python311-torch213-cu130-cpu-fallback"
 VC_RUNTIME_FILES = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 CONFIG_FILES = (
@@ -229,6 +235,32 @@ def build_package_manifest(payload_root: Path, *, app_version: str) -> dict:
     }
 
 
+def build_worker_identity(repo_root: Path, pipeline_root: Path) -> dict[str, int | str]:
+    """Record committed source provenance for the self-contained worker tree."""
+    root = Path(repo_root).resolve()
+    try:
+        dirty = subprocess.run(
+            ("git", "-C", str(root), "diff", "--quiet", "HEAD", "--", *deployed_worker_identity_paths()),
+            check=False,
+        )
+        if dirty.returncode == 1:
+            raise ValueError("tracked inference source must be clean before packaging")
+        if dirty.returncode != 0:
+            raise OSError("could not inspect tracked inference source")
+        commit = subprocess.run(
+            ("git", "-C", str(root), "rev-parse", "HEAD"),
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError("packaging source checkout is not resolvable") from exc
+    return {
+        "schema_version": 1,
+        **compute_deployed_worker_code_identity(pipeline_root, commit=commit),
+    }
+
+
 def assemble_payload(
     *,
     repo_root: Path,
@@ -262,6 +294,11 @@ def assemble_payload(
             _copy_file(source, destination)
         for relative, source in allowlist["pipeline_directories"]:
             _copy_tree(source, staging / "pipeline" / Path(relative))
+        worker_identity = build_worker_identity(repo_root, staging / "pipeline")
+        (staging / "pipeline" / "worker-identity.json").write_text(
+            json.dumps(worker_identity, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         for dll_name in VC_RUNTIME_FILES:
             source = vc_runtime_dir / dll_name
             if not source.is_file():

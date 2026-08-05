@@ -18,6 +18,10 @@ import yaml
 
 from scripts.build_camera_installer_payload import _extended, _iter_files
 from scripts.camera_runtime_validation import validate_runtime_tree
+from scripts.run_camera_inference_worker import (
+    compute_deployed_worker_code_identity,
+    load_deployed_worker_identity,
+)
 
 INSTALLER_METADATA_PATTERNS = ("unins???.exe", "unins???.dat", "unins???.msg")
 
@@ -121,6 +125,21 @@ def verify_internal_artifact_hashes(root: Path) -> None:
             detector[key],
             context=f"detector {key}",
         )
+
+
+def verify_deployed_worker_identity(root: Path) -> dict[str, str]:
+    """Ensure the packaged worker will only import the attested pipeline bytes."""
+    pipeline = Path(root).resolve() / "pipeline"
+    expected = load_deployed_worker_identity(pipeline)
+    if expected is None:
+        raise ValueError("deployed worker identity is missing")
+    actual = compute_deployed_worker_code_identity(
+        pipeline,
+        commit=expected["code_commit"],
+    )
+    if actual != expected:
+        raise ValueError("deployed worker code identity does not match package")
+    return actual
 
 
 def launch_worker_smoke(
@@ -244,12 +263,17 @@ def main() -> int:
 
     manifest = verify_package_manifest(args.root)
     verify_internal_artifact_hashes(args.root)
+    worker_identity = verify_deployed_worker_identity(args.root)
     runtime = validate_runtime_tree(
         args.root / "runtime",
         args.root / "runtime" / "runtime-lock.json",
         execute_cpu_check=True,
     )
-    result = {"manifest_files": len(manifest["files"]), "runtime": runtime}
+    result = {
+        "manifest_files": len(manifest["files"]),
+        "runtime": runtime,
+        "worker_identity": worker_identity,
+    }
     if args.launch_worker_smoke:
         if args.analysis_count < 0:
             raise ValueError("analysis-count must be non-negative")

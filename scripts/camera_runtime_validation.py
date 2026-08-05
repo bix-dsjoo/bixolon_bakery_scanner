@@ -17,6 +17,8 @@ def validate_runtime_lock(path: Path) -> dict:
     lock = json.loads(path.read_text(encoding="utf-8"))
     if lock.get("schema_version") != 1:
         raise ValueError("runtime lock schema_version must be 1")
+    if lock.get("cpu_fallback") is not True:
+        raise ValueError("runtime lock must declare cpu_fallback true")
     actual = lock.get("python", {}).get("version")
     if actual != REQUIRED_PYTHON_VERSION:
         raise ValueError(

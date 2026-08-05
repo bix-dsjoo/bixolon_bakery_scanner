@@ -11,7 +11,9 @@ from torchvision import transforms
 
 from bakery_scanner.classification.config import ClassifierConfig
 from bakery_scanner.classification.preprocess import build_transform
-from bakery_scanner.classification.repvit import RepVitM1Runner
+from bakery_scanner.classification.preprocess import ClassifierPreprocessDescriptor
+from bakery_scanner.classification.repvit import RepVitM1Runner, RepVitPrototypeBank
+from bakery_scanner.pipelines.rtx5080_15plus5.contracts import CANONICAL_SKUS
 
 
 class FixedLogitModel(torch.nn.Module):
@@ -24,6 +26,30 @@ class FixedLogitModel(torch.nn.Module):
         assert batch.shape == (3, 3, 224, 224)
         self.saw_inference_mode = not torch.is_grad_enabled()
         return self.logits
+
+
+def test_static_prototype_bank_rejects_contradictory_preprocess_descriptor(tmp_path):
+    descriptor = ClassifierPreprocessDescriptor()
+    checkpoint_sha256 = "a" * 64
+    path = tmp_path / "prototypes.pt"
+    torch.save(
+        {
+            "artifact_type": "repvit_m1_15plus5_feature_prototypes",
+            "checkpoint_sha256": checkpoint_sha256,
+            "preprocess_sha256": descriptor.sha256(),
+            "preprocess_descriptor": {**descriptor.to_payload(), "input_size": 999},
+            "prototypes": torch.ones(20, 384),
+        },
+        path,
+    )
+
+    with pytest.raises(ValueError, match="preprocess descriptor"):
+        RepVitPrototypeBank.load(
+            path,
+            checkpoint_sha256=checkpoint_sha256,
+            expected_preprocess_sha256=descriptor.sha256(),
+            expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
 
 
 def test_repvit_averages_three_softmax_vectors():
@@ -112,6 +138,17 @@ def test_score_many_matches_serial_evidence_and_preserves_object_order():
     assert runner.model.batch_sizes[-2:] == [6, 3]
 
 
+def test_static_tight_context_runner_executes_one_padded_14_row_batch():
+    runner = _recording_evidence_runner()
+    rows = tuple(Image.new("RGB", (8, 8), "red") for _ in range(14))
+
+    evidence = runner.score_tight_context_chunk(rows, valid_mask=(True, True) + (False,) * 12)
+
+    assert len(evidence) == 1
+    assert runner.model.batch_sizes == [14]
+    assert evidence[0].tight_scores.sku_ids == evidence[0].context_scores.sku_ids
+
+
 @pytest.mark.parametrize(
     ("crop_groups", "max_objects", "message"),
     [
@@ -187,6 +224,44 @@ def test_load_rejects_manifest_checkpoint_class_map_mismatch(monkeypatch, tmp_pa
     monkeypatch.setattr("bakery_scanner.classification.repvit.timm.create_model", lambda *args, **kwargs: pytest.fail("model must not be constructed"))
     with pytest.raises(ValueError, match="class_map"):
         RepVitM1Runner.load(bad, device=torch.device("cpu"))
+
+
+@pytest.mark.parametrize("mutation", ("name", "order", "preprocess"))
+def test_static_load_rejects_manifest_class_or_preprocess_mismatch(monkeypatch, tmp_path, mutation):
+    config = ClassifierConfig.load(Path("configs/classifier_policy.yaml"))
+    checkpoint = tmp_path / "checkpoint.pt"
+    manifest = tmp_path / "manifest.json"
+    checkpoint.write_bytes(b"checkpoint")
+    descriptor = ClassifierPreprocessDescriptor()
+    class_map = [{"id": sku_id, "name": name} for sku_id, name in CANONICAL_SKUS.items()]
+    payload = {
+        "class_map": class_map,
+        "preprocess_descriptor": descriptor.to_payload(),
+        "preprocess_sha256": descriptor.sha256(),
+    }
+    if mutation == "name":
+        payload["class_map"][0]["name"] = "wrong"
+    elif mutation == "order":
+        payload["class_map"][0], payload["class_map"][1] = payload["class_map"][1], payload["class_map"][0]
+    else:
+        payload["preprocess_sha256"] = "0" * 64
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    repvit = config.repvit.model_copy(update={
+        "checkpoint": checkpoint,
+        "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        "manifest": manifest,
+        "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    })
+    configured = config.model_copy(update={"repvit": repvit})
+    monkeypatch.setattr("bakery_scanner.classification.repvit.torch.load", lambda *args, **kwargs: {"class_index": {sku: sku - 1 for sku in range(1, 21)}})
+    monkeypatch.setattr("bakery_scanner.classification.repvit.timm.create_model", lambda *args, **kwargs: pytest.fail("model must not be constructed"))
+
+    with pytest.raises(ValueError, match="class_map|preprocess"):
+        RepVitM1Runner.load(
+            configured,
+            device=torch.device("cpu"),
+            expected_preprocess_sha256=descriptor.sha256(),
+        )
 
 
 @pytest.mark.integration

@@ -775,6 +775,112 @@ END
   );
 
   test(
+    'candidate Top3 and catalog audit stays linked to immutable request and chain',
+    () async {
+      final candidateRuntime = _runtimeSnapshot(startupDevice: 'cuda:0');
+      final candidateStore = DatabaseCheckoutAuditStore(
+        database: db,
+        runtimeSnapshot: candidateRuntime,
+        references: references,
+        createId: (_) => _uuidFor(++nextId),
+        now: () => DateTime.utc(2026, 7, 30, 8),
+      );
+      final sessionId = await _beginSession(candidateStore, revision);
+      final attempt = await candidateStore.stageAttempt(
+        sessionId: sessionId,
+        attemptNumber: 1,
+        image: CapturedAuditFile(
+          fileId: 'candidate-image',
+          path: _capturePath(sessionId, DateTime.utc(2026, 7, 30, 8), 1),
+          sha256: _hash('4'),
+        ),
+      );
+      final result = InferenceResult.fromJson(_candidateUnknownResultJson());
+      final receiptJson = canonicalInferenceReceiptJson(
+        result: result,
+        runtimeSnapshot: candidateRuntime,
+      );
+      await candidateStore.completeAttempt(
+        attempt: attempt,
+        result: result,
+        receipt: ImmutableJsonReceipt(
+          canonicalJson: receiptJson,
+          sha256: _receiptHash(receiptJson),
+        ),
+      );
+      final unknown = result.objects.single;
+
+      await candidateStore.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: sessionId,
+          inferenceObject: unknown,
+          product: product,
+          source: CustomerResolutionSource.customerTop3,
+          resolvedAt: DateTime.utc(2026, 7, 30, 8, 1),
+        ),
+      );
+      await candidateStore.recordResolution(
+        ObjectResolutionDraft(
+          sessionId: sessionId,
+          inferenceObject: unknown,
+          product: product,
+          source: CustomerResolutionSource.customerCatalog,
+          resolvedAt: DateTime.utc(2026, 7, 30, 8, 2),
+        ),
+      );
+
+      final resolutions = await (db.select(db.objectResolutions)
+            ..orderBy([(row) => OrderingTerm.asc(row.resolvedAtUs)]))
+          .get();
+      expect(resolutions.map((row) => row.source), [
+        'customer_top3',
+        'customer_catalog',
+      ]);
+      expect(resolutions.map((row) => row.candidateRank), [1, null]);
+      expect(receiptJson, contains('"request_id":"scan-1"'));
+      expect(receiptJson, contains('"retake_chain_id":"chain-1"'));
+      expect((await db.select(db.inferenceObjects).getSingle()).skuId, isNull);
+    },
+  );
+
+  test('candidate receipt is isolated from every nested source mutation', () {
+    final source = _candidateUnknownResultJson();
+    final result = InferenceResult.fromJson(source);
+    final runtime = _runtimeSnapshot(startupDevice: 'cuda:0');
+    final before = canonicalInferenceReceiptJson(
+      result: result,
+      runtimeSnapshot: runtime,
+    );
+
+    source['request_id'] = 'mutated-request';
+    source['retake_chain_id'] = 'mutated-chain';
+    (source['provenance']! as Map<String, Object?>)['pipeline_id'] = 'mutated';
+    final object = (source['objects']! as List<Object?>).single!
+        as Map<String, Object?>;
+    object['sku_name'] = 'mutated-object';
+    (object['provenance']! as Map<String, Object?>)['detector_sha256'] =
+        _hash('f');
+    ((object['top3']! as List<Object?>).first! as Map<String, Object?>)
+        ['sku_name'] = 'mutated-top3';
+
+    expect(
+      canonicalInferenceReceiptJson(result: result, runtimeSnapshot: runtime),
+      before,
+    );
+    expect(
+      () => (result.candidateResult!.immutablePayload['provenance']!
+              as Map<String, Object?>)['pipeline_id'] =
+          'cannot-write',
+      throwsUnsupportedError,
+    );
+    expect(
+      () => (result.candidateResult!.immutablePayload['objects']!
+              as List<Object?>).add(null),
+      throwsUnsupportedError,
+    );
+  });
+
+  test(
     'registered resolution source exactly follows AI product identity',
     () async {
       final otherProduct = Product(
@@ -1288,7 +1394,10 @@ Future<void> _seedCatalog(
       );
 }
 
-AuditRuntimeSnapshot _runtimeSnapshot({String? repvitSha256}) =>
+AuditRuntimeSnapshot _runtimeSnapshot({
+  String? repvitSha256,
+  String startupDevice = 'cpu',
+}) =>
     AuditRuntimeSnapshot(
       detectorId: 'rfdetr_large_bakery_v1',
       detectorSha256: _hash('b'),
@@ -1305,10 +1414,85 @@ AuditRuntimeSnapshot _runtimeSnapshot({String? repvitSha256}) =>
       fusionPolicyId: 'fusion-v1',
       fusionPolicySha256: _hash('3'),
       configSnapshotJson: '{"pipeline":"canonical_cpu"}',
-      startupDevice: 'cpu',
+      startupDevice: startupDevice,
       startupLoadMs: 12.5,
       startupWarmupMs: 7,
     );
+
+Map<String, Object?> _candidateUnknownResultJson() => {
+  'type': 'result',
+  'request_id': 'scan-1',
+  'scan_id': 'scan-1',
+  'retake_chain_id': 'chain-1',
+  'state': 'accepted_scan',
+  'object_total': 1,
+  'registered_object_total': 0,
+  'unknown_total': 1,
+  'sku_totals': <String, Object?>{},
+  'objects': <Object?>[
+    {
+      'object_id': 'scan-1#0001',
+      'sku_id': null,
+      'sku_name': 'Unknown',
+      'decision_path': 'unknown_top3',
+      'location': <String, Object?>{
+        'box_xyxy': <Object?>[10.0, 10.0, 30.0, 30.0],
+        'center_normalized': <Object?>[0.2, 0.2],
+        'object_order': 1,
+      },
+      'confidence': <String, Object?>{
+        'detector_calibrated': 0.9,
+        'sku_acceptance_calibrated': null,
+        'fusion_margin': 0.1,
+      },
+      'top3': <Object?>[
+        {'rank': 1, 'sku_id': 6, 'sku_name': 'Croissant', 'score': 0.8},
+        {'rank': 2, 'sku_id': 2, 'sku_name': 'Croffle', 'score': 0.15},
+        {'rank': 3, 'sku_id': 3, 'sku_name': 'Waffle', 'score': 0.05},
+      ],
+      'provenance': <String, Object?>{
+        'detector_artifact_id': 'detector',
+        'detector_sha256': _hash('a'),
+        'repvit_artifact_id': 'repvit',
+        'repvit_sha256': _hash('b'),
+        'dinov3_artifact_id': 'dinov3',
+        'dinov3_sha256': _hash('c'),
+        'fusion_policy_id': 'fusion',
+        'fusion_policy_sha256': _hash('d'),
+        'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+      },
+    },
+  ],
+  'reasons': <Object?>[],
+  'problem_regions': <Object?>[],
+  'attempt': null,
+  'canonical_frame': <String, Object?>{'width': 100, 'height': 100},
+  'timings_ms': <String, Object?>{
+    'decode_canonical': 1.0,
+    'detector': 2.0,
+    'completeness': 3.0,
+    'crop': 1.0,
+    'repvit': 1.0,
+    'direct_gate': 1.0,
+    'dinov3': 1.0,
+    'fusion_payload': 1.0,
+    'total': 10.0,
+  },
+  'provenance': <String, Object?>{
+    'pipeline_id': 'rtx5080_15plus5_single_frame_v1',
+    'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+    'admission_receipt_sha256': _hash('e'),
+    'artifact_hashes': <String, Object?>{
+      'detector': _hash('a'),
+      'repvit': _hash('b'),
+      'dinov3': _hash('c'),
+      'fusion': _hash('d'),
+    },
+  },
+  'manual_catalog_required': false,
+  'runtime_profile_id': 'rtx5080_trt_fp16_static7_v1',
+  'receipt_id': _hash('e'),
+};
 
 Future<void> _seedProduct(
   BakeryDatabase db,

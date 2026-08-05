@@ -1,5 +1,14 @@
 import 'dart:collection';
 
+const Map<int, String> _candidateCanonicalSkuNames = {
+  1: 'Walnut Donut', 2: 'Croffle', 3: 'Waffle', 4: 'Scon',
+  5: 'Half-moon Croissant', 6: 'Croissant', 7: 'Flower Bread',
+  8: 'Almond Scon', 9: 'Dinner Roll', 10: 'Sugar Donut', 11: 'Bagel',
+  12: 'Egg Tart', 13: 'Muffin', 14: 'Burger', 15: 'Sandwich',
+  16: 'Grain Campagne', 17: 'Almond Campagne', 18: 'Mini Bread',
+  19: 'Pastry Bread', 20: 'Plain Bread',
+};
+
 enum WorkerStatus {
   notStarted,
   starting,
@@ -26,6 +35,24 @@ enum WorkerPhase {
       'rechecking' => WorkerPhase.rechecking,
       'aggregating' => WorkerPhase.aggregating,
       _ => throw FormatException('unsupported worker phase: $value'),
+    };
+  }
+}
+
+enum RuntimeMode {
+  gpuFastVerified,
+  gpuReference,
+  cpuReference;
+
+  static RuntimeMode parse(Object? value) {
+    if (value is! String) {
+      throw const FormatException('runtime mode must be a string');
+    }
+    return switch (value) {
+      'gpu_fast_verified' => RuntimeMode.gpuFastVerified,
+      'gpu_reference' => RuntimeMode.gpuReference,
+      'cpu_reference' => RuntimeMode.cpuReference,
+      _ => throw FormatException('unsupported runtime mode: $value'),
     };
   }
 }
@@ -308,6 +335,7 @@ final class InferenceDiagnostics {
 final class StartupMetrics {
   StartupMetrics({
     required this.device,
+    required this.runtimeMode,
     required this.loadMs,
     required this.warmupMs,
     required this.fallbackReason,
@@ -319,11 +347,19 @@ final class StartupMetrics {
     Map<String, String> appliedArtifactHashes = const {},
   }) : appliedArtifactHashes = UnmodifiableMapView(
          Map<String, String>.from(appliedArtifactHashes),
-       );
+       ) {
+    _validateRuntimeAdmission(
+      device: device,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      context: 'startup',
+    );
+  }
 
   factory StartupMetrics.fromJson(Map<String, Object?> json) {
     _expectFields(json, const {
       'device',
+      'runtime_mode',
       'load_ms',
       'warmup_ms',
       'fallback_reason',
@@ -338,7 +374,11 @@ final class StartupMetrics {
     if (device != 'cpu' && device != 'cuda:0') {
       throw const FormatException('startup device must be cpu or cuda:0');
     }
+    final runtimeMode = RuntimeMode.parse(json['runtime_mode']);
     final fallbackValue = json['fallback_reason'];
+    final String? fallbackReason = fallbackValue == null
+        ? null
+        : _requiredString(fallbackValue, 'startup fallback_reason');
     final rawHashes = _map(
       json['applied_artifact_hashes'],
       'startup applied_artifact_hashes',
@@ -370,11 +410,10 @@ final class StartupMetrics {
     }
     return StartupMetrics(
       device: device,
+      runtimeMode: runtimeMode,
       loadMs: _nonNegativeFinite(json['load_ms'], 'startup load_ms'),
       warmupMs: _nonNegativeFinite(json['warmup_ms'], 'startup warmup_ms'),
-      fallbackReason: fallbackValue == null
-          ? null
-          : _requiredString(fallbackValue, 'startup fallback_reason'),
+      fallbackReason: fallbackReason,
       detectorId: _requiredString(json['detector_id'], 'startup detector_id'),
       repvitId: _requiredString(json['repvit_id'], 'startup repvit_id'),
       dinov3Id: _requiredString(json['dinov3_id'], 'startup dinov3_id'),
@@ -391,6 +430,7 @@ final class StartupMetrics {
   }
 
   final String device;
+  final RuntimeMode runtimeMode;
   final double loadMs;
   final double warmupMs;
   final String? fallbackReason;
@@ -600,27 +640,599 @@ final class InferencePresentation {
   final String policySha256;
 }
 
+/// Strict consumer for the admitted RTX 5080 ScanResult contract.
+///
+/// This is deliberately separate from the declared legacy worker result. A
+/// payload cannot mix fields from the two schemas and be accepted.
+final class CandidateScanResult {
+  CandidateScanResult._({
+    required this.requestId,
+    required this.scanId,
+    required this.retakeChainId,
+    required this.state,
+    required this.objectTotal,
+    required this.registeredObjectTotal,
+    required this.unknownTotal,
+    required Map<int, int> skuTotals,
+    required List<CandidateInferenceObject> objects,
+    required List<String> reasons,
+    required List<CandidateObjectLocation> problemRegions,
+    required this.attempt,
+    required this.frameWidth,
+    required this.frameHeight,
+    required this.manualCatalogRequired,
+    required this.runtimeProfileId,
+    required this.receiptId,
+    required Map<String, Object?> immutablePayload,
+  }) : skuTotals = UnmodifiableMapView(skuTotals),
+       objects = List.unmodifiable(objects),
+       reasons = List.unmodifiable(reasons),
+       problemRegions = List.unmodifiable(problemRegions),
+       immutablePayload = UnmodifiableMapView(immutablePayload);
+
+  factory CandidateScanResult.fromJson(Map<String, Object?> json) {
+    _expectFields(json, const {
+      'type', 'request_id', 'scan_id', 'retake_chain_id', 'state',
+      'object_total', 'registered_object_total', 'unknown_total',
+      'sku_totals', 'objects', 'reasons', 'problem_regions', 'attempt',
+      'canonical_frame', 'timings_ms', 'provenance',
+      'manual_catalog_required', 'runtime_profile_id', 'receipt_id',
+    });
+    if (json['type'] != 'result') {
+      throw const FormatException('candidate result type must be result');
+    }
+    final requestId = _requiredString(json['request_id'], 'request_id');
+    final scanId = _requiredString(json['scan_id'], 'scan_id');
+    if (requestId != scanId) {
+      throw const FormatException('candidate request_id must equal scan_id');
+    }
+    final chainId = _requiredString(
+      json['retake_chain_id'],
+      'retake_chain_id',
+    );
+    final frame = _map(json['canonical_frame'], 'canonical_frame');
+    _expectFields(frame, const {'width', 'height'});
+    final width = _positiveInt(frame['width'], 'canonical frame width');
+    final height = _positiveInt(frame['height'], 'canonical frame height');
+    final runtimeProfileId = _requiredString(
+      json['runtime_profile_id'],
+      'runtime_profile_id',
+    );
+    final receiptId = _requiredString(json['receipt_id'], 'receipt_id');
+    if (!_sha256(receiptId)) {
+      throw const FormatException('receipt_id must be a SHA-256 identity');
+    }
+    final provenance = _map(json['provenance'], 'provenance');
+    _expectFields(provenance, const {
+      'pipeline_id', 'runtime_profile_id', 'admission_receipt_sha256',
+      'artifact_hashes',
+    });
+    if (provenance['pipeline_id'] !=
+            'rtx5080_15plus5_single_frame_v1' ||
+        provenance['runtime_profile_id'] != runtimeProfileId ||
+        provenance['admission_receipt_sha256'] != receiptId) {
+      throw const FormatException('candidate scan provenance mismatch');
+    }
+    final artifacts = _map(provenance['artifact_hashes'], 'artifact_hashes');
+    if (artifacts.isEmpty ||
+        artifacts.entries.any(
+          (entry) => entry.key.trim().isEmpty ||
+              entry.value is! String ||
+              !_sha256(entry.value! as String),
+        )) {
+      throw const FormatException('candidate artifact provenance is invalid');
+    }
+    _candidateTimings(_map(json['timings_ms'], 'timings_ms'));
+
+    final objectValues = _list(json['objects'], 'objects');
+    final state = _requiredString(json['state'], 'state');
+    if (state == 'needs_retake' && objectValues.isNotEmpty) {
+      throw const FormatException(
+        'needs_retake must not contain partial inference',
+      );
+    }
+    final objects = <CandidateInferenceObject>[
+      for (var index = 0; index < objectValues.length; index += 1)
+        CandidateInferenceObject.fromJson(
+          _map(objectValues[index], 'candidate object'),
+          scanId: scanId,
+          expectedOrder: index + 1,
+          imageWidth: width,
+          imageHeight: height,
+          runtimeProfileId: runtimeProfileId,
+        ),
+    ];
+    for (var index = 1; index < objects.length; index += 1) {
+      if (CandidateObjectLocation.compare(
+            objects[index - 1].location,
+            objects[index].location,
+          ) >
+          0) {
+        throw const FormatException('candidate object order is invalid');
+      }
+    }
+    final expectedTotals = <int, int>{};
+    var expectedUnknown = 0;
+    for (final object in objects) {
+      if (object.skuId == null) {
+        expectedUnknown += 1;
+      } else {
+        expectedTotals.update(object.skuId!, (value) => value + 1,
+            ifAbsent: () => 1);
+      }
+    }
+    final skuTotals = <int, int>{};
+    for (final entry in _map(json['sku_totals'], 'sku_totals').entries) {
+      final skuId = int.tryParse(entry.key);
+      if (skuId == null || '$skuId' != entry.key) {
+        throw const FormatException('candidate SKU total key is invalid');
+      }
+      _skuId(skuId, 'candidate SKU total ID');
+      skuTotals[skuId] = _positiveInt(entry.value, 'candidate SKU total');
+    }
+    final objectTotal = _nonNegativeInt(json['object_total'], 'object_total');
+    final registeredTotal = _nonNegativeInt(
+      json['registered_object_total'],
+      'registered_object_total',
+    );
+    final unknownTotal = _nonNegativeInt(json['unknown_total'], 'unknown_total');
+    if (objectTotal != objects.length ||
+        registeredTotal != objects.length - expectedUnknown ||
+        unknownTotal != expectedUnknown ||
+        !_equalIntMaps(skuTotals, expectedTotals)) {
+      throw const FormatException('candidate counts do not match objects');
+    }
+
+    final reasons = <String>[
+      for (final value in _list(json['reasons'], 'reasons'))
+        _requiredString(value, 'retake reason'),
+    ];
+    const allowedReasons = {
+      'no_target_detected', 'uncovered_foreground',
+      'overlap_or_occlusion', 'possible_split', 'possible_merge',
+      'truncated_object', 'capture_quality_unverified',
+      'completeness_risk_exceeded',
+    };
+    if (reasons.toSet().length != reasons.length ||
+        reasons.any((reason) => !allowedReasons.contains(reason))) {
+      throw const FormatException('candidate retake reasons are invalid');
+    }
+    final regions = <CandidateObjectLocation>[
+      for (var index = 0;
+          index < _list(json['problem_regions'], 'problem_regions').length;
+          index += 1)
+        CandidateObjectLocation.fromJson(
+          _map(
+            _list(json['problem_regions'], 'problem_regions')[index],
+            'problem region',
+          ),
+          expectedOrder: index + 1,
+          imageWidth: width,
+          imageHeight: height,
+        ),
+    ];
+    final manual = json['manual_catalog_required'];
+    if (manual is! bool) {
+      throw const FormatException('manual_catalog_required must be boolean');
+    }
+    final attemptValue = json['attempt'];
+    final int? attempt;
+    if (state == 'needs_retake') {
+      attempt = _positiveInt(attemptValue, 'retake attempt');
+      if (reasons.isEmpty || manual != (attempt >= 3) || objects.isNotEmpty) {
+        throw const FormatException('candidate retake state is inconsistent');
+      }
+    } else if (state == 'accepted_scan') {
+      attempt = null;
+      if (objects.isEmpty || reasons.isNotEmpty || regions.isNotEmpty ||
+          attemptValue != null || manual) {
+        throw const FormatException('candidate accepted state is inconsistent');
+      }
+    } else {
+      throw const FormatException('candidate state is invalid');
+    }
+
+    return CandidateScanResult._(
+      requestId: requestId,
+      scanId: scanId,
+      retakeChainId: chainId,
+      state: state,
+      objectTotal: objectTotal,
+      registeredObjectTotal: registeredTotal,
+      unknownTotal: unknownTotal,
+      skuTotals: skuTotals,
+      objects: objects,
+      reasons: reasons,
+      problemRegions: regions,
+      attempt: attempt,
+      frameWidth: width,
+      frameHeight: height,
+      manualCatalogRequired: manual,
+      runtimeProfileId: runtimeProfileId,
+      receiptId: receiptId,
+      immutablePayload: _deepCanonicalImmutableMap(json),
+    );
+  }
+
+  final String requestId;
+  final String scanId;
+  final String retakeChainId;
+  final String state;
+  final int objectTotal;
+  final int registeredObjectTotal;
+  final int unknownTotal;
+  final Map<int, int> skuTotals;
+  final List<CandidateInferenceObject> objects;
+  final List<String> reasons;
+  final List<CandidateObjectLocation> problemRegions;
+  final int? attempt;
+  final int frameWidth;
+  final int frameHeight;
+  final bool manualCatalogRequired;
+  final String runtimeProfileId;
+  final String receiptId;
+  final Map<String, Object?> immutablePayload;
+
+  CandidateRetakeRequest get nextRetakeRequest {
+    if (state != 'needs_retake' || attempt == null || manualCatalogRequired) {
+      throw StateError('candidate result cannot request another retake');
+    }
+    return CandidateRetakeRequest(
+      retakeChainId: retakeChainId,
+      attempt: attempt! + 1,
+    );
+  }
+
+  /// Adapts the admitted candidate into the existing checkout/audit surface.
+  /// The original candidate payload remains attached and is what receipts bind.
+  InferenceResult toCheckoutInferenceResult() {
+    final adaptedObjects = <InferenceObject>[
+      for (final object in objects)
+        InferenceObject._(
+          objectId: object.objectId,
+          skuId: object.skuId,
+          skuName: object.skuName,
+          bboxXyxy: object.location.boxXyxy,
+          confidence:
+              object.skuAcceptanceConfidence ?? object.detectorConfidence,
+          decisionPath: switch (object.decisionPath) {
+            'direct_approved' => 'repvit_direct',
+            'consensus_approved' => 'dinov3_confirmed',
+            'unknown_top3' => 'unknown_top3',
+            _ => throw StateError('unsupported candidate decision path'),
+          },
+          candidates: object.skuId == null ? object.top3 : const [],
+          unknownReason: object.skuId == null
+              ? 'candidate_consensus_rejected'
+              : null,
+          detectorSource:
+              object.provenance['detector_artifact_id']! as String,
+          detectorScore: object.detectorConfidence,
+          provenance: object.provenance,
+        ),
+    ];
+    final rawTimings = immutablePayload['timings_ms']! as Map<String, Object?>;
+    final timings = StageTimings(
+      decodePreprocessMs: (rawTimings['decode_canonical']! as num).toDouble(),
+      detectorMs: (rawTimings['detector']! as num).toDouble(),
+      cropMs: (rawTimings['crop']! as num).toDouble(),
+      repvitMs: (rawTimings['repvit']! as num).toDouble(),
+      dinov3Ms: (rawTimings['dinov3']! as num).toDouble(),
+      fusionMs: (rawTimings['fusion_payload']! as num).toDouble(),
+      postprocessMs:
+          (rawTimings['completeness']! as num).toDouble() +
+          (rawTimings['direct_gate']! as num).toDouble(),
+      totalMs: (rawTimings['total']! as num).toDouble(),
+    );
+    final hasUnknown = adaptedObjects.any((object) => object.isUnknown);
+    final isRetake = state == 'needs_retake';
+    final presentation = InferencePresentation._(
+      state: isRetake
+          ? InferencePresentationState.needsRetake
+          : hasUnknown
+          ? InferencePresentationState.unknown
+          : InferencePresentationState.normal,
+      finalCountUsable: !isRetake,
+      retakeScope: isRetake ? RetakeScope.scan : null,
+      retakeObjectIds: const [],
+      instruction: isRetake
+          ? reasons.contains('no_target_detected')
+                ? RetakeInstruction.noBreadDetected
+                : RetakeInstruction.separateBreads
+          : null,
+      candidateObjectIds: hasUnknown
+          ? [
+              for (final object in adaptedObjects.where(
+                (object) => object.isUnknown,
+              ))
+                object.objectId,
+            ]
+          : const [],
+      policyId: 'camera_action_state_v2',
+      policySha256: receiptId,
+    );
+    return InferenceResult._(
+      requestId: requestId,
+      imageWidth: frameWidth.toDouble(),
+      imageHeight: frameHeight.toDouble(),
+      device: 'cuda:0',
+      executionDevice: 'cuda:0',
+      runtimeMode: RuntimeMode.gpuFastVerified,
+      fallbackReason: null,
+      scanToResultMs: timings.totalMs,
+      inferenceMs:
+          timings.detectorMs +
+          timings.cropMs +
+          timings.repvitMs +
+          timings.dinov3Ms +
+          timings.fusionMs +
+          timings.postprocessMs,
+      objects: adaptedObjects,
+      counts: skuTotals,
+      unknownCount: unknownTotal,
+      presentation: presentation,
+      timings: timings,
+      diagnostics: InferenceDiagnostics(
+        objectCount: objectTotal,
+        dinoObjectCount: adaptedObjects
+            .where((object) => object.decisionPath != 'repvit_direct')
+            .length,
+      ),
+      candidateResult: this,
+    );
+  }
+}
+
+final class CandidateRetakeRequest {
+  const CandidateRetakeRequest({
+    required this.retakeChainId,
+    required this.attempt,
+  });
+
+  final String retakeChainId;
+  final int attempt;
+}
+
+final class CandidateInferenceObject {
+  CandidateInferenceObject._({
+    required this.objectId,
+    required this.skuId,
+    required this.skuName,
+    required this.decisionPath,
+    required this.location,
+    required this.detectorConfidence,
+    required this.skuAcceptanceConfidence,
+    required this.fusionMargin,
+    required List<InferenceCandidate> top3,
+    required Map<String, Object?> provenance,
+  }) : top3 = List.unmodifiable(top3),
+       provenance = UnmodifiableMapView(provenance);
+
+  factory CandidateInferenceObject.fromJson(
+    Map<String, Object?> json, {
+    required String scanId,
+    required int expectedOrder,
+    required int imageWidth,
+    required int imageHeight,
+    required String runtimeProfileId,
+  }) {
+    _expectFields(json, const {
+      'object_id', 'sku_id', 'sku_name', 'decision_path', 'location',
+      'confidence', 'top3', 'provenance',
+    });
+    final objectId = _requiredString(json['object_id'], 'candidate object_id');
+    if (objectId != '$scanId#${expectedOrder.toString().padLeft(4, '0')}') {
+      throw const FormatException('candidate object identity is invalid');
+    }
+    final location = CandidateObjectLocation.fromJson(
+      _map(json['location'], 'candidate location'),
+      expectedOrder: expectedOrder,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+    );
+    final confidence = _map(json['confidence'], 'candidate confidence');
+    _expectFields(confidence, const {
+      'detector_calibrated', 'sku_acceptance_calibrated', 'fusion_margin',
+    });
+    final detector = _probability(
+      confidence['detector_calibrated'],
+      'detector calibrated confidence',
+    );
+    final acceptanceValue = confidence['sku_acceptance_calibrated'];
+    final acceptance = acceptanceValue == null
+        ? null
+        : _probability(acceptanceValue, 'SKU acceptance confidence');
+    final marginValue = confidence['fusion_margin'];
+    final margin = marginValue == null
+        ? null
+        : _nonNegativeFinite(marginValue, 'fusion margin');
+    final candidates = <InferenceCandidate>[
+      for (final item in _list(json['top3'], 'candidate top3'))
+        InferenceCandidate.fromJson(_map(item, 'candidate top3 row')),
+    ];
+    _requireExactTop3(candidates);
+    if (candidates.any(
+      (candidate) =>
+          _candidateCanonicalSkuNames[candidate.skuId] != candidate.skuName,
+    )) {
+      throw const FormatException('candidate Top3 SKU name is not canonical');
+    }
+    final skuValue = json['sku_id'];
+    final skuId = skuValue == null ? null : _skuId(skuValue, 'candidate sku_id');
+    final skuName = _requiredString(json['sku_name'], 'candidate sku_name');
+    final path = _requiredString(json['decision_path'], 'candidate decision_path');
+    if (skuId == null) {
+      if (skuName != 'Unknown' || path != 'unknown_top3' || acceptance != null) {
+        throw const FormatException('candidate Unknown object is invalid');
+      }
+    } else if (_candidateCanonicalSkuNames[skuId] != skuName ||
+        !{'direct_approved', 'consensus_approved'}.contains(path) ||
+        acceptance == null) {
+      throw const FormatException('candidate registered object is invalid');
+    }
+    final provenance = _map(json['provenance'], 'candidate object provenance');
+    _expectFields(provenance, const {
+      'detector_artifact_id', 'detector_sha256', 'repvit_artifact_id',
+      'repvit_sha256', 'dinov3_artifact_id', 'dinov3_sha256',
+      'fusion_policy_id', 'fusion_policy_sha256', 'runtime_profile_id',
+    });
+    for (final key in const {
+      'detector_artifact_id', 'repvit_artifact_id', 'dinov3_artifact_id',
+      'fusion_policy_id', 'runtime_profile_id',
+    }) {
+      _requiredString(provenance[key], 'candidate provenance $key');
+    }
+    for (final key in const {
+      'detector_sha256', 'repvit_sha256', 'dinov3_sha256',
+      'fusion_policy_sha256',
+    }) {
+      final digest = _requiredString(provenance[key], 'candidate provenance $key');
+      if (!_sha256(digest)) {
+        throw FormatException('candidate provenance $key is invalid');
+      }
+    }
+    if (provenance['runtime_profile_id'] != runtimeProfileId) {
+      throw const FormatException('candidate object runtime profile mismatch');
+    }
+    return CandidateInferenceObject._(
+      objectId: objectId,
+      skuId: skuId,
+      skuName: skuName,
+      decisionPath: path,
+      location: location,
+      detectorConfidence: detector,
+      skuAcceptanceConfidence: acceptance,
+      fusionMargin: margin,
+      top3: candidates,
+      provenance: provenance,
+    );
+  }
+
+  final String objectId;
+  final int? skuId;
+  final String skuName;
+  final String decisionPath;
+  final CandidateObjectLocation location;
+  final double detectorConfidence;
+  final double? skuAcceptanceConfidence;
+  final double? fusionMargin;
+  final List<InferenceCandidate> top3;
+  final Map<String, Object?> provenance;
+}
+
+final class CandidateObjectLocation {
+  CandidateObjectLocation._({
+    required List<double> boxXyxy,
+    required List<double> centerNormalized,
+    required this.objectOrder,
+  }) : boxXyxy = List.unmodifiable(boxXyxy),
+       centerNormalized = List.unmodifiable(centerNormalized);
+
+  factory CandidateObjectLocation.fromJson(
+    Map<String, Object?> json, {
+    required int expectedOrder,
+    required int imageWidth,
+    required int imageHeight,
+  }) {
+    _expectFields(json, const {
+      'box_xyxy', 'center_normalized', 'object_order',
+    });
+    final box = _box(
+      json['box_xyxy'],
+      imageWidth: imageWidth.toDouble(),
+      imageHeight: imageHeight.toDouble(),
+    );
+    final centerValues = _list(json['center_normalized'], 'center_normalized');
+    if (centerValues.length != 2) {
+      throw const FormatException('center_normalized must have two values');
+    }
+    final center = <double>[
+      for (final value in centerValues)
+        _probability(value, 'normalized center'),
+    ];
+    if (json['object_order'] != expectedOrder ||
+        (center[0] - (box[0] + box[2]) / (2 * imageWidth)).abs() > 1e-6 ||
+        (center[1] - (box[1] + box[3]) / (2 * imageHeight)).abs() > 1e-6) {
+      throw const FormatException('candidate location is inconsistent');
+    }
+    return CandidateObjectLocation._(
+      boxXyxy: box,
+      centerNormalized: center,
+      objectOrder: expectedOrder,
+    );
+  }
+
+  final List<double> boxXyxy;
+  final List<double> centerNormalized;
+  final int objectOrder;
+
+  static int compare(CandidateObjectLocation left, CandidateObjectLocation right) {
+    for (final pair in [
+      (left.centerNormalized[1], right.centerNormalized[1]),
+      (left.centerNormalized[0], right.centerNormalized[0]),
+      (left.boxXyxy[0], right.boxXyxy[0]),
+      (left.boxXyxy[1], right.boxXyxy[1]),
+    ]) {
+      final compared = pair.$1.compareTo(pair.$2);
+      if (compared != 0) return compared;
+    }
+    return 0;
+  }
+}
+
+void _candidateTimings(Map<String, Object?> json) {
+  const fields = {
+    'decode_canonical', 'detector', 'completeness', 'crop', 'repvit',
+    'direct_gate', 'dinov3', 'fusion_payload', 'total',
+  };
+  _expectFields(json, fields);
+  final values = {
+    for (final field in fields)
+      field: _nonNegativeFinite(json[field], 'candidate $field timing'),
+  };
+  final stages = values.entries
+      .where((entry) => entry.key != 'total')
+      .map((entry) => entry.value);
+  if (values['total']! < stages.reduce((a, b) => a > b ? a : b)) {
+    throw const FormatException('candidate total timing is invalid');
+  }
+}
+
 final class InferenceResult {
   InferenceResult._({
     required this.requestId,
     required this.imageWidth,
     required this.imageHeight,
     required this.device,
+    required this.executionDevice,
+    required this.runtimeMode,
+    required this.fallbackReason,
+    required this.scanToResultMs,
+    required this.inferenceMs,
     required List<InferenceObject> objects,
     required Map<int, int> counts,
     required this.unknownCount,
     required this.presentation,
     required this.timings,
     required this.diagnostics,
+    this.candidateResult,
   }) : objects = List.unmodifiable(objects),
        counts = UnmodifiableMapView(counts);
 
   factory InferenceResult.fromJson(Map<String, Object?> json) {
+    if (json.containsKey('scan_id')) {
+      return CandidateScanResult.fromJson(json).toCheckoutInferenceResult();
+    }
     _expectFields(json, const {
       'type',
       'request_id',
       'image',
       'device',
+      'execution_device',
+      'runtime_mode',
+      'fallback_reason',
+      'scan_to_result_ms',
+      'inference_ms',
       'objects',
       'counts',
       'unknown_count',
@@ -639,6 +1251,42 @@ final class InferenceResult {
     final device = _requiredString(json['device'], 'result device');
     if (device != 'cpu' && device != 'cuda:0') {
       throw const FormatException('result device must be cpu or cuda:0');
+    }
+    final executionDevice = _requiredString(
+      json['execution_device'],
+      'result execution_device',
+    );
+    if (executionDevice != 'cpu' && executionDevice != 'cuda:0') {
+      throw const FormatException(
+        'result execution_device must be cpu or cuda:0',
+      );
+    }
+    if (executionDevice != device) {
+      throw const FormatException('result execution_device must match device');
+    }
+    final runtimeMode = RuntimeMode.parse(json['runtime_mode']);
+    final fallbackValue = json['fallback_reason'];
+    final String? fallbackReason = fallbackValue == null
+        ? null
+        : _requiredString(fallbackValue, 'result fallback_reason');
+    _validateRuntimeAdmission(
+      device: executionDevice,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      context: 'result',
+    );
+    final scanToResultMs = _nonNegativeFinite(
+      json['scan_to_result_ms'],
+      'scan_to_result_ms',
+    );
+    final inferenceMs = _nonNegativeFinite(
+      json['inference_ms'],
+      'inference_ms',
+    );
+    if (inferenceMs > scanToResultMs) {
+      throw const FormatException(
+        'inference_ms must not exceed scan_to_result_ms',
+      );
     }
     final objectValues = _list(json['objects'], 'objects');
     final objects = <InferenceObject>[
@@ -692,6 +1340,11 @@ final class InferenceResult {
       imageWidth: imageWidth,
       imageHeight: imageHeight,
       device: device,
+      executionDevice: executionDevice,
+      runtimeMode: runtimeMode,
+      fallbackReason: fallbackReason,
+      scanToResultMs: scanToResultMs,
+      inferenceMs: inferenceMs,
       objects: objects,
       counts: counts,
       unknownCount: unknownCount,
@@ -704,6 +1357,7 @@ final class InferenceResult {
         _map(json['diagnostics'], 'diagnostics'),
         actualObjectCount: objects.length,
       ),
+      candidateResult: null,
     );
   }
 
@@ -711,12 +1365,18 @@ final class InferenceResult {
   final double imageWidth;
   final double imageHeight;
   final String device;
+  final String executionDevice;
+  final RuntimeMode runtimeMode;
+  final String? fallbackReason;
+  final double scanToResultMs;
+  final double inferenceMs;
   final List<InferenceObject> objects;
   final Map<int, int> counts;
   final int unknownCount;
   final InferencePresentation presentation;
   final StageTimings timings;
   final InferenceDiagnostics diagnostics;
+  final CandidateScanResult? candidateResult;
 
   int get registeredCount =>
       counts.values.fold<int>(0, (sum, count) => sum + count);
@@ -1123,4 +1783,52 @@ bool _equalIntMaps(Map<int, int> left, Map<int, int> right) {
     return false;
   }
   return left.entries.every((entry) => right[entry.key] == entry.value);
+}
+
+Map<String, Object?> _deepCanonicalImmutableMap(Map<String, Object?> source) {
+  final keys = source.keys.toList(growable: false)..sort();
+  return Map<String, Object?>.unmodifiable({
+    for (final key in keys) key: _deepCanonicalImmutableJson(source[key]),
+  });
+}
+
+Object? _deepCanonicalImmutableJson(Object? value) {
+  if (value is Map<String, Object?>) {
+    return _deepCanonicalImmutableMap(value);
+  }
+  if (value is List<Object?>) {
+    return List<Object?>.unmodifiable(
+      value.map<Object?>(_deepCanonicalImmutableJson),
+    );
+  }
+  if (value == null || value is String || value is bool || value is num) {
+    return value;
+  }
+  throw const FormatException('candidate payload is not canonical JSON');
+}
+
+void _validateRuntimeAdmission({
+  required String device,
+  required RuntimeMode runtimeMode,
+  required String? fallbackReason,
+  required String context,
+}) {
+  if (runtimeMode == RuntimeMode.cpuReference) {
+    if (device != 'cpu') {
+      throw FormatException('$context CPU runtime mode requires cpu device');
+    }
+  } else if (device != 'cuda:0') {
+    throw FormatException('$context GPU runtime mode requires cuda:0 device');
+  }
+  if (runtimeMode == RuntimeMode.gpuFastVerified) {
+    if (fallbackReason != null) {
+      throw FormatException(
+        '$context verified GPU runtime must not include a fallback reason',
+      );
+    }
+  } else if (fallbackReason == null || fallbackReason.trim().isEmpty) {
+    throw FormatException(
+      '$context reference runtime must include a fallback reason',
+    );
+  }
 }

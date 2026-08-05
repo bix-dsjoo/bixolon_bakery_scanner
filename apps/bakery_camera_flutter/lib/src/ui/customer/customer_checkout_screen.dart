@@ -7,6 +7,7 @@ import '../../catalog/product.dart';
 import '../../checkout/checkout_controller.dart';
 import '../../checkout/checkout_models.dart';
 import '../../checkout/checkout_state.dart';
+import '../../inference/inference_models.dart';
 import '../components/bakery_primary_button.dart';
 import '../components/bakery_status_banner.dart';
 import '../bixolon_theme_extension.dart';
@@ -36,6 +37,105 @@ class CustomerCheckoutScreen extends StatefulWidget {
 
   @override
   State<CustomerCheckoutScreen> createState() => _CustomerCheckoutScreenState();
+}
+
+/// Candidate-only rearrangement surface. It consumes the immutable result and
+/// emits either the next linked capture request or a manual-catalog action.
+class CandidateRearrangementPanel extends StatelessWidget {
+  const CandidateRearrangementPanel({
+    required this.result,
+    required this.onRetake,
+    required this.onManualCatalog,
+    super.key,
+  });
+
+  final CandidateScanResult result;
+  final ValueChanged<CandidateRetakeRequest> onRetake;
+  final VoidCallback onManualCatalog;
+
+  @override
+  Widget build(BuildContext context) {
+    if (result.state != 'needs_retake') {
+      throw StateError('rearrangement panel requires needs_retake');
+    }
+    final reasonText = result.reasons.map(_candidateReasonGuidance).join(' ');
+    return SingleChildScrollView(
+      key: const Key('candidate-rearrangement-scroll'),
+      child: Column(
+        key: const Key('candidate-rearrangement-panel'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AspectRatio(
+          aspectRatio: result.frameWidth / result.frameHeight,
+          child: CustomPaint(
+            key: const Key('candidate-problem-region-overlay'),
+            painter: _CandidateProblemRegionPainter(result),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Semantics(
+          liveRegion: true,
+          child: Text(reasonText, key: const Key('candidate-retake-guidance')),
+        ),
+        const SizedBox(height: 12),
+        if (result.manualCatalogRequired)
+          BakeryPrimaryButton(
+            key: const Key('candidate-manual-catalog'),
+            label: '전체 상품에서 직접 선택',
+            onPressed: onManualCatalog,
+          )
+        else
+          BakeryPrimaryButton(
+            key: const Key('candidate-linked-retake'),
+            label: '정리한 뒤 다시 촬영',
+            onPressed: () => onRetake(result.nextRetakeRequest),
+          ),
+      ],
+      ),
+    );
+  }
+}
+
+String _candidateReasonGuidance(String reason) => switch (reason) {
+  'no_target_detected' => '빵을 트레이 안에 놓고 다시 촬영해 주세요.',
+  'overlap_or_occlusion' || 'possible_merge' =>
+    '겹친 빵을 서로 떨어뜨리고 트레이 안쪽으로 옮겨 주세요.',
+  'possible_split' => '한 빵의 조각이 떨어져 보이지 않도록 정리해 주세요.',
+  'truncated_object' || 'uncovered_foreground' =>
+    '모든 빵이 트레이 안에서 완전히 보이도록 옮겨 주세요.',
+  'capture_quality_unverified' => '카메라를 고정하고 빵이 선명하게 보이도록 다시 촬영해 주세요.',
+  'completeness_risk_exceeded' => '표시된 영역의 빵을 분리한 뒤 다시 촬영해 주세요.',
+  _ => throw StateError('unsupported candidate retake reason: $reason'),
+};
+
+final class _CandidateProblemRegionPainter extends CustomPainter {
+  const _CandidateProblemRegionPainter(this.result);
+
+  final CandidateScanResult result;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFFD32F2F)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    for (final region in result.problemRegions) {
+      final box = region.boxXyxy;
+      canvas.drawRect(
+        Rect.fromLTRB(
+          box[0] / result.frameWidth * size.width,
+          box[1] / result.frameHeight * size.height,
+          box[2] / result.frameWidth * size.width,
+          box[3] / result.frameHeight * size.height,
+        ),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_CandidateProblemRegionPainter oldDelegate) =>
+      oldDelegate.result.receiptId != result.receiptId;
 }
 
 class _CustomerCheckoutScreenState extends State<CustomerCheckoutScreen> {

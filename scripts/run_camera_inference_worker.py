@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence, TextIO
 
 
 _ATTESTED_TREES = ("src", "dino", "data", "configs", "policies")
@@ -18,6 +19,53 @@ _ATTESTED_FILES = (
     "models/rfdetr_large_bakery_v1/manifest.json",
     "scripts/run_camera_inference_worker.py",
 )
+_DEPLOYED_ATTESTED_TREES = ("src/bakery_scanner", "dino/dinov3")
+_DEPLOYED_ATTESTED_FILES = (
+    "pyproject.toml",
+    "scripts/run_camera_inference_worker.py",
+    "data/catalogs/classes.json",
+    "configs/gpu_rfdetr_classifier_policy.yaml",
+    "configs/cpu_rfdetr_classifier_policy.yaml",
+    "models/rfdetr_large_bakery_v1/manifest.json",
+    "policies/presentation/camera_action_state_v2.json",
+    "policies/classification/policy_v2_manifest_rebound_cpu_smoke.json",
+    "policies/classification/fusion_local_or_global_consensus_margin_v1.json",
+)
+_DEPLOYED_IDENTITY_FILE = "worker-identity.json"
+_DEPLOYED_IDENTITY_KEYS = {
+    "schema_version",
+    "code_commit",
+    "code_identity_sha256",
+}
+_CANDIDATE_PROFILE = "rtx5080_15plus5_single_frame_v1"
+_LEGACY_PROFILE = "legacy"
+
+
+def serve_selected_runtime(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    runtime_factory: Callable[[Callable[[str, str | None], None]], object],
+    code_identity: dict[str, str],
+    runtime_profile: str,
+    candidate_provider_factory: Callable[[], object],
+    serve_fn: Callable[..., int],
+) -> int:
+    """Forward one explicit launch selection to the worker without fallback."""
+    if runtime_profile == _CANDIDATE_PROFILE:
+        candidate_provider = candidate_provider_factory()
+    elif runtime_profile == _LEGACY_PROFILE:
+        candidate_provider = None
+    else:
+        raise ValueError("unsupported camera runtime profile")
+    return serve_fn(
+        stdin,
+        stdout,
+        runtime_factory=runtime_factory,
+        code_identity=code_identity,
+        runtime_profile_id=runtime_profile,
+        candidate_runtime_provider=candidate_provider,
+    )
 
 
 def resolve_paths(
@@ -78,12 +126,42 @@ def stage_worker_snapshot(repo_root: Path, destination: Path) -> Path:
 
 def compute_worker_code_identity(root: Path, *, commit: str) -> dict[str, str]:
     """Hash the immutable snapshot's exact selected application inputs."""
+    return _compute_code_identity(
+        root,
+        commit=commit,
+        trees=_ATTESTED_TREES,
+        files=_ATTESTED_FILES,
+    )
+
+
+def compute_deployed_worker_code_identity(root: Path, *, commit: str) -> dict[str, str]:
+    """Hash the exact source/config/policy bytes included in a portable payload."""
+    return _compute_code_identity(
+        root,
+        commit=commit,
+        trees=_DEPLOYED_ATTESTED_TREES,
+        files=_DEPLOYED_ATTESTED_FILES,
+    )
+
+
+def deployed_worker_identity_paths() -> tuple[str, ...]:
+    """Return the committed paths whose bytes define a deployed worker."""
+    return _DEPLOYED_ATTESTED_TREES + _DEPLOYED_ATTESTED_FILES
+
+
+def _compute_code_identity(
+    root: Path,
+    *,
+    commit: str,
+    trees: Sequence[str],
+    files: Sequence[str],
+) -> dict[str, str]:
     if len(commit) not in (40, 64) or any(char not in "0123456789abcdef" for char in commit):
         raise ValueError("worker checkout commit is invalid")
     base = Path(root).resolve()
     records: list[str] = []
     try:
-        for relative in _ATTESTED_TREES:
+        for relative in trees:
             tree = base / relative
             if not tree.is_dir():
                 raise ValueError(f"worker attested tree is missing: {tree}")
@@ -92,7 +170,7 @@ def compute_worker_code_identity(root: Path, *, commit: str) -> dict[str, str]:
                 key=lambda candidate: candidate.relative_to(base).as_posix(),
             ):
                 records.append(_identity_record(base, path))
-        for relative in _ATTESTED_FILES:
+        for relative in files:
             path = base / relative
             if not path.is_file():
                 raise ValueError(f"worker attested file is missing: {path}")
@@ -106,6 +184,51 @@ def compute_worker_code_identity(root: Path, *, commit: str) -> dict[str, str]:
             f"{commit}\n{encoded}\n".encode("utf-8")
         ).hexdigest(),
     }
+
+
+def load_deployed_worker_identity(root: Path) -> dict[str, str] | None:
+    """Load the package-only worker identity, if this is a deployed pipeline."""
+    identity_path = Path(root).resolve() / _DEPLOYED_IDENTITY_FILE
+    if not identity_path.exists():
+        return None
+    if not identity_path.is_file():
+        raise ValueError("deployed worker identity is not a file")
+    try:
+        payload = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("deployed worker identity is invalid") from exc
+    if not isinstance(payload, dict) or set(payload) != _DEPLOYED_IDENTITY_KEYS:
+        raise ValueError("deployed worker identity has invalid fields")
+    if payload.get("schema_version") != 1:
+        raise ValueError("deployed worker identity schema_version must be 1")
+    commit = payload.get("code_commit")
+    identity = payload.get("code_identity_sha256")
+    if not isinstance(commit, str) or not isinstance(identity, str):
+        raise ValueError("deployed worker identity values are invalid")
+    if len(identity) != 64 or any(char not in "0123456789abcdef" for char in identity):
+        raise ValueError("deployed worker identity SHA-256 is invalid")
+    return {
+        "code_commit": commit,
+        "code_identity_sha256": identity,
+    }
+
+
+def resolve_worker_execution_root(
+    repo_root: Path,
+    temporary_root: Path,
+) -> tuple[Path, dict[str, str]]:
+    """Use a verified deployed pipeline or preserve the clean-checkout snapshot."""
+    root = Path(repo_root).resolve()
+    deployed_identity = load_deployed_worker_identity(root)
+    if deployed_identity is None:
+        return _capture_child_snapshot(root, temporary_root / "checkout")
+    actual_identity = compute_deployed_worker_code_identity(
+        root,
+        commit=deployed_identity["code_commit"],
+    )
+    if actual_identity != deployed_identity:
+        raise ValueError("deployed worker code identity does not match package")
+    return root, actual_identity
 
 
 def _capture_child_snapshot(repo_root: Path, destination: Path) -> tuple[Path, dict[str, str]]:
@@ -149,6 +272,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument(
+        "--runtime-profile",
+        choices=(_CANDIDATE_PROFILE, _LEGACY_PROFILE),
+        default=_CANDIDATE_PROFILE,
+    )
     parser.add_argument("--warmup-image", required=True, type=Path)
     parser.add_argument("--allow-external-warmup", action="store_true")
     parser.add_argument("--staged-root", type=Path)
@@ -175,8 +303,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="bakery-camera-worker-") as temporary:
         try:
             if args.staged_root is None:
-                snapshot, code_identity = _capture_child_snapshot(
-                    root, Path(temporary) / "checkout"
+                snapshot, code_identity = resolve_worker_execution_root(
+                    root, Path(temporary)
                 )
             else:
                 snapshot = Path(args.staged_root).resolve()
@@ -195,6 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.path.insert(0, str(dino_root))
         sys.path.insert(0, str(source_root))
         from bakery_scanner.prototype.camera_runtime import CameraInferenceRuntime
+        from bakery_scanner.prototype.camera_runtime import CandidateAdmissionFailed
         from bakery_scanner.prototype.camera_worker import serve
 
         def runtime_factory(emit):
@@ -206,11 +335,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 artifact_root=root,
             )
 
-        return serve(
-            sys.stdin,
-            sys.stdout,
+        class CandidateAdmissionProvider:
+            """Fail closed until the externally admitted engine runtime is staged."""
+
+            def admit(self):
+                manifest = (
+                    root
+                    / "artifacts"
+                    / "rtx5080_15plus5_single_frame_v1"
+                    / "admission.json"
+                )
+                if not manifest.is_file():
+                    raise CandidateAdmissionFailed(
+                        "admission_failed: candidate admission manifest is unavailable; "
+                        "no fallback"
+                    )
+                raise CandidateAdmissionFailed(
+                    "admission_failed: candidate engine-session provider is unavailable; "
+                    "no fallback"
+                )
+
+            def load(self, receipt):
+                del receipt
+                raise CandidateAdmissionFailed(
+                    "admission_failed: candidate runtime was not admitted; no fallback"
+                )
+
+        return serve_selected_runtime(
+            stdin=sys.stdin,
+            stdout=sys.stdout,
             runtime_factory=runtime_factory,
             code_identity=code_identity,
+            runtime_profile=args.runtime_profile,
+            candidate_provider_factory=CandidateAdmissionProvider,
+            serve_fn=serve,
         )
 
 

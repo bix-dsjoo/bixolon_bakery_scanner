@@ -5,6 +5,7 @@
     "dino/dinov3"
   ],
   "pipeline_files": [
+    "pyproject.toml",
     "scripts/run_camera_inference_worker.py",
     "dino/LICENSE.md",
     "data/catalogs/classes.json",

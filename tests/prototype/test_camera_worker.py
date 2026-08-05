@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bakery_scanner.prototype.camera_protocol import WorkerPhase
+from bakery_scanner.prototype.camera_protocol import WorkerPhase, validate_result_event
 from bakery_scanner.prototype.camera_runtime import StartupMetrics
 from bakery_scanner.prototype.camera_worker import serve
 
@@ -43,12 +43,16 @@ class FakeRuntime:
             WorkerPhase.AGGREGATING,
         ),
         device: str = "cpu",
+        runtime_mode: str = "cpu_reference",
+        fallback_reason: str | None = "CPU reference runtime selected",
         startup_metrics: object | None = None,
         presentation: object | None = None,
     ) -> None:
         self.fail_analyze = fail_analyze
         self.phases = phases
         self.device = device
+        self.runtime_mode = runtime_mode
+        self.fallback_reason = fallback_reason
         self.startup_metrics = startup_metrics
         self.presentation = (
             _normal_presentation() if presentation is None else presentation
@@ -67,6 +71,11 @@ class FakeRuntime:
             "request_id": request_id,
             "image": {"width": 1, "height": 1},
             "device": self.device,
+            "execution_device": self.device,
+            "runtime_mode": self.runtime_mode,
+            "fallback_reason": self.fallback_reason,
+            "scan_to_result_ms": 0.0,
+            "inference_ms": 0.0,
             "objects": [],
             "counts": {},
             "unknown_count": 0,
@@ -87,6 +96,35 @@ class FakeRuntime:
     def close(self) -> None:
         self.close_calls += 1
         self.closed = True
+
+
+def test_strict_result_validation_requires_runtime_mode(tmp_path: Path):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    result = FakeRuntime().analyze(image, "request-1", lambda _phase: None)
+    result.pop("runtime_mode")
+
+    with pytest.raises(ValueError, match="envelope"):
+        validate_result_event(result)
+
+
+def test_strict_result_validation_requires_gpu_mode_to_use_cuda_device(tmp_path: Path):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    result = FakeRuntime().analyze(image, "request-1", lambda _phase: None)
+    result.update(
+        {
+            "device": "cpu",
+            "execution_device": "cpu",
+            "runtime_mode": "gpu_reference",
+            "fallback_reason": "GPU reference result",
+            "scan_to_result_ms": 400.0,
+            "inference_ms": 80.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="GPU.*device"):
+        validate_result_event(result)
 
 
 def _events(stdout: io.StringIO) -> list[dict[str, object]]:
@@ -143,7 +181,8 @@ def test_ready_serializes_immutable_real_startup_provenance():
         "presentation_policy_sha256",
     )}
     metrics = StartupMetrics(
-        device="cpu", load_ms=1.0, warmup_ms=1.0, fallback_reason=None,
+        device="cpu", runtime_mode="cpu_reference", load_ms=1.0, warmup_ms=1.0,
+        fallback_reason="forced_cpu",
         detector_id="detector", repvit_id="repvit", dinov3_id="dino",
         fusion_policy_id="fusion", detector_threshold=0.5, applied_artifact_hashes=hashes,
     )
@@ -222,6 +261,11 @@ def test_worker_emits_legal_correlated_progress_before_result(tmp_path: Path):
             "request_id": "analysis-1",
             "image": {"width": 1, "height": 1},
             "device": "cpu",
+            "execution_device": "cpu",
+            "runtime_mode": "cpu_reference",
+            "fallback_reason": "CPU reference runtime selected",
+            "scan_to_result_ms": 0.0,
+            "inference_ms": 0.0,
             "objects": [],
             "counts": {},
             "unknown_count": 0,
@@ -371,6 +415,130 @@ def test_worker_emits_exactly_one_fatal_when_initialization_fails():
     events = _events(stdout)
     assert [row["type"] for row in events].count("fatal") == 1
     assert all(row["type"] != "ready" for row in events)
+
+
+def test_live_worker_candidate_admission_failure_is_explicit_and_never_falls_back():
+    calls = {"admit": 0, "load": 0, "legacy": 0}
+
+    class Provider:
+        def admit(self):
+            calls["admit"] += 1
+            raise ValueError("engine hash mismatch")
+
+        def load(self, receipt):
+            calls["load"] += 1
+            return FakeRuntime(device="cuda:0")
+
+    def legacy_factory(_emit):
+        calls["legacy"] += 1
+        return FakeRuntime()
+
+    stdout = io.StringIO()
+    status = serve(
+        io.StringIO(),
+        stdout,
+        runtime_factory=legacy_factory,
+        runtime_profile_id="rtx5080_15plus5_single_frame_v1",
+        candidate_runtime_provider=Provider(),
+        stderr=io.StringIO(),
+    )
+
+    assert status == 1
+    assert calls == {"admit": 1, "load": 0, "legacy": 0}
+    assert _events(stdout)[-1]["code"] == "admission_failed"
+
+
+def test_live_worker_uses_admitted_candidate_for_analysis_requests(tmp_path: Path):
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"jpeg")
+    calls = {"admit": 0, "load": 0, "legacy": 0}
+
+    class Provider:
+        def admit(self):
+            calls["admit"] += 1
+            return "receipt"
+
+        def load(self, receipt):
+            assert receipt == "receipt"
+            calls["load"] += 1
+            return FakeRuntime(
+                device="cuda:0",
+                runtime_mode="gpu_fast_verified",
+                fallback_reason=None,
+            )
+
+    stdout = io.StringIO()
+    status = serve(
+        io.StringIO(
+            json.dumps({"type": "analyze", "request_id": "scan-1", "image_path": str(image)})
+            + "\n"
+            + '{"type":"shutdown","request_id":"stop"}\n'
+        ),
+        stdout,
+        runtime_factory=lambda _emit: calls.__setitem__("legacy", calls["legacy"] + 1),
+        runtime_profile_id="rtx5080_15plus5_single_frame_v1",
+        candidate_runtime_provider=Provider(),
+    )
+
+    assert status == 0
+    assert calls == {"admit": 1, "load": 1, "legacy": 0}
+    assert any(event.get("request_id") == "scan-1" and event["type"] == "result" for event in _events(stdout))
+
+
+def test_cli_forwards_candidate_profile_and_provider_to_serve():
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_profile", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    provider = object()
+    observed = {}
+
+    def fake_serve(stdin, stdout, **kwargs):
+        observed.update(kwargs)
+        return 17
+
+    status = module.serve_selected_runtime(
+        stdin=io.StringIO(),
+        stdout=io.StringIO(),
+        runtime_factory=lambda _emit: None,
+        code_identity={"code_commit": "a" * 40, "code_identity_sha256": "b" * 64},
+        runtime_profile="rtx5080_15plus5_single_frame_v1",
+        candidate_provider_factory=lambda: provider,
+        serve_fn=fake_serve,
+    )
+
+    assert status == 17
+    assert observed["runtime_profile_id"] == "rtx5080_15plus5_single_frame_v1"
+    assert observed["candidate_runtime_provider"] is provider
+
+
+def test_cli_preserves_explicit_legacy_profile():
+    script = Path(__file__).parents[2] / "scripts" / "run_camera_inference_worker.py"
+    spec = importlib.util.spec_from_file_location("camera_worker_cli_legacy", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = {}
+
+    def fail_provider():
+        raise AssertionError("legacy profile must not construct candidate provider")
+
+    def fake_serve(stdin, stdout, **kwargs):
+        observed.update(kwargs)
+        return 0
+
+    assert module.serve_selected_runtime(
+        stdin=io.StringIO(),
+        stdout=io.StringIO(),
+        runtime_factory=lambda _emit: None,
+        code_identity={"code_commit": "a" * 40, "code_identity_sha256": "b" * 64},
+        runtime_profile="legacy",
+        candidate_provider_factory=fail_provider,
+        serve_fn=fake_serve,
+    ) == 0
+    assert observed["runtime_profile_id"] == "legacy"
+    assert observed["candidate_runtime_provider"] is None
 
 
 def test_worker_closes_initialized_runtime_when_ready_event_cannot_encode():
