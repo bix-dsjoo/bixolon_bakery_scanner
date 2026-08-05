@@ -39,7 +39,13 @@ void main() {
     expect(find.byIcon(Icons.error_outline), findsNothing);
   });
 
-  testWidgets('shows exact GPU runtime labels', (tester) async {
+  testWidgets('shows exact GPU runtime labels without narrow-header overflow', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(768, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     for (final scenario in [
       (RuntimeMode.gpuFastVerified, null, 'GPU \uac80\uc99d \uac00\uc18d'),
       (RuntimeMode.gpuReference, 'rfdetr_engine_parity_missing', 'GPU \ucc38\uc870 \ubaa8\ub4dc'),
@@ -60,6 +66,7 @@ void main() {
       );
 
       expect(find.text(scenario.$3), findsOneWidget);
+      expect(tester.takeException(), isNull);
     }
   });
 }

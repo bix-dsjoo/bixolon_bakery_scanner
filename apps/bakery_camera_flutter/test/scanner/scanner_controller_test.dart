@@ -719,6 +719,11 @@ InferenceResult _emptyResult({double workerTotalMs = 37}) {
     'request_id': 'analysis-1',
     'image': {'width': 1920, 'height': 1080},
     'device': 'cpu',
+    'execution_device': 'cpu',
+    'runtime_mode': 'cpu_reference',
+    'fallback_reason': 'CPU reference runtime selected',
+    'scan_to_result_ms': workerTotalMs,
+    'inference_ms': workerTotalMs,
     'objects': <Object?>[],
     'counts': <String, Object?>{},
     'unknown_count': 0,
@@ -752,6 +757,11 @@ InferenceResult _confirmedResult() {
     'request_id': 'analysis-1',
     'image': {'width': 1920, 'height': 1080},
     'device': 'cpu',
+    'execution_device': 'cpu',
+    'runtime_mode': 'cpu_reference',
+    'fallback_reason': 'CPU reference runtime selected',
+    'scan_to_result_ms': 37.0,
+    'inference_ms': 37.0,
     'objects': [
       {
         'object_id': 'object-1',

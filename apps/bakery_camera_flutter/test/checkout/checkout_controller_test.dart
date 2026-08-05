@@ -1192,6 +1192,11 @@ InferenceResult _registeredResult() => InferenceResult.fromJson({
   'request_id': 'analysis-registered',
   'image': {'width': 1920, 'height': 1080},
   'device': 'cpu',
+  'execution_device': 'cpu',
+  'runtime_mode': 'cpu_reference',
+  'fallback_reason': 'CPU reference runtime selected',
+  'scan_to_result_ms': 10.0,
+  'inference_ms': 10.0,
   'objects': [
     buildInferenceObjectJson(
       id: 'object-1',
@@ -1215,6 +1220,11 @@ InferenceResult _emptyResult({String requestId = 'analysis-empty'}) =>
       'request_id': requestId,
       'image': {'width': 1920, 'height': 1080},
       'device': 'cpu',
+      'execution_device': 'cpu',
+      'runtime_mode': 'cpu_reference',
+      'fallback_reason': 'CPU reference runtime selected',
+      'scan_to_result_ms': 10.0,
+      'inference_ms': 10.0,
       'objects': <Object?>[],
       'counts': <String, Object?>{},
       'unknown_count': 0,

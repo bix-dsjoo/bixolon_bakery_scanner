@@ -43,6 +43,7 @@ final class StatusStrip extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final showProductTitle = constraints.maxWidth >= 1180;
+              final showRuntimeFallback = constraints.maxWidth >= 800;
               final horizontalPadding = showProductTitle ? 24.0 : 16.0;
               final statusGap = showProductTitle ? 16.0 : 12.0;
               return Padding(
@@ -117,6 +118,7 @@ final class StatusStrip extends StatelessWidget {
                       _RuntimeModeStatus(
                         mode: runtimeMode,
                         fallbackReason: fallbackReason,
+                        showFallbackReason: showRuntimeFallback,
                       ),
                     ],
                     if (cameraFailure) ...[
@@ -138,10 +140,15 @@ final class StatusStrip extends StatelessWidget {
 }
 
 final class _RuntimeModeStatus extends StatelessWidget {
-  const _RuntimeModeStatus({required this.mode, required this.fallbackReason});
+  const _RuntimeModeStatus({
+    required this.mode,
+    required this.fallbackReason,
+    required this.showFallbackReason,
+  });
 
   final RuntimeMode mode;
   final String? fallbackReason;
+  final bool showFallbackReason;
 
   @override
   Widget build(BuildContext context) {
@@ -164,7 +171,7 @@ final class _RuntimeModeStatus extends StatelessWidget {
             _runtimeModeLabel(mode),
             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
           ),
-          if (isReference && fallbackReason != null) ...[
+          if (isReference && showFallbackReason && fallbackReason != null) ...[
             const SizedBox(width: 6),
             Text(
               fallbackReason!,
