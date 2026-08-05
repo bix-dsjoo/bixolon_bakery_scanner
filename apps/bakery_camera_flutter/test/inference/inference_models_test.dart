@@ -23,6 +23,29 @@ void main() {
     expect(() => CandidateScanResult.fromJson(partial), throwsFormatException);
   });
 
+  test('admitted candidate preserves verified GPU runtime evidence', () {
+    final payload = _candidateRetakeJson()
+      ..['state'] = 'accepted_scan'
+      ..['object_total'] = 1
+      ..['registered_object_total'] = 1
+      ..['unknown_total'] = 0
+      ..['sku_totals'] = <String, Object?>{'1': 1}
+      ..['objects'] = <Object?>[_candidateObjectJson()]
+      ..['reasons'] = <Object?>[]
+      ..['problem_regions'] = <Object?>[]
+      ..['attempt'] = null
+      ..['manual_catalog_required'] = false;
+
+    final result = InferenceResult.fromJson(payload);
+
+    expect(result.device, 'cuda:0');
+    expect(result.executionDevice, 'cuda:0');
+    expect(result.runtimeMode, RuntimeMode.gpuFastVerified);
+    expect(result.fallbackReason, isNull);
+    expect(result.scanToResultMs, 6.0);
+    expect(result.inferenceMs, 5.0);
+  });
+
   test('candidate schema rejects unknown fields and non-finite timings', () {
     final unknown = _candidateRetakeJson()..['extra'] = true;
     expect(() => CandidateScanResult.fromJson(unknown), throwsFormatException);

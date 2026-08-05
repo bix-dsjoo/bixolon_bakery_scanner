@@ -956,6 +956,17 @@ final class CandidateScanResult {
       imageWidth: frameWidth.toDouble(),
       imageHeight: frameHeight.toDouble(),
       device: 'cuda:0',
+      executionDevice: 'cuda:0',
+      runtimeMode: RuntimeMode.gpuFastVerified,
+      fallbackReason: null,
+      scanToResultMs: timings.totalMs,
+      inferenceMs:
+          timings.detectorMs +
+          timings.cropMs +
+          timings.repvitMs +
+          timings.dinov3Ms +
+          timings.fusionMs +
+          timings.postprocessMs,
       objects: adaptedObjects,
       counts: skuTotals,
       unknownCount: unknownTotal,
