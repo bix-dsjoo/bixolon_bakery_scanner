@@ -809,8 +809,8 @@ Map<String, Object?> _candidateObjectJson() => {
   'sku_name': 'Walnut Donut',
   'decision_path': 'direct_approved',
   'location': <String, Object?>{
-    'box_xyxy': <Object?>[10.0, 10.0, 30.0, 30.0],
-    'center_normalized': <Object?>[0.2, 0.2],
+    'box_xyxy': <Object?>[10.0, 10.0, 15.0, 15.0],
+    'center_normalized': <Object?>[0.625, 0.625],
     'object_order': 1,
   },
   'confidence': <String, Object?>{

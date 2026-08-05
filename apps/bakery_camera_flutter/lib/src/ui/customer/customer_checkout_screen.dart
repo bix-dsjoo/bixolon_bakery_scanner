@@ -59,8 +59,10 @@ class CandidateRearrangementPanel extends StatelessWidget {
       throw StateError('rearrangement panel requires needs_retake');
     }
     final reasonText = result.reasons.map(_candidateReasonGuidance).join(' ');
-    return Column(
-      key: const Key('candidate-rearrangement-panel'),
+    return SingleChildScrollView(
+      key: const Key('candidate-rearrangement-scroll'),
+      child: Column(
+        key: const Key('candidate-rearrangement-panel'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         AspectRatio(
@@ -89,6 +91,7 @@ class CandidateRearrangementPanel extends StatelessWidget {
             onPressed: () => onRetake(result.nextRetakeRequest),
           ),
       ],
+      ),
     );
   }
 }

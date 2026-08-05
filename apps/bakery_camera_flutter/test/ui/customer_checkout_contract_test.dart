@@ -31,7 +31,9 @@ void main() {
     );
 
     expect(find.byKey(const Key('candidate-problem-region-overlay')), findsOneWidget);
+    expect(find.byKey(const Key('candidate-rearrangement-scroll')), findsOneWidget);
     expect(find.textContaining('겹친 빵'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('candidate-linked-retake')));
     await tester.tap(find.byKey(const Key('candidate-linked-retake')));
     expect(request?.retakeChainId, 'chain-1');
     expect(request?.attempt, 2);
@@ -53,6 +55,7 @@ void main() {
     );
 
     expect(find.byKey(const Key('candidate-linked-retake')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('candidate-manual-catalog')));
     await tester.tap(find.byKey(const Key('candidate-manual-catalog')));
     expect(opened, isTrue);
   });
