@@ -30,7 +30,8 @@ intentionally retained after integration.
   class/scene splits, nested support selection, provenance-bound evidence
   scoring, stage selection/reselection, and experiment summaries/receipts.
 - Documentation: added the canonical fail-closed workflow infographics,
-  integration design and execution plan, and this handoff.
+  integration design and execution plan, H1 closed-pipeline plans and
+  summaries, and this handoff.
 
 ## Experiment and benchmark evidence
 
@@ -42,6 +43,10 @@ intentionally retained after integration.
   `experiments/20260731-rpc-fewshot/`. They document a research workflow and
   do not convert unavailable external artifacts into accepted production
   evidence.
+- The retained H1 20-SKU and 200-SKU closed-pipeline summaries live under
+  `experiments/2026-08-04-h1-*-closed-pipeline-summary.md`. They are
+  oracle-box classification evidence and explicitly exclude detector accuracy;
+  they must not be presented as end-to-end scan-image results.
 - No new model, calibration, benchmark, or deployment release is claimed by
   this consolidation alone.
 
