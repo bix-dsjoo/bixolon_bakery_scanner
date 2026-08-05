@@ -173,4 +173,3 @@ def test_stage1_runner_writes_all_four_methods_for_each_fold_seed(tmp_path: Path
 git add src/bakery_scanner/experiments/rpc_research_worker.py tools/experiments tests/experiments/test_rpc_research_worker.py experiments/20260731-rpc-fewshot/README.md
 git commit -m "feat: run reproducible RPC stage-one research"
 ~~~
-

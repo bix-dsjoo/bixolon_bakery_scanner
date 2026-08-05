@@ -382,5 +382,3 @@ git commit -m "docs(release): ?댁쨷 ?고???寃利?踰붿쐞瑜?湲곕줉"
 - Tasks 1--2 enforce common GPU/CPU worker behavior, Task 3 makes it observable in Flutter, Task 4 protects the single offline payload, and Task 5 records strict evidence without enabling the non-parity engine.
 - No task introduces an object-count restriction: batching is an implementation detail and every detected object remains in the result contract.
 - The plan uses one stable spelling for every cross-boundary field: `execution_device`, `runtime_mode`, `fallback_reason`, `scan_to_result_ms`, and `inference_ms`.
-
-

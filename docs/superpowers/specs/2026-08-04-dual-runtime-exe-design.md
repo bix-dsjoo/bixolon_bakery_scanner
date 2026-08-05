@@ -1,6 +1,6 @@
 # GPU/CPU dual-runtime evaluator EXE design
 
-**Status:** approved design, pending implementation plan  
+**Status:** approved design, pending implementation plan
 **Scope:** the existing Windows Flutter evaluator, its bundled Python worker, and
 the single offline installer.
 
