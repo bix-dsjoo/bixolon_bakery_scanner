@@ -399,7 +399,7 @@ INSERT INTO admin_review_annotations (
     });
     final original = BakeryDatabase(NativeDatabase(file));
     await original.select(original.appSettings).getSingle();
-    await original.customStatement('PRAGMA user_version = 5');
+    await original.customStatement('PRAGMA user_version = 6');
     await original.close();
     final newer = BakeryDatabase(NativeDatabase(file));
     addTearDown(newer.close);

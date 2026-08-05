@@ -325,7 +325,7 @@ CHECK (
     '''
 CHECK (
   CASE WHEN json_valid(provenance_json) THEN
-    (json_type(provenance_json, '\$.detector_id') = 'text'
+    CASE WHEN (json_type(provenance_json, '\$.detector_id') = 'text'
     AND json_type(provenance_json, '\$.repvit_artifact_id') = 'text'
     AND json_extract(provenance_json, '\$.repvit_sha256') IS NOT NULL
     AND json_type(provenance_json, '\$.repvit_sha256') = 'text'
@@ -389,7 +389,7 @@ CHECK (
       AND json_extract(provenance_json, '\$.fusion_policy_sha256')
         NOT GLOB '*[^0-9a-f]*'
       AND json_type(provenance_json, '\$.runtime_profile_id') = 'text'
-    )
+    ) THEN 1 ELSE 0 END
   ELSE 0 END
 )''',
   ];

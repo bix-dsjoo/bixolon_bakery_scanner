@@ -52,7 +52,7 @@ void main() {
       expect(snapshot.timing.configSha256, 'config-current');
       expect(snapshot.timing.conditionalDinoRate, 0.5);
       expect(snapshot.timing.total.p50Ms, 180);
-      expect(snapshot.storage.schemaVersion, 5);
+      expect(snapshot.storage.schemaVersion, 4);
       expect(snapshot.storage.activeCatalogRevisionId, 'catalog-v2');
     },
   );
